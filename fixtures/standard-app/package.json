@@ -1,0 +1,19 @@
+{
+  "name": "@itervane/standard-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "files": ["dist", "server"],
+  "scripts": {
+    "build": "vite build",
+    "start": "node server/index.mjs",
+    "test": "node --test test/application.test.mjs"
+  },
+  "dependencies": {
+    "express": "5.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": { "vite": "8.3.8" }
+}
