@@ -10,7 +10,7 @@ export type TaskState = z.infer<typeof taskStateSchema>;
 
 export const sourceRefSchema = z.object({
   repositoryId: idSchema,
-  commit: z.string().regex(/^[a-f0-9]{40,64}$/),
+  commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
 }).strict();
 
 export const startTaskSchema = z.object({

@@ -9,6 +9,9 @@ describe('governance boundaries', () => {
   it('requires a fixed commit rather than a branch or command', () => {
     expect(startTaskSchema.safeParse(input()).success).toBe(true);
     expect(startTaskSchema.safeParse({ ...input(), source: { repositoryId: randomUUID(), commit: 'main' } }).success).toBe(false);
+    for (const length of [39, 41, 63, 65]) {
+      expect(startTaskSchema.safeParse({ ...input(), source: { repositoryId: randomUUID(), commit: 'a'.repeat(length) } }).success).toBe(false);
+    }
   });
   it.each(['approved', 'actor', 'permissions', 'apiKey'])('rejects caller-supplied %s authority', property => {
     expect(startTaskSchema.safeParse({ ...input(), [property]: true }).success).toBe(false);
