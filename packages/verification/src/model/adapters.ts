@@ -67,12 +67,13 @@ export function createOpenAI(config: Config): ModelAdapter {
       }, { signal });
       const message = response.choices[0]?.message;
       if (!message) throw new Error('Model returned no choice');
+      if (!response.usage) throw new Error('Model omitted usage; token budget cannot be verified');
       return {
         text: message.content ?? '',
         calls: (message.tool_calls ?? []).filter(c => c.type === 'function').map(c => ({
           id: c.id, name: c.function.name, input: JSON.parse(c.function.arguments) as unknown,
         })),
-        tokenUsage: response.usage?.total_tokens ?? 0,
+        tokenUsage: response.usage.total_tokens,
       };
     },
   };

@@ -48,6 +48,20 @@ describe('model protocol compatibility', () => {
     for (const url of ['http://example.com', 'https://user:pass@example.com', 'https://example.com?key=placeholder']) expect(() => safeEndpoint(url)).toThrow();
     expect(safeEndpoint('http://localhost:23000/')).toBe('http://localhost:23000');
   });
+  it('does not treat missing token usage as a free OpenAI turn', async () => {
+    const server = createServer((req, res) => {
+      req.resume();
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ id: 'fixture', object: 'chat.completion', created: 1, model: 'test',
+        choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'done' } }] }));
+    });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing fixture address');
+    try {
+      const adapter = createOpenAI({ apiKey: 'fixture-only', model: 'test', baseURL: `http://127.0.0.1:${address.port}/v1` });
+      await expect(adapter.complete({ system: 'test', conversation: [{ kind: 'user', text: 'inspect' }], tools: [], signal: AbortSignal.timeout(5_000) })).rejects.toThrow('Model omitted usage');
+    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
   it('does not forward credentials through a model endpoint redirect', async () => {
     let forwarded = false;
     const target = createServer((_, res) => { forwarded = true; res.end('unexpected'); });
