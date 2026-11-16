@@ -10,8 +10,9 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
-    "check": "pnpm typecheck && pnpm test"
+    "test": "vitest run",
+    "probe:model": "tsx --env-file-if-exists=.env packages/verification/src/entries/model.ts",
+    "check": "tsx scripts/check.ts"
   },
   "devDependencies": {
     "@itervane/contracts": "workspace:*",
