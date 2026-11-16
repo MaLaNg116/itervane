@@ -1,8 +1,8 @@
-# Loopstead
+# Itervane
 
 An open-source, self-hostable platform for agent-driven application delivery, operations, and governance.
 
-Loopstead connects three evidence-based loops:
+Itervane connects three evidence-based loops:
 
 - Delivery: audit, repair, independently verify, freeze a release candidate, obtain human approval, deploy, and verify the running application.
 - Operations: observe, diagnose, propose a bounded action, obtain approval, execute, and verify recovery; code defects enter a linked delivery task.

@@ -1,4 +1,4 @@
-# Loopstead 分阶段实施计划 v2：TypeScript + PostgreSQL
+# Itervane 分阶段实施计划 v2：TypeScript + PostgreSQL
 
 - 文档版本：实施计划 v2。
 - 整理日期：2026-11-16。
