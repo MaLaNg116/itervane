@@ -13,7 +13,8 @@
     "test": "vitest run",
     "probe:model": "tsx --env-file-if-exists=.env packages/verification/src/entries/model.ts",
     "probe:mcp": "tsx packages/verification/src/entries/mcp.ts",
-    "check": "tsx scripts/check.ts"
+    "check": "tsx scripts/check.ts",
+    "probe:cloud": "tsx --env-file-if-exists=.env packages/verification/src/entries/cloud.ts"
   },
   "devDependencies": {
     "@itervane/contracts": "workspace:*",

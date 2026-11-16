@@ -4,3 +4,4 @@ export { report, saveReport, executeProbe, sourceFingerprint } from './report.js
 export { probeModel } from './model/probe.js';
 export { runProbeLoop } from './model/loop.js';
 export { probeMcp } from './mcp.js';
+export { probeCloud, cloudArguments } from './cloud.js';
