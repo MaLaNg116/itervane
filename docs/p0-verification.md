@@ -71,11 +71,11 @@ postgres:17@sha256:0d938e975177bef9f1f61f3f9dbcf2e0aa0a139568f66d3415ed8892eb97f
 | MCP | 未认证 401、错误 Origin 403、官方客户端重连/幂等三个检查通过 | 临时探针认证与内存状态，不是生产 OAuth 或持久化任务 API |
 | 标准应用 | Vite 构建和 5 项真实 HTTP/启动/静态资源检查通过 | Dockerfile 已准备但镜像构建、受保护入口和真实部署未验证 |
 | 评测材料 | 24 个案例（6 个 holdout）及源码变异匹配检查通过 | **24 个平台场景尚未执行**；按 P1—P5 接入，不计为 Agent 成功率 |
-| 本地实际模型 | 模型列表可达；实际 Messages/Chat 推理请求超时 | P0.2 尚未通过；需要端点能完成真实推理，再验证两条观察路径 |
+| 本地实际模型 | 之前实际推理请求超时；本次通过 Anthropic 协议完成健康/故障两条真实观察路径，分别计量 518 / 806 tokens | 健康路径仅 inspect，故障路径 inspect → logs，最终随机证明匹配；OpenAI 适配仅通过协议夹具，未进行实际模型验证 |
 | 候选云机 | Linux 可 SSH；KVM 设备不可用、CPU 虚拟化标志未开放、virsh 缺失 | P0.4 阻塞；不以 Docker 或未验证的替代隔离放行 |
 | Komodo / Whiskers | 尚未执行原生发布、版本恢复、确认后重试 | P0.5 阻塞；没有 `native-operations.json` 是预期状态，不补造通过报告 |
 
-模型、云机、原生集成的关键条件未满足，**P0 不通过，P1 不进入正式实现**。没有因这次环境问题删减三条闭环、MCP、Agent 运维或安全边界。
+云机隔离及原生集成的关键条件未满足，**P0 不通过，P1 不进入正式实现**。没有因这次环境问题删减三条闭环、MCP、Agent 运维或安全边界。
 
 ## 5. 当前候选依赖组合
 
@@ -84,7 +84,7 @@ postgres:17@sha256:0d938e975177bef9f1f61f3f9dbcf2e0aa0a139568f66d3415ed8892eb97f
 | 依赖 | 精确版本 | manifest 许可 | 当前证据 |
 |---|---|---|---|
 | TypeScript / Vitest / tsx | 7.0.2 / 5.1.0 / 4.23.15 | Apache-2.0 / MIT / MIT | 本机严格检查和测试 |
-| `@anthropic-ai/sdk` | 1.8.0 | Apache-2.0 | 本地协议夹具通过；实际推理未通过 |
+| `@anthropic-ai/sdk` | 1.8.0 | Apache-2.0 | 协议夹具及实际兼容端点工具循环通过 |
 | `openai` | 7.57.0 | Apache-2.0 | 本地协议夹具通过；实际推理未通过 |
 | `@langchain/core` / `@langchain/langgraph` | 1.4.1 / 1.7.4 | MIT | 图与 PG 检查点恢复测试 |
 | `@langchain/langgraph-checkpoint-postgres` | 1.1.3 | MIT | 新连接恢复测试 |
@@ -100,7 +100,7 @@ Fastify、门户组件、Keycloak、Traefik、Registry、Komodo、Whiskers、lib
 
 ## 6. P0 剩余出口
 
-1. 在可实际推理的端点运行 `probe:model`，验证两种观察导致的不同路径及证据校验，不只测试文本问答。
+1. 首轮实际 Anthropic 协议的工具循环已通过；模型/协议/配置改变时重新验证。OpenAI 协议如要作为正式任务配置，还需补充实际模型证据。
 2. 准备支持 KVM 的 Linux 宿主，完成 VM 创建、资源/出口限制、执行、重置、销毁、越界与残留验证。只读预检成功不能代替这些证据。
 3. 在隔离、登记的测试目标验证 Komodo 的发布/版本恢复及 Whiskers 原生 MCP 确认闸门。平台确认与下游确认关联，固定目标/动作/参数；响应未知时先核对。
 4. 验证标准镜像构建与受保护部署，补全适配器和 Runner 契约、正式 P0.7 版本/协议/许可记录。
