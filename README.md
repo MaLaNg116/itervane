@@ -10,9 +10,19 @@ Loopstead connects three evidence-based loops:
 
 ## Status
 
-Planning stage. Blueprint v6 and its TypeScript + PostgreSQL implementation plan define the design baseline. Application implementation has not started.
+Planning stage. [Blueprint v6](docs/blueprint-v6.md) and the [TypeScript + PostgreSQL implementation plan v2](docs/implementation-plan-v2-ts-postgresql.md) define the design baseline. Application implementation has not started.
 
 The capabilities below are planned, not available features.
+
+## Development baseline
+
+The complete design documents are maintained in Chinese:
+
+- [Baseline index and design consistency](docs/baseline.md): document responsibilities, invariant mapping, approved clarifications, and change records.
+- [Blueprint v6](docs/blueprint-v6.md): product vision, all three loops, five logical agent roles, security boundaries, and MVP scope.
+- [Implementation plan v2: TypeScript + PostgreSQL](docs/implementation-plan-v2-ts-postgresql.md): technology choices, modules, dependencies, database and concurrency design, P0-P5 tasks, and acceptance criteria.
+
+Blueprint v6 remains the product and architecture baseline. The implementation plan records the agreed TypeScript stack and execution approach. No implementation phase has been completed.
 
 ## Agent engineering
 
@@ -39,4 +49,5 @@ The MVP includes all three loops, both MCP directions, and validated reuse of at
 
 ## License
 
-Apache License 2.0. See LICENSE. Third-party components, model services, and rule packages retain their own licenses and terms.
+Apache License 2.0. See [LICENSE](LICENSE). Third-party components, model services, and rule packages retain their own licenses and terms.
+
