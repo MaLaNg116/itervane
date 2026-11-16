@@ -80,12 +80,14 @@ export async function openDatabaseProbe(connectionString: string) {
           await client.query('BEGIN');
           // Lock the authority row for this short write; check-then-write outside
           // a transaction would allow a superseded owner to commit stale output.
-          const current = await client.query(`SELECT 1 FROM ${schemaName}.execution_slot
-            WHERE slot=1 AND owner=$1 AND generation=$2 AND lease_until>clock_timestamp() FOR UPDATE`, [owner, generation]);
-          if (current.rowCount !== 1) { await client.query('ROLLBACK'); return false; }
-          await client.query(`INSERT INTO ${schemaName}.observations(owner,generation,value) VALUES($1,$2,$3)`, [owner, generation, value]);
+          await client.query(`SELECT 1 FROM ${schemaName}.execution_slot WHERE slot=1 FOR UPDATE`);
+          // Evaluate the lease after acquiring the lock: it may expire while
+          // waiting even when the row's owner and generation never change.
+          const written = await client.query(`INSERT INTO ${schemaName}.observations(owner,generation,value)
+            SELECT $1,$2,$3 FROM ${schemaName}.execution_slot
+            WHERE slot=1 AND owner=$1 AND generation=$2 AND lease_until>clock_timestamp()`, [owner, generation, value]);
           await client.query('COMMIT');
-          return true;
+          return written.rowCount === 1;
         } catch (error) { await client.query('ROLLBACK'); throw error; }
         finally { client.release(); }
       },

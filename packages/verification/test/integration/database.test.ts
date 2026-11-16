@@ -68,6 +68,25 @@ describe('real PostgreSQL 17 admission and recovery', () => {
     expect((await probe.boss.findJobs('workflow'))[0]?.state).toBe('cancelled');
   });
 
+  it('rechecks lease expiry after waiting for another transaction to release the authority row', async () => {
+    const owner = randomUUID();
+    const generation = await probe.acquire(owner);
+    await probe.pool.query(`UPDATE ${probe.schemaName}.execution_slot SET lease_until=clock_timestamp()+interval '500 milliseconds' WHERE slot=1`);
+    const locker = await probe.pool.connect();
+    let pending: Promise<boolean> | undefined;
+    try {
+      await locker.query('BEGIN');
+      await locker.query(`SELECT 1 FROM ${probe.schemaName}.execution_slot WHERE slot=1 FOR UPDATE`);
+      pending = probe.recordObservation(owner, generation!, 'expired-while-waiting');
+      await new Promise(resolveDelay => setTimeout(resolveDelay, 750));
+    } finally {
+      await locker.query('ROLLBACK');
+      locker.release();
+    }
+    expect(await pending).toBe(false);
+    expect((await probe.pool.query(`SELECT 1 FROM ${probe.schemaName}.observations`)).rowCount).toBe(0);
+  });
+
   it('bounds retries without creating a new logical wakeup', async () => {
     const admission = await probe.admit(input());
     const [first] = await probe.boss.fetch('workflow');

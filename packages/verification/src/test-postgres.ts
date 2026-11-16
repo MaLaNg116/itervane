@@ -52,7 +52,7 @@ export async function runPostgresTests(): Promise<number> {
       child.once('exit', value => resolveCode(value ?? 1));
     });
     const summary = JSON.parse(await readFile('.reports/p0/database-tests.json', 'utf8')) as { success?: boolean; numPassedTests?: number };
-    const passed = code === 0 && summary.success === true && (summary.numPassedTests ?? 0) >= 10;
+    const passed = code === 0 && summary.success === true && (summary.numPassedTests ?? 0) >= 11;
     await saveReport(report('database', [
       { id: 'postgresql-17', status: 'passed', detail: `Real PostgreSQL ${serverVersion}.` },
       { id: 'atomicity-recovery-and-fencing', status: passed ? 'passed' : 'failed', detail: `${summary.numPassedTests ?? 0} integration assertions passed; no SQLite or in-memory database used.` },
