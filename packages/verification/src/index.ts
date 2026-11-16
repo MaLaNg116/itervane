@@ -6,3 +6,4 @@ export { runProbeLoop } from './model/loop.js';
 export { probeMcp } from './mcp.js';
 export { probeCloud, cloudArguments } from './cloud.js';
 export { openDatabaseProbe, assertDisposableDatabase } from './database.js';
+export { probeEvaluation, validateInventory, inventorySchema } from './evaluation.js';

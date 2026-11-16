@@ -16,10 +16,10 @@ export async function sourceFingerprint(): Promise<string> {
       if (entry.name === 'node_modules' || entry.name === 'dist') continue;
       const path = resolve(directory, entry.name);
       if (entry.isDirectory()) await walk(path);
-      else if (entry.isFile() && /\.(ts|json)$/.test(entry.name)) files.push(path);
+      else if (entry.isFile() && (/\.(ts|json|mjs|js|jsx|css|html|yaml)$/.test(entry.name) || entry.name === 'Dockerfile')) files.push(path);
     }
   }
-  for (const directory of ['packages', 'scripts']) await walk(resolve(directory));
+  for (const directory of ['packages', 'scripts', 'fixtures', 'evaluation']) await walk(resolve(directory));
   for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.json', 'vitest.config.ts', 'vitest.integration.config.ts']) files.push(resolve(name));
   for (const file of files.sort()) hash.update(relative(process.cwd(), file).replaceAll('\\', '/')).update('\0').update(await readFile(file)).update('\0');
   return hash.digest('hex');
