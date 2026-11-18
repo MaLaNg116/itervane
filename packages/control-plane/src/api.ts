@@ -3,7 +3,7 @@ import Fastify, { LogController, type FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   admissionDtoSchema, applicationDtoSchema, capabilitiesSchema, environmentDtoSchema,
-  idSchema, listQuerySchema, meDtoSchema, projectDtoSchema, repositoryDtoSchema, taskDtoSchema, taskEventDtoSchema,
+  idSchema, listQuerySchema, meDtoSchema, projectAccessDtoSchema, portalConfigSchema, projectDtoSchema, repositoryDtoSchema, taskDtoSchema, taskEventDtoSchema,
   negotiateLocale, type Locale,
 } from '@itervane/contracts';
 import { AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
@@ -13,6 +13,7 @@ import { errorCode, localizedError, statusFor } from './service/presentation.js'
 import { ResourceService } from './service/resources.js';
 import { TaskService } from './service/tasks.js';
 import { createMcpEndpoint } from './mcp.js';
+import { canonicalPublicUrl } from './config.js';
 
 declare module 'fastify' {
   interface FastifyRequest { verifiedIdentity: VerifiedIdentity | null; locale: Locale }
@@ -27,7 +28,8 @@ const identity = (request: FastifyRequest) => {
 };
 const limit = (request: FastifyRequest) => parseInput(listQuerySchema, request.query).limit;
 
-export function createApi(database: Database, config: IdentityConfig & { publicUrl?: string }, options: { logger?: boolean } = {}) {
+export type ApiConfig = IdentityConfig & { publicUrl?: string; portalClientId?: string };
+export function createApi(database: Database, config: ApiConfig, options: { logger?: boolean } = {}) {
   const verify = createIdentityVerifier(config);
   const resources = new ResourceService(database); const tasks = new TaskService(database);
   const app = Fastify({
@@ -68,6 +70,11 @@ export function createApi(database: Database, config: IdentityConfig & { publicU
   app.setNotFoundHandler((request, reply) => reply.code(404).send(localizedError('not_found', request.id, request.locale)));
 
   app.get('/health/live', { config: { public: true } }, async () => ({ status: 'alive' }));
+  app.get('/portal-config', { config: { public: true } }, async () => {
+    const origin = canonicalPublicUrl(config.publicUrl ?? 'http://127.0.0.1:4310');
+    return portalConfigSchema.parse(config.portalClientId ? { enabled: true, authority: config.issuer, clientId: config.portalClientId,
+      redirectUri: `${origin}/auth/callback`, postLogoutRedirectUri: `${origin}/auth/logout-callback` } : { enabled: false });
+  });
   app.get('/.well-known/oauth-protected-resource/mcp', { config: { public: true } }, async () => mcp.metadata);
   app.route({ method: ['POST', 'GET', 'DELETE'], url: '/mcp', config: { mcp: true }, handler: async (request, reply) => {
     await mcp.handle(request, reply, identity(request), request.headers.authorization!.slice(7));
@@ -75,10 +82,15 @@ export function createApi(database: Database, config: IdentityConfig & { publicU
   app.get('/v1/me', async request => meDtoSchema.parse(await resources.me(identity(request))));
   app.get('/v1/capabilities', async request => {
     await resources.me(identity(request));
-    return capabilitiesSchema.parse({ stage: 'p1-b', taskAdmission: true, taskExecution: false, durableScheduling: true, externalMcp: true, sandbox: false, deployment: false, operations: false });
+    return capabilitiesSchema.parse({ stage: 'p1-c', taskAdmission: true, taskExecution: false, durableScheduling: true, externalMcp: true,
+      portal: false, browserLogin: Boolean(config.portalClientId), sandbox: false, deployment: false, operations: false });
   });
   app.post('/v1/projects', async (request, reply) => reply.code(201).send(projectDtoSchema.parse(await resources.createProject(identity(request), request.body))));
   app.get('/v1/projects', async request => ({ items: projectDtoSchema.array().parse(await resources.listProjects(identity(request), limit(request))) }));
+  app.get('/v1/projects/:projectId/access', async request => {
+    const { projectId } = parseInput(projectParam, request.params);
+    return projectAccessDtoSchema.parse(await resources.projectAccess(identity(request), projectId));
+  });
   app.post('/v1/projects/:projectId/repositories', async (request, reply) => {
     const { projectId } = parseInput(projectParam, request.params);
     return reply.code(201).send(repositoryDtoSchema.parse(await resources.registerRepository(identity(request), projectId, request.body)));
