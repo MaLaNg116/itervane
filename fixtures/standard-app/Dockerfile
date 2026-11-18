@@ -5,6 +5,7 @@ RUN npm install --global pnpm@11.9.0 --ignore-scripts
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
 COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/verification/package.json packages/verification/package.json
+COPY packages/control-plane/package.json packages/control-plane/package.json
 COPY fixtures/standard-app/package.json fixtures/standard-app/package.json
 RUN pnpm --filter @itervane/standard-app install --frozen-lockfile --ignore-scripts
 COPY fixtures/standard-app fixtures/standard-app
