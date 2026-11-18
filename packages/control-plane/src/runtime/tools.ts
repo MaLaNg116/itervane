@@ -52,6 +52,8 @@ export class ToolGateway {
       return { status: 'success', evidence: [{ id: randomUUID(), sha256: digest(JSON.stringify(data)), kind: 'observation' }], data };
     });
     return this.coordinator.withLease(scope, async (tx, { task }) => {
+      const [existing] = await tx.select().from(toolCalls).where(and(eq(toolCalls.runId, scope.runId), eq(toolCalls.keyHash, keyHash)));
+      if (existing?.result) return toolResultSchema.parse(existing.result);
       const [updated] = await tx.update(toolCalls).set({ status: result.status, result })
         .where(and(eq(toolCalls.runId, scope.runId), eq(toolCalls.keyHash, keyHash), eq(toolCalls.fence, scope.fence))).returning();
       if (!updated) throw new ExecutionLost();

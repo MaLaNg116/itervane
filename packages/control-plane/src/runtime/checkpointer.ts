@@ -26,6 +26,7 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
     this.bind(config);
     return this.coordinator.withLease(this.scope, async (tx, { runtime }) => {
       if (!runtime.checkpointId) return undefined;
+      if (config.configurable?.checkpoint_id && config.configurable.checkpoint_id !== runtime.checkpointId) throw new ExecutionLost();
       const tuple = await this.storage.getTuple({ configurable: { thread_id: this.scope.runId, checkpoint_ns: '', checkpoint_id: runtime.checkpointId } });
       if (!tuple) throw new Error('Published checkpoint is missing');
       const published = new Set((await tx.select().from(checkpointWrites).where(and(eq(checkpointWrites.runId, this.scope.runId),

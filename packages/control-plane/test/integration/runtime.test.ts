@@ -142,7 +142,8 @@ it('releases the slot while waiting for a same-project child and rejects wait cy
 it('deduplicates read observations, charges a persistent budget and refuses commands or foreign targets', async () => {
   await admit(); const scope = await claim(); const gateway = new ToolGateway(coordinator);
   await database.admin.query('UPDATE itervane.run_runtime SET max_tools=3');
-  const result = await gateway.call(scope, 'project.describe', {}, 'metadata');
+  const [result, concurrent] = await Promise.all([gateway.call(scope, 'project.describe', {}, 'metadata'), gateway.call(scope, 'project.describe', {}, 'metadata')]);
+  expect(concurrent).toEqual(result);
   expect(result).toMatchObject({ status: 'success', data: { projectId, repositoryId: source.repositoryId, commit: source.commit } });
   expect(await gateway.call(scope, 'project.describe', {}, 'metadata')).toEqual(result);
   await expect(gateway.call(scope, 'project.describe', { projectId: randomUUID() }, 'metadata')).rejects.toMatchObject({ code: 'idempotency_conflict' });

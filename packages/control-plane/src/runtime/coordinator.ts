@@ -84,7 +84,9 @@ export class ExecutionCoordinator {
   async heartbeat(scope: ExecutionScope): Promise<boolean> {
     return this.withLease(scope, async (tx, { task }) => {
       if (task.state === 'cancel_requested') return false;
-      await tx.update(executionSlot).set({ leaseUntil: sql`clock_timestamp() + ${this.leaseSeconds} * interval '1 second'` }).where(eq(executionSlot.id, 1));
+      const [renewed] = await tx.update(executionSlot).set({ leaseUntil: sql`clock_timestamp() + ${this.leaseSeconds} * interval '1 second'` })
+        .where(and(eq(executionSlot.id, 1), sql`${executionSlot.leaseUntil} > clock_timestamp()`)).returning({ id: executionSlot.id });
+      if (!renewed) throw new ExecutionLost();
       return true;
     }, { allowCancel: true });
   }
