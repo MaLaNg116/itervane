@@ -11,6 +11,9 @@ import { ExecutionCoordinator } from './coordinator.js';
 export class GuardedCheckpointer extends BaseCheckpointSaver {
   constructor(readonly coordinator: ExecutionCoordinator, readonly scope: ExecutionScope, readonly storage: PostgresSaver) { super(storage.serde); }
 
+  // PostgresSaver 为分叉重算加入随机版本后缀，避免未发布分支占用同一个 blob key。
+  override getNextVersion(current: number | undefined): number { return this.storage.getNextVersion(current); }
+
   private async hashWrite(write: unknown) {
     const [type, bytes] = await this.serde.dumpsTyped(write);
     return createHash('sha256').update(type).update(bytes).digest('hex');
@@ -40,9 +43,10 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
     const bound = this.bind(config);
     return this.coordinator.withLease(this.scope, async (tx, { runtime }) => {
       const next = await this.storage.put(bound, checkpoint, metadata, newVersions);
-      // UUIDv6 checkpoint IDs 按时间排序，异步保存不能让领域指针倒退。
-      if (!runtime.checkpointId || checkpoint.id > runtime.checkpointId) {
-        await tx.update(runRuntime).set({ checkpointId: checkpoint.id }).where(eq(runRuntime.runId, this.scope.runId));
+      // 用图的持久化 step 排序；跨进程的系统时钟回拨不能使 UUID 时间排序阻塞进展。
+      if (!Number.isSafeInteger(metadata.step)) throw new Error('Invalid checkpoint step');
+      if (!runtime.checkpointId || metadata.step > runtime.checkpointStep) {
+        await tx.update(runRuntime).set({ checkpointId: checkpoint.id, checkpointStep: metadata.step }).where(eq(runRuntime.runId, this.scope.runId));
       }
       return next;
     });

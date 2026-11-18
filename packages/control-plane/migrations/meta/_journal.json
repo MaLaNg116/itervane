@@ -22,6 +22,13 @@
       "when": 1794982436590,
       "tag": "0002_checkpoint_write_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794983711763,
+      "tag": "0003_checkpoint_step",
+      "breakpoints": true
     }
   ]
 }

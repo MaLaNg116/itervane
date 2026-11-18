@@ -95,6 +95,7 @@ export const executionSlot = domain.table('execution_slot', {
 export const runRuntime = domain.table('run_runtime', {
   runId: uuid('run_id').primaryKey().references(() => taskRuns.id),
   taskId: uuid('task_id').notNull().references(() => tasks.id), checkpointId: text('checkpoint_id'),
+  checkpointStep: integer('checkpoint_step').notNull().default(-2),
   resumePending: boolean('resume_pending').notNull().default(false), resumeCount: integer('resume_count').notNull().default(0),
   toolsUsed: integer('tools_used').notNull().default(0), maxTools: integer('max_tools').notNull().default(8),
   waitingForTaskId: uuid('waiting_for_task_id').references(() => tasks.id), reason: text('reason'),

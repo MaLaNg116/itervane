@@ -15,6 +15,10 @@ pending writes 另有领域发布回执：按 saver 序列化后的 `(taskId, ch
 
 逻辑 run ID 与 generation 保持领域含义；每次领取/恢复都有新 slot fence。检查点恢复不会复活旧 fence。暂停/等待子任务时释放 slot，恢复重新竞争并检查当前权限、取消状态和剩余预算。
 
+领域指针同时记录 LangGraph 的 checkpoint step，拒绝落后 step 覆盖已发布进度。UUID 是存储定位符，不用其时间顺序充当执行顺序，避免跨进程时钟回拨影响恢复。
+
+包装器沿用 PostgresSaver 的 channel version 分配方法，保留其分叉随机后缀。若退回基类整数版本，未发布分支与恢复重算可能复用同一个 blob key，导致恢复读取旧分支内容；正式测试覆盖该故障窗口。
+
 ## 验证
 
 测试必须包含真实 PostgresSaver interrupt/resume、过期执行者拒写、底层已写但指针未发布的故障窗口，以及新 Worker 仅从已发布 ID 恢复。检查点不存在但任务已被接受时，从正式任务输入重建 preflight；不能丢弃任务或冒充已执行。
