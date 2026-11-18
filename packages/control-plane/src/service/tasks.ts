@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
-import { cancelTaskSchema, resumeTaskSchema, idSchema, listQuerySchema, startTaskSchema, taskDtoSchema, taskEventDtoSchema, wakeupSchema, translate, type Locale, type MessageKey } from '@itervane/contracts';
+import { cancelTaskSchema, resumeTaskSchema, idSchema, listQuerySchema, startTaskSchema, taskDtoSchema, taskEventDtoSchema, wakeupSchema, translate,
+  eventReasonMessages, taskEventReasonSchema, type Locale, type MessageKey } from '@itervane/contracts';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import { queueName, type Database } from '../persistence/database.js';
 import { repositories, runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
@@ -84,9 +85,14 @@ export class TaskService {
       const actor = await requireActor(tx, identity); const task = await taskView(tx, taskId);
       await requireProject(tx, actor, task.projectId);
       return (await tx.select().from(taskEvents).where(eq(taskEvents.taskId, taskId)).orderBy(asc(taskEvents.sequence)).limit(limit))
-        .map(row => taskEventDtoSchema.parse({ taskId: row.taskId, sequence: row.sequence, type: row.type,
+        .map(row => {
+          const parsedReason = taskEventReasonSchema.safeParse(row.detail.reason);
+          const reason = parsedReason.success ? parsedReason.data : null;
+          return taskEventDtoSchema.parse({ taskId: row.taskId, sequence: row.sequence, type: row.type,
           state: row.state, actorId: row.actorId, actorKind: row.actorKind, workerId: row.workerId,
-          messageKey: row.type, message: translate(locale, row.type as MessageKey), locale, createdAt: row.createdAt.toISOString() }));
+          reason, reasonMessage: reason ? translate(locale, eventReasonMessages[reason]) : null,
+          messageKey: row.type, message: translate(locale, row.type as MessageKey), locale, createdAt: row.createdAt.toISOString() });
+        });
     });
   }
 

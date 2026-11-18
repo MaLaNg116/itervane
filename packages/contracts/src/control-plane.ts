@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { idSchema, sourceRefSchema, taskStateSchema } from './primitives.js';
-import { localeSchema, messageKeySchema, taskEventTypes } from './i18n.js';
+import { localeSchema, messageKeySchema, taskEventTypes, taskEventReasonSchema } from './i18n.js';
 
 const nameSchema = z.string().trim().min(1).max(120);
 const timestampSchema = z.iso.datetime();
@@ -45,6 +45,7 @@ export const taskEventDtoSchema = z.object({
   taskId: idSchema, sequence: z.number().int().positive(),
   type: z.enum(taskEventTypes), state: taskStateSchema,
   actorId: idSchema, actorKind: z.enum(['human', 'worker']), workerId: idSchema.nullable(),
+  reason: taskEventReasonSchema.nullable(), reasonMessage: z.string().nullable(),
   messageKey: messageKeySchema, message: z.string(), locale: localeSchema, createdAt: timestampSchema,
 }).strict();
 export const admissionDtoSchema = z.object({ task: taskDtoSchema, replayed: z.boolean() }).strict();

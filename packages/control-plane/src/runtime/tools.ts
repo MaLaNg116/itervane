@@ -23,7 +23,7 @@ export class ToolGateway {
     const serialized = JSON.stringify({ name, args });
     if (serialized.length > 16_384) throw new DomainError('invalid_input');
     const keyHash = digest(callKey); const inputHash = digest(serialized);
-    const tool = Object.hasOwn(preflightTools, name) ? name : 'unsupported';
+    const tool = name === 'project.describe' || name === 'source.inspect' ? name : 'unsupported';
     const cached = await this.coordinator.withLease(scope, async (tx, { runtime }) => {
       const [existing] = await tx.select().from(toolCalls).where(and(eq(toolCalls.runId, scope.runId), eq(toolCalls.keyHash, keyHash)));
       if (existing) {

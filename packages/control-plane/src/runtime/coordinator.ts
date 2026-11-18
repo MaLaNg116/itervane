@@ -1,6 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { fromDrizzle, type Job } from 'pg-boss';
-import { idSchema, wakeupSchema } from '@itervane/contracts';
+import { idSchema, wakeupSchema, type TaskEventReason } from '@itervane/contracts';
 import { queueName, type Database } from '../persistence/database.js';
 import { executionSlot, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { requireProject, requireStoredActor, type Transaction } from '../service/access.js';
@@ -100,7 +100,7 @@ export class ExecutionCoordinator {
     });
   }
 
-  async stop(scope: ExecutionScope, reason: string) {
+  async stop(scope: ExecutionScope, reason: TaskEventReason) {
     await this.withLease(scope, async (tx, { task }) => {
       const cancelled = task.state === 'cancel_requested';
       await tx.update(runRuntime).set({ reason, resumePending: false }).where(eq(runRuntime.runId, scope.runId));

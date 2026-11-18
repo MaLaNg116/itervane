@@ -16,6 +16,11 @@ export const en = {
   'task.tool_observed': 'A controlled tool observation was recorded.', 'task.updated': 'Task updated.',
   'tool.project_describe': 'Read registered project and source metadata.', 'tool.source_inspect': 'Inspect the fixed source only through a verified isolated Runner.',
   'tool.runner_unavailable': 'Source inspection is blocked until a verified isolated Runner is available.',
+  'reason.lease_expired': 'The previous execution lease expired.', 'reason.expired_cancel': 'Cancellation was acknowledged after the previous lease expired.',
+  'reason.permission_revoked': 'The requesting principal no longer has the required project permission.',
+  'reason.budget_exhausted': 'The persistent tool budget has been exhausted.', 'reason.cancelled': 'The execution acknowledged cancellation.',
+  'reason.cancelled_or_interrupted': 'The execution received a stop signal.', 'reason.execution_error': 'Preflight could not finish and requires investigation.',
+  'reason.child_task': 'A linked task must finish before this workflow can continue.', 'reason.tool_denied': 'The requested tool is outside the allowed catalog.',
   'mcp.start': 'Queue an audit of a registered fixed Git revision. This does not approve or deploy it.',
   'mcp.query': 'Read the current authorized task state.', 'mcp.events': 'Read authorized task events.',
   'mcp.cancel': 'Request task cancellation using its current version.', 'mcp.resume': 'Retry a paused preflight. This does not grant approval.',
@@ -38,6 +43,11 @@ export const zhCN: Record<MessageKey, string> = {
   'task.tool_observed': '已记录一次受控工具观察。', 'task.updated': '任务已更新。',
   'tool.project_describe': '读取已登记的项目和源码版本信息。', 'tool.source_inspect': '仅通过经过验证的隔离 Runner 检查固定源码版本。',
   'tool.runner_unavailable': '经过验证的隔离 Runner 尚不可用，源码检查已阻断。',
+  'reason.lease_expired': '上一次执行的租约已过期。', 'reason.expired_cancel': '上一次租约过期后已确认取消。',
+  'reason.permission_revoked': '任务提交者已失去所需的项目权限。', 'reason.budget_exhausted': '持久化工具预算已耗尽。',
+  'reason.cancelled': '执行者已确认取消。', 'reason.cancelled_or_interrupted': '执行者收到停止信号。',
+  'reason.execution_error': '前置检查未能完成，需要排查。', 'reason.child_task': '此工作流需等待关联任务完成后才能继续。',
+  'reason.tool_denied': '请求的工具不在允许目录中。',
   'mcp.start': '将已登记的固定 Git 版本审计任务入队，不代表批准或发布。',
   'mcp.query': '查询当前有权访问的任务状态。', 'mcp.events': '查询当前有权访问的任务事件。',
   'mcp.cancel': '使用任务当前版本申请取消。', 'mcp.resume': '重试暂停的前置检查，不授予批准权限。',
@@ -49,6 +59,15 @@ export const zhCN: Record<MessageKey, string> = {
 export const messageKeySchema = z.enum(Object.keys(en) as [MessageKey, ...MessageKey[]]);
 export const taskEventTypes = ['task.accepted', 'task.cancelled', 'task.started', 'task.recovered', 'task.paused', 'task.resumed',
   'task.cancel_requested', 'task.needs_human', 'task.waiting_child', 'task.tool_observed'] as const;
+
+export const eventReasonMessages = {
+  runner_unavailable: 'tool.runner_unavailable', lease_expired: 'reason.lease_expired', expired_cancel: 'reason.expired_cancel',
+  permission_revoked: 'reason.permission_revoked', budget_exhausted: 'reason.budget_exhausted', cancelled: 'reason.cancelled',
+  cancelled_or_interrupted: 'reason.cancelled_or_interrupted', execution_error: 'reason.execution_error', child_task: 'reason.child_task',
+  'project.describe': 'tool.project_describe', 'source.inspect': 'tool.source_inspect', unsupported: 'reason.tool_denied',
+} as const satisfies Record<string, MessageKey>;
+export type TaskEventReason = keyof typeof eventReasonMessages;
+export const taskEventReasonSchema = z.enum(Object.keys(eventReasonMessages) as [TaskEventReason, ...TaskEventReason[]]);
 
 export function translate(locale: Locale, key: MessageKey): string { return (locale === 'zh-CN' ? zhCN : en)[key]; }
 

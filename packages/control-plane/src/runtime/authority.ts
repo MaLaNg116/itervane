@@ -1,6 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
-import { wakeupSchema, type TaskState } from '@itervane/contracts';
+import { wakeupSchema, type TaskState, type TaskEventReason } from '@itervane/contracts';
 import { queueName, type Database } from '../persistence/database.js';
 import { executionSlot, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
 import { DomainError } from '../service/errors.js';
@@ -27,7 +27,7 @@ export async function clearSlot(tx: Transaction) {
 }
 
 export async function appendEvent(tx: Transaction, task: TaskRow, type: string, state: TaskState,
-  options: { actorId?: string; workerId?: string; reason?: string } = {}) {
+  options: { actorId?: string; workerId?: string; reason?: TaskEventReason } = {}) {
   const [next] = await tx.update(tasks).set({ state, version: task.version + 1 })
     .where(and(eq(tasks.id, task.id), eq(tasks.version, task.version))).returning();
   if (!next) throw new DomainError('version_conflict');
