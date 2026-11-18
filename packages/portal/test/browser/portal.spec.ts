@@ -110,6 +110,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycl
   await expect.poll(async () => (await stack.database.admin.query('SELECT resume_count FROM itervane.run_runtime WHERE task_id=$1', [taskId])).rows[0]?.resume_count).toBe(1);
   await expect(page.getByText(zh ? '任务正在等待经过验证的 Runner。' : 'Task is waiting for a verified Runner.', { exact: true })).toHaveCount(2);
   await expect(page.getByRole('button', { name: zh ? '重试前置检查' : 'Retry preflight', exact: true })).toBeVisible();
+  expect((await stack.database.admin.query('SELECT count(*)::int AS count FROM itervane.inspection_plans WHERE task_id=$1', [taskId])).rows[0]?.count).toBe(1);
   await language(page, zh ? 'en' : 'zh-CN');
   await expect(page.getByTestId('task-locale')).toHaveText(zh ? '简体中文' : 'English');
   await page.getByRole('button', { name: zh ? 'Cancel task' : '取消任务', exact: true }).click();

@@ -49,10 +49,20 @@ it('rolls back plan creation with its fenced transaction and rejects a missing o
   await expect(database.admin.query('INSERT INTO itervane.inspection_plans(run_id,task_id,prepared_fence,sha256,document) VALUES($1,$2,1,$3,$4)', [scope.runId, task.id, 'a'.repeat(64), {}])).rejects.toMatchObject({ code: '23514' });
 });
 
-it('does not prepare a plan after cancellation or loss of the current execution fence', async () => {
+it('does not prepare a plan after cancellation', async () => {
   const scope = await claim(); await new TaskService(database.storage).cancel(identity, task.id, { expectedVersion: 2 });
   await expect(new ToolGateway(coordinator).call(scope, 'source.inspect', {}, 'cancelled')).rejects.toBeInstanceOf(ExecutionLost);
   expect((await database.admin.query('SELECT * FROM itervane.inspection_plans')).rowCount).toBe(0);
+});
+
+it('refuses the expired fence and lets only its recovered owner prepare the same logical run', async () => {
+  const old = await claim(); await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await coordinator.reconcile(randomUUID()); const current = await claim();
+  expect(current.fence).toBeGreaterThan(old.fence);
+  await expect(new ToolGateway(coordinator).call(old, 'source.inspect', {}, 'expired')).rejects.toBeInstanceOf(ExecutionLost);
+  expect((await database.admin.query('SELECT * FROM itervane.inspection_plans')).rowCount).toBe(0);
+  await new ToolGateway(coordinator).call(current, 'source.inspect', {}, 'recovered');
+  expect((await database.admin.query('SELECT prepared_fence FROM itervane.inspection_plans')).rows[0]?.prepared_fence).toBe(current.fence);
 });
 
 it('enforces current project permission for both preparing and reading the plan', async () => {
