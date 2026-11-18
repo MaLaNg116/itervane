@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { test as base, expect, type Page } from '@playwright/test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { admissionDtoSchema, taskDtoSchema } from '@itervane/contracts';
+import { admissionDtoSchema, sourceInspectionDtoSchema, taskDtoSchema } from '@itervane/contracts';
 import { browserStack } from './stack.js';
 
 type Stack = Awaited<ReturnType<typeof browserStack>>;
@@ -94,6 +94,10 @@ for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycl
     await client.connect(new StreamableHTTPClientTransport(new URL(`${stack.origin}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${await stack.mcpToken()}` } } }));
     const task = taskDtoSchema.parse((await client.callTool({ name: 'get_task', arguments: { taskId } })).structuredContent);
     expect(task).toMatchObject({ id: taskId, state: 'waiting_input', locale, purpose });
+    const inspection = sourceInspectionDtoSchema.parse((await client.callTool({ name: 'get_source_inspection', arguments: { taskId } })).structuredContent);
+    expect(inspection).toMatchObject({ taskId, status: 'blocked', sourceFetched: false, snapshotVerified: false, scanCompleted: false });
+    await expect(page.getByTestId('source-inspection')).toContainText(zh ? '计划已准备，执行仍被阻断' : 'Plan prepared; execution is blocked');
+    await expect(page.getByTestId('source-inspection')).toContainText(inspection.plan!.sha256);
   } finally { await client.close(); }
   const storageSafe = await page.evaluate(() => {
     const entries = [...Object.keys(localStorage).map(key => localStorage.getItem(key) ?? ''), ...Object.keys(sessionStorage).map(key => sessionStorage.getItem(key) ?? '')];

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Card, Modal, Tag } from 'antd';
 import { z } from 'zod';
-import { projectAccessDtoSchema, taskDtoSchema, taskEventDtoSchema } from '@itervane/contracts';
+import { projectAccessDtoSchema, sourceInspectionDtoSchema, taskDtoSchema, taskEventDtoSchema } from '@itervane/contracts';
 import { usePortal, useRemote, useText } from '../context.js';
 import { Failure, Loading, PageHeading, Status, formatTime } from '../components.js';
 import { ApiFailure } from '../api.js';
@@ -19,6 +19,7 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
   const { api, locale } = usePortal(); const t = useText(); const cache = useQueryClient();
   const access = useRemote(`/v1/projects/${task.projectId}/access`, projectAccessDtoSchema, { poll: true });
   const events = useRemote(`/v1/tasks/${task.id}/events?limit=100`, z.object({ items: taskEventDtoSchema.array() }).strict(), { poll: true, localized: true });
+  const inspection = useRemote(`/v1/tasks/${task.id}/source-inspection`, sourceInspectionDtoSchema, { poll: true });
   const [confirmation, setConfirmation] = useState<{ action: 'cancel' | 'resume'; expectedVersion: number } | null>(null);
   const control = useMutation({ retry: false,
     mutationFn: (input: NonNullable<typeof confirmation>) => api.request(`/v1/tasks/${task.id}/${input.action}`, taskDtoSchema, locale, { method: 'POST', body: { expectedVersion: input.expectedVersion } }),
@@ -49,6 +50,17 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
         <div><dt>{t('taskLanguage')}</dt><dd data-testid="task-locale">{t(task.locale === 'en' ? 'english' : 'chinese')}</dd></div>
       </dl>
       <p className="muted">{t('taskLanguageHint')}</p>
+    </Card>
+    <Card title={t('inspection')} className="section-gap" data-testid="source-inspection">
+      {inspection.isPending ? <Loading locale={locale} /> : inspection.error ? <Failure error={inspection.error} locale={locale} retry={() => { void inspection.refetch(); }} /> : <>
+        <Tag color="warning">{t(inspection.data.status === 'blocked' ? 'inspectionBlocked' : 'inspectionPending')}</Tag>
+        <p>{t('inspectionBoundary')}</p>
+        <dl className="detail-grid"><div><dt>{t('requestedCommit')}</dt><dd><code>{inspection.data.requestedSource.commit}</code></dd></div>
+          <div><dt>{t('requiredIsolation')}</dt><dd>{t('disposableVm')}</dd></div>
+          {inspection.data.plan && <div><dt>{t('planDigest')}</dt><dd><code>{inspection.data.plan.sha256}</code></dd></div>}</dl>
+        {inspection.data.plan && <><h3>{t('scannerProfiles')}</h3><ul>{inspection.data.plan.document.scanners.map(profile => <li key={profile.scanner}>{profile.scanner} {profile.version}</li>)}</ul></>}
+        <p className="muted">{t('scannerCoverage')}</p>
+      </>}
     </Card>
     <Card title={t('events')}>
       {events.isPending ? <Loading locale={locale} /> : events.error ? <Failure error={events.error} locale={locale} retry={() => { void events.refetch(); }} />
