@@ -69,6 +69,11 @@ export class ResourceService {
     });
   }
 
+  async getProject(identity: VerifiedIdentity, projectId: string) {
+    parseInput(idSchema, projectId);
+    return this.database.db.transaction(async tx => projectView(await requireProject(tx, await requireActor(tx, identity), projectId)));
+  }
+
   async listProjects(identity: VerifiedIdentity, limit: number) {
     limit = parseInput(listQuerySchema, { limit }).limit;
     return this.database.db.transaction(async tx => {

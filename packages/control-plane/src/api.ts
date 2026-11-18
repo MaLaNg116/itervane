@@ -14,6 +14,7 @@ import { ResourceService } from './service/resources.js';
 import { TaskService } from './service/tasks.js';
 import { createMcpEndpoint } from './mcp.js';
 import { canonicalPublicUrl } from './config.js';
+import { registerPortal } from './portal.js';
 
 declare module 'fastify' {
   interface FastifyRequest { verifiedIdentity: VerifiedIdentity | null; locale: Locale }
@@ -29,7 +30,7 @@ const identity = (request: FastifyRequest) => {
 const limit = (request: FastifyRequest) => parseInput(listQuerySchema, request.query).limit;
 
 export type ApiConfig = IdentityConfig & { publicUrl?: string; portalClientId?: string };
-export function createApi(database: Database, config: ApiConfig, options: { logger?: boolean } = {}) {
+export function createApi(database: Database, config: ApiConfig, options: { logger?: boolean; portalRoot?: string } = {}) {
   const verify = createIdentityVerifier(config);
   const resources = new ResourceService(database); const tasks = new TaskService(database);
   const app = Fastify({
@@ -53,7 +54,8 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
     if (request.routeOptions.config.mcp && !mcp.hasScope(request.verifiedIdentity, 'itervane:read')) throw new DomainError('forbidden');
   });
   app.addHook('onSend', async (request, reply) => {
-    reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff').header('Content-Language', request.locale).header('Vary', 'Accept-Language');
+    if (!reply.hasHeader('Cache-Control')) reply.header('Cache-Control', 'no-store');
+    reply.header('X-Content-Type-Options', 'nosniff').header('Content-Language', request.locale).header('Vary', 'Accept-Language');
   });
   app.addHook('onResponse', async (request, reply) => {
     app.log.info({ requestId: request.id, method: request.method, route: request.routeOptions.url, status: reply.statusCode }, 'request-completed');
@@ -68,6 +70,7 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
     void reply.code(statusFor[code]).send(localizedError(code, request.id, request.locale));
   });
   app.setNotFoundHandler((request, reply) => reply.code(404).send(localizedError('not_found', request.id, request.locale)));
+  const portalAvailable = registerPortal(app, options.portalRoot, config);
 
   app.get('/health/live', { config: { public: true } }, async () => ({ status: 'alive' }));
   app.get('/portal-config', { config: { public: true } }, async () => {
@@ -83,10 +86,14 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
   app.get('/v1/capabilities', async request => {
     await resources.me(identity(request));
     return capabilitiesSchema.parse({ stage: 'p1-c', taskAdmission: true, taskExecution: false, durableScheduling: true, externalMcp: true,
-      portal: false, browserLogin: Boolean(config.portalClientId), sandbox: false, deployment: false, operations: false });
+      portal: portalAvailable, browserLogin: portalAvailable && Boolean(config.portalClientId), sandbox: false, deployment: false, operations: false });
   });
   app.post('/v1/projects', async (request, reply) => reply.code(201).send(projectDtoSchema.parse(await resources.createProject(identity(request), request.body))));
   app.get('/v1/projects', async request => ({ items: projectDtoSchema.array().parse(await resources.listProjects(identity(request), limit(request))) }));
+  app.get('/v1/projects/:projectId', async request => {
+    const { projectId } = parseInput(projectParam, request.params);
+    return projectDtoSchema.parse(await resources.getProject(identity(request), projectId));
+  });
   app.get('/v1/projects/:projectId/access', async request => {
     const { projectId } = parseInput(projectParam, request.params);
     return projectAccessDtoSchema.parse(await resources.projectAccess(identity(request), projectId));
