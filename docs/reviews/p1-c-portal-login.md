@@ -1,8 +1,8 @@
 # P1-C Review guide：最小门户、真实登录与双语任务流程
 
-- 批次：004；PR 与远端验证见 [交付索引](README.md)。
+- 批次：004，[PR #4](https://github.com/MaLaNg116/itervane/pull/4)；远端验证见 [交付索引](README.md)。
 - 依赖：P1-B / [PR #3](https://github.com/MaLaNg116/itervane/pull/3)，比较基线 `83656e7f95a00ffc0cc0af4738e64e192bae99ec`。
-- 固定代码快照：`6bac8b6fa816248f7c552c079d9d317d023ec99b`。以下源码链接固定在此提交；后续运行说明和验证记录不改变对应代码。
+- 固定代码快照：`62f3ef82895880de6aee0fa5f3c525f0e31e209a`。以下源码链接固定在此提交；后续运行说明和验证记录不改变对应代码。
 - 日期：2026-11-18；[本批计划](../plans/p1-c-portal-and-login.md)、[运行说明](../control-plane-p1-c.md)、[ADR 0003](../decisions/0003-browser-oidc.md)。
 
 ## 1. 交付结果与边界
@@ -17,17 +17,17 @@ v6 的三条闭环、五种逻辑角色、双向 MCP、现代自主 Agent 目标
 
 | 顺序 | 固定源码 | 建议关注 |
 |---|---|---|
-| 1 | [共享契约](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/contracts/src/control-plane.ts) | 公开登录配置只包含非敏感字段；当前项目角色；实际能力声明 |
-| 2 | [API 路由](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/control-plane/src/api.ts)、[资源服务](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/control-plane/src/service/resources.ts) | 新增公开配置和受保护读取；复用数据库当前授权；现有写命令保持 |
-| 3 | [会话](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/portal/src/auth.ts) | PKCE、短暂登录 state、内存凭证、会话代次、并发刷新、退出 |
-| 4 | [浏览器 API 客户端](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/portal/src/api.ts)、[查询上下文](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/portal/src/context.tsx) | 同源请求、严格 schema、超时、缓存分键、401/迟到响应 |
-| 5 | [登录与布局](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/portal/src/app.tsx)、[样式](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/portal/src/style.css) | 先配置/认证，再领域授权；动态加载页面、nonce、窄屏布局 |
-| 6 | [项目列表](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/portal/src/pages/projects.tsx)、[项目详情](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/portal/src/pages/project.tsx) | 正式数据、表单、固定 commit、同一请求重试 |
-| 7 | [任务详情](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/portal/src/pages/task.tsx) | 真实状态/事件、principal/worker、绑定版本的确认、冲突提示 |
-| 8 | [双语资源](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/portal/src/messages.ts)、[通用组件](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/portal/src/components.tsx)、[路由](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/portal/src/router.ts) | 完整语言键、安全本地返回、日期与错误显示、验证切换 |
-| 9 | [静态服务](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/control-plane/src/portal.ts) | 精确 HTML 路径、构建资源白名单、缓存与 CSP，未放开 API |
-| 10 | [真实浏览器测试](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/portal/test/browser/portal.spec.ts)、[可信测试栈](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/portal/test/browser/stack.ts) | 真正登录/Worker/DB/MCP，以及故障注入与权限/会话边界 |
-| 11 | [PG 夹具](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/verification/src/postgres-fixture.ts)、[安全报告](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/packages/portal/test/browser/reporter.ts)、[CI](https://github.com/MaLaNg116/itervane/blob/6bac8b6fa816248f7c552c079d9d317d023ec99b/.github/workflows/verification.yml) | 临时资源归属清理、凭证不出日志、独立 Linux 浏览器验收 |
+| 1 | [共享契约](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/contracts/src/control-plane.ts) | 公开登录配置只包含非敏感字段；当前项目角色；实际能力声明 |
+| 2 | [API 路由](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/control-plane/src/api.ts)、[资源服务](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/control-plane/src/service/resources.ts) | 新增公开配置和受保护读取；复用数据库当前授权；现有写命令保持 |
+| 3 | [会话](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/portal/src/auth.ts) | PKCE、短暂登录 state、内存凭证、会话代次、并发刷新、退出 |
+| 4 | [浏览器 API 客户端](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/portal/src/api.ts)、[查询上下文](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/portal/src/context.tsx) | 同源请求、严格 schema、超时、缓存分键、401/迟到响应 |
+| 5 | [登录与布局](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/portal/src/app.tsx)、[样式](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/portal/src/style.css) | 先配置/认证，再领域授权；动态加载页面、nonce、窄屏布局 |
+| 6 | [项目列表](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/portal/src/pages/projects.tsx)、[项目详情](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/portal/src/pages/project.tsx) | 正式数据、表单、固定 commit、同一请求重试 |
+| 7 | [任务详情](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/portal/src/pages/task.tsx) | 真实状态/事件、principal/worker、绑定版本的确认、冲突提示 |
+| 8 | [双语资源](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/portal/src/messages.ts)、[通用组件](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/portal/src/components.tsx)、[路由](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/portal/src/router.ts) | 完整语言键、安全本地返回、日期与错误显示、验证切换 |
+| 9 | [静态服务](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/control-plane/src/portal.ts) | 精确 HTML 路径、构建资源白名单、缓存与 CSP，未放开 API |
+| 10 | [真实浏览器测试](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/portal/test/browser/portal.spec.ts)、[可信测试栈](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/portal/test/browser/stack.ts) | 真正登录/Worker/DB/MCP，以及故障注入与权限/会话边界 |
+| 11 | [PG 夹具](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/verification/src/postgres-fixture.ts)、[安全报告](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/packages/portal/test/browser/reporter.ts)、[CI](https://github.com/MaLaNg116/itervane/blob/62f3ef82895880de6aee0fa5f3c525f0e31e209a/.github/workflows/verification.yml) | 临时资源归属清理、凭证不出日志、独立 Linux 浏览器验收与版本记录 |
 
 pnpm-lock.yaml 的新增部分是精确依赖锁定，可先核对 portal/package.json，再核对锁文件。后端仍是 NodeNext 类型检查；门户单独采用 ESNext/Bundler/DOM/React JSX，不为前端改坏 Node 模块约束。
 
@@ -101,7 +101,13 @@ portal.ts 只加载维护者构建的可信 dist，不接收任务工作区或�
 | MCP | 正式同任务由真实 Keycloak token + 官方 MCP SDK 核对；旧本地 MCP 探针三项通过 |
 | 评测准备 | 24 份材料含 6 holdout 已校验；可信参考应用构建/五项 HTTP 验证通过，变异源码案例仍等待 VM |
 
-本地环境为 Windows、Node 24.14.0、pnpm 11.9.0、Docker Linux、PG17、Keycloak 26.8.2、本机 Chrome。CI 另在 Ubuntu 24.04 使用 Playwright Chromium；远端结果在交付索引补充，不用 Windows 成功代替 Linux 验收。
+本地环境为 Windows、Node 24.14.0、pnpm 11.9.0、Docker Linux、PG17、Keycloak 26.8.2、本机 Chrome。CI 在 Ubuntu 24.04 使用 Playwright 驱动预装 Chrome，并在日志记录实际版本；远端结果在交付索引补充，不用 Windows 成功代替 Linux 验收。
+
+首次 Linux 浏览器 CI 在身份服务就绪阶段失败，基础类型/单元/PG 已通过。测试导入文件原为 0600，Linux 下不适合 Keycloak 的非 root UID；修正为宿主私有 0700 目录中的 0644 只读挂载文件，并在启动时检查容器内可读性。重测实际通过前八项登录/权限/任务/会话测试，确认就绪故障已解决。失败报告只追加白名单基础设施错误码，容器原始日志不输出。
+
+随后 Linux 窄屏用例发现长项目标识溢出。修正卡片/Tag 的最小宽度、换行与图标收缩，并将样例改为完整 64 位宽字符标识，等待实际卡片加载后再断言页面宽度。没有通过隐藏横向滚动掩盖内容，也没有放宽测试断言。最终重测结果见下方交付证据。
+
+浏览器安装步骤多次长时间停留后，CI 改用 [Ubuntu 托管运行器已有的 Chrome](https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md#browsers-and-drivers)，省去重复系统库/浏览器安装，继续跑完整 Playwright 套件。通道只允许明确的 chrome 或默认 Chromium，不接受任意可执行路径；普通 Linux 开发环境仍可安装锁定 Playwright 对应的 Chromium。运行器浏览器会随镜像更新，日志版本用于还原环境。
 
 本机 Docker 拉取 Quay 曾遇 TLS 握手超时，使用外置维护工具从官方 registry 下载并逐项核验 index/manifest/config/layer digest 后导入本地别名；测试没有关闭 TLS，也没有提交镜像下载工具或私人路径。CI 保持官方固定 digest。pnpm 24 小时发布时间门槛保持，TanStack Query 选已满足门槛的 5.107.0。
 
@@ -116,3 +122,10 @@ portal.ts 只加载维护者构建的可信 dist，不接收任务工作区或�
 后续按 [P1 剩余矩阵](../plans/p1-c-portal-and-login.md) 继续：经过验证的 VM/固定快照/真实扫描、规则查询与片段预审、资源映射及其出口证据。应用/环境和成员管理 UI 另批。P2 再实现自主 Agent 审计/修复/独立复验；发布/运维/规则沉淀继续保留 v6 范围。
 
 本批未验公网 TLS/代理/正式 IdP 运维、其他浏览器或多标签单点会话、生产备份恢复、真实模型、VM、扫描、Komodo、Whiskers、批准、发布及规则复用。退出使用标准 RP-initiated logout；IdP 不可达时只确认本地状态清除。当前 AntD 公共 chunk 约 734 kB（gzip 232 kB），保留构建提示，后续按实际加载指标优化。完整 P0/P1/MVP 仍未验收。
+
+## 10. 最终交付证据
+
+- 最终代码快照 `62f3ef82895880de6aee0fa5f3c525f0e31e209a`；[PR #4](https://github.com/MaLaNg116/itervane/pull/4) 保持草稿，base 为 P1-B，未合并前置 PR。
+- [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44314376241) 和 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44314366272) 均 success；两条流水线各含 deterministic 与 portal 任务，运行锁定依赖、严格类型、48 单元、53 真实 PG、MCP/可信评测以及完整 9 项真实浏览器用例。
+- 本地全量浏览器 9/9 通过；最终窄屏修正使用 64 位标识单项回归通过，Linux 在最终代码上全量 9/9 通过。首次 Linux 导入故障、长标识问题及修正记录保留，不用早期失败版本作验收依据。
+- 凭证/敏感文件扫描无发现，未提交临时身份配置、模型密钥、数据库 URL、截图或浏览器 trace。最终只补充这份导读和交付状态，不继续开发后续阶段。

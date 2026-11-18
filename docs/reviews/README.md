@@ -7,9 +7,11 @@
 | 001 | P0 起步：契约、模型循环、数据库与 MCP 探针、评测材料 | [#1](https://github.com/MaLaNg116/itervane/pull/1) | [P0 起步导读](pr-001-p0-foundation.md) | 草稿；自动检查通过，完整 P0 未验收 |
 | 002 | P1-A：身份、资源登记、持久化任务与排队取消 | [#2](https://github.com/MaLaNg116/itervane/pull/2)，基于 #1 | [P1-A 导读](p1-a-project-task-foundation.md) | 草稿；本地验证通过，完整 P1 未验收 |
 | 003 | P1-B：持久化调度、受控 preflight、外部 MCP、en/zh-CN | [#3](https://github.com/MaLaNg116/itervane/pull/3)，基于 #2 | [P1-B 导读](p1-b-durable-worker-mcp.md) | 草稿；47 单元/50 PG 及 Linux CI 通过，完整 P1 未验收 |
-| 004 | P1-C：最小门户、真实 OIDC 登录、双语任务界面 | 本批 PR 待创建，基于 #3 | [P1-C 导读](p1-c-portal-login.md) | 本地 48 单元/53 PG/9 浏览器通过；远端待验证，完整 P1 未验收 |
+| 004 | P1-C：最小门户、真实 OIDC 登录、双语任务界面 | [#4](https://github.com/MaLaNg116/itervane/pull/4)，基于 #3 | [P1-C 导读](p1-c-portal-login.md) | 草稿；48 单元/53 PG/9 浏览器及 Linux CI 通过，完整 P1 未验收 |
 
 P1-B 已验证的远端交付版本为 `74706f95881c6435b98f26983654b725463483d3`，[PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44255791193) 与 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44255784496) 均通过。代码快照与证据见导读；后续仅补充文档，不把前置 PR 自动合并。
+
+P1-C 最终代码快照为 `62f3ef82895880de6aee0fa5f3c525f0e31e209a`，[PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44314376241) 与 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44314366272) 均通过。此后只同步导读/运行说明，不改变本批代码；#4 明确依赖未合并的 #3。
 
 ## 每批交付约定
 

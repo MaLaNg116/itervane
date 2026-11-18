@@ -93,6 +93,8 @@ pnpm probe:evaluation
 
 `test:portal` 先构建门户，再启动真实 API/Worker、真实 Keycloak 和 PostgreSQL 17。数据库测试与浏览器测试共用带随机标签、loopback 绑定和归属校验清理的 PostgreSQL 基础夹具；每个测试库仍有独立低权限角色。现有 `DATABASE_URL` 只可指向明确的专用测试库，不能指向生产库。
 
+Windows 默认本机 Chrome，普通 Linux 默认 Playwright Chromium；配置 `ITERVANE_BROWSER_CHANNEL=chrome` 可显式使用已安装 Chrome。CI 在 Ubuntu 24.04 上使用预装 Chrome 并输出其版本，避免重复安装系统库导致的阻塞；用例和真实验收要求保持一致。
+
 Keycloak 26.8.2 和 PG17 默认使用 `.env.example` 中的官方不可变镜像 digest。`ITERVANE_KEYCLOAK_IMAGE` / `ITERVANE_POSTGRES_IMAGE` 仅供维护者指定已校验的本机镜像；不降低 TLS 校验或包管理器的发布时间门槛。测试身份、密码、realm 和数据库均临时随机生成；Docker 只运行可信基础组件，不运行提交项目。
 
 浏览器覆盖两种语言完整流程、真实 PKCE、严格身份声明、未知主体拒绝、角色变化/撤权、响应丢失后的幂等重试、真实版本冲突、内存凭证、硬刷新重新登录、单次在途刷新/IdP 撤销，以及窄屏中文表单。短 token 生命周期仅用于加速测试刷新路径。

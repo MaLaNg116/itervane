@@ -1,6 +1,6 @@
 # P1-C：最小门户、OIDC 登录与中英文
 
-- 日期：2026-11-18；状态：计划先行后完成本批实现与本地验收；交付证据见 [review guide](../reviews/p1-c-portal-login.md)，完整 P1 仍未验收。
+- 日期：2026-11-18；状态：计划先行后完成本批实现、本地与 Linux CI 验收；交付证据见 [review guide](../reviews/p1-c-portal-login.md)，完整 P1 仍未验收。
 - 前置代码：`83656e7f95a00ffc0cc0af4738e64e192bae99ec`（P1-B / PR #3）。
 - 交付：独立叠加分支/草稿 PR，以 P1-B 分支为比较基线；不合并前置 PR。
 - 产品与技术仍遵守 v6、TS + PostgreSQL 实施计划、ADR 0001/0002。本批不修改三条闭环、五种角色或运行资格。
