@@ -9,7 +9,7 @@ async function run(entry: string, args: string[]) {
     child.once('exit', code => resolveCode(code ?? 1));
   });
 }
-const types = await run('node_modules/typescript/bin/tsc', ['--noEmit']);
+const types = await run('node_modules/tsx/dist/cli.mjs', ['scripts/typecheck.ts']);
 const tests = types === 0 ? await run('node_modules/vitest/vitest.mjs', ['run']) : 1;
 const result = report('engineering', [
   { id: 'strict-types', status: types === 0 ? 'passed' : 'failed', detail: 'TypeScript strict checking.' },

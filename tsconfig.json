@@ -13,5 +13,6 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["packages/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "vitest*.ts"]
+  "include": ["packages/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "vitest*.ts"],
+  "exclude": ["node_modules", "packages/portal"]
 }
