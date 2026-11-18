@@ -2,7 +2,7 @@
 
 - 批次：003，[PR #3](https://github.com/MaLaNg116/itervane/pull/3)；依赖见 [交付索引](README.md)。
 - 前置：P1-A / PR #2，比较基线 `f332826cc4d58394c38aa305ea09eeaed2e51e96`。
-- 本批固定代码快照：`2ce5515600f0f7167170a26e522bcb77afe93c9e`。下文源码链接均固定在此版本，后续文档提交不改变讲解对应的代码。
+- 本批固定代码快照：`74706f95881c6435b98f26983654b725463483d3`。下文源码链接均固定在此版本，后续文档提交不改变讲解对应的代码。
 - 日期：2026-11-18；[开发计划](../plans/p1-b-durable-execution-and-mcp.md)、[运行说明](../control-plane-p1-b.md)、[ADR 0002](../decisions/0002-checkpoint-publication.md)。
 
 ## 1. 先明确交付结果
@@ -17,16 +17,16 @@ P1-A 只接收和查询正式任务，P1-B 增加实际 Worker：消费唤醒、
 
 | 顺序 | 固定源码 | 重点 |
 |---|---|---|
-| 1 | [契约与 i18n](https://github.com/MaLaNg116/itervane/blob/2ce5515600f0f7167170a26e522bcb77afe93c9e/packages/contracts/src/i18n.ts) | 稳定机器码、语言协商、事件原因和完整资源键 |
-| 2 | [schema.ts](https://github.com/MaLaNg116/itervane/blob/2ce5515600f0f7167170a26e522bcb77afe93c9e/packages/control-plane/src/persistence/schema.ts) | slot、runtime、预算、工具账本、checkpoint 回执 |
-| 3 | [authority.ts](https://github.com/MaLaNg116/itervane/blob/2ce5515600f0f7167170a26e522bcb77afe93c9e/packages/control-plane/src/runtime/authority.ts) | 锁顺序、数据库时钟、领域事件、同事务唤醒 |
-| 4 | [coordinator.ts](https://github.com/MaLaNg116/itervane/blob/2ce5515600f0f7167170a26e522bcb77afe93c9e/packages/control-plane/src/runtime/coordinator.ts) | claim、withLease、心跳、暂停、恢复扫描 |
-| 5 | [tasks.ts](https://github.com/MaLaNg116/itervane/blob/2ce5515600f0f7167170a26e522bcb77afe93c9e/packages/control-plane/src/service/tasks.ts) | 语言兼容的入队幂等、取消、版本化 resume |
-| 6 | [tools.ts](https://github.com/MaLaNg116/itervane/blob/2ce5515600f0f7167170a26e522bcb77afe93c9e/packages/control-plane/src/runtime/tools.ts) | 绑定目标、持久预算、预留和只读重放 |
-| 7 | [checkpointer.ts](https://github.com/MaLaNg116/itervane/blob/2ce5515600f0f7167170a26e522bcb77afe93c9e/packages/control-plane/src/runtime/checkpointer.ts) | 不取 latest、发布回执、图 step、blob 分叉隔离 |
-| 8 | [worker.ts](https://github.com/MaLaNg116/itervane/blob/2ce5515600f0f7167170a26e522bcb77afe93c9e/packages/control-plane/src/runtime/worker.ts) | 实际图执行、interrupt、恢复输入、停止与心跳 |
-| 9 | [mcp.ts](https://github.com/MaLaNg116/itervane/blob/2ce5515600f0f7167170a26e522bcb77afe93c9e/packages/control-plane/src/mcp.ts) | 官方协议底座、固定 resource、scope 和领域复用 |
-| 10 | [API](https://github.com/MaLaNg116/itervane/blob/2ce5515600f0f7167170a26e522bcb77afe93c9e/packages/control-plane/src/api.ts)、[Worker 入口](https://github.com/MaLaNg116/itervane/blob/2ce5515600f0f7167170a26e522bcb77afe93c9e/packages/control-plane/src/entries/worker.ts) | 两个独立进程、关闭顺序、公开能力及配置 |
+| 1 | [契约与 i18n](https://github.com/MaLaNg116/itervane/blob/74706f95881c6435b98f26983654b725463483d3/packages/contracts/src/i18n.ts) | 稳定机器码、语言协商、事件原因和完整资源键 |
+| 2 | [schema.ts](https://github.com/MaLaNg116/itervane/blob/74706f95881c6435b98f26983654b725463483d3/packages/control-plane/src/persistence/schema.ts) | slot、runtime、预算、工具账本、checkpoint 回执 |
+| 3 | [authority.ts](https://github.com/MaLaNg116/itervane/blob/74706f95881c6435b98f26983654b725463483d3/packages/control-plane/src/runtime/authority.ts) | 锁顺序、数据库时钟、领域事件、同事务唤醒 |
+| 4 | [coordinator.ts](https://github.com/MaLaNg116/itervane/blob/74706f95881c6435b98f26983654b725463483d3/packages/control-plane/src/runtime/coordinator.ts) | claim、withLease、心跳、暂停、恢复扫描 |
+| 5 | [tasks.ts](https://github.com/MaLaNg116/itervane/blob/74706f95881c6435b98f26983654b725463483d3/packages/control-plane/src/service/tasks.ts) | 语言兼容的入队幂等、取消、版本化 resume |
+| 6 | [tools.ts](https://github.com/MaLaNg116/itervane/blob/74706f95881c6435b98f26983654b725463483d3/packages/control-plane/src/runtime/tools.ts) | 绑定目标、持久预算、预留和只读重放 |
+| 7 | [checkpointer.ts](https://github.com/MaLaNg116/itervane/blob/74706f95881c6435b98f26983654b725463483d3/packages/control-plane/src/runtime/checkpointer.ts) | 不取 latest、发布回执、图 step、blob 分叉隔离 |
+| 8 | [worker.ts](https://github.com/MaLaNg116/itervane/blob/74706f95881c6435b98f26983654b725463483d3/packages/control-plane/src/runtime/worker.ts) | 实际图执行、interrupt、恢复输入、停止与心跳 |
+| 9 | [mcp.ts](https://github.com/MaLaNg116/itervane/blob/74706f95881c6435b98f26983654b725463483d3/packages/control-plane/src/mcp.ts) | 官方协议底座、固定 resource、scope 和领域复用 |
+| 10 | [API](https://github.com/MaLaNg116/itervane/blob/74706f95881c6435b98f26983654b725463483d3/packages/control-plane/src/api.ts)、[Worker 入口](https://github.com/MaLaNg116/itervane/blob/74706f95881c6435b98f26983654b725463483d3/packages/control-plane/src/entries/worker.ts) | 两个独立进程、关闭顺序、公开能力及配置 |
 
 SQL 与 Drizzle snapshot 是单独提交的数据库演进。四份 snapshot 为机械生成内容，占 diff 大部分；逐行检查新增 SQL 和 schema，再核对 snapshot 一致性即可。
 
@@ -126,22 +126,24 @@ Protected Resource Metadata、401/403 challenge、Host/Origin 校验均有真实
 
 本地对固定代码对应源码执行：
 
-数据库/MCP/评测探针报告时间分别为 `2026-11-18T06:46:47Z`、`06:48:34Z`、`06:48:42Z`；三份报告的源码指纹一致：`35087a8105a1ac04cffcbc7f2070f20d6b7d950f890b0e3279ad95ab7ba14446`。指纹覆盖源码、迁移和依赖，文档后续补记不改变它。
+本地报告保存在忽略提交的 .reports，代码与实测结果通过固定版本和下述 CI 记录关联；文档后续补记不改动运行代码。
 
 | 检查 | 实测结果 | 含义 |
 |---|---|---|
 | pnpm check | 严格类型 + 47 项单元测试通过 | 契约、身份、语言与配置等 |
-| pnpm test:integration | 49 项真实 PG17 测试通过 | 原有 26 项 + 双语 2 + runtime 16 + 正式 MCP 5 |
+| pnpm test:integration | 50 项真实 PG17 测试通过 | 原有 26 项 + 双语 2 + runtime 17 + 正式 MCP 5 |
 | pnpm probe:mcp | 3 项通过 | 历史 P0 协议探针，不能替代上行正式 MCP 测试 |
 | pnpm probe:evaluation | 材料、可信样例构建和 5 项 HTTP 检查通过 | 24 份案例/6 个保留集仅准备完成，未跑完整平台评测 |
 
-重点测试为 [runtime.test.ts](https://github.com/MaLaNg116/itervane/blob/2ce5515600f0f7167170a26e522bcb77afe93c9e/packages/control-plane/test/integration/runtime.test.ts)、[mcp.test.ts](https://github.com/MaLaNg116/itervane/blob/2ce5515600f0f7167170a26e522bcb77afe93c9e/packages/control-plane/test/integration/mcp.test.ts)、[i18n.test.ts](https://github.com/MaLaNg116/itervane/blob/2ce5515600f0f7167170a26e522bcb77afe93c9e/packages/control-plane/test/integration/i18n.test.ts)。
+重点测试为 [runtime.test.ts](https://github.com/MaLaNg116/itervane/blob/74706f95881c6435b98f26983654b725463483d3/packages/control-plane/test/integration/runtime.test.ts)、[mcp.test.ts](https://github.com/MaLaNg116/itervane/blob/74706f95881c6435b98f26983654b725463483d3/packages/control-plane/test/integration/mcp.test.ts)、[i18n.test.ts](https://github.com/MaLaNg116/itervane/blob/74706f95881c6435b98f26983654b725463483d3/packages/control-plane/test/integration/i18n.test.ts)。
 
-runtime 故障用例包括：两个独立消费者竞争、旧 fence/错误 generation、锁等待过期、首个 checkpoint 缺失、完成但未领取的唤醒、运行取消、权限撤销、子任务等待、并发只读去重、预留结果提交失败、恢复事务回滚、实际 graph interrupt/resume、未发布 checkpoint/pending writes/blob、乱序 step，以及终止实际 Worker 进程后重领。
+runtime 故障用例包括：两个独立消费者竞争、旧 fence/错误 generation、锁等待过期、首个 checkpoint 缺失、完成但未领取的唤醒、运行取消、权限撤销、子任务等待、并发只读去重、预留结果提交失败、恢复事务回滚、实际 graph interrupt/resume、未发布 checkpoint/pending writes/blob、乱序 step、终止实际 Worker 进程后重领，以及保留真实 backend 时清理必须等待其自然退出。
 
 进程故障夹具只在测试中延迟域暂停，确保图已真正保存 checkpoint 后 SIGKILL；没有伪造 Runner。测试数据库使用临时专用库和低权限角色，Docker 只运行可信 PostgreSQL。
 
-远端交付版本 `68131c644b7505886c92d15e3d93bed680baedff` 的 [Linux CI](https://github.com/MaLaNg116/itervane/actions/runs/44254468170) 已通过全部步骤，包含冻结依赖安装、严格类型/单元测试、真实 PG/Worker/MCP、历史 MCP 探针及可信样例检查。本地 .reports 不提交，避免公开环境细节。测试通过不是 P0/P1/MVP 完整验收。
+首轮并行 push 检查曾出现“49 项断言通过，但删库发生未处理 57P01”的竞态。原因是 pool.end 返回后服务器 backend 尚未退出，紧接 DROP DATABASE FORCE 强制终止了正在正常断开的连接。74706f9 改为有界等待连接归零、普通 DROP，真实连接泄漏会失败；同时让 fixture 关闭幂等并保证 cluster 池在 finally 收尾。新增用例保留实际外部读连接，验证清理不会强杀它。本次修正没有放宽断言或忽略数据库错误。
+
+最终代码版本 `74706f95881c6435b98f26983654b725463483d3` 的 [PR Linux CI](https://github.com/MaLaNg116/itervane/actions/runs/44255791193) 与 [push Linux CI](https://github.com/MaLaNg116/itervane/actions/runs/44255784496) 均通过全部步骤，包含冻结依赖安装、47 单元测试、50 真实 PG/Worker/MCP 测试、历史 MCP 探针及可信样例检查。本地 .reports 不提交，避免公开环境细节。测试通过不是 P0/P1/MVP 完整验收。
 
 ## 11. 提交地图与后续边界
 
