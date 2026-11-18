@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { mkdir, rm, rmdir, writeFile } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from 'vitest';
 import { portalConfigSchema, projectAccessDtoSchema } from '@itervane/contracts';
 import { createApi } from '../../src/api.js';
@@ -35,6 +37,7 @@ it('reports current project access without accepting token roles or preserving r
   const project = (await api.inject({ method: 'POST', url: '/v1/projects', headers, payload: { name: 'Portal project', slug: 'portal' } })).json();
   const path = `/v1/projects/${project.id}/access`;
   expect(projectAccessDtoSchema.parse((await api.inject({ url: path, headers })).json())).toEqual({ projectId: project.id, role: 'owner', canWrite: true });
+  expect((await api.inject({ url: `/v1/projects/${project.id}`, headers })).json()).toMatchObject({ name: 'Portal project' });
   const id = randomUUID();
   await database.admin.query('INSERT INTO itervane.principals(id,issuer,subject) VALUES($1,$2,$3)', [id, issuer.config.issuer, 'viewer']);
   await database.admin.query("INSERT INTO itervane.project_members(project_id,principal_id,role) VALUES($1,$2,'viewer')", [project.id, id]);
@@ -44,4 +47,35 @@ it('reports current project access without accepting token roles or preserving r
   expect((await api.inject({ url: path, headers: viewer })).json()).toMatchObject({ role: 'maintainer', canWrite: true });
   await database.admin.query('DELETE FROM itervane.project_members WHERE principal_id=$1', [id]);
   expect((await api.inject({ url: path, headers: viewer })).statusCode).toBe(404);
+  expect((await api.inject({ url: `/v1/projects/${project.id}`, headers: viewer })).statusCode).toBe(404);
+});
+
+it('serves only trusted assets with fresh CSP nonces while callbacks and API routes keep separate boundaries', async () => {
+  const root = resolve('.reports/p1-c', `static-${randomUUID()}`); const assets = join(root, 'assets');
+  await mkdir(assets, { recursive: true });
+  await writeFile(join(root, 'index.html'), '<html><meta name="itervane-csp-nonce" content="__ITERVANE_CSP_NONCE__"><div id="root"></div></html>');
+  await writeFile(join(assets, 'index-trusted.css'), 'body{color:green}');
+  await writeFile(join(assets, '.env'), 'synthetic-hidden-build-file');
+  const mounted = createApi(database.storage, { ...issuer.config, portalClientId: 'itervane-portal' }, { logger: false, portalRoot: root });
+  try {
+    const first = await mounted.inject('/'); const second = await mounted.inject('/auth/callback?code=synthetic-never-log&state=synthetic-state');
+    expect(first.statusCode).toBe(200); expect(second.statusCode).toBe(200);
+    const nonce = /content="([A-Za-z0-9+/=]+)"/.exec(first.body)?.[1];
+    expect(nonce).toBeTruthy(); expect(second.body).not.toContain(nonce);
+    expect(first.headers['content-security-policy']).toContain(`'nonce-${nonce}'`);
+    expect(first.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+    expect(first.headers['referrer-policy']).toBe('no-referrer');
+    expect(first.headers['cache-control']).toBe('no-store');
+    const asset = await mounted.inject('/assets/index-trusted.css');
+    expect(asset.statusCode).toBe(200); expect(asset.headers['cache-control']).toContain('immutable');
+    for (const path of ['/assets/.env', '/assets/%2e%2e%2fpackage.json', '/v1/unknown', '/missing']) {
+      const response = await mounted.inject(path); expect(response.statusCode).toBeGreaterThanOrEqual(400);
+      expect(response.body).not.toContain('synthetic-hidden-build-file'); expect(response.body).not.toContain('<html>');
+    }
+    expect((await mounted.inject('/v1/projects')).statusCode).toBe(401);
+    expect((await mounted.inject({ url: '/v1/capabilities', headers })).json()).toMatchObject({ portal: true, browserLogin: true, taskExecution: false });
+  } finally {
+    await mounted.close(); await rm(join(root, 'index.html')); await rm(join(assets, 'index-trusted.css')); await rm(join(assets, '.env'));
+    await rmdir(assets); await rmdir(root);
+  }
 });

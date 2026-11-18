@@ -1,12 +1,13 @@
 import { createApi } from '../api.js';
 import { runtimeConfig } from '../config.js';
 import { openDatabase } from '../persistence/database.js';
+import { fileURLToPath } from 'node:url';
 
 try {
   const config = runtimeConfig();
   const database = await openDatabase(config.databaseUrl);
   try {
-    const app = createApi(database, config);
+    const app = createApi(database, config, { portalRoot: fileURLToPath(new URL('../../../portal/dist/', import.meta.url)) });
     app.addHook('onClose', () => database.close());
     await app.listen({ host: config.host, port: config.port });
     for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
