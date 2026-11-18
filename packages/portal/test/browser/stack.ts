@@ -45,7 +45,8 @@ export async function browserStack() {
     const priorDatabaseUrl = process.env.DATABASE_URL; process.env.DATABASE_URL = postgres.url;
     try { database = await databaseFixture(); }
     finally { if (priorDatabaseUrl === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = priorDatabaseUrl; }
-    await mkdir(directory, { recursive: true });
+    // The host-only directory stays private; the mounted file must be readable by Keycloak's non-root UID.
+    await mkdir(directory, { recursive: true, mode: 0o700 });
     const audience = (value: string) => ({ name: `audience-${value}`, protocol: 'openid-connect', protocolMapper: 'oidc-audience-mapper',
       config: { 'included.custom.audience': value, 'access.token.claim': 'true', 'id.token.claim': 'false' } });
     await writeFile(realmFile, JSON.stringify({ realm, enabled: true, sslRequired: 'none', internationalizationEnabled: true,
@@ -67,13 +68,15 @@ export async function browserStack() {
         { id: ownerId, username: 'owner' }, { id: viewerId, username: 'viewer' }, { id: randomUUID(), username: 'stranger' },
       ].map(user => ({ ...user, enabled: true, firstName: 'Test', lastName: user.username, email: `${user.username}@example.invalid`, emailVerified: true,
         credentials: [{ type: 'password', value: password, temporary: false }] })),
-    }), { mode: 0o600 });
+    }), { mode: 0o644 });
     const image = process.env.ITERVANE_KEYCLOAK_IMAGE ?? 'quay.io/keycloak/keycloak:26.8.2@sha256:c68e286cacd87b942ac1939a0a1481461109d6acd3a57dc496969a319a76bbf0';
     if (!/^[a-z0-9][a-z0-9./:@_-]+$/.test(image)) throw new Error('Invalid identity image');
     attempted = true;
     await execute('docker', ['run', '--detach', '--rm', '--name', name, '--label', `io.itervane.test=${nonce}`, '--memory', '1g',
       '--publish', '127.0.0.1::8080', '--mount', `type=bind,source=${realmFile},target=/opt/keycloak/data/import/itervane.json,readonly`,
       '--env', 'JAVA_OPTS_KC_HEAP=-Xms128m -Xmx512m', image, 'start-dev', '--import-realm', '--hostname-strict=false'], { timeout: 180_000 });
+    await execute('docker', ['exec', name, '/bin/bash', '-c', 'test -r /opt/keycloak/data/import/itervane.json'], { timeout: 10_000 })
+      .catch(() => { throw new Error('IDP_IMPORT_UNREADABLE'); });
     const mapping = await execute('docker', ['port', name, '8080/tcp'], { timeout: 10_000 });
     const idpPort = /^127\.0\.0\.1:(\d+)\s*$/.exec(mapping.stdout)?.[1]; if (!idpPort) throw new Error('Identity must bind to loopback');
     const issuer = `http://127.0.0.1:${idpPort}/realms/${realm}`;
@@ -82,7 +85,14 @@ export async function browserStack() {
       try { if ((await fetch(`${issuer}/.well-known/openid-configuration`, { signal: AbortSignal.timeout(1_000) })).ok) { ready = true; break; } } catch { /* Trusted local IdP startup. */ }
       await new Promise(done => setTimeout(done, 500));
     }
-    if (!ready) throw new Error('Identity readiness timeout');
+    if (!ready) {
+      const state = await execute('docker', ['inspect', '--format', '{{.State.Running}} {{.State.OOMKilled}} {{.State.ExitCode}}', name], { timeout: 10_000 }).catch(() => undefined);
+      const logs = await execute('docker', ['logs', '--tail', '120', name], { timeout: 10_000 }).catch(() => undefined);
+      const output = `${logs?.stdout ?? ''}\n${logs?.stderr ?? ''}`;
+      const code = /true true|false true/.test(state?.stdout ?? '') ? 'IDP_MEMORY_LIMIT' : /permission denied|accessdeniedexception/i.test(output) ? 'IDP_IMPORT_UNREADABLE'
+        : /error.*import|failed.*import/i.test(output) ? 'IDP_IMPORT_FAILED' : 'IDP_READINESS_TIMEOUT';
+      throw new Error(code);
+    }
     await bootstrapOwner(database.storage, { issuer, subject: ownerId });
     await database.admin.query('INSERT INTO itervane.principals(id,issuer,subject) VALUES($1,$2,$3)', [randomUUID(), issuer, viewerId]);
     api = createApi(database.storage, { issuer, audience: 'itervane-api', publicUrl: origin, portalClientId: clientId }, { logger: false, portalRoot: resolve('packages/portal/dist') });

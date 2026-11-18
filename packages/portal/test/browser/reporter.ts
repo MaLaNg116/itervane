@@ -12,7 +12,8 @@ export default class SafeReporter implements Reporter {
   onTestEnd(test: TestCase, result: TestResult) {
     const category = !result.error ? '' : result.status === 'timedOut' ? 'Timed out' : result.error.message?.includes('expect(') ? 'Assertion failed' : 'Test execution failed';
     const location = result.error?.stack?.match(/(?:portal\.spec|stack)\.ts:\d+:\d+/)?.[0] ?? '';
-    const diagnostic = [category, location].filter(Boolean).join(' ');
+    const infrastructure = result.error?.message?.match(/\bIDP_(?:IMPORT_UNREADABLE|MEMORY_LIMIT|IMPORT_FAILED|READINESS_TIMEOUT)\b/)?.[0] ?? '';
+    const diagnostic = [category, location, infrastructure].filter(Boolean).join(' ');
     this.results.push({ title: test.title, status: result.status, ...(diagnostic ? { diagnostic } : {}) });
     console.log(`${result.status}: ${test.title}${diagnostic ? ` — ${diagnostic}` : ''}`);
   }
