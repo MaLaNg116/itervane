@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { migrationConfig, runtimeConfig } from '../../src/config.js';
+import { canonicalPublicUrl, migrationConfig, runtimeConfig, workerConfig } from '../../src/config.js';
 
 const configured = {
   DATABASE_URL: 'postgresql://localhost/itervane', ITERVANE_OIDC_ISSUER: 'https://identity.example/realms/personal',
@@ -20,5 +20,20 @@ it('does not reuse the runtime credential as an implicit migration credential', 
 it('refuses credential-bearing or plaintext remote identity URLs', () => {
   for (const issuer of ['http://remote.example/realm', 'https://user:password@identity.example/realm']) {
     expect(() => runtimeConfig({ ...configured, ITERVANE_OIDC_ISSUER: issuer })).toThrow();
+  }
+});
+
+it('starts workers without API identity credentials and bounds their lease and polling settings', () => {
+  expect(workerConfig({ DATABASE_URL: configured.DATABASE_URL })).toMatchObject({ leaseSeconds: 10, pollMs: 1_000 });
+  for (const overrides of [{ ITERVANE_WORKER_LEASE_SECONDS: '1' }, { ITERVANE_WORKER_POLL_MS: '0' }]) {
+    expect(() => workerConfig({ DATABASE_URL: configured.DATABASE_URL, ...overrides })).toThrow();
+  }
+});
+
+it('fixes the public MCP URL in configuration instead of deriving it from untrusted request headers', () => {
+  expect(canonicalPublicUrl('https://itervane.example/')).toBe('https://itervane.example');
+  expect(runtimeConfig(configured).publicUrl).toBe('http://127.0.0.1:4310');
+  for (const value of ['http://remote.example', 'https://user:password@example.com', 'https://example.com/path', 'https://example.com?token=x']) {
+    expect(() => canonicalPublicUrl(value)).toThrow();
   }
 });

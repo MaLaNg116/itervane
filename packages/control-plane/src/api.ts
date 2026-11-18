@@ -8,14 +8,15 @@ import {
 } from '@itervane/contracts';
 import { AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
 import type { Database } from './persistence/database.js';
-import { parseInput } from './service/errors.js';
+import { DomainError, parseInput } from './service/errors.js';
 import { errorCode, localizedError, statusFor } from './service/presentation.js';
 import { ResourceService } from './service/resources.js';
 import { TaskService } from './service/tasks.js';
+import { createMcpEndpoint } from './mcp.js';
 
 declare module 'fastify' {
   interface FastifyRequest { verifiedIdentity: VerifiedIdentity | null; locale: Locale }
-  interface FastifyContextConfig { public?: boolean }
+  interface FastifyContextConfig { public?: boolean; mcp?: boolean }
 }
 
 const projectParam = z.object({ projectId: idSchema }).strict();
@@ -35,15 +36,19 @@ export function createApi(database: Database, config: IdentityConfig & { publicU
     bodyLimit: 64 * 1024, requestTimeout: 15_000, connectionTimeout: 10_000,
     trustProxy: false, onProtoPoisoning: 'error', onConstructorPoisoning: 'error',
   });
+  const mcp = createMcpEndpoint(database, config, () => app.log.error({ code: 'mcp_transport_error' }, 'mcp-request-failed'));
+  app.addHook('onClose', () => mcp.close());
   app.decorateRequest('verifiedIdentity', null);
   app.decorateRequest('locale', 'en');
   app.addHook('onRequest', async request => {
     request.locale = negotiateLocale(request.headers['accept-language']);
     if (request.routeOptions.config.public) return;
+    if (request.routeOptions.config.mcp) mcp.validateHeaders(request.headers);
     const authorization = request.headers.authorization;
     const token = typeof authorization === 'string' && /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/i.exec(authorization)?.[1];
     if (!token) throw new AuthenticationError();
-    request.verifiedIdentity = await verify(token);
+    request.verifiedIdentity = await (request.routeOptions.config.mcp ? mcp.verify : verify)(token);
+    if (request.routeOptions.config.mcp && !mcp.hasScope(request.verifiedIdentity, 'itervane:read')) throw new DomainError('forbidden');
   });
   app.addHook('onSend', async (request, reply) => {
     reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff').header('Content-Language', request.locale).header('Vary', 'Accept-Language');
@@ -54,16 +59,23 @@ export function createApi(database: Database, config: IdentityConfig & { publicU
   app.setErrorHandler((error, request, reply) => {
     const code = errorCode(error);
     app.log[statusFor[code] >= 500 ? 'error' : 'warn']({ requestId: request.id, code }, 'request-failed');
-    if (code === 'unauthenticated') reply.header('WWW-Authenticate', 'Bearer');
+    if (code === 'unauthenticated') reply.header('WWW-Authenticate', request.routeOptions.config.mcp ? mcp.challenge() : 'Bearer');
+    if (code === 'forbidden' && request.routeOptions.config.mcp && request.verifiedIdentity && !mcp.hasScope(request.verifiedIdentity, mcp.requiredScope(request.body))) {
+      reply.header('WWW-Authenticate', mcp.challenge(mcp.requiredScope(request.body)));
+    }
     void reply.code(statusFor[code]).send(localizedError(code, request.id, request.locale));
   });
   app.setNotFoundHandler((request, reply) => reply.code(404).send(localizedError('not_found', request.id, request.locale)));
 
   app.get('/health/live', { config: { public: true } }, async () => ({ status: 'alive' }));
+  app.get('/.well-known/oauth-protected-resource/mcp', { config: { public: true } }, async () => mcp.metadata);
+  app.route({ method: ['POST', 'GET', 'DELETE'], url: '/mcp', config: { mcp: true }, handler: async (request, reply) => {
+    await mcp.handle(request, reply, identity(request), request.headers.authorization!.slice(7));
+  } });
   app.get('/v1/me', async request => meDtoSchema.parse(await resources.me(identity(request))));
   app.get('/v1/capabilities', async request => {
     await resources.me(identity(request));
-    return capabilitiesSchema.parse({ stage: 'p1-b', taskAdmission: true, taskExecution: false, durableScheduling: true, externalMcp: false, sandbox: false, deployment: false, operations: false });
+    return capabilitiesSchema.parse({ stage: 'p1-b', taskAdmission: true, taskExecution: false, durableScheduling: true, externalMcp: true, sandbox: false, deployment: false, operations: false });
   });
   app.post('/v1/projects', async (request, reply) => reply.code(201).send(projectDtoSchema.parse(await resources.createProject(identity(request), request.body))));
   app.get('/v1/projects', async request => ({ items: projectDtoSchema.array().parse(await resources.listProjects(identity(request), limit(request))) }));
@@ -108,6 +120,9 @@ export function createApi(database: Database, config: IdentityConfig & { publicU
   });
   app.post('/v1/tasks/:taskId/cancel', async request => {
     const { taskId } = parseInput(taskParam, request.params); return taskDtoSchema.parse(await tasks.cancel(identity(request), taskId, request.body));
+  });
+  app.post('/v1/tasks/:taskId/resume', async request => {
+    const { taskId } = parseInput(taskParam, request.params); return taskDtoSchema.parse(await tasks.resume(identity(request), taskId, request.body));
   });
   return app;
 }
