@@ -20,6 +20,7 @@ export async function openDatabase(connectionString: string) {
       OR has_database_privilege(current_user, current_database(), 'CREATE')
       OR has_schema_privilege(current_user, 'itervane', 'CREATE')
       OR has_schema_privilege(current_user, 'itervane_queue', 'CREATE')
+      OR has_schema_privilege(current_user, 'itervane_checkpoint', 'CREATE')
     ) AS privileged FROM pg_roles WHERE rolname=current_user`);
     if (privilege.rows[0]?.privileged !== false) throw new Error('Use a runtime database role without DDL privileges');
     await boss.start();

@@ -33,9 +33,9 @@ export async function databaseFixture() {
     admin = new pg.Pool({ connectionString: url.toString(), max: 2 });
     await admin.query(`CREATE ROLE "${role}" LOGIN PASSWORD '${password}'`); createdRole = true;
     await admin.query(`GRANT CONNECT ON DATABASE "${databaseName}" TO "${role}"`);
-    await admin.query(`GRANT USAGE ON SCHEMA itervane, itervane_queue TO "${role}"`);
-    await admin.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA itervane, itervane_queue TO "${role}"`);
-    await admin.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA itervane, itervane_queue TO "${role}"`);
+    await admin.query(`GRANT USAGE ON SCHEMA itervane, itervane_queue, itervane_checkpoint TO "${role}"`);
+    await admin.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA itervane, itervane_queue, itervane_checkpoint TO "${role}"`);
+    await admin.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA itervane, itervane_queue, itervane_checkpoint TO "${role}"`);
     const runtimeUrl = new URL(url); runtimeUrl.username = role; runtimeUrl.password = password;
     storage = await openDatabase(runtimeUrl.toString());
     const runtime = storage; const control = admin;
@@ -43,9 +43,10 @@ export async function databaseFixture() {
       storage: runtime, admin: control, adminUrl: url.toString(), runtimeUrl: runtimeUrl.toString(),
       async reset() {
         await runtime.boss.deleteAllJobs(queueName);
-        await control.query(`TRUNCATE itervane.task_events, itervane.task_runs, itervane.tasks,
+        await control.query(`TRUNCATE itervane.execution_slot, itervane.tool_calls, itervane.run_runtime, itervane.task_events, itervane.task_runs, itervane.tasks,
           itervane.environments, itervane.applications, itervane.repositories, itervane.project_members,
           itervane.projects, itervane.workspace_members, itervane.workspaces, itervane.principals`);
+        await control.query('INSERT INTO itervane.execution_slot(id) VALUES (1)');
       }, close,
     };
   } catch (error) { await close(); throw error; }

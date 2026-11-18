@@ -8,6 +8,13 @@
       "when": 1794968831707,
       "tag": "0000_initial_control_plane",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794981442097,
+      "tag": "0001_durable_execution",
+      "breakpoints": true
     }
   ]
 }

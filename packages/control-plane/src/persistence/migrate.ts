@@ -4,6 +4,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { readMigrationFiles } from 'drizzle-orm/migrator';
 import { PgBoss } from 'pg-boss';
+import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { queueName, queueSchema } from './database.js';
 
 export const migrationsFolder = fileURLToPath(new URL('../../migrations/', import.meta.url));
@@ -12,6 +13,7 @@ export async function migrateDatabase(connectionString: string) {
   const pool = new pg.Pool({ connectionString, max: 1, connectionTimeoutMillis: 3_000 });
   let client: pg.PoolClient | undefined;
   let boss: PgBoss | undefined;
+  let saver: PostgresSaver | undefined;
   try {
     client = await pool.connect();
     const version = await client.query<{ version: string }>("SELECT current_setting('server_version_num') AS version");
@@ -30,7 +32,10 @@ export async function migrateDatabase(connectionString: string) {
     boss = new PgBoss({ connectionString, schema: queueSchema, max: 2, supervise: false, schedule: false });
     await boss.start();
     await boss.createQueue(queueName, { retryLimit: 1 });
+    saver = PostgresSaver.fromConnString(connectionString, { schema: 'itervane_checkpoint' });
+    await saver.setup();
   } finally {
+    if (saver) await saver.end();
     if (boss) await boss.stop().catch(() => {});
     if (client) {
       await client.query("SELECT pg_advisory_unlock(hashtextextended('itervane:migrate:v1', 0))").catch(() => {});
