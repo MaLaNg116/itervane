@@ -10,13 +10,15 @@ Itervane connects three evidence-based loops:
 
 ## Status
 
-P0 verification foundations and the independent P1-A/P1-B/P1-C control-plane slices are implemented in part. [Blueprint v6](docs/blueprint-v6.md) and the [TypeScript + PostgreSQL implementation plan v2](docs/implementation-plan-v2-ts-postgresql.md) remain the design baseline. Full P0, P1, and the platform MVP have not been accepted as complete.
+P0 verification foundations and the independent P1-A/P1-B/P1-C/P1-D1 control-plane slices are implemented in part. [Blueprint v6](docs/blueprint-v6.md) and the [TypeScript + PostgreSQL implementation plan v2](docs/implementation-plan-v2-ts-postgresql.md) remain the design baseline. Full P0, P1, and the platform MVP have not been accepted as complete.
 
 Available now: strict shared contracts, Anthropic/OpenAI protocol adapters, a bounded tool-loop probe, authenticated local MCP checks, real PostgreSQL transaction/recovery tests, evaluation inputs, and a trusted reference application. The platform capabilities described below remain planned.
 
 The P1-A API adds verified identity, resource registration and durable tasks. P1-B adds a lease-fenced Worker, real PostgreSQL graph interrupts/recovery, a bounded read-only tool gateway, authenticated external MCP task tools, and English/Simplified Chinese messages. Tasks pause at the unavailable Runner gate; submitted code is not executed. See [P1-B setup and boundaries](docs/control-plane-p1-b.md), the [P1-B plan](docs/plans/p1-b-durable-execution-and-mcp.md), and the earlier [P1-A setup](docs/control-plane-p1-a.md). Infrastructure gates remain pending under [ADR 0001](docs/decisions/0001-development-and-runtime-gates.md).
 
 P1-C adds a minimal English/Simplified Chinese React portal with real OIDC Authorization Code + PKCE login, current project permissions, project/repository registration, task history, and versioned retry/cancellation. It uses the same API, database and Worker as MCP. See [portal setup and session boundaries](docs/control-plane-p1-c.md), the [remaining P1 work and P1-C plan](docs/plans/p1-c-portal-and-login.md), and the [review guide](docs/reviews/p1-c-portal-login.md).
+
+P1-D1 adds immutable source-inspection plans, Git object/manifest verification, redacted scanner adapters, and real Gitleaks/Trivy checks on maintainer-generated fixtures. The portal and MCP read the same preparation record. Submitted repositories are not fetched or scanned while the verified disposable-VM gate is closed. See [P1-D setup](docs/control-plane-p1-d.md) and the [D1/D2/D3 implementation and acceptance plan](docs/plans/p1-d-isolated-source-inspection.md).
 
 For P0 setup, observed versions, and outstanding gates, see [P0 verification](docs/p0-verification.md). The repository does not yet deploy applications, execute submitted code, or operate infrastructure through an Agent.
 
@@ -27,9 +29,12 @@ pnpm test:integration
 pnpm test:portal
 pnpm probe:mcp
 pnpm probe:evaluation
+pnpm probe:scanners
 ```
 
 Use Node.js 24 and pnpm 11.9.0. Database tests need Docker with Linux containers, or an explicitly dedicated PostgreSQL 17 test database. Browser tests additionally need the trusted Keycloak image and Chromium (`pnpm --filter @itervane/portal exec playwright install --with-deps chromium` on Linux); Windows uses installed Chrome. Live model and read-only cloud checks are opt-in through an ignored local `.env`. `pnpm verify:p0` reports missing gates as blocked; green unit tests alone cannot pass P0.
+
+The scanner probe needs Git, tar, x64 Windows/Linux and network access to pinned official CLI assets and the official vulnerability database. It accepts no source-path or URL arguments, uses generated inputs only, and does not qualify a production Runner.
 
 ## Development baseline
 
@@ -44,6 +49,7 @@ The complete design documents are maintained in Chinese:
 - [P1-A control plane](docs/control-plane-p1-a.md): identity, least-privilege database setup, API commands, and verification limits.
 - [P1-B durable runtime and MCP](docs/control-plane-p1-b.md): worker startup, checkpoint publication, cancellation/resume, MCP auth, and localization.
 - [P1-C portal and login](docs/control-plane-p1-c.md): trusted same-origin build, public OIDC client, memory-only tokens, bilingual workflows, and real browser verification.
+- [P1-D1 source-inspection foundations](docs/control-plane-p1-d.md): immutable preparation, content verification, real trusted scanner checks, and the remaining KVM acceptance gates.
 
 Blueprint v6 remains the product and architecture baseline. The implementation plan records the agreed TypeScript stack and execution approach. No implementation phase has been accepted as complete. Commits are separated by requirement for review.
 
