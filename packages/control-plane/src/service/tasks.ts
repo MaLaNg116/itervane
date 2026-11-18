@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
-import { assertTransition, cancelTaskSchema, idSchema, listQuerySchema, startTaskSchema, taskDtoSchema, taskEventDtoSchema, wakeupSchema, translate, type Locale, type MessageKey } from '@itervane/contracts';
+import { cancelTaskSchema, resumeTaskSchema, idSchema, listQuerySchema, startTaskSchema, taskDtoSchema, taskEventDtoSchema, wakeupSchema, translate, type Locale, type MessageKey } from '@itervane/contracts';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import { queueName, type Database } from '../persistence/database.js';
 import { repositories, runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
 import { requireActor, requireProject, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
+import { appendEvent, enqueue, lockSlot } from '../runtime/authority.js';
 
 function presentTask(task: typeof tasks.$inferSelect, runId: string) {
   return taskDtoSchema.parse({ id: task.id, projectId: task.projectId, requestedBy: task.requestedBy, runId,
@@ -94,20 +95,40 @@ export class TaskService {
     return this.database.db.transaction(async tx => {
       const actor = await requireActor(tx, identity); const initial = await taskView(tx, taskId);
       await requireProject(tx, actor, initial.projectId, true);
+      await lockSlot(tx);
       const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId)).for('update');
       if (!task) throw new DomainError('not_found');
-      if (task.state === 'cancelled') return taskView(tx, taskId);
-      if (task.state !== 'queued') throw new DomainError('unsupported_state');
+      if (task.state === 'cancelled' || task.state === 'cancel_requested') return taskView(tx, taskId);
+      if (!['queued', 'running', 'waiting_input', 'waiting_approval'].includes(task.state)) throw new DomainError('unsupported_state');
       if (task.version !== input.expectedVersion) throw new DomainError('version_conflict');
-      assertTransition(task.state, 'cancelled');
-      const [updated] = await tx.update(tasks).set({ state: 'cancelled', version: task.version + 1 })
-        .where(and(eq(tasks.id, taskId), eq(tasks.version, input.expectedVersion), eq(tasks.state, 'queued'))).returning();
-      if (!updated) throw new DomainError('version_conflict');
       const [run] = await tx.select().from(taskRuns).where(and(eq(taskRuns.taskId, taskId), eq(taskRuns.generation, task.generation)));
-      if (!run?.wakeupJobId) throw new DomainError('unavailable');
-      await this.database.boss.cancel(queueName, run.wakeupJobId, { db: fromDrizzle(tx, sql) });
-      await tx.update(taskRuns).set({ state: 'cancelled' }).where(eq(taskRuns.id, run.id));
-      await tx.insert(taskEvents).values({ taskId, sequence: updated.version, type: 'task.cancelled', state: 'cancelled', actorId: actor.principalId });
+      if (!run) throw new DomainError('unavailable');
+      if (run.wakeupJobId) await this.database.boss.cancel(queueName, run.wakeupJobId, { db: fromDrizzle(tx, sql) });
+      const running = task.state === 'running';
+      await appendEvent(tx, task, running ? 'task.cancel_requested' : 'task.cancelled', running ? 'cancel_requested' : 'cancelled', { actorId: actor.principalId });
+      await tx.update(runRuntime).set({ resumePending: false, waitingForTaskId: null }).where(eq(runRuntime.runId, run.id));
+      return taskView(tx, taskId);
+    });
+  }
+
+  async resume(identity: VerifiedIdentity, taskId: string, raw: unknown) {
+    parseInput(idSchema, taskId); const input = parseInput(resumeTaskSchema, raw);
+    return this.database.db.transaction(async tx => {
+      const actor = await requireActor(tx, identity); const initial = await taskView(tx, taskId);
+      await requireProject(tx, actor, initial.projectId, true);
+      await lockSlot(tx);
+      const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId)).for('update');
+      if (!task) throw new DomainError('not_found');
+      if (task.version !== input.expectedVersion) throw new DomainError('version_conflict');
+      if (task.state !== 'waiting_input') throw new DomainError('unsupported_state');
+      const [run] = await tx.select().from(taskRuns).where(and(eq(taskRuns.taskId, taskId), eq(taskRuns.generation, task.generation)));
+      const [runtime] = run ? await tx.select().from(runRuntime).where(eq(runRuntime.runId, run.id)) : [];
+      // 人工 resume 只重试 Runner 前置检查，不能代替子任务完成或高风险审批。
+      if (!run || !runtime?.checkpointId || runtime.reason !== 'runner_unavailable' || runtime.waitingForTaskId) throw new DomainError('unsupported_state');
+      if (runtime.resumeCount >= 3) throw new DomainError('resume_limit');
+      await tx.update(runRuntime).set({ resumePending: true, resumeCount: runtime.resumeCount + 1 }).where(eq(runRuntime.runId, run.id));
+      const next = await appendEvent(tx, task, 'task.resumed', 'queued', { actorId: actor.principalId });
+      await enqueue(tx, this.database, next, run.id);
       return taskView(tx, taskId);
     });
   }
