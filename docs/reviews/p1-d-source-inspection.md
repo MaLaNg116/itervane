@@ -1,6 +1,6 @@
 # P1-D1 Review guide：隔离源码检查底座
 
-- 批次：005；PR 与远端证据见 [交付索引](README.md)。
+- 批次：005，[PR #5](https://github.com/MaLaNg116/itervane/pull/5)；远端证据见 [交付索引](README.md)。
 - 前置 P1-C / [PR #4](https://github.com/MaLaNg116/itervane/pull/4)，比较基线 `f274c914d54fdcfc9785aa0836ff59f41a200bd4`；不合并前置 PR。
 - 固定代码快照：`314664e702bdc6802533f8398dc4e4cbac8e7f99`。以下源码链接固定至此版本，后续文档提交不改变讲解对象。
 - 日期：2026-11-18；[D1/D2/D3 计划](../plans/p1-d-isolated-source-inspection.md)、[运行说明](../control-plane-p1-d.md)、[ADR 0004](../decisions/0004-isolated-source-inspection.md)。
@@ -126,3 +126,10 @@ probe:scanners 不加载 .env，不接收任何项目路径/URL 参数；从已�
 升级需停 API/Worker、备份、专用迁移账号应用 0005、核对运行角色新表授权、重建门户并重启。计划/截图/探针不授权执行；模型、私人云机、Komodo/Whiskers 和发布流程本批均未触发。
 
 D2 先用真实 KVM + 不可变镜像验证资源、网络、取消、销毁、宿主与跨任务边界。D3 再接真实源获取、库导入、结构化 guest job、受控产物发布、fence/取消/未知结果恢复；另批补规则查询/片段预审与资源映射。没有 KVM 不影响这些独立部分的后续设计，但不能提前验收不可信执行。
+
+## 10. 远端交付证据
+
+- 已验证交付版本 `041a066259f49f17d25a137cb979233fb3f3f790`，源码仍固定为本 guide 顶部的 `314664e`；后续仅补充文档。
+- [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44324198709) 和 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44324051943) 均 success。Ubuntu 24.04、Node 24.14.0、pnpm 11.9.0 下，deterministic/portal/scanners 三组全部通过，含 60 单元、58 真 PG、9 真浏览器与 5 真 CLI 检查。
+- Linux 实际扫描报告仍明确 runtimeQualified=false，与业务任务暂停状态一致；可信样例通过未扩大源码执行资格。生产 VM、真实任务扫描及完整 P1 继续待验。
+- 敏感文件与凭证扫描无发现，临时源/身份配置/数据库/CLI 原始报告和工具缓存未提交；PR 保持草稿，依赖未合并 #4。
