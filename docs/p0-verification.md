@@ -4,6 +4,8 @@
 - 阶段：P0 进行中，尚未完整验收；P1 未开始。
 - 对应：[开发计划 v1](development-plan-v1.md)、[实施计划 v2](implementation-plan-v2-ts-postgresql.md)。
 
+2026-11-18 补充：下文保留 2026-11-16 的 P0 观测快照。按 [ADR 0001](decisions/0001-development-and-runtime-gates.md)，独立 P1-A 身份/资源/任务模块已进入开发，见 [控制面说明](control-plane-p1-a.md)；这不改变 VM 隔离与原生集成仍待验、完整 P0 未通过的事实。
+
 ## 1. 本轮实际实现
 
 `@itervane/contracts` 提供固定 Git 输入、五种角色标识、初版任务状态转换、主体能力判断、唤醒与工具结果契约。`@itervane/verification` 包含模型协议适配、受限观察循环、MCP/数据库/云机/评测探针和本地证据汇总。它们都是 P0 验证模块。
