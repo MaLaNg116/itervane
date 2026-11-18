@@ -4,6 +4,8 @@
 - 依据：[蓝图 v6](blueprint-v6.md)、[TS + PostgreSQL 实施计划 v2](implementation-plan-v2-ts-postgresql.md)。
 - 当前：P0 验证底座进行中，关键闸门未通过，P1 尚未开工。
 
+2026-11-18 补充：用户要求继续分阶段完成项目。按 [ADR 0001](decisions/0001-development-and-runtime-gates.md) 分开开发依赖与运行资格，允许独立的 [P1-A 身份/资源/任务底座](plans/p1-a-project-task-foundation.md) 开发；本文件原始阶段出口继续约束完整验收，VM/发布/运维待验不放行。
+
 本计划将既定路线拆成开发任务。最终交付仍是完整的开发交付、受控运维、规则与 Runbook 复用三条闭环；当前代码是选型和机制的验证程序，不是缩减后的平台 MVP。
 
 ## 1. 开发约束
