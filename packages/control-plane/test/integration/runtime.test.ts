@@ -103,6 +103,16 @@ it('recreates a missing or prematurely completed wakeup without losing the accep
   expect((await database.admin.query('SELECT * FROM itervane.tasks')).rowCount).toBe(1);
 });
 
+it('rebuilds preflight from accepted domain input when a crash precedes the first checkpoint', async () => {
+  const accepted = await admit(); const scope = await claim();
+  expect((await database.admin.query('SELECT checkpoint_id FROM itervane.run_runtime')).rows[0]?.checkpoint_id).toBeNull();
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await worker().tick();
+  expect((await service.get(identity, accepted.task.id))).toMatchObject({ state: 'waiting_input', runId: scope.runId });
+  expect((await database.admin.query('SELECT checkpoint_id, tools_used FROM itervane.run_runtime')).rows[0])
+    .toMatchObject({ checkpoint_id: expect.any(String), tools_used: 2 });
+});
+
 it('stops new tools immediately after running cancellation and acknowledges it separately', async () => {
   const accepted = await admit(); const scope = await claim();
   const running = await service.get(identity, accepted.task.id);
@@ -141,6 +151,7 @@ it('releases the slot while waiting for a same-project child and rejects wait cy
 
 it('deduplicates read observations, charges a persistent budget and refuses commands or foreign targets', async () => {
   await admit(); const scope = await claim(); const gateway = new ToolGateway(coordinator);
+  await expect(gateway.call({ ...scope, generation: scope.generation + 1 }, 'project.describe', {}, 'wrong-generation')).rejects.toBeInstanceOf(ExecutionLost);
   await database.admin.query('UPDATE itervane.run_runtime SET max_tools=3');
   const [result, concurrent] = await Promise.all([gateway.call(scope, 'project.describe', {}, 'metadata'), gateway.call(scope, 'project.describe', {}, 'metadata')]);
   expect(concurrent).toEqual(result);
@@ -154,6 +165,18 @@ it('deduplicates read observations, charges a persistent budget and refuses comm
   expect(JSON.stringify((await database.admin.query('SELECT * FROM itervane.tool_calls')).rows)).not.toContain('synthetic-forbidden-command');
 });
 
+it('replays a reserved read after a failed result transaction without charging its budget twice', async () => {
+  await admit(); const scope = await claim(); const gateway = new ToolGateway(coordinator);
+  await database.admin.query("ALTER TABLE itervane.tool_calls ADD CONSTRAINT injected_result_failure CHECK(status='reserved') NOT VALID");
+  try { await expect(gateway.call(scope, 'project.describe', {}, 'recoverable-read')).rejects.toThrow(); }
+  finally { await database.admin.query('ALTER TABLE itervane.tool_calls DROP CONSTRAINT injected_result_failure'); }
+  expect((await database.admin.query('SELECT status FROM itervane.tool_calls')).rows).toEqual([{ status: 'reserved' }]);
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await coordinator.reconcile(randomUUID()); const replacement = await claim();
+  expect(await gateway.call(replacement, 'project.describe', {}, 'recoverable-read')).toMatchObject({ status: 'success' });
+  expect((await database.admin.query('SELECT tools_used FROM itervane.run_runtime')).rows[0]?.tools_used).toBe(1);
+});
+
 it('persists a real graph interrupt, releases the slot, resumes once and preserves language and budget', async () => {
   const accepted = await admit('zh-CN'); const first = worker();
   expect(await first.tick()).toBe(true);
@@ -162,6 +185,12 @@ it('persists a real graph interrupt, releases the slot, resumes once and preserv
   const before = (await database.admin.query('SELECT * FROM itervane.run_runtime')).rows[0]!;
   expect(before.checkpoint_id).toBeTruthy(); expect(before.tools_used).toBe(2);
   await first.close(); workers.splice(workers.indexOf(first), 1);
+  await database.admin.query("ALTER TABLE itervane.task_events ADD CONSTRAINT injected_resume_failure CHECK(type<>'task.resumed') NOT VALID");
+  try { await expect(service.resume(identity, paused.id, { expectedVersion: paused.version })).rejects.toThrow(); }
+  finally { await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_resume_failure'); }
+  expect((await service.get(identity, paused.id)).state).toBe('waiting_input');
+  expect((await database.admin.query('SELECT resume_count FROM itervane.run_runtime')).rows[0]?.resume_count).toBe(0);
+  expect((await database.storage.boss.findJobs(queueName)).filter(job => job.state === 'created')).toHaveLength(0);
   const resumes = await Promise.allSettled([service.resume(identity, paused.id, { expectedVersion: paused.version }), service.resume(identity, paused.id, { expectedVersion: paused.version })]);
   expect(resumes.filter(result => result.status === 'fulfilled')).toHaveLength(1);
   expect(resumes.find(result => result.status === 'rejected')).toMatchObject({ reason: { code: 'version_conflict' } });
@@ -172,6 +201,7 @@ it('persists a real graph interrupt, releases the slot, resumes once and preserv
   const events = await service.events(identity, paused.id, 100, 'zh-CN');
   expect(events.some(event => event.actorKind === 'worker' && event.workerId)).toBe(true);
   expect(events.at(-1)?.message).toBe('任务正在等待经过验证的 Runner。');
+  expect(events.at(-1)).toMatchObject({ reason: 'runner_unavailable', reasonMessage: '经过验证的隔离 Runner 尚不可用，源码检查已阻断。' });
   await service.cancel(identity, paused.id, { expectedVersion: (await service.get(identity, paused.id)).version });
   expect((await service.get(identity, paused.id)).state).toBe('cancelled');
 });
@@ -211,6 +241,42 @@ it('ignores unpublished checkpoints and pending writes after a real saver commit
     await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
     await expect(guard.putWrites(bound, [['registered', false]], 'stale-node')).rejects.toBeInstanceOf(ExecutionLost);
     await expect(guard.put(bound, emptyCheckpoint(), { source: 'loop', step: 2, parents: {} }, {})).rejects.toBeInstanceOf(ExecutionLost);
+  } finally { await storage.end(); }
+});
+
+it('orders checkpoint publication by graph step instead of UUID time or asynchronous arrival', async () => {
+  await admit(); const scope = await claim();
+  const storage = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+  const guard = new GuardedCheckpointer(coordinator, scope, storage);
+  const config = { configurable: { thread_id: scope.runId } };
+  const earlierId = emptyCheckpoint(); const laterId = emptyCheckpoint();
+  try {
+    await guard.put(config, laterId, { source: 'loop', step: 1, parents: {} }, {});
+    await guard.put(config, earlierId, { source: 'loop', step: 2, parents: {} }, {});
+    expect((await guard.getTuple(config))?.checkpoint.id).toBe(earlierId.id);
+    await guard.put(config, emptyCheckpoint(), { source: 'loop', step: 1, parents: {} }, {});
+    expect((await guard.getTuple(config))?.checkpoint.id).toBe(earlierId.id);
+  } finally { await storage.end(); }
+});
+
+it('keeps unpublished branch blobs from contaminating a recovered checkpoint', async () => {
+  await admit(); const scope = await claim();
+  const storage = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+  const guard = new GuardedCheckpointer(coordinator, scope, storage);
+  const config = { configurable: { thread_id: scope.runId } };
+  const first = emptyCheckpoint(); const firstVersion = guard.getNextVersion(undefined);
+  first.channel_values = { registered: false }; first.channel_versions = { registered: firstVersion };
+  try {
+    const bound = await guard.put(config, first, { source: 'loop', step: 0, parents: {} }, first.channel_versions);
+    const orphan = emptyCheckpoint(); orphan.channel_values = { registered: true };
+    orphan.channel_versions = { registered: guard.getNextVersion(firstVersion) };
+    await database.admin.query(`ALTER TABLE itervane.run_runtime ADD CONSTRAINT injected_blob_publish_failure CHECK(checkpoint_id<>'${orphan.id}') NOT VALID`);
+    try { await expect(guard.put(bound, orphan, { source: 'loop', step: 1, parents: {} }, orphan.channel_versions)).rejects.toThrow(); }
+    finally { await database.admin.query('ALTER TABLE itervane.run_runtime DROP CONSTRAINT injected_blob_publish_failure'); }
+    const recovered = emptyCheckpoint(); recovered.channel_values = { registered: false };
+    recovered.channel_versions = { registered: guard.getNextVersion(firstVersion) };
+    await guard.put(bound, recovered, { source: 'loop', step: 1, parents: {} }, recovered.channel_versions);
+    expect((await guard.getTuple(config))?.checkpoint.channel_values.registered).toBe(false);
   } finally { await storage.end(); }
 });
 
