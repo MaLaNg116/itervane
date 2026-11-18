@@ -39,6 +39,8 @@ jobs:
   portal:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      ITERVANE_BROWSER_CHANNEL: chrome
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -50,8 +52,8 @@ jobs:
         run: npm install --global pnpm@11.9.0 --ignore-scripts
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Install Chromium and OS libraries
-        run: pnpm --filter @itervane/portal exec playwright install --with-deps chromium
+      - name: Record preinstalled Chrome version
+        run: google-chrome --version
       - name: Real browser, Keycloak, PostgreSQL and Worker
         run: pnpm test:portal
       - name: Sanitized browser verification evidence
