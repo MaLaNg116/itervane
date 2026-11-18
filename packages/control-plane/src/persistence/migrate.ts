@@ -10,9 +10,10 @@ export const migrationsFolder = fileURLToPath(new URL('../../migrations/', impor
 
 export async function migrateDatabase(connectionString: string) {
   const pool = new pg.Pool({ connectionString, max: 1, connectionTimeoutMillis: 3_000 });
-  const client = await pool.connect();
+  let client: pg.PoolClient | undefined;
   let boss: PgBoss | undefined;
   try {
+    client = await pool.connect();
     const version = await client.query<{ version: string }>("SELECT current_setting('server_version_num') AS version");
     if (Math.floor(Number(version.rows[0]?.version) / 10_000) !== 17) throw new Error('PostgreSQL 17 required');
     await client.query("SELECT pg_advisory_lock(hashtextextended('itervane:migrate:v1', 0))");
@@ -31,8 +32,10 @@ export async function migrateDatabase(connectionString: string) {
     await boss.createQueue(queueName, { retryLimit: 1 });
   } finally {
     if (boss) await boss.stop().catch(() => {});
-    await client.query("SELECT pg_advisory_unlock(hashtextextended('itervane:migrate:v1', 0))").catch(() => {});
-    client.release();
+    if (client) {
+      await client.query("SELECT pg_advisory_unlock(hashtextextended('itervane:migrate:v1', 0))").catch(() => {});
+      client.release();
+    }
     await pool.end();
   }
 }

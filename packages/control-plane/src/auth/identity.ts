@@ -16,7 +16,7 @@ export function validateIdentityConfig(config: IdentityConfig): IdentityConfig {
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) || url.username || url.password || url.search || url.hash
     || !config.audience || config.audience.length > 255 || config.issuer.length > 2_048) throw new Error('Invalid identity configuration');
-  return config;
+  return Object.freeze({ issuer: config.issuer, audience: config.audience });
 }
 
 export function createIdentityVerifier(input: IdentityConfig) {
