@@ -19,6 +19,7 @@ export class DurableWorker {
   private active: Promise<boolean> | undefined;
   private abort: AbortController | undefined;
   private closing = false;
+  private closePromise: Promise<void> | undefined;
 
   constructor(readonly database: Database, connectionString: string, options: { leaseSeconds?: number } = {}) {
     this.coordinator = new ExecutionCoordinator(database, options);
@@ -37,10 +38,11 @@ export class DurableWorker {
 
   private async performTick(): Promise<boolean> {
     await this.coordinator.reconcile(this.id);
+    if (this.closing) return false;
     const [job] = await this.database.boss.fetch(queueName);
     if (!job) return false;
     const scope = await this.coordinator.claim(job, this.id);
-    if (scope) await this.execute(scope);
+    if (scope && !this.closing) await this.execute(scope);
     return true;
   }
 
@@ -94,8 +96,9 @@ export class DurableWorker {
     }
   }
 
-  async close() {
+  close(): Promise<void> {
     this.closing = true; this.abort?.abort();
-    try { await this.active; } finally { await this.saver.end(); }
+    this.closePromise ??= (async () => { try { await this.active; } finally { await this.saver.end(); } })();
+    return this.closePromise;
   }
 }
