@@ -2,38 +2,22 @@ import { randomUUID } from 'node:crypto';
 import Fastify, { LogController, type FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
-  admissionDtoSchema, apiErrorSchema, applicationDtoSchema, capabilitiesSchema, environmentDtoSchema,
+  admissionDtoSchema, applicationDtoSchema, capabilitiesSchema, environmentDtoSchema,
   idSchema, listQuerySchema, meDtoSchema, projectDtoSchema, repositoryDtoSchema, taskDtoSchema, taskEventDtoSchema,
-  type ApiErrorCode,
+  negotiateLocale, type Locale,
 } from '@itervane/contracts';
 import { AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
 import type { Database } from './persistence/database.js';
-import { DomainError, parseInput } from './service/errors.js';
+import { parseInput } from './service/errors.js';
+import { errorCode, localizedError, statusFor } from './service/presentation.js';
 import { ResourceService } from './service/resources.js';
 import { TaskService } from './service/tasks.js';
 
 declare module 'fastify' {
-  interface FastifyRequest { verifiedIdentity: VerifiedIdentity | null }
+  interface FastifyRequest { verifiedIdentity: VerifiedIdentity | null; locale: Locale }
   interface FastifyContextConfig { public?: boolean }
 }
 
-const statusFor: Record<ApiErrorCode, number> = {
-  invalid_input: 400, unauthenticated: 401, forbidden: 403, not_found: 404, conflict: 409,
-  idempotency_conflict: 409, version_conflict: 409, unsupported_state: 409, unavailable: 503, internal_error: 500,
-};
-function errorCode(error: unknown): ApiErrorCode {
-  if (error instanceof AuthenticationError || error instanceof DomainError) return error.code;
-  // 只读取有限层级的错误分类，不返回 SQL、请求内容或驱动异常信息。
-  let value = error;
-  for (let depth = 0; depth < 4 && value && typeof value === 'object'; depth++) {
-    const candidate = value as { code?: string; cause?: unknown; statusCode?: number };
-    if (candidate.code === '23505') return 'conflict';
-    if (candidate.code === '23503') return 'not_found';
-    if (candidate.statusCode && candidate.statusCode >= 400 && candidate.statusCode < 500) return 'invalid_input';
-    value = candidate.cause;
-  }
-  return 'internal_error';
-}
 const projectParam = z.object({ projectId: idSchema }).strict();
 const taskParam = z.object({ taskId: idSchema }).strict();
 const identity = (request: FastifyRequest) => {
@@ -42,7 +26,7 @@ const identity = (request: FastifyRequest) => {
 };
 const limit = (request: FastifyRequest) => parseInput(listQuerySchema, request.query).limit;
 
-export function createApi(database: Database, config: IdentityConfig, options: { logger?: boolean } = {}) {
+export function createApi(database: Database, config: IdentityConfig & { publicUrl?: string }, options: { logger?: boolean } = {}) {
   const verify = createIdentityVerifier(config);
   const resources = new ResourceService(database); const tasks = new TaskService(database);
   const app = Fastify({
@@ -52,15 +36,17 @@ export function createApi(database: Database, config: IdentityConfig, options: {
     trustProxy: false, onProtoPoisoning: 'error', onConstructorPoisoning: 'error',
   });
   app.decorateRequest('verifiedIdentity', null);
+  app.decorateRequest('locale', 'en');
   app.addHook('onRequest', async request => {
+    request.locale = negotiateLocale(request.headers['accept-language']);
     if (request.routeOptions.config.public) return;
     const authorization = request.headers.authorization;
     const token = typeof authorization === 'string' && /^Bearer ([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/i.exec(authorization)?.[1];
     if (!token) throw new AuthenticationError();
     request.verifiedIdentity = await verify(token);
   });
-  app.addHook('onSend', async (_request, reply) => {
-    reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff');
+  app.addHook('onSend', async (request, reply) => {
+    reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff').header('Content-Language', request.locale).header('Vary', 'Accept-Language');
   });
   app.addHook('onResponse', async (request, reply) => {
     app.log.info({ requestId: request.id, method: request.method, route: request.routeOptions.url, status: reply.statusCode }, 'request-completed');
@@ -69,15 +55,15 @@ export function createApi(database: Database, config: IdentityConfig, options: {
     const code = errorCode(error);
     app.log[statusFor[code] >= 500 ? 'error' : 'warn']({ requestId: request.id, code }, 'request-failed');
     if (code === 'unauthenticated') reply.header('WWW-Authenticate', 'Bearer');
-    void reply.code(statusFor[code]).send(apiErrorSchema.parse({ error: { code, requestId: request.id } }));
+    void reply.code(statusFor[code]).send(localizedError(code, request.id, request.locale));
   });
-  app.setNotFoundHandler((request, reply) => reply.code(404).send(apiErrorSchema.parse({ error: { code: 'not_found', requestId: request.id } })));
+  app.setNotFoundHandler((request, reply) => reply.code(404).send(localizedError('not_found', request.id, request.locale)));
 
   app.get('/health/live', { config: { public: true } }, async () => ({ status: 'alive' }));
   app.get('/v1/me', async request => meDtoSchema.parse(await resources.me(identity(request))));
   app.get('/v1/capabilities', async request => {
     await resources.me(identity(request));
-    return capabilitiesSchema.parse({ stage: 'p1-a', taskAdmission: true, taskExecution: false, externalMcp: false, sandbox: false, deployment: false, operations: false });
+    return capabilitiesSchema.parse({ stage: 'p1-b', taskAdmission: true, taskExecution: false, durableScheduling: true, externalMcp: false, sandbox: false, deployment: false, operations: false });
   });
   app.post('/v1/projects', async (request, reply) => reply.code(201).send(projectDtoSchema.parse(await resources.createProject(identity(request), request.body))));
   app.get('/v1/projects', async request => ({ items: projectDtoSchema.array().parse(await resources.listProjects(identity(request), limit(request))) }));
@@ -118,7 +104,7 @@ export function createApi(database: Database, config: IdentityConfig, options: {
   });
   app.get('/v1/tasks/:taskId/events', async request => {
     const { taskId } = parseInput(taskParam, request.params);
-    return { items: taskEventDtoSchema.array().parse(await tasks.events(identity(request), taskId, limit(request))) };
+    return { items: taskEventDtoSchema.array().parse(await tasks.events(identity(request), taskId, limit(request), request.locale)) };
   });
   app.post('/v1/tasks/:taskId/cancel', async request => {
     const { taskId } = parseInput(taskParam, request.params); return taskDtoSchema.parse(await tasks.cancel(identity(request), taskId, request.body));
