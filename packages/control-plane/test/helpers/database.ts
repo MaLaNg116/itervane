@@ -15,16 +15,32 @@ export async function databaseFixture() {
   let admin: pg.Pool | undefined;
   let storage: Awaited<ReturnType<typeof openDatabase>> | undefined;
   let createdDatabase = false; let createdRole = false;
-  async function close() {
-    if (storage) await storage.close();
-    if (admin) await admin.end();
-    // 数据库和角色名称完全由本次随机值生成；不删除提供给测试驱动器的原数据库。
-    if (createdDatabase && /^itervane_test_[a-f0-9]{12}$/.test(databaseName)) {
-      const marker = await cluster.query("SELECT shobj_description(oid, 'pg_database') AS marker FROM pg_database WHERE datname=$1", [databaseName]);
-      if (marker.rows[0]?.marker === `itervane-test:${nonce}`) await cluster.query(`DROP DATABASE "${databaseName}" WITH (FORCE)`);
-    }
-    if (createdRole && /^itervane_runtime_[a-f0-9]{12}$/.test(role)) await cluster.query(`DROP ROLE "${role}"`);
-    await cluster.end();
+  let closing: Promise<void> | undefined;
+  function close(): Promise<void> {
+    closing ??= (async () => {
+      try {
+        const pools = await Promise.allSettled([storage?.close(), admin?.end()]);
+        if (pools.some(result => result.status === 'rejected')) throw new Error('Test database pools did not close');
+        // 数据库和角色名称完全由本次随机值生成；不删除提供给测试驱动器的原数据库。
+        if (createdDatabase && /^itervane_test_[a-f0-9]{12}$/.test(databaseName)) {
+          const marker = await cluster.query("SELECT shobj_description(oid, 'pg_database') AS marker FROM pg_database WHERE datname=$1", [databaseName]);
+          if (marker.rows[0]?.marker === `itervane-test:${nonce}`) {
+            // pool.end() 可在服务器真正移除 backend 前返回。FORCE 会把正常断开的
+            // 窗口变成 57P01 异步错误；先等连接自然退出，泄漏则明确失败，不强制杀连接。
+            let drained = false;
+            for (let attempt = 0; attempt < 200; attempt++) {
+              const active = await cluster.query('SELECT count(*)::int AS count FROM pg_stat_activity WHERE datname=$1', [databaseName]);
+              if (active.rows[0]?.count === 0) { drained = true; break; }
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            if (!drained) throw new Error('Test database connections did not drain before cleanup');
+            await cluster.query(`DROP DATABASE "${databaseName}"`);
+          }
+        }
+        if (createdRole && /^itervane_runtime_[a-f0-9]{12}$/.test(role)) await cluster.query(`DROP ROLE "${role}"`);
+      } finally { await cluster.end(); }
+    })();
+    return closing;
   }
   try {
     await cluster.query(`CREATE DATABASE "${databaseName}"`); createdDatabase = true;

@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import pg from 'pg';
 import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
@@ -49,6 +50,20 @@ beforeEach(async () => {
 });
 afterEach(async () => { await Promise.all(workers.splice(0).map(instance => instance.close())); });
 afterAll(async () => { await issuer?.close(); await database?.close(); });
+
+it('waits for server-side connections to drain instead of force-terminating an external test reader', async () => {
+  const isolated = await databaseFixture(); const reader = new pg.Client({ connectionString: isolated.runtimeUrl });
+  await reader.connect(); let finished = false;
+  const closing = isolated.close().finally(() => { finished = true; });
+  const outcome = closing.then(() => true, () => false);
+  try {
+    await vi.waitFor(() => expect(isolated.storage.pool.ended).toBe(true), { timeout: 5_000, interval: 10 });
+    expect(finished).toBe(false);
+    // 故意保留一个真实 backend；cleanup 必须允许它自然读完，而非 DROP ... FORCE。
+    expect((await reader.query('SELECT pg_sleep(0.1), 1 AS value')).rows[0]?.value).toBe(1);
+  } finally { await reader.end(); expect(await outcome).toBe(true); }
+  await expect(isolated.close()).resolves.toBeUndefined();
+});
 
 it('grants only one global execution slot to two independent competing consumers', async () => {
   await admit(); await admit();
