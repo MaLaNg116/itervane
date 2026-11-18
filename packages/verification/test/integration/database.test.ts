@@ -78,7 +78,9 @@ describe('real PostgreSQL 17 admission and recovery', () => {
       await locker.query('BEGIN');
       await locker.query(`SELECT 1 FROM ${probe.schemaName}.execution_slot WHERE slot=1 FOR UPDATE`);
       pending = probe.recordObservation(owner, generation!, 'expired-while-waiting');
-      await new Promise(resolveDelay => setTimeout(resolveDelay, 750));
+      // 用数据库所在主机的时间等待，避免 Windows 与 Docker VM 的时钟调度差异。
+      await locker.query('SELECT pg_sleep(0.75)');
+      expect((await locker.query(`SELECT lease_until < clock_timestamp() AS expired FROM ${probe.schemaName}.execution_slot WHERE slot=1`)).rows[0]?.expired).toBe(true);
     } finally {
       await locker.query('ROLLBACK');
       locker.release();
