@@ -228,8 +228,12 @@ test('real refresh is serialized and a revoked IdP session clears private views'
 });
 
 test('the bilingual portal remains usable on a narrow viewport without page overflow', async ({ page, stack }) => {
+  const project = await seedProject(stack); const longSlug = 'w'.repeat(64);
+  await stack.database.admin.query('UPDATE itervane.projects SET slug=$1 WHERE id=$2', [longSlug, project.id]);
   await page.setViewportSize({ width: 390, height: 844 }); await login(page, stack, 'owner', 'zh-CN');
   await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: project.title, exact: true })).toBeVisible();
+  await expect(page.getByText(longSlug, { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
   await page.getByRole('button', { name: '创建项目', exact: true }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
