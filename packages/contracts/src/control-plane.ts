@@ -44,6 +44,7 @@ export const taskEventDtoSchema = z.object({
   type: z.enum(['task.accepted', 'task.cancelled']), state: taskStateSchema,
   actorId: idSchema, createdAt: timestampSchema,
 }).strict();
+export const admissionDtoSchema = z.object({ task: taskDtoSchema, replayed: z.boolean() }).strict();
 export const meDtoSchema = z.object({
   principalId: idSchema, workspaceId: idSchema.nullable(), isWorkspaceOwner: z.boolean(),
 }).strict();

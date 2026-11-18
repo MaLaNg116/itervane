@@ -15,6 +15,9 @@
     "probe:mcp": "tsx packages/verification/src/entries/mcp.ts",
     "probe:evaluation": "tsx packages/verification/src/entries/evaluation.ts",
     "verify:p0": "tsx --env-file-if-exists=.env packages/verification/src/cli.ts readiness",
+    "start:api": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/server.ts",
+    "db:migrate": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/migrate.ts",
+    "bootstrap:owner": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/bootstrap.ts",
     "check": "tsx scripts/check.ts"
   },
   "devDependencies": {
