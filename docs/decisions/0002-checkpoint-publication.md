@@ -11,6 +11,8 @@ PostgresSaver 仍负责其内部 schema、序列化和图检查点。运行时�
 
 锁只覆盖 checkpoint 的数据库写入与领域发布，不覆盖图节点、模型调用、工具执行或人工等待。checkpoint 保存失败或租约失效时拒绝本次发布，由重领后的执行者重新核对。pending writes 同样经 fencing 包装，且不携带批准或基础设施凭证。
 
+pending writes 另有领域发布回执：按 saver 序列化后的 `(taskId, channel, value)` 计算哈希，和领域事务一起提交。恢复保留底层排序，但过滤没有回执的中间写入。这样即使底层 putWrites 已提交、领域事务随后回滚，也不会借已发布 checkpoint 注入未发布的中间结果。丢失或被覆盖的中间结果可以重算；工具账本仍负责避免重复扣预算，未来有副作用的工具必须另走 operation ledger，不能依赖 checkpoint 达到 exactly-once。
+
 逻辑 run ID 与 generation 保持领域含义；每次领取/恢复都有新 slot fence。检查点恢复不会复活旧 fence。暂停/等待子任务时释放 slot，恢复重新竞争并检查当前权限、取消状态和剩余预算。
 
 ## 验证
