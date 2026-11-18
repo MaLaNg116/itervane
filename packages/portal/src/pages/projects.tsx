@@ -17,7 +17,7 @@ export function ProjectsPage() {
       {me.isWorkspaceOwner && <Button type="primary" onClick={() => setCreating(true)}>{t('createProject')}</Button>}
     </>} />
     {projects.isPending ? <Loading locale={locale} /> : projects.error ? <Failure error={projects.error} locale={locale} retry={() => { void projects.refetch(); }} />
-      : projects.data.items.length === 0 ? <Card><Empty description={<><strong>{t('emptyProjects')}</strong><p>{t('emptyProjectsHelp')}</p></>} /></Card>
+      : projects.data.items.length === 0 ? <Card><Empty description={<><strong>{t('emptyProjects')}</strong><p>{t(me.isWorkspaceOwner ? 'emptyProjectsHelp' : 'readOnly')}</p></>} /></Card>
       : <div className="project-grid">{projects.data.items.map(project => <Card key={project.id}>
         <div className="project-card-top"><span className="project-monogram" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</span><Tag>{project.slug}</Tag></div>
         <h2><a href={`#/projects/${project.id}`}>{project.name}</a></h2>

@@ -40,7 +40,7 @@ export function PortalApp() {
     <QueryClientProvider client={queries}>
       <a className="skip-link" href="#main" onClick={event => { event.preventDefault(); const main = document.getElementById('main'); if (main) { main.tabIndex = -1; main.focus(); } }}>{t('skip')}</a>
       <header className="topbar"><a href="#/projects" className="brand" aria-label="Itervane"><span className="brand-mark" aria-hidden="true">i</span>Itervane</a>
-        <div className="topbar-end"><span className="workspace-label">{t('workspace')}</span><Select aria-label={t('language')} value={locale} onChange={setLocale} options={[{ value: 'en', label: 'English' }, { value: 'zh-CN', label: '简体中文' }]} /></div>
+        <div className="topbar-end"><span className="workspace-label">{t('workspace')}</span><Select aria-label={t('language')} virtual={false} value={locale} onChange={setLocale} options={[{ value: 'en', label: 'English' }, { value: 'zh-CN', label: '简体中文' }]} /></div>
       </header>
       {!config ? <main id="main" className="login-main">{configError ? <Failure error={new ApiFailure('networkError')} locale={locale} retry={() => setRetry(retry + 1)} /> : <Loading locale={locale} />}</main>
         : !config.enabled ? <main id="main" className="login-main"><Result status="info" title={t('loginDisabled')} subTitle={t('loginDisabledHelp')} /></main>

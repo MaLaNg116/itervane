@@ -23,6 +23,7 @@ export class PortalApi {
       if (epoch !== this.session.getSnapshot().epoch) throw new SessionLost();
       if (response.status === 401) { this.session.rejectToken(token); throw new SessionLost(); }
       const body: unknown = await response.json();
+      if (epoch !== this.session.getSnapshot().epoch) throw new SessionLost();
       if (!response.ok) {
         const error = apiErrorSchema.safeParse(body);
         throw error.success ? new ApiFailure('networkError', error.data.error.code, error.data.error.requestId) : new ApiFailure('invalidResponse');

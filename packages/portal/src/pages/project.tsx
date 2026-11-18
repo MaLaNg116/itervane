@@ -17,7 +17,7 @@ export function ProjectPage({ id }: { id: string }) {
   const [dialog, setDialog] = useState<'repository' | 'task' | null>(null);
   if (project.isPending || access.isPending || repositories.isPending || tasks.isPending) return <Loading locale={locale} />;
   const error = project.error ?? access.error ?? repositories.error ?? tasks.error;
-  if (error) return <Failure error={error} locale={locale} retry={() => { void access.refetch(); void repositories.refetch(); void tasks.refetch(); }} />;
+  if (error) return <Failure error={error} locale={locale} retry={() => { void project.refetch(); void access.refetch(); void repositories.refetch(); void tasks.refetch(); }} />;
   if (!project.data || !access.data || !repositories.data || !tasks.data) return null;
   return <>
     <a href="#/projects" className="back-link">← {t('backProjects')}</a>
