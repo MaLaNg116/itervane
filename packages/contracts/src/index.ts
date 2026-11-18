@@ -1,17 +1,9 @@
 import { z } from 'zod';
+import { idSchema, sourceRefSchema, taskStateSchema } from './primitives.js';
 
-export const idSchema = z.uuid();
-export const agentRoleSchema = z.enum(['audit', 'repair', 'verify', 'operations', 'rule-extraction']);
-export const taskStateSchema = z.enum([
-  'queued', 'running', 'waiting_approval', 'waiting_input', 'reconciling',
-  'succeeded', 'failed', 'cancel_requested', 'cancelled', 'needs_human',
-]);
+export * from './control-plane.js';
+export { idSchema, sourceRefSchema, taskStateSchema, agentRoleSchema, taskStates, agentRoles } from './primitives.js';
 export type TaskState = z.infer<typeof taskStateSchema>;
-
-export const sourceRefSchema = z.object({
-  repositoryId: idSchema,
-  commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
-}).strict();
 
 export const startTaskSchema = z.object({
   projectId: idSchema,
