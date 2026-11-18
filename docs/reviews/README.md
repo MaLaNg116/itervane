@@ -6,6 +6,9 @@
 |---|---|---|---|---|
 | 001 | P0 起步：契约、模型循环、数据库与 MCP 探针、评测材料 | [#1](https://github.com/MaLaNg116/itervane/pull/1) | [P0 起步导读](pr-001-p0-foundation.md) | 草稿；自动检查通过，完整 P0 未验收 |
 | 002 | P1-A：身份、资源登记、持久化任务与排队取消 | [#2](https://github.com/MaLaNg116/itervane/pull/2)，基于 #1 | [P1-A 导读](p1-a-project-task-foundation.md) | 草稿；本地验证通过，完整 P1 未验收 |
+| 003 | P1-B：持久化调度、受控 preflight、外部 MCP、en/zh-CN | [#3](https://github.com/MaLaNg116/itervane/pull/3)，基于 #2 | [P1-B 导读](p1-b-durable-worker-mcp.md) | 草稿；47 单元/49 PG 及 Linux CI 通过，完整 P1 未验收 |
+
+P1-B 已验证的远端交付版本为 `68131c644b7505886c92d15e3d93bed680baedff`，[CI 记录](https://github.com/MaLaNg116/itervane/actions/runs/44254468170)。核心代码快照与本地源码指纹见导读；后续仅补充 PR/索引等文档，不把前置 PR 自动合并。
 
 ## 每批交付约定
 

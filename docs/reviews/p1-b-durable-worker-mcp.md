@@ -1,6 +1,6 @@
 # P1-B Review guide：持久化调度、受控执行骨架、外部 MCP 与多语言
 
-- 批次：003；PR 与依赖见 [交付索引](README.md)。
+- 批次：003，[PR #3](https://github.com/MaLaNg116/itervane/pull/3)；依赖见 [交付索引](README.md)。
 - 前置：P1-A / PR #2，比较基线 `f332826cc4d58394c38aa305ea09eeaed2e51e96`。
 - 本批固定代码快照：`2ce5515600f0f7167170a26e522bcb77afe93c9e`。下文源码链接均固定在此版本，后续文档提交不改变讲解对应的代码。
 - 日期：2026-11-18；[开发计划](../plans/p1-b-durable-execution-and-mcp.md)、[运行说明](../control-plane-p1-b.md)、[ADR 0002](../decisions/0002-checkpoint-publication.md)。
@@ -141,7 +141,7 @@ runtime 故障用例包括：两个独立消费者竞争、旧 fence/错误 gene
 
 进程故障夹具只在测试中延迟域暂停，确保图已真正保存 checkpoint 后 SIGKILL；没有伪造 Runner。测试数据库使用临时专用库和低权限角色，Docker 只运行可信 PostgreSQL。
 
-自动检查的远端 run/提交状态在本批 PR 与交付索引补记；本地 .reports 不提交，避免把环境细节写入公开仓库。测试通过不是 P0/P1/MVP 完整验收。
+远端交付版本 `68131c644b7505886c92d15e3d93bed680baedff` 的 [Linux CI](https://github.com/MaLaNg116/itervane/actions/runs/44254468170) 已通过全部步骤，包含冻结依赖安装、严格类型/单元测试、真实 PG/Worker/MCP、历史 MCP 探针及可信样例检查。本地 .reports 不提交，避免公开环境细节。测试通过不是 P0/P1/MVP 完整验收。
 
 ## 11. 提交地图与后续边界
 
