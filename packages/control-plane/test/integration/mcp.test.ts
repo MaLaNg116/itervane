@@ -72,7 +72,7 @@ it('serves localized SDK tool discovery and real task start/query/events/cancel 
   const repeated = admissionDtoSchema.parse((await second.callTool({ name: 'start_audit', arguments: input })).structuredContent);
   expect(repeated.task.id).toBe(accepted.task.id); expect(repeated.replayed).toBe(true);
   const events = await second.callTool({ name: 'get_task_events', arguments: { taskId: accepted.task.id } });
-  expect(events.structuredContent).toMatchObject({ items: [{ message: translate('en', 'task.accepted'), locale: 'en' }] });
+  expect(events.structuredContent).toMatchObject({ items: [{ message: translate('en', 'task.accepted'), locale: 'en', actorKind: 'principal', workerId: null }] });
   expect((await api.inject({ url: `/v1/tasks/${accepted.task.id}`, headers })).json()).toEqual(queried);
   const cancelled = taskDtoSchema.parse((await second.callTool({ name: 'cancel_task', arguments: { taskId: accepted.task.id, expectedVersion: queried.version } })).structuredContent);
   expect(cancelled.state).toBe('cancelled');

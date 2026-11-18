@@ -78,10 +78,10 @@ export const taskEvents = domain.table('task_events', {
   taskId: uuid('task_id').notNull().references(() => tasks.id), sequence: integer('sequence').notNull(),
   type: text('type').notNull(), state: taskState('state').notNull(),
   actorId: uuid('actor_id').notNull().references(() => principals.id),
-  actorKind: text('actor_kind').notNull().default('human'), workerId: uuid('worker_id'),
+  actorKind: text('actor_kind').notNull().default('principal'), workerId: uuid('worker_id'),
   detail: jsonb('detail').$type<Record<string, unknown>>().notNull().default({}), createdAt: createdAt(),
 }, t => [primaryKey({ columns: [t.taskId, t.sequence] }), check('event_sequence_positive', sql`${t.sequence} > 0`),
-  check('event_actor_kind', sql`(${t.actorKind} = 'human' AND ${t.workerId} IS NULL) OR (${t.actorKind} = 'worker' AND ${t.workerId} IS NOT NULL)`)]);
+  check('event_actor_kind', sql`(${t.actorKind} = 'principal' AND ${t.workerId} IS NULL) OR (${t.actorKind} = 'worker' AND ${t.workerId} IS NOT NULL)`)]);
 
 export const executionSlot = domain.table('execution_slot', {
   id: integer('id').primaryKey(), taskId: uuid('task_id').references(() => tasks.id),

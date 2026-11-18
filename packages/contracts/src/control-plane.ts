@@ -44,7 +44,7 @@ export const taskDtoSchema = z.object({
 export const taskEventDtoSchema = z.object({
   taskId: idSchema, sequence: z.number().int().positive(),
   type: z.enum(taskEventTypes), state: taskStateSchema,
-  actorId: idSchema, actorKind: z.enum(['human', 'worker']), workerId: idSchema.nullable(),
+  actorId: idSchema, actorKind: z.enum(['principal', 'worker']), workerId: idSchema.nullable(),
   reason: taskEventReasonSchema.nullable(), reasonMessage: z.string().nullable(),
   messageKey: messageKeySchema, message: z.string(), locale: localeSchema, createdAt: timestampSchema,
 }).strict();

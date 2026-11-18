@@ -33,7 +33,7 @@ export async function appendEvent(tx: Transaction, task: TaskRow, type: string, 
   if (!next) throw new DomainError('version_conflict');
   await tx.update(taskRuns).set({ state }).where(and(eq(taskRuns.taskId, task.id), eq(taskRuns.generation, task.generation)));
   await tx.insert(taskEvents).values({ taskId: task.id, sequence: next.version, type, state,
-    actorId: options.actorId ?? task.requestedBy, actorKind: options.workerId ? 'worker' : 'human', workerId: options.workerId ?? null,
+    actorId: options.actorId ?? task.requestedBy, actorKind: options.workerId ? 'worker' : 'principal', workerId: options.workerId ?? null,
     detail: options.reason ? { reason: options.reason } : {} });
   return next;
 }

@@ -29,6 +29,13 @@
       "when": 1794983711763,
       "tag": "0003_checkpoint_step",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794984334903,
+      "tag": "0004_event_principal_kind",
+      "breakpoints": true
     }
   ]
 }
