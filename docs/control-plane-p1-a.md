@@ -4,6 +4,8 @@
 - 本批计划：[P1-A](plans/p1-a-project-task-foundation.md)。
 - Review 入口：[分批索引](reviews/README.md)。
 
+本文记录 P1-A 的交付状态；后续 Worker、外部 MCP、多语言和新增迁移见 [P1-B 说明](control-plane-p1-b.md)。下文“没有 Worker”等描述对应本批固定历史版本。
+
 ## 当前能力
 
 控制面提供 Keycloak 风格 RS256 access token 验证、已登记主体的当前项目权限、单工作区维护者初始化、项目/HTTPS 仓库/应用/环境登记，以及固定 Git 快照任务的接收、查询、事件与排队取消。
