@@ -1,6 +1,6 @@
 # P1-A Review guide：身份、资源与持久化任务
 
-- 批次：002，关联 PR 见 [交付索引](README.md)。
+- 批次：002，[PR #2](https://github.com/MaLaNg116/itervane/pull/2)，关联记录见 [交付索引](README.md)。
 - 前置：PR #1；比较基线 `3063bfc`，不需要重复 review P0 的全部代码。
 - 本批核心代码快照：`4390942ba098651cd18c62777c5edf4930ae8884`；后续运行说明与授权 SQL 单独提交。
 - 日期：2026-11-18。

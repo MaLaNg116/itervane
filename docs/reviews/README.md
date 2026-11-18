@@ -5,7 +5,7 @@
 | 批次 | 交付范围 | PR | Review guide | 状态 |
 |---|---|---|---|---|
 | 001 | P0 起步：契约、模型循环、数据库与 MCP 探针、评测材料 | [#1](https://github.com/MaLaNg116/itervane/pull/1) | [P0 起步导读](pr-001-p0-foundation.md) | 草稿；自动检查通过，完整 P0 未验收 |
-| 002 | P1-A：身份、资源登记、持久化任务与排队取消 | 待发布独立叠加 PR，基于 #1 | [P1-A 导读](p1-a-project-task-foundation.md) | 本地验证通过；完整 P1 未验收 |
+| 002 | P1-A：身份、资源登记、持久化任务与排队取消 | [#2](https://github.com/MaLaNg116/itervane/pull/2)，基于 #1 | [P1-A 导读](p1-a-project-task-foundation.md) | 草稿；本地验证通过，完整 P1 未验收 |
 
 ## 每批交付约定
 
