@@ -4,7 +4,7 @@ import { z } from 'zod';
 import {
   admissionDtoSchema, applicationDtoSchema, capabilitiesSchema, environmentDtoSchema,
   idSchema, listQuerySchema, meDtoSchema, projectAccessDtoSchema, portalConfigSchema, projectDtoSchema, repositoryDtoSchema, taskDtoSchema, taskEventDtoSchema,
-  negotiateLocale, type Locale,
+  negotiateLocale, sourceInspectionDtoSchema, type Locale,
 } from '@itervane/contracts';
 import { AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
 import type { Database } from './persistence/database.js';
@@ -15,6 +15,7 @@ import { TaskService } from './service/tasks.js';
 import { createMcpEndpoint } from './mcp.js';
 import { canonicalPublicUrl } from './config.js';
 import { registerPortal } from './portal.js';
+import { InspectionService } from './service/inspections.js';
 
 declare module 'fastify' {
   interface FastifyRequest { verifiedIdentity: VerifiedIdentity | null; locale: Locale }
@@ -33,6 +34,7 @@ export type ApiConfig = IdentityConfig & { publicUrl?: string; portalClientId?: 
 export function createApi(database: Database, config: ApiConfig, options: { logger?: boolean; portalRoot?: string } = {}) {
   const verify = createIdentityVerifier(config);
   const resources = new ResourceService(database); const tasks = new TaskService(database);
+  const inspections = new InspectionService(database);
   const app = Fastify({
     logger: options.logger === false ? false : { level: 'info' },
     logController: new LogController({ disableRequestLogging: true }), requestIdHeader: false, genReqId: () => randomUUID(),
@@ -85,7 +87,8 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
   app.get('/v1/me', async request => meDtoSchema.parse(await resources.me(identity(request))));
   app.get('/v1/capabilities', async request => {
     await resources.me(identity(request));
-    return capabilitiesSchema.parse({ stage: 'p1-c', taskAdmission: true, taskExecution: false, durableScheduling: true, externalMcp: true,
+    return capabilitiesSchema.parse({ stage: 'p1-d1', taskAdmission: true, taskExecution: false, durableScheduling: true, externalMcp: true,
+      sourceInspectionPlanning: true, sourceSnapshots: false, sourceScanning: false,
       portal: portalAvailable, browserLogin: portalAvailable && Boolean(config.portalClientId), sandbox: false, deployment: false, operations: false });
   });
   app.post('/v1/projects', async (request, reply) => reply.code(201).send(projectDtoSchema.parse(await resources.createProject(identity(request), request.body))));
@@ -136,6 +139,10 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
   app.get('/v1/tasks/:taskId/events', async request => {
     const { taskId } = parseInput(taskParam, request.params);
     return { items: taskEventDtoSchema.array().parse(await tasks.events(identity(request), taskId, limit(request), request.locale)) };
+  });
+  app.get('/v1/tasks/:taskId/source-inspection', async request => {
+    const { taskId } = parseInput(taskParam, request.params);
+    return sourceInspectionDtoSchema.parse(await inspections.get(identity(request), taskId));
   });
   app.post('/v1/tasks/:taskId/cancel', async request => {
     const { taskId } = parseInput(taskParam, request.params); return taskDtoSchema.parse(await tasks.cancel(identity(request), taskId, request.body));

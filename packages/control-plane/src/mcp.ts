@@ -12,6 +12,7 @@ import { DomainError, parseInput } from './service/errors.js';
 import { errorCode, localizedError } from './service/presentation.js';
 import { ResourceService } from './service/resources.js';
 import { TaskService } from './service/tasks.js';
+import { InspectionService } from './service/inspections.js';
 
 const taskIdInput = z.object({ taskId: idSchema }).strict();
 const versionInput = cancelTaskSchema.extend({ taskId: idSchema }).strict();
@@ -21,6 +22,7 @@ const specs = [
   { name: 'start_audit', key: 'mcp.start', input: startTaskSchema, write: true },
   { name: 'get_task', key: 'mcp.query', input: taskIdInput, write: false },
   { name: 'get_task_events', key: 'mcp.events', input: eventsInput, write: false },
+  { name: 'get_source_inspection', key: 'mcp.inspection', input: taskIdInput, write: false },
   { name: 'cancel_task', key: 'mcp.cancel', input: versionInput, write: true },
   { name: 'resume_task', key: 'mcp.resume', input: resumeInput, write: true },
 ] as const;
@@ -30,6 +32,7 @@ export function createMcpEndpoint(database: Database, config: IdentityConfig & {
   const resource = `${publicUrl}/mcp`; const metadataUrl = `${publicUrl}/.well-known/oauth-protected-resource/mcp`;
   const verify = createIdentityVerifier({ issuer: config.issuer, audience: resource });
   const service = new TaskService(database); const resources = new ResourceService(database);
+  const inspections = new InspectionService(database);
   const allowedHosts = new Set([new URL(publicUrl).hostname, 'localhost', '127.0.0.1', '[::1]']);
   const requiredScope = (body: unknown) => {
     const parsed = z.object({ method: z.string(), params: z.object({ name: z.string() }).passthrough().optional() }).passthrough().safeParse(body);
@@ -64,6 +67,7 @@ export function createMcpEndpoint(database: Database, config: IdentityConfig & {
         switch (spec.name) {
           case 'start_audit': output = await service.admit(identity, args); break;
           case 'get_task': output = await service.get(identity, taskIdInput.parse(args).taskId); break;
+          case 'get_source_inspection': output = await inspections.get(identity, taskIdInput.parse(args).taskId); break;
           case 'get_task_events': {
             const input = eventsInput.parse(args); output = { items: await service.events(identity, input.taskId, input.limit, locale) }; break;
           }
