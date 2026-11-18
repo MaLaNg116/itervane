@@ -6,6 +6,7 @@ import { repositories, runRuntime, toolCalls } from '../persistence/schema.js';
 import { DomainError } from '../service/errors.js';
 import { appendEvent, BudgetExhausted, ExecutionLost, type ExecutionScope } from './authority.js';
 import { ExecutionCoordinator } from './coordinator.js';
+import { prepareInspection } from '../service/inspections.js';
 
 type ToolResult = z.infer<typeof toolResultSchema>;
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -44,7 +45,10 @@ export class ToolGateway {
     const result = await this.coordinator.withLease(scope, async (tx, { task }): Promise<ToolResult> => {
       if (tool === 'unsupported') return { status: 'business_error', code: 'tool_denied', retryable: false };
       if (!emptyArguments.safeParse(args).success) return { status: 'business_error', code: 'invalid_arguments', retryable: false };
-      if (tool === 'source.inspect') return { status: 'business_error', code: 'runner_unavailable', retryable: false };
+      if (tool === 'source.inspect') {
+        await prepareInspection(tx, task, scope.runId, scope.fence);
+        return { status: 'business_error', code: 'runner_unavailable', retryable: false };
+      }
       const [repository] = await tx.select().from(repositories)
         .where(and(eq(repositories.id, task.repositoryId), eq(repositories.projectId, task.projectId)));
       if (!repository) throw new DomainError('not_found');

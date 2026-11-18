@@ -36,6 +36,13 @@
       "when": 1794984334903,
       "tag": "0004_event_principal_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1795010801295,
+      "tag": "0005_inspection_plans",
+      "breakpoints": true
     }
   ]
 }
