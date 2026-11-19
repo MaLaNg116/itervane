@@ -1,6 +1,6 @@
 # P1-E Review guide：规则查询与有限文本预审
 
-- 批次：006；PR 与远端 CI 见[交付索引](README.md)。
+- 批次：006，[PR #6](https://github.com/MaLaNg116/itervane/pull/6)；远端 CI 见[交付索引](README.md)。
 - 前置 P1-D1 / [PR #5](https://github.com/MaLaNg116/itervane/pull/5)，比较基线 `8a9cf3850cbd34204c0f2357a90230836ab586eb`；本批使用 `feat/p1-rules-preaudit`，不合并前置 PR。
 - 固定代码快照：`1f93809aef42c70bce52f3dd1fac7af58d929358`。以下源码链接固定至此版本，后续文档提交不改变讲解对象。
 - 日期：2026-11-19；[实施计划](../plans/p1-e-rules-and-preaudit.md)、[运行说明](../control-plane-p1-e.md)、[ADR 0005](../decisions/0005-limited-text-preaudit.md)。
@@ -111,3 +111,10 @@ SHA-256 不是加密或匿名化，不适合提交私人数据。数据类别只
 升级需停旧 API/Worker、备份、独立账号追加 0006、核对运行角色授权、重建门户并重启；没有新增常驻服务或开关放行。P1-E 只验收本切片，D2/D3、完整 P1 与所有三条 MVP 闭环仍有剩余工作。
 
 后续可以独立规划 P1 资源映射或 P2-A Harness 契约/可信工具验证，实际自主审计与源码修复仍等待合格 Runner。规则/Skill 上传和沉淀必须按 P4 补验证、人审和版本生命周期，不能将内置目录当作已完成 P4。
+
+## 9. 远端交付证据
+
+- [草稿 PR #6](https://github.com/MaLaNg116/itervane/pull/6) 基于未合并的 #5，比较基线与固定代码版本保持本 guide 顶部记录。
+- 已验证文档交付版本 `54e095fd3add9a028105bf0141d95dbf0384efcc` 的 [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44501368994) 和 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44501335089) 均 success；Ubuntu 24.04、Node 24.14.0、pnpm 11.9.0 下 deterministic/portal/scanners 全部通过，包含 73 单元、66 真 PG、15 真浏览器和原 5 项可信样例 CLI 检查。
+- Linux 浏览器/扫描器的源码指纹均为 `99cb20b72d18ca3f9a9792cd954cafa613cd795237cf3621728002efe24bbcee`，与本地浏览器一致。真实扫描报告仍为 runtimeQualified=false，完整 Runner 资格没有变化。
+- 新提交 blob 的本机敏感值/私人标识/私钥头扫描无发现，忽略配置和报告未提交。随后仅补充 PR/证据记录，不改变固定代码；前置 PR 未自动合并。

@@ -1,6 +1,6 @@
 # P1-E：规则查询与有限文本预审
 
-- 日期：2026-11-19；状态：计划先行已提交，E0—E6 本地实现与验收通过；E7 文档/叠加 PR 交付中，远端 CI 随后记录在 review 索引。
+- 日期：2026-11-19；状态：计划先行，E0—E7 本切片已交付为[草稿 PR #6](https://github.com/MaLaNg116/itervane/pull/6)，本地与三组 Linux CI 通过；完整 P1 及执行资格继续待验，证据见 review 索引。
 - 前置：P1-D1 / PR #5，`8a9cf3850cbd34204c0f2357a90230836ab586eb`；新草稿 PR 基于 `feat/p1-runner-foundation`，不合并前置 PR。
 - 依据：v6 §5—9/§13/§15—18、TS + PostgreSQL 实施计划 P1.5、ADR 0001/0004/0005。
 
