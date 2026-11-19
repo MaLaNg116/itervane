@@ -3,10 +3,12 @@
 - 文档版本：实施计划 v2。
 - 整理日期：2026-11-16。
 - 对应蓝图：[蓝图 v6](blueprint-v6.md)。
-- 实现状态：P0 基础设施仍待验；独立 P1-A 身份/资源/任务、P1-B 持久化 preflight/外部 MCP/双语及 P1-C 最小门户/OIDC 登录切片已实现，完整 P1—P5 未验收；实际证据见 [P0 记录](p0-verification.md)、[P1-A](control-plane-p1-a.md)、[P1-B](control-plane-p1-b.md) 与 [P1-C 说明](control-plane-p1-c.md)。
+- 实现状态：P0 基础设施仍待验；独立 P1-A 身份/资源/任务、P1-B 持久化 preflight/外部 MCP/双语、P1-C 最小门户/OIDC 登录、P1-D1 检查准备与 P1-E 有限文本预审切片已实现，完整 P1—P5 未验收；实际证据见 [P0 记录](p0-verification.md)和[分批 review 索引](reviews/README.md)。
 - 阅读入口：[开发基线与一致性约束](baseline.md)。
 
 P1-D1 追加源码检查计划、Git 内容校验与可信样例扫描适配；[D2/D3 的真实 VM 与任务扫描验收](plans/p1-d-isolated-source-inspection.md) 继续受基础设施闸门约束，不代表本节完整 P1 已完成。
+
+P1-E 追加 [只读规则/Skill 查询与有限文本预审](plans/p1-e-rules-and-preaudit.md)，提供同一持久化报告的 API/MCP/双语门户入口。固定文本匹配不调用模型、不获取或执行仓库，不给发布资格；P2-A 自主 Agent、P4 规则/Skill 上传与沉淀、D2/D3 执行资格均保持原边界。
 
 本计划完整保留已确认的 TypeScript + PostgreSQL 分阶段实施方案。完整愿景、Agent 架构、MVP 闭环和安全边界沿用 v6；更新控制面技术栈、数据访问、任务调度与并发方案。本文定义实施顺序，不提前宣称接口兼容、恢复正确或阶段验收已经通过。
 
