@@ -5,6 +5,8 @@ it('accepts only supported local routes and never follows an external callback r
   const id = 'd7fe96c6-1d7b-4e25-b994-904f9cd9f673';
   expect(readRoute(`#/tasks/${id}`)).toEqual({ page: 'task', id });
   expect(readRoute(`#/projects/${id}`)).toEqual({ page: 'project', id });
+  expect(readRoute(`#/projects/${id}/preaudit`)).toEqual({ page: 'preaudit', id });
+  expect(readRoute(`#/preaudits/${id}`)).toEqual({ page: 'preaudit-report', id });
   for (const value of ['https://untrusted.invalid', '//untrusted.invalid', '#/tasks/../../admin', '#/projects/invalid', '#/tasks/' + id + '/extra', null]) {
     expect(safeReturnHash(value)).toBe('#/projects');
   }
