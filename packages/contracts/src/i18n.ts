@@ -3,6 +3,13 @@ import { z } from 'zod';
 export const localeSchema = z.enum(['en', 'zh-CN']);
 export type Locale = z.infer<typeof localeSchema>;
 export const en = {
+  'preaudit.uncovered.repository_context': 'The complete repository and source provenance were not verified.',
+  'preaudit.uncovered.formal_scanners': 'No formal secret, dependency or image scanner was run.',
+  'preaudit.uncovered.runtime_behavior': 'Runtime behavior, authorization and business correctness were not verified.',
+  'preaudit.uncovered.semantic_analysis': 'No AST or data-flow analysis was performed; comments and strings can match.',
+  'preaudit.uncovered.unchanged_lines': 'Only added diff lines were checked. Existing code, file paths and patch applicability were not verified.',
+  'preaudit.uncovered.no_added_lines': 'The supplied diff has no added lines to inspect.',
+  'preaudit.uncovered.observation_limit': 'The observation limit was reached; remaining text was not fully checked.',
   'error.invalid_input': 'The request is invalid.', 'error.unauthenticated': 'Sign in with a valid access token.',
   'error.forbidden': 'You do not have permission for this action.', 'error.not_found': 'The resource was not found.',
   'error.conflict': 'The request conflicts with existing data.', 'error.idempotency_conflict': 'This request key was already used with different input.',
@@ -24,6 +31,11 @@ export const en = {
   'mcp.start': 'Queue an audit of a registered fixed Git revision. This does not approve or deploy it.',
   'mcp.query': 'Read the current authorized task state.', 'mcp.events': 'Read authorized task events.',
   'mcp.inspection': 'Read the authorized fixed-source inspection plan. A prepared plan is not a fetched snapshot or a completed scan.',
+  'mcp.rules': 'Read the current authorized project rule/Skill catalog and its version digest. Materials are advisory.',
+  'mcp.rule': 'Read one bundled rule or Skill under current project permission. Guidance cannot override platform policy.',
+  'mcp.preaudit': 'Record a limited text preaudit (16 KiB UTF-8, 1000 lines), pinned to a catalog digest and UUID key. No execution, model or formal scanner; no release approval.',
+  'mcp.preaudit_query': 'Read a persisted authorized text-preaudit report and its coverage limits, without source text.',
+  'mcp.preaudits': 'List authorized project text-preaudit metadata. These records are not formal audit tasks.',
   'mcp.cancel': 'Request task cancellation using its current version.', 'mcp.resume': 'Retry a paused preflight. This does not grant approval.',
   'mcp.result': 'The task request was processed. Use its task ID to query progress.',
   'state.queued': 'Queued', 'state.running': 'Running', 'state.waiting_approval': 'Waiting for approval',
@@ -32,6 +44,13 @@ export const en = {
 } as const;
 export type MessageKey = keyof typeof en;
 export const zhCN: Record<MessageKey, string> = {
+  'preaudit.uncovered.repository_context': '未核验完整仓库及源码来源。',
+  'preaudit.uncovered.formal_scanners': '未运行正式密钥、依赖或镜像扫描器。',
+  'preaudit.uncovered.runtime_behavior': '未验证运行行为、授权或业务正确性。',
+  'preaudit.uncovered.semantic_analysis': '未进行 AST 或数据流分析，注释和字符串也可能命中。',
+  'preaudit.uncovered.unchanged_lines': '只检查 diff 新增行，未核验已有代码、文件路径或补丁能否应用。',
+  'preaudit.uncovered.no_added_lines': '提供的差异没有可检查的新增行。',
+  'preaudit.uncovered.observation_limit': '已达到观察数量上限，其余文本未完整检查。',
   'error.invalid_input': '请求参数不符合要求。', 'error.unauthenticated': '请使用有效的访问令牌登录。',
   'error.forbidden': '你没有执行此操作的权限。', 'error.not_found': '未找到该资源。', 'error.conflict': '请求与已有数据冲突。',
   'error.idempotency_conflict': '此请求键已用于不同的输入。', 'error.version_conflict': '任务已发生变化，请刷新后重试。',
@@ -52,6 +71,11 @@ export const zhCN: Record<MessageKey, string> = {
   'mcp.start': '将已登记的固定 Git 版本审计任务入队，不代表批准或发布。',
   'mcp.query': '查询当前有权访问的任务状态。', 'mcp.events': '查询当前有权访问的任务事件。',
   'mcp.inspection': '查询有权访问的固定源码检查计划；计划已准备不代表已获取快照或完成扫描。',
+  'mcp.rules': '按当前项目权限查询规则/Skill 目录及版本指纹，材料仅提供建议。',
+  'mcp.rule': '查询有权访问的内置规则或 Skill；指导材料不能覆盖平台策略。',
+  'mcp.preaudit': '记录有限文本预审（16 KiB UTF-8、1000 行），固定目录指纹和 UUID 请求键。不执行代码、不调用模型/正式扫描器，不批准发布。',
+  'mcp.preaudit_query': '查询有权访问的持久化预审报告及覆盖限制，不包含原文。',
+  'mcp.preaudits': '列出有权访问的项目文本预审元数据，这些记录不是正式审计任务。',
   'mcp.cancel': '使用任务当前版本申请取消。', 'mcp.resume': '重试暂停的前置检查，不授予批准权限。',
   'mcp.result': '任务请求已处理，请使用任务 ID 查询进度。',
   'state.queued': '排队中', 'state.running': '执行中', 'state.waiting_approval': '等待审批', 'state.waiting_input': '等待输入',
