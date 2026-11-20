@@ -3,7 +3,7 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import {
   applicationDtoSchema, applicationInputSchema, environmentDtoSchema, environmentInputSchema,
-  idSchema, listQuerySchema, meDtoSchema, projectDtoSchema, projectInputSchema, repositoryDtoSchema, repositoryInputSchema,
+  idSchema, listQuerySchema, meDtoSchema, projectAccessDtoSchema, projectDtoSchema, projectInputSchema, repositoryDtoSchema, repositoryInputSchema,
 } from '@itervane/contracts';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import type { Database } from '../persistence/database.js';
@@ -56,6 +56,22 @@ export class ResourceService {
       const [row] = await tx.insert(projects).values({ ...input, workspaceId: actor.workspaceId }).returning();
       return projectView(row!);
     });
+  }
+
+  async projectAccess(identity: VerifiedIdentity, projectId: string) {
+    parseInput(idSchema, projectId);
+    return this.database.db.transaction(async tx => {
+      const actor = await requireActor(tx, identity); const project = await requireProject(tx, actor, projectId);
+      const [member] = await tx.select().from(projectMembers)
+        .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.principalId, actor.principalId)));
+      const role = actor.workspaceId === project.workspaceId ? 'owner' : member!.role;
+      return projectAccessDtoSchema.parse({ projectId, role, canWrite: role !== 'viewer' });
+    });
+  }
+
+  async getProject(identity: VerifiedIdentity, projectId: string) {
+    parseInput(idSchema, projectId);
+    return this.database.db.transaction(async tx => projectView(await requireProject(tx, await requireActor(tx, identity), projectId)));
   }
 
   async listProjects(identity: VerifiedIdentity, limit: number) {

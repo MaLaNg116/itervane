@@ -2,13 +2,15 @@
 
 - 日期：2026-11-16。
 - 依据：[蓝图 v6](blueprint-v6.md)、[TS + PostgreSQL 实施计划 v2](implementation-plan-v2-ts-postgresql.md)。
-- 当前：P0 基础设施闸门仍待验证，独立 P1-A/P1-B 已有局部实现，完整 P1 未验收。
+- 当前：P0 基础设施闸门仍待验证，独立 P1-A/P1-B/P1-C 已有局部实现，完整 P1 未验收。
 
 2026-11-18 补充：用户要求继续分阶段完成项目。按 [ADR 0001](decisions/0001-development-and-runtime-gates.md) 分开开发依赖与运行资格，允许独立的 [P1-A 身份/资源/任务底座](plans/p1-a-project-task-foundation.md) 开发；本文件原始阶段出口继续约束完整验收，VM/发布/运维待验不放行。
 
 本计划将既定路线拆成开发任务。最终交付仍是完整的开发交付、受控运维、规则与 Runbook 复用三条闭环；当前代码是选型和机制的验证程序，不是缩减后的平台 MVP。
 
 P1-B 追加 [持久化调度/受控执行/外部 MCP](plans/p1-b-durable-execution-and-mcp.md)，先覆盖 en/zh-CN。正式 preflight 只运行受信任数据库工具并在 Runner 闸门处中断；P2 的自主 Agent 循环和原始完整验收标准保持不变。
+
+P1-C 追加 [最小门户与真实 OIDC 登录](plans/p1-c-portal-and-login.md)，保留中英文并复用同一任务服务。剩余 P1 的 Runner/扫描、规则查询/预审及资源映射见该计划矩阵，未因本批门户交付而移除。
 
 ## 1. 开发约束
 

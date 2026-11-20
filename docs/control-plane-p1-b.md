@@ -4,6 +4,8 @@
 - 基线仍为 [v6](blueprint-v6.md) 与 [TS + PostgreSQL 实施计划](implementation-plan-v2-ts-postgresql.md)。
 - 前置安装见 [P1-A](control-plane-p1-a.md)；设计决定见 [运行资格](decisions/0001-development-and-runtime-gates.md)、[检查点发布](decisions/0002-checkpoint-publication.md)。
 
+本文保留 P1-B 的历史交付范围；后续最小门户、浏览器登录和真实 Keycloak 验证见 [P1-C](control-plane-p1-c.md)。下文“尚无门户”等内容描述 P1-B 固定版本。
+
 ## 实际能力
 
 `API/MCP 接收任务 → 原子入队 → Worker 领取 → 受控读取登记信息 → 检查 Runner 能力 → 保存真实图 interrupt → waiting_input 并释放槽位 → 查询/人工重试/取消 → 重启后恢复`

@@ -52,8 +52,17 @@ export const admissionDtoSchema = z.object({ task: taskDtoSchema, replayed: z.bo
 export const meDtoSchema = z.object({
   principalId: idSchema, workspaceId: idSchema.nullable(), isWorkspaceOwner: z.boolean(),
 }).strict();
+export const projectAccessDtoSchema = z.object({
+  projectId: idSchema, role: z.enum(['owner', 'maintainer', 'viewer']), canWrite: z.boolean(),
+}).strict();
+export const portalConfigSchema = z.discriminatedUnion('enabled', [
+  z.object({ enabled: z.literal(false) }).strict(),
+  z.object({ enabled: z.literal(true), authority: z.url(), clientId: z.string().min(1).max(255),
+    redirectUri: z.url(), postLogoutRedirectUri: z.url() }).strict(),
+]);
 export const capabilitiesSchema = z.object({
-  stage: z.literal('p1-b'), taskAdmission: z.literal(true), taskExecution: z.literal(false), durableScheduling: z.literal(true),
+  stage: z.literal('p1-c'), taskAdmission: z.literal(true), taskExecution: z.literal(false), durableScheduling: z.literal(true),
+  portal: z.boolean(), browserLogin: z.boolean(),
   externalMcp: z.boolean(), sandbox: z.literal(false), deployment: z.literal(false), operations: z.literal(false),
 }).strict();
 export const apiErrorSchema = z.object({ error: z.object({
@@ -72,4 +81,6 @@ export type EnvironmentDto = z.infer<typeof environmentDtoSchema>;
 export type TaskDto = z.infer<typeof taskDtoSchema>;
 export type TaskEventDto = z.infer<typeof taskEventDtoSchema>;
 export type MeDto = z.infer<typeof meDtoSchema>;
+export type ProjectAccessDto = z.infer<typeof projectAccessDtoSchema>;
+export type PortalConfig = z.infer<typeof portalConfigSchema>;
 export type ApiErrorCode = z.infer<typeof apiErrorSchema>['error']['code'];

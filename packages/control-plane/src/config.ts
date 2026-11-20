@@ -20,7 +20,9 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env) {
   }).parse({ databaseUrl: env.DATABASE_URL, issuer: env.ITERVANE_OIDC_ISSUER,
     audience: env.ITERVANE_OIDC_AUDIENCE, host: env.ITERVANE_API_HOST ?? '127.0.0.1', port: env.ITERVANE_API_PORT ?? 4310 });
   validateIdentityConfig(config);
-  return { ...config, publicUrl: canonicalPublicUrl(env.ITERVANE_PUBLIC_URL ?? `http://127.0.0.1:${config.port}`) };
+  const portalClientId = env.ITERVANE_PORTAL_CLIENT_ID ? z.string().trim().min(1).max(255).parse(env.ITERVANE_PORTAL_CLIENT_ID) : undefined;
+  return { ...config, publicUrl: canonicalPublicUrl(env.ITERVANE_PUBLIC_URL ?? `http://127.0.0.1:${config.port}`),
+    ...(portalClientId ? { portalClientId } : {}) };
 }
 
 export function workerConfig(env: NodeJS.ProcessEnv = process.env) {

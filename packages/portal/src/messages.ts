@@ -1,0 +1,78 @@
+import { localeSchema, negotiateLocale, translate, type Locale, type TaskState } from '@itervane/contracts';
+
+const en = {
+  language: 'Language', english: 'English', chinese: '简体中文', appTitle: 'Application workspace', skip: 'Skip to content',
+  projects: 'Projects', workspace: 'Personal workspace', account: 'Account', signIn: 'Sign in', signOut: 'Sign out',
+  welcome: 'A clear trail from code to delivery.', intro: 'Register a version, follow its progress, and stay in control of the next step.',
+  loginHint: 'Continue with your identity provider. Project access is checked by Itervane.',
+  loginDisabled: 'Browser sign-in is not configured.', loginDisabledHelp: 'The maintainer needs to configure an OIDC public client before this workspace can be opened.',
+  authError: 'Sign-in could not be completed. Please try again.', callbackError: 'This sign-in response is invalid or has expired. Start a new sign-in.',
+  sessionExpired: 'Your session has ended. Sign in again to continue.', signedOut: 'You have signed out.', logoutError: 'The local session is cleared. Single sign-out could not be confirmed.',
+  accessDenied: 'This account has not been granted workspace access.', accessDeniedHelp: 'Ask the maintainer to register your identity. Signing in does not create an administrator account.',
+  loading: 'Loading…', retry: 'Try again', refresh: 'Refresh', cancel: 'Go back', close: 'Close', errorTitle: 'Unable to load this view',
+  networkError: 'The request could not be completed. Check the connection and try again.', invalidResponse: 'The server returned an unexpected response.',
+  requestId: 'Request ID', notFound: 'This view is unavailable.', backProjects: 'Back to projects',
+  projectsHint: 'Your registered repositories and their delivery tasks.', emptyProjects: 'No projects yet', emptyProjectsHelp: 'Create a project to register a repository and start a task.',
+  createProject: 'Create project', projectName: 'Project name', projectSlug: 'Project slug', slugHint: 'Lowercase letters, numbers, and single dashes.',
+  owner: 'Owner', maintainer: 'Maintainer', viewer: 'Viewer', readOnly: 'Read-only access',
+  repositories: 'Repositories', repositoryHint: 'Register an HTTPS repository. Its code is not fetched at registration.',
+  addRepository: 'Register repository', repositoryName: 'Repository name', repositoryUrl: 'HTTPS repository URL', saveRepository: 'Save repository',
+  emptyRepositories: 'No repositories registered', emptyRepositoriesHelp: 'Register a repository before starting a task.',
+  tasks: 'Tasks', taskHint: 'Track the registered version and each recorded step.', emptyTasks: 'No tasks yet',
+  startTask: 'Start preflight', repository: 'Repository', commit: 'Full Git commit', commitHint: 'Use a full 40- or 64-character lowercase Git ID.',
+  purpose: 'Task goal', taskLanguage: 'Task language', dataClass: 'Data category', synthetic: 'Synthetic data', publicData: 'Public data',
+  dataHint: 'This first release accepts synthetic or public data only.', submitTask: 'Queue task', required: 'This field is required.',
+  invalidCommit: 'Enter a complete lowercase Git ID.', invalidSlug: 'Use lowercase letters, numbers, and single dashes.',
+  invalidUrl: 'Use an HTTPS URL without credentials, query, or fragment.', tooLong: 'This value is too long.',
+  unknownSubmission: 'The submission result is uncertain. Retry this same request or check the task list before starting another.', retrySubmission: 'Retry same request',
+  preflightOnly: 'Preflight only', runnerNotice: 'Source inspection is waiting for a verified isolated Runner. No audit or deployment has completed.',
+  taskDetails: 'Task details', taskId: 'Task ID', runId: 'Run ID', status: 'Status', createdAt: 'Created', source: 'Source version',
+  version: 'Version', events: 'Activity', emptyEvents: 'No activity recorded', cancelTask: 'Cancel task', resumeTask: 'Retry preflight',
+  cancelTitle: 'Cancel this task?', cancelHelp: 'A running task first stops new work, then acknowledges cancellation. This does not undo external operations.',
+  resumeTitle: 'Retry this preflight?', resumeHelp: 'This retries the Runner check with the remaining budget. It does not grant approval or enable deployment.',
+  confirmCancel: 'Confirm cancellation', confirmResume: 'Confirm retry', controlConflict: 'The task changed. Review its latest state before confirming again.',
+  principal: 'Authenticated principal', worker: 'Worker', eventStep: 'Step', taskLanguageHint: 'Changing the display language does not change an existing task’s language.',
+  shownLimit: 'Showing the latest 100 items.', viewingProject: 'Project', latestState: 'Latest state', safeData: 'Synthetic / public data',
+} as const;
+export type UiKey = keyof typeof en;
+const zh: Record<UiKey, string> = {
+  language: '显示语言', english: 'English', chinese: '简体中文', appTitle: '应用工作台', skip: '跳到主要内容',
+  projects: '项目', workspace: '个人工作区', account: '账号', signIn: '登录平台', signOut: '退出登录',
+  welcome: '从代码到交付，每一步都有迹可循。', intro: '登记代码版本，查看任务进展，在需要时由你决定下一步。',
+  loginHint: '通过你的身份服务登录，项目访问权限由 Itervane 核验。',
+  loginDisabled: '尚未配置浏览器登录。', loginDisabledHelp: '维护者需要先配置 OIDC 公开客户端，才能进入工作区。',
+  authError: '未能完成登录，请重试。', callbackError: '登录响应无效或已过期，请重新发起登录。',
+  sessionExpired: '登录已失效，请重新登录后继续。', signedOut: '你已退出登录。', logoutError: '本地登录状态已清除，尚未确认单点登录已退出。',
+  accessDenied: '此账号尚未获得工作区访问权限。', accessDeniedHelp: '请维护者登记你的身份。登录不会自动创建管理员账号。',
+  loading: '正在加载…', retry: '重新尝试', refresh: '刷新列表', cancel: '暂不操作', close: '关闭窗口', errorTitle: '暂时无法加载此页面',
+  networkError: '请求未能完成，请检查连接后重试。', invalidResponse: '服务器返回的数据格式异常。',
+  requestId: '请求编号', notFound: '此页面暂不可用。', backProjects: '返回项目',
+  projectsHint: '管理已登记的代码仓库，追踪各个版本的交付任务。', emptyProjects: '还没有项目', emptyProjectsHelp: '先创建项目，再登记仓库并发起任务。',
+  createProject: '创建项目', projectName: '项目名称', projectSlug: '项目标识', slugHint: '仅使用小写字母、数字和单个短横线。',
+  owner: '维护者', maintainer: '项目维护者', viewer: '只读成员', readOnly: '当前为只读访问',
+  repositories: '代码仓库', repositoryHint: '登记 HTTPS 仓库地址，此时不会拉取或执行源码。',
+  addRepository: '登记仓库', repositoryName: '仓库名称', repositoryUrl: 'HTTPS 仓库地址', saveRepository: '保存仓库',
+  emptyRepositories: '尚未登记仓库', emptyRepositoriesHelp: '发起任务前请先登记代码仓库。',
+  tasks: '任务', taskHint: '查看固定代码版本的处理状态与每一步记录。', emptyTasks: '还没有任务',
+  startTask: '发起前置检查', repository: '代码仓库', commit: '完整 Git 版本', commitHint: '填写 40 位或 64 位小写 Git 提交 ID。',
+  purpose: '任务目标', taskLanguage: '任务语言', dataClass: '数据类别', synthetic: '模拟数据', publicData: '公开数据',
+  dataHint: '首个版本仅接受模拟数据或公开数据。', submitTask: '提交任务', required: '请填写此项。',
+  invalidCommit: '请填写完整的小写 Git 提交 ID。', invalidSlug: '请使用小写字母、数字和单个短横线。',
+  invalidUrl: '请使用不含凭证、查询参数或片段的 HTTPS 地址。', tooLong: '填写内容过长。',
+  unknownSubmission: '暂时无法确定提交结果。请重试同一请求，或先检查任务列表，再发起其他任务。', retrySubmission: '重试同一请求',
+  preflightOnly: '前置检查模式', runnerNotice: '源码检查正在等待经过验证的隔离 Runner，尚未完成审计或发布。',
+  taskDetails: '任务详情', taskId: '任务编号', runId: '运行编号', status: '当前状态', createdAt: '创建时间', source: '源码版本',
+  version: '任务版本', events: '过程记录', emptyEvents: '尚无过程记录', cancelTask: '取消任务', resumeTask: '重试前置检查',
+  cancelTitle: '确认取消此任务？', cancelHelp: '运行中的任务会先停止新增工作，再确认取消。这不会撤销已经发生的外部操作。',
+  resumeTitle: '确认重试前置检查？', resumeHelp: '使用剩余预算重新检查 Runner，不代表批准，也不会开启部署能力。',
+  confirmCancel: '确认取消', confirmResume: '确认重试', controlConflict: '任务已发生变化，请查看最新状态后重新确认。',
+  principal: '已认证主体', worker: '执行者', eventStep: '步骤', taskLanguageHint: '切换显示语言不会改变已有任务的语言。',
+  shownLimit: '最多显示最近 100 条。', viewingProject: '所属项目', latestState: '最新状态', safeData: '模拟或公开数据',
+};
+export const ui = (locale: Locale, key: UiKey) => (locale === 'zh-CN' ? zh : en)[key];
+export const stateLabel = (locale: Locale, state: TaskState) => translate(locale, `state.${state}`);
+export function initialLocale(): Locale {
+  try { const stored = localeSchema.safeParse(localStorage.getItem('itervane.locale')); if (stored.success) return stored.data; } catch { /* Preference storage is optional. */ }
+  return negotiateLocale(navigator.language);
+}
+export function saveLocale(locale: Locale) { try { localStorage.setItem('itervane.locale', locale); } catch { /* No authentication depends on this value. */ } }

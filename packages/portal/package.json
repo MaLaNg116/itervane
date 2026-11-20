@@ -1,0 +1,25 @@
+{
+  "name": "@itervane/portal",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": { "build": "vite build" },
+  "dependencies": {
+    "@itervane/contracts": "workspace:*",
+    "@ant-design/cssinjs": "2.1.2",
+    "@tanstack/react-query": "5.107.0",
+    "antd": "6.7.1",
+    "oidc-client-ts": "3.5.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
+    "@playwright/test": "1.65.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "vite": "8.3.8"
+  }
+}
