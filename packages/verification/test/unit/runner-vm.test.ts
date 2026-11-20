@@ -14,6 +14,7 @@ describe('D2-A sanitized native VM probe result', () => {
       { ...valid, imageSha256: 'b'.repeat(64) },
       { ...valid, runId: 'invalid' },
       { ...valid, raw: 'unexpected stderr' },
+      { ...valid, profileIssue: 'device-interface' },
     ]) {
       expect(parseRunnerProbeOutput(JSON.stringify(invalid), imageSha256)).toEqual({
         code: 'driver_lost', runId: null, imageSha256: null,
@@ -28,5 +29,11 @@ describe('D2-A sanitized native VM probe result', () => {
       expect(parseRunnerProbeOutput(JSON.stringify(result), imageSha256)).toEqual(result);
     }
     expect(parseRunnerProbeOutput('invalid stdout', imageSha256).code).toBe('driver_lost');
+  });
+
+  it('retains a bounded profile diagnostic without accepting a path', () => {
+    const rejected = { code: 'profile_rejected', runId, imageSha256, profileIssue: 'disk-child-seclabel' };
+    expect(parseRunnerProbeOutput(JSON.stringify(rejected), imageSha256)).toEqual(rejected);
+    expect(parseRunnerProbeOutput(JSON.stringify({ ...rejected, profileIssue: '/private/source' }), imageSha256).code).toBe('driver_lost');
   });
 });
