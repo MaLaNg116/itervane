@@ -70,7 +70,7 @@ export class DurableWorker {
     let heartbeat: Promise<void> | undefined;
     const timer = setInterval(() => {
       if (heartbeat || controller.signal.aborted) return;
-      heartbeat = this.coordinator.heartbeat(scope).then(alive => { if (!alive) controller.abort(); }, () => controller.abort())
+      heartbeat = this.coordinator.heartbeat(scope).then(alive => { if (!alive) controller.abort(new ExecutionLost()); }, error => controller.abort(error))
         .finally(() => { heartbeat = undefined; });
     }, this.coordinator.leaseSeconds * 1_000 / 3);
     timer.unref();
@@ -96,7 +96,8 @@ export class DurableWorker {
         })
         .addEdge(START, 'describe').addEdge('describe', 'inspect').addEdge('inspect', 'wait').addEdge('wait', 'inspect')
         .compile({ checkpointer: saver });
-      const config = { configurable: { thread_id: scope.runId }, signal: controller.signal, recursionLimit: 12 };
+      // Each work node observes cancellation. Racing graph.invoke against the signal would release the slot before Runner teardown settles.
+      const config = { configurable: { thread_id: scope.runId }, recursionLimit: 12 };
       const snapshot = runtime.checkpointId ? await graph.getState(config) : undefined;
       const interrupted = snapshot?.tasks.some(task => task.interrupts?.length);
       const input = !runtime.checkpointId ? {} : runtime.resumePending && interrupted ? new Command({ resume: 'retry_preflight' }) : null;

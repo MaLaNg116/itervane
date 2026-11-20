@@ -201,10 +201,14 @@ async function probe() {
     const revoked = await start('Revoke project permission during native inspection');
     const revokedGuest = await watchGuest(controllerUid);
     const [grant] = (await db.admin.query('DELETE FROM itervane.workspace_members RETURNING workspace_id, principal_id')).rows;
+    phase = 'revocation_read_permission';
     equal((await fetch(`${address}/v1/tasks/${revoked.id}/source-inspection`, { headers: { Authorization: await authorization() } })).status, 404);
+    phase = 'revocation_process_exit';
     await revokedGuest.confirm(); await reached(revoked.id, 'needs_human'); await assertDrained(controllerUid, staging);
+    phase = 'revocation_settlement';
     const [revokedAttempt] = await attempts(revoked.id);
     equal(revokedAttempt.state, 'closed'); equal(revokedAttempt.receipt_sha256, null);
+    equal((await db.admin.query('SELECT reason FROM itervane.run_runtime WHERE run_id=$1', [revoked.runId])).rows[0]?.reason, 'permission_revoked');
     await db.admin.query('INSERT INTO itervane.workspace_members(workspace_id,principal_id) VALUES($1,$2)', [grant.workspace_id, grant.principal_id]);
 
     phase = 'worker_crash_and_recovery';

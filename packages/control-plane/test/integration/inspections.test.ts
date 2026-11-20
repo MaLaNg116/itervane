@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
 import { qualifiedInspectionResponseSchema, type QualifiedInspectionRequest } from '@itervane/contracts';
@@ -253,6 +255,32 @@ it('does not revive an inspection after a heartbeat observed permission loss and
   expect((await tasks.get(identity, task.id)).state).toBe('needs_human');
   expect((await tasks.events(identity, task.id, 50)).at(-1)).toMatchObject({ reason: 'permission_revoked' });
   expect((await database.admin.query('SELECT state, receipt FROM itervane.inspection_attempts')).rows).toEqual([{ state: 'closed', receipt: null }]);
+});
+
+it('waits for the running inspection to settle cleanup before releasing the slot after heartbeat revocation', async () => {
+  const started = Promise.withResolvers<void>(); const stopping = Promise.withResolvers<void>(); const drained = Promise.withResolvers<void>();
+  const runner = inspectionRunner(async (request, authorize, signal) => {
+    await authorize();
+    const aborted = once(signal!, 'abort');
+    started.resolve();
+    await aborted;
+    stopping.resolve();
+    await drained.promise;
+    return { kind: 'rejected', requestId: request.requestId, code: 'lease_lost', cleanup: 'confirmed', domainId: randomUUID() };
+  });
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner, leaseSeconds: 6 });
+  const processing = worker.tick();
+  try {
+    await started.promise;
+    await database.admin.query('DELETE FROM itervane.workspace_members');
+    await stopping.promise;
+    await delay(150);
+    expect((await database.admin.query('SELECT task_id FROM itervane.execution_slot')).rows).toEqual([{ task_id: task.id }]);
+    drained.resolve();
+    await processing;
+    expect((await database.admin.query('SELECT state, receipt FROM itervane.inspection_attempts')).rows).toEqual([{ state: 'closed', receipt: null }]);
+    expect((await database.admin.query('SELECT reason FROM itervane.run_runtime')).rows).toEqual([{ reason: 'permission_revoked' }]);
+  } finally { drained.resolve(); await worker.close(); }
 });
 
 it('requires a matching idle workspace before a new fence, and retains incomplete scan coverage', async () => {
