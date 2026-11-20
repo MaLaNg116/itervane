@@ -112,7 +112,8 @@ export const toolCalls = domain.table('tool_calls', {
   runId: uuid('run_id').notNull().references(() => taskRuns.id), keyHash: text('key_hash').notNull(),
   inputHash: text('input_hash').notNull(), tool: text('tool').notNull(), fence: integer('fence').notNull(),
   status: text('status').notNull(), result: jsonb('result').$type<Record<string, unknown>>(), createdAt: createdAt(),
-}, t => [primaryKey({ columns: [t.runId, t.keyHash] }), check('tool_call_status', sql`${t.status} IN ('reserved', 'success', 'business_error', 'infrastructure_error')`)]);
+}, t => [primaryKey({ columns: [t.runId, t.keyHash] }), check('tool_call_status', sql`
+  ${t.status} IN ('reserved', 'success', 'business_error', 'infrastructure_error') OR (${t.tool} = 'source.inspect' AND ${t.status} = 'unknown')`)]);
 
 // 底层 saver 与领域事务分离：只有已发布的中间写入才参与恢复。
 export const checkpointWrites = domain.table('checkpoint_write_receipts', {

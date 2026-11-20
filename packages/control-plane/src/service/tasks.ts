@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
 import { cancelTaskSchema, resumeTaskSchema, idSchema, listQuerySchema, startTaskSchema, taskDtoSchema, taskEventDtoSchema, wakeupSchema, translate,
-  eventReasonMessages, taskEventReasonSchema, type Locale, type MessageKey } from '@itervane/contracts';
+  eventReasonMessages, retrySourceInspectionReasonSchema, taskEventReasonSchema, type Locale, type MessageKey } from '@itervane/contracts';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import { queueName, type Database } from '../persistence/database.js';
 import { repositories, runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
@@ -130,7 +130,8 @@ export class TaskService {
       const [run] = await tx.select().from(taskRuns).where(and(eq(taskRuns.taskId, taskId), eq(taskRuns.generation, task.generation)));
       const [runtime] = run ? await tx.select().from(runRuntime).where(eq(runRuntime.runId, run.id)) : [];
       // 人工 resume 只重试 Runner 前置检查，不能代替子任务完成或高风险审批。
-      if (!run || !runtime?.checkpointId || runtime.reason !== 'runner_unavailable' || runtime.waitingForTaskId) throw new DomainError('unsupported_state');
+      if (!run || !runtime?.checkpointId || !retrySourceInspectionReasonSchema.safeParse(runtime.reason).success
+        || runtime.waitingForTaskId) throw new DomainError('unsupported_state');
       if (runtime.resumeCount >= 3) throw new DomainError('resume_limit');
       await tx.update(runRuntime).set({ resumePending: true, resumeCount: runtime.resumeCount + 1 }).where(eq(runRuntime.runId, run.id));
       const next = await appendEvent(tx, task, 'task.resumed', 'queued', { actorId: actor.principalId });

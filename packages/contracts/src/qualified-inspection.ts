@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { sha256Schema } from './inspection.js';
+import { scannerDatabaseSchema, scannerReasonSchema, scannerStatusSchema, sha256Schema } from './inspection.js';
 
 const uuid = z.uuidv4();
 const gitId = z.string().regex(/^[0-9a-f]{40}$/);
@@ -17,10 +17,9 @@ const finding = z.strictObject({
 const report = z.strictObject({
   scanner: z.enum(['gitleaks', 'trivy']), version: z.string().regex(/^\d+\.\d+\.\d+$/),
   policySha256: sha256Schema, snapshotSha256: sha256Schema,
-  status: z.enum(['completed', 'failed', 'unavailable', 'unsupported']),
-  reason: z.enum(['timeout', 'scanner_error', 'invalid_report', 'missing_inventory', 'database_unavailable', 'empty_source']).nullable(),
+  status: scannerStatusSchema, reason: scannerReasonSchema.nullable(),
   findings: z.array(finding).max(2000),
-  database: z.strictObject({ sha256: sha256Schema, updatedAt: z.iso.datetime() }).nullable(),
+  database: scannerDatabaseSchema.nullable(),
 }).superRefine((value, ctx) => {
   if (value.status === 'completed'
     ? value.reason !== null || (value.scanner === 'trivy') !== (value.database !== null)

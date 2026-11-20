@@ -78,6 +78,13 @@
       "when": 1795187275465,
       "tag": "0010_inspection_workspace",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795187991464,
+      "tag": "0011_inspection_tool_status",
+      "breakpoints": true
     }
   ]
 }

@@ -30,6 +30,15 @@ it('starts workers without API identity credentials and bounds their lease and p
   }
 });
 
+it('requires a complete local socket, separate controller UID and pinned image for optional source inspection', () => {
+  const environment = { DATABASE_URL: configured.DATABASE_URL, ITERVANE_RUNNER_SOCKET: '/run/itervane/inspection.sock',
+    ITERVANE_RUNNER_UID: '1234', ITERVANE_RUNNER_IMAGE_SHA256: 'a'.repeat(64) };
+  expect(workerConfig(environment).runner).toEqual({ socketPath: environment.ITERVANE_RUNNER_SOCKET, controllerUid: 1234, imageSha256: environment.ITERVANE_RUNNER_IMAGE_SHA256 });
+  for (const overrides of [{ ITERVANE_RUNNER_UID: '0' }, { ITERVANE_RUNNER_IMAGE_SHA256: undefined },
+    { ITERVANE_RUNNER_SOCKET: 'https://example.invalid/runner.sock' }]) expect(() => workerConfig({ ...environment, ...overrides })).toThrow();
+  expect(workerConfig({ DATABASE_URL: configured.DATABASE_URL }).runner).toBeUndefined();
+});
+
 it('fixes the public MCP URL in configuration instead of deriving it from untrusted request headers', () => {
   expect(canonicalPublicUrl('https://itervane.example/')).toBe('https://itervane.example');
   expect(runtimeConfig(configured).publicUrl).toBe('http://127.0.0.1:4310');

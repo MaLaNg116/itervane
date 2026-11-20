@@ -1,4 +1,6 @@
+import { posix } from 'node:path';
 import { z } from 'zod';
+import { sha256Schema } from '@itervane/contracts';
 import { validateIdentityConfig } from './auth/identity.js';
 
 const databaseUrl = z.string().min(1).refine(value => {
@@ -26,8 +28,15 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env) {
 }
 
 export function workerConfig(env: NodeJS.ProcessEnv = process.env) {
-  return z.object({ databaseUrl, leaseSeconds: z.coerce.number().int().min(2).max(60), pollMs: z.coerce.number().int().min(100).max(10_000) })
+  const worker = z.object({ databaseUrl, leaseSeconds: z.coerce.number().int().min(2).max(60), pollMs: z.coerce.number().int().min(100).max(10_000) })
     .parse({ databaseUrl: env.DATABASE_URL, leaseSeconds: env.ITERVANE_WORKER_LEASE_SECONDS ?? 10, pollMs: env.ITERVANE_WORKER_POLL_MS ?? 1_000 });
+  const address = { socketPath: env.ITERVANE_RUNNER_SOCKET, controllerUid: env.ITERVANE_RUNNER_UID, imageSha256: env.ITERVANE_RUNNER_IMAGE_SHA256 };
+  const runner = Object.values(address).some(value => value !== undefined) ? z.object({
+    socketPath: z.string().refine(value => posix.isAbsolute(value) && value.endsWith('.sock') && Buffer.byteLength(value) <= 100),
+    controllerUid: z.coerce.number().int().min(1).max(2147483647),
+    imageSha256: sha256Schema,
+  }).parse(address) : undefined;
+  return { ...worker, runner };
 }
 
 export function migrationConfig(env: NodeJS.ProcessEnv = process.env) {
