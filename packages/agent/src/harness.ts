@@ -1,10 +1,10 @@
 import { Annotation, END, START, StateGraph, type BaseCheckpointSaver } from '@langchain/langgraph';
-import type { ModelAdapter } from '@itervane/model';
-import { agentSpecSchema, sha256, type AgentSpec, type AgentEvidence, type Candidate, type AuditReport, type DeliveryRole } from './contracts.js';
+import type { ConversationEntry, ModelAdapter } from '@itervane/model';
+import { agentSpecSchema, checkKinds, sha256, type AgentSpec, type AgentEvidence, type Candidate, type AuditReport, type DeliveryRole } from './contracts.js';
 import { agentPrompt, agentText, type AgentReason, type Feedback } from './messages.js';
 import { finishAudit, finishRepair, finishVerify } from './results.js';
 import { initialState, restoreState, stopped, type AgentState, type Stop } from './state.js';
-import { acceptReceipt, canCall, emptyArguments, plannedToolSchema, toolDefinitions, type PlannedTool } from './tools.js';
+import { acceptReceipt, canCall, emptyArguments, hasObservation, plannedToolSchema, toolDefinitions, type PlannedTool } from './tools.js';
 
 export type AgentScope = Readonly<{
   spec: Readonly<AgentSpec>; bindingSha256: string; snapshotSha256: string; role: DeliveryRole;
@@ -22,13 +22,14 @@ type AgentStatus = Stop['status'] | 'paused';
 const graphState = Annotation.Root({ state: Annotation<AgentState>() });
 
 function report(spec: AgentSpec, status: AgentStatus, reason: AgentReason, state?: AgentState) {
+  const visible = reason === 'permission_denied' ? undefined : state;
   return {
     runId: spec.runId, status, reason, message: agentText(spec.locale).reason[reason],
     origin: 'trusted_fixture' as const, releaseEligible: false as const,
     bindingSha256: state?.bindingSha256 ?? sha256(JSON.stringify(spec)),
     role: state?.role ?? 'audit', usage: state?.usage ?? { turns: 0, toolCalls: 0, tokens: 0 },
-    trace: state?.trace ?? [], evidence: state?.evidence ?? [],
-    audit: state?.audit ?? null, repairs: state?.repairs ?? [], verifications: state?.verifications ?? [],
+    trace: visible?.trace.map(({ call, ...item }) => ({ ...item, tool: call.name })) ?? [], evidence: visible?.evidence ?? [],
+    audit: visible?.audit ?? null, repairs: visible?.repairs ?? [], verifications: visible?.verifications ?? [],
   };
 }
 export type AgentFixtureReport = ReturnType<typeof report>;
@@ -49,17 +50,21 @@ function currentEvidence(state: AgentState) {
   return state.evidence.filter(item => state.currentEvidence.includes(item.id));
 }
 
-function context(spec: AgentSpec, state: AgentState, system: string) {
-  const entries = currentEvidence(state);
+function conversation(spec: AgentSpec, state: AgentState, entries: AgentEvidence[], system: string) {
   const observations: AgentEvidence[] = [];
   const latestVerification = state.verifications.at(-1);
   const candidate = state.repairs.at(-1)?.candidate;
+  const completionNeeds = state.role === 'audit'
+    ? (entries.some(item => item.data.kind === 'findings') ? [] : ['read_findings'])
+    : state.role === 'repair' ? (entries.some(item => item.data.kind === 'candidate') ? [] : ['draft_repair'])
+    : checkKinds.filter(check => !hasObservation(entries, { name: 'check_candidate', args: { check } }));
   const payload = {
-    goal: spec.goal, role: state.role, source: spec.source, snapshotSha256: spec.snapshotSha256,
+    goal: spec.goal, role: state.role, source: spec.source,
+    snapshotSha256: state.role === 'verify' ? candidate?.snapshotSha256 : spec.snapshotSha256,
     feedback: state.feedback ? agentText(spec.locale).feedback[state.feedback] : null,
+    completionNeeds,
     handoff: {
       findings: state.audit?.findings.map(({ id, ruleId, severity, certainty }) => ({ id, ruleId, severity, certainty })) ?? [],
-      candidateSha256: state.role === 'verify' ? candidate?.snapshotSha256 : undefined,
       previousChecks: latestVerification?.checks,
     },
     evidenceIndex: entries.map(({ id, data }) => ({
@@ -68,16 +73,31 @@ function context(spec: AgentSpec, state: AgentState, system: string) {
     })),
     observations,
   };
-  const fits = (content: string) => Buffer.byteLength(content) + Buffer.byteLength(system) <= spec.limits.maxContextBytes;
-  let content = JSON.stringify(payload);
-  if (!fits(content)) return;
+  // Replay the latest admitted exchange with synthetic correlation IDs and no provider prose.
+  let exchange: ConversationEntry[] = [];
+  const last = state.trace.at(-1);
+  if (last?.role === state.role && state.currentEvidence.includes(last.evidenceId)) {
+    const id = `call_${last.operationId.slice(0, 24)}`;
+    exchange = [
+      { kind: 'assistant', turn: { text: '', calls: [{ id, name: last.call.name, input: last.call.args }], tokenUsage: 0 } },
+      { kind: 'observations', observations: [{ callId: id, name: last.call.name, output: JSON.stringify({ evidenceId: last.evidenceId }), isError: false }] },
+    ];
+  }
+  const build = (): ConversationEntry[] => [{ kind: 'user', text: JSON.stringify(payload) }, ...exchange];
+  const fits = (messages: ConversationEntry[]) => Buffer.byteLength(JSON.stringify(messages)) + Buffer.byteLength(system) <= spec.limits.maxContextBytes;
+  let messages = build();
+  if (!fits(messages)) {
+    exchange = [];
+    messages = build();
+    if (!fits(messages)) return;
+  }
   for (const entry of [...entries].reverse()) {
     observations.push(entry);
-    const withEntry = JSON.stringify(payload);
-    if (fits(withEntry)) content = withEntry;
+    const withEntry = build();
+    if (fits(withEntry)) messages = withEntry;
     else observations.pop();
   }
-  return content;
+  return messages;
 }
 
 function nextRole(state: AgentState, role: DeliveryRole): AgentState {
@@ -178,12 +198,13 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
         const before = await gate(state, signal);
         if (before) return { state: before };
         const system = agentPrompt(spec.locale, state.role);
-        const prompt = context(spec, state, system);
-        if (!prompt) return { state: stopped(state, 'context_budget') };
+        const entries = currentEvidence(state);
+        const messages = conversation(spec, state, entries, system);
+        if (!messages) return { state: stopped(state, 'context_budget') };
         let turn;
         try {
           turn = await bounded(signal, () => model.complete({
-            system, conversation: [{ kind: 'user', text: prompt }], tools: toolDefinitions(spec.locale, state.role), signal,
+            system, conversation: messages, tools: toolDefinitions(spec.locale, state.role, entries), signal,
             maxOutputTokens: Math.min(1_024, limits.maxTokens - state.usage.tokens), singleTool: true,
           }));
         } catch {
@@ -202,6 +223,7 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
         if (call.name === 'finish_role') return { state: finish(state, spec, call.input) ?? stalled(state, 'insufficient_evidence') };
         const planned = plannedToolSchema.safeParse({ name: call.name, args: call.input });
         if (!planned.success || !canCall(state.role, planned.data.name)) return { state: stalled(state, 'invalid_call') };
+        if (hasObservation(entries, planned.data)) return { state: stalled(state, 'no_new_evidence') };
         return { state: { ...state, nextTool: planned.data } };
       })
       .addNode('observation', async ({ state: reserved }) => {
@@ -227,7 +249,7 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
         if (after) return { state: after };
         const receipt = acceptReceipt(raw, { bindingSha256, snapshotSha256: scope.snapshotSha256, call, audit: state.audit, candidate });
         if (!receipt) return { state: stopped(state, 'invalid_receipt') };
-        const trace = [...state.trace, { role: state.role, operationId, tool: call.name, evidenceId: receipt.id }];
+        const trace = [...state.trace, { role: state.role, operationId, call, evidenceId: receipt.id }];
         if (state.currentEvidence.includes(receipt.id)) return { state: stalled({ ...state, trace }, 'no_new_evidence') };
         return { state: {
           ...state, stalled: 0, feedback: null, trace,

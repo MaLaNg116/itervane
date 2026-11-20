@@ -19,7 +19,7 @@ const stateSchema = z.object({
   pending: z.enum(['decision', 'observation']).nullable(), nextTool: plannedToolSchema.nullable(),
   evidence: z.array(evidenceSchema).max(28),
   currentEvidence: z.array(shaSchema).max(28),
-  trace: z.array(z.object({ role: deliveryRoleSchema, operationId: shaSchema, tool: z.string(), evidenceId: shaSchema }).strict()).max(28),
+  trace: z.array(z.object({ role: deliveryRoleSchema, operationId: shaSchema, call: plannedToolSchema, evidenceId: shaSchema }).strict()).max(28),
   stalled: z.number().int().nonnegative().max(6), feedback: z.custom<Feedback>(value => typeof value === 'string' && Object.hasOwn(feedback, value)).nullable(),
   audit: auditReportSchema.nullable(),
   repairs: z.array(repairReportSchema).max(3),

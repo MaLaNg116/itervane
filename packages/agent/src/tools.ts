@@ -33,10 +33,37 @@ export const plannedToolSchema = z.discriminatedUnion('name', [
 export type PlannedTool = z.infer<typeof plannedToolSchema>;
 export const canCall = (role: DeliveryRole, name: AgentToolName) => roles[name].includes(role);
 
-export function toolDefinitions(locale: Locale, role: DeliveryRole): ToolDefinition[] {
+export function hasObservation(evidence: readonly AgentEvidence[], call: PlannedTool) {
+  return evidence.some(({ data }) => {
+    switch (call.name) {
+      case 'read_context': return data.kind === 'context' && data.section === call.args.section;
+      case 'read_rule': return data.kind === 'rule' && data.ruleId === call.args.ruleId;
+      case 'read_findings': return data.kind === 'findings';
+      case 'read_candidate': return data.kind === 'candidate';
+      case 'check_candidate': return data.kind === 'check' && data.result.check === call.args.check;
+      case 'draft_repair': return data.kind === 'candidate' && data.candidate.templateIds.length === call.args.templateIds.length
+        && call.args.templateIds.every(id => data.candidate.templateIds.includes(id));
+    }
+  });
+}
+
+export function toolDefinitions(locale: Locale, role: DeliveryRole, evidence: readonly AgentEvidence[]): ToolDefinition[] {
   const text = agentText(locale).tool;
+  const sections = contextSectionSchema.options.filter(section => !hasObservation(evidence, { name: 'read_context', args: { section } }));
+  const checks = checkKindSchema.options.filter(check => !hasObservation(evidence, { name: 'check_candidate', args: { check } }));
+  const availableInputs = {
+    ...inputs,
+    read_context: sections.length ? z.object({ section: z.enum(sections) }).strict() : null,
+    read_findings: hasObservation(evidence, { name: 'read_findings', args: {} }) ? null : inputs.read_findings,
+    read_candidate: hasObservation(evidence, { name: 'read_candidate', args: {} }) ? null : inputs.read_candidate,
+    check_candidate: checks.length ? z.object({ check: z.enum(checks) }).strict() : null,
+  };
+  const available = names.flatMap(name => {
+    const schema = availableInputs[name];
+    return canCall(role, name) && schema ? [{ name, description: text[name], inputSchema: z.toJSONSchema(schema, { io: 'input' }) }] : [];
+  });
   return [
-    ...names.filter(name => canCall(role, name)).map(name => ({ name, description: text[name], inputSchema: z.toJSONSchema(inputs[name], { io: 'input' }) })),
+    ...available,
     { name: 'finish_role', description: text.finish_role, inputSchema: z.toJSONSchema(completionSchemas[role], { io: 'input' }) },
     { name: 'request_human', description: text.request_human, inputSchema: z.toJSONSchema(emptyArguments, { io: 'input' }) },
   ];

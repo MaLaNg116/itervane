@@ -20,13 +20,26 @@ it.each([
 ] as const)('follows the observed %s section through independently verified repair', async (name, locale, finding, template) => {
   const { spec, host } = createDeliveryFixture(name, locale);
   const model = scriptedModel(locale);
-  const agent = createAgentHarness({ model, checkpointer: new MemorySaver(), host });
+  const complete = vi.fn(model.complete);
+  const agent = createAgentHarness({ model: { ...model, complete }, checkpointer: new MemorySaver(), host });
   const result = await agent.run(spec);
   expect(result).toMatchObject({ status: 'completed', reason: 'fixture_complete', origin: 'trusted_fixture', releaseEligible: false });
   expect(result.message).toMatch(locale === 'zh-CN' ? /可信样例/ : /trusted fixture/);
   const investigation = result.trace.filter(item => item.role === 'audit' && item.tool === 'read_context');
   expect(investigation.map(item => result.evidence.find(evidence => evidence.id === item.evidenceId)?.data))
     .toMatchObject([{ section: 'overview' }, { section: name }]);
+  const afterOverview = complete.mock.calls[1]?.[0];
+  const call = afterOverview?.conversation[1];
+  expect(call).toMatchObject({
+    kind: 'assistant', turn: { text: '', calls: [{ name: 'read_context', input: { section: 'overview' } }] },
+  });
+  const originalId = call?.kind === 'assistant' ? call.turn.calls[0]?.id : undefined;
+  expect(afterOverview?.conversation[2]).toMatchObject({
+    kind: 'observations', observations: [{ callId: originalId, output: JSON.stringify({ evidenceId: investigation[0]?.evidenceId }) }],
+  });
+  expect(afterOverview?.tools.find(item => item.name === 'read_context')?.inputSchema).toMatchObject({
+    properties: { section: { enum: ['display', 'pagination'] } },
+  });
   expect(result.audit?.findings).toMatchObject([{ id: finding, certainty: 'confirmed' }]);
   const candidate = result.repairs[0]?.candidate;
   expect(candidate).toMatchObject({ baseSha256: spec.snapshotSha256, templateIds: [template] });
@@ -138,7 +151,7 @@ it('compacts observation text while retaining its evidence reference', async () 
   const complete: ModelAdapter['complete'] = vi.fn(async (input) => {
     const message = input.conversation[0];
     if (message?.kind !== 'user') throw new Error('Missing user context');
-    expect(Buffer.byteLength(message.text) + Buffer.byteLength(input.system)).toBeLessThanOrEqual(2_048);
+    expect(Buffer.byteLength(JSON.stringify(input.conversation)) + Buffer.byteLength(input.system)).toBeLessThanOrEqual(2_048);
     const context = JSON.parse(message.text);
     expect(context.observations).toEqual([]);
     return !context.evidenceIndex.length ? modelChoosing('read_context', { section: 'overview' }).complete(input)
@@ -173,7 +186,7 @@ it('stops repeated observations, loss of authorization and cancellation before f
   const run = (currentHost: AgentFixtureHost, model: ModelAdapter, signal?: AbortSignal) =>
     createAgentHarness({ host: currentHost, model, checkpointer: new MemorySaver() }).run(spec, signal ? { signal } : {});
   const repeated = modelChoosing('read_context', { section: 'overview' });
-  expect(await run(host, repeated)).toMatchObject({ reason: 'no_progress', evidence: [expect.anything()] });
+  expect(await run(host, repeated)).toMatchObject({ reason: 'no_progress', usage: { toolCalls: 1 }, evidence: [expect.anything()] });
 
   let allowed = true;
   const observe = vi.fn(host.observe);

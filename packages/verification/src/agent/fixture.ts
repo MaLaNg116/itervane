@@ -106,8 +106,8 @@ export function createDeliveryFixture(name: DeliveryCase, locale: Locale, limits
     taskId: randomUUID(), runId: randomUUID(), projectId: randomUUID(), generation: 1,
     source: { repositoryId: randomUUID(), commit: sha256(`synthetic:${source}`) },
     snapshotSha256: sha256(source), catalogSha256: catalog.sha256, baselineSha256: sha256(baselineVersion), locale,
-    goal: locale === 'zh-CN' ? '审计固定设置样例，修复明确问题并完成独立复验。先通过 overview 了解设置。'
-      : 'Audit the fixed settings fixture, repair confirmed findings, and obtain independent verification. Read overview for orientation.',
+    goal: locale === 'zh-CN' ? '审计固定设置样例，修复明确问题并完成独立复验。overview 可用于查找区段及模板。'
+      : 'Audit the fixed settings fixture, repair confirmed findings, and obtain independent verification. Overview lists sections and templates.',
     limits: { maxTurns: 24, maxToolCalls: 17, maxTokens: 60_000, maxContextBytes: 12_288,
       maxDurationMs: 120_000, maxStalledTurns: 3, maxRepairs: 2, ...limits },
   });
