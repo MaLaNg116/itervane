@@ -40,11 +40,22 @@ qemu-img info -f qcow2 --output=json "$downloads/base.qcow2" \
 
 guest_image="$downloads/base.qcow2"
 if [[ ${#extra[@]} -gt 0 ]]; then
-  guest_image="$downloads/inspection.qcow2"
-  qemu-img create -f qcow2 -o preallocation=metadata "$guest_image" 6G
-  LIBGUESTFS_BACKEND=direct virt-resize --format qcow2 --output-format qcow2 \
-    --expand /dev/sda1 "$downloads/base.qcow2" "$guest_image"
-  rm -- "$downloads/base.qcow2"
+  read_layout() {
+    LIBGUESTFS_BACKEND=direct guestfish --ro --format=qcow2 -a "$guest_image" \
+      run : part-get-parttype /dev/sda : blockdev-getss /dev/sda : \
+      part-get-disk-guid /dev/sda : part-get-gpt-guid /dev/sda 1 : vfs-uuid /dev/sda1
+  }
+  before=$(read_layout)
+  mapfile -t layout <<< "$before"
+  test "${#layout[@]}" -eq 5
+  test "${layout[0]}" = gpt
+  test "${layout[1]}" = 512
+  qemu-img resize -f qcow2 "$guest_image" 6G
+  # Extend the existing end sector so the boot partition numbering stays intact.
+  end_sector=$((6 * 1024**3 / 512 - 34))
+  LIBGUESTFS_BACKEND=direct guestfish --format=qcow2 -a "$guest_image" \
+    run : part-expand-gpt /dev/sda : part-resize /dev/sda 1 "$end_sector" : resize2fs /dev/sda1
+  test "$(read_layout)" = "$before"
 fi
 
 # The libguestfs appliance has no network. Any scanner payload was prepared
