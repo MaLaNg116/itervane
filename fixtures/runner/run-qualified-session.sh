@@ -25,7 +25,7 @@ sudo -n systemd-run --quiet --unit="$unit" --uid="$runner" --gid="$runner" \
   --property=CapabilityBoundingSet= --property=AmbientCapabilities= \
   --setenv="XDG_CONFIG_HOME=/home/$runner/.config" --setenv="XDG_CACHE_HOME=/home/$runner/.cache" --setenv=LANG=C.UTF-8 \
   /usr/bin/python3 -I -B "$directory/code/packages/runner/host/qualified_controller.py" \
-  "$sock" "$stage" "$directory/probe.raw" "$digest" "$(id -u "$worker")" https://github.com/MaLaNg116/itervane.git
+  "$sock" "$stage" "$directory/probe.raw" "$digest" "$(id -u "$worker")" --enable-repair https://github.com/MaLaNg116/itervane.git
 trap 'sudo -n systemctl stop "$unit"' EXIT
 for attempt in {1..100}; do
   if sudo -n test -S "$sock"; then break; fi
@@ -69,6 +69,8 @@ as_client origin > "$reports/runner-qualified-origin.json"
 as_client no-lease > "$reports/runner-qualified-no-lease.json"
 assert_empty
 as_client scan > "$reports/runner-qualified-scan.json"
+assert_empty
+as_client repair < "$reports/runner-qualified-scan.json" > "$reports/runner-qualified-repair.json"
 assert_empty
 
 for mode in revoke disconnect; do
