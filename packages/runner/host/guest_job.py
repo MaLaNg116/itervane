@@ -8,6 +8,7 @@ import time
 
 PORT = "org.itervane.runner.job.0"
 FRAME = struct.Struct("!4s16sI32s")
+READY = b"ITR1"
 REQUEST = b"ITJ1"
 STARTED = b"ITS1"
 VERIFIED = b"ITV1"
@@ -52,6 +53,7 @@ def write_all(write, body, check_deadline):
 
 
 def serve_job(read, write, check_deadline):
+    write_all(write, READY, check_deadline)
     version, run_id, size, expected = FRAME.unpack(read_exact(read, FRAME.size, check_deadline))
     if version != REQUEST or not 0 < size <= MAX_INPUT_BYTES:
         raise ProtocolError("invalid request header")
@@ -82,15 +84,7 @@ def main():
     try:
         port = os.open(f"/dev/virtio-ports/{PORT}", os.O_RDWR | os.O_NONBLOCK | os.O_NOCTTY)
         try:
-            def read_port(size):
-                block = os.read(port, size)
-                if not block:
-                    # Before the host opens its stream, the virtio device can
-                    # return zero bytes even though the port is healthy.
-                    raise BlockingIOError()
-                return block
-
-            serve_job(read_port, lambda body: os.write(port, body), check_deadline)
+            serve_job(lambda size: os.read(port, size), lambda body: os.write(port, body), check_deadline)
         finally:
             os.close(port)
     except (OSError, ProtocolError):

@@ -20,7 +20,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from guest_job import PORT as JOB_PORT
-from native_job import SCENARIOS, JobEvidence, JobRejected, ProbeJob
+from native_job import SCENARIOS, JobEvidence, JobRejected, ProbeJob, start_channel_events
 
 
 URI = "qemu:///system"
@@ -48,6 +48,7 @@ class Result:
     profileIssue: str | None = None
     cleanupConfirmed: bool = False
     job: JobEvidence | None = None
+    jobIssue: str | None = None
 
 
 def check_kvm():
@@ -281,6 +282,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None):
     cleanup_confirmed = False
     code = "host_error"
     issue = None
+    job_issue = None
     try:
         check_deadline()
         conn = connect(libvirt)
@@ -320,7 +322,10 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None):
         domain.resume()
         ping_guest(libvirt, qemu, domain, check_deadline)
         code = "passed" if job is None else job.run(libvirt, conn, domain, run_id, check_deadline)
-    except (Rejected, JobRejected) as error:
+    except JobRejected as error:
+        code = str(error)
+        job_issue = job.phase
+    except Rejected as error:
         code = str(error)
     except (libvirt.libvirtError, OSError, xml.ParseError):
         code = "host_error"
@@ -355,7 +360,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None):
             check_deadline()
         except Rejected as error:
             code = str(error)
-    return Result(code, run_id, digest if verified_image else None, issue, cleanup_confirmed, job.evidence if job else None)
+    return Result(code, run_id, digest if verified_image else None, issue, cleanup_confirmed, job.evidence if job else None, job_issue)
 
 
 def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat"):
@@ -414,6 +419,11 @@ def main():
         except ImportError as error:
             raise Rejected("libvirt_unavailable") from error
         libvirt.registerErrorHandler(lambda _ctx, _error: None, None)
+        if scenario != "heartbeat":
+            try:
+                start_channel_events(libvirt)
+            except libvirt.libvirtError as error:
+                raise Rejected("libvirt_unavailable") from error
         result = probe(libvirt, libvirt_qemu, Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], lambda: cancelled, scenario)
     except Rejected as error:
         result = Result(str(error))

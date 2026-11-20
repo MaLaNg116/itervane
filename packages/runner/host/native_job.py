@@ -5,10 +5,10 @@ import secrets
 import sys
 import time
 import uuid
-import xml.etree.ElementTree as xml
 from dataclasses import dataclass, replace
+from threading import Thread
 
-from guest_job import CHUNK_BYTES, FRAME, PORT, REJECTED, REQUEST, STARTED, VERIFIED, ProtocolError, read_exact, write_all
+from guest_job import CHUNK_BYTES, FRAME, PORT, READY, REJECTED, REQUEST, STARTED, VERIFIED, ProtocolError, read_exact, write_all
 
 
 SCENARIOS = ("heartbeat", "job", "job-reject-input", "job-cancel", "job-timeout")
@@ -37,10 +37,26 @@ def stream_io(operation, argument):
     return result
 
 
+def start_channel_events(libvirt):
+    # The remote driver needs async socket processing for nonblocking
+    # streams. This driver process serves one probe and owns the event loop.
+    libvirt.virEventRegisterDefaultImpl()
+
+    def dispatch():
+        try:
+            while True:
+                libvirt.virEventRunDefaultImpl()
+        except libvirt.libvirtError:
+            return
+
+    Thread(target=dispatch, name="libvirt-events", daemon=True).start()
+
+
 class ProbeJob:
     def __init__(self, scenario):
         self.scenario = scenario
         self.evidence = None
+        self.phase = "open-channel"
 
     def exchange(self, stream, run_id, check_deadline, after_prefix):
         identity = uuid.UUID(run_id).bytes
@@ -52,23 +68,29 @@ class ProbeJob:
         def send(body):
             write_all(lambda chunk: stream_io(stream.send, chunk), body, check_deadline)
 
-        def receive():
-            return FRAME.unpack(read_exact(lambda size: stream_io(stream.recv, size), FRAME.size, check_deadline))
+        def receive(size):
+            return read_exact(lambda remaining: stream_io(stream.recv, remaining), size, check_deadline)
 
+        self.phase = "guest-ready"
+        if receive(len(READY)) != READY:
+            raise ProtocolError("unexpected guest greeting")
+
+        self.phase = "prefix"
         prefix = payload[:CHUNK_BYTES]
         send(FRAME.pack(REQUEST, identity, len(payload), expected))
         send(prefix)
-        if receive() != (STARTED, identity, len(prefix), hashlib.sha256(prefix).digest()):
+        if FRAME.unpack(receive(FRAME.size)) != (STARTED, identity, len(prefix), hashlib.sha256(prefix).digest()):
             raise ProtocolError("unexpected prefix receipt")
         check_deadline()
         self.evidence = JobEvidence(len(payload), len(prefix), expected.hex())
         after_prefix()
 
+        self.phase = "result"
         if self.scenario not in ("job-cancel", "job-timeout"):
             send(payload[len(prefix):])
         actual = hashlib.sha256(payload).digest()
         outcome = VERIFIED if expected == actual else REJECTED
-        if receive() != (outcome, identity, len(payload), actual):
+        if FRAME.unpack(receive(FRAME.size)) != (outcome, identity, len(payload), actual):
             raise ProtocolError("unexpected terminal receipt")
         check_deadline()
         if self.scenario in ("job-cancel", "job-timeout"):
@@ -93,13 +115,7 @@ class ProbeJob:
                 deadline = min(deadline, time.monotonic() + TIMEOUT_FIXTURE_SECONDS)
 
         try:
-            target = f"devices/channel/target[@name='{PORT}'][@state='connected']"
-            while True:
-                check_deadline()
-                if xml.fromstring(domain.XMLDesc(0)).find(target) is not None:
-                    break
-                time.sleep(0.1)
-
+            check_deadline()
             stream = conn.newStream(libvirt.VIR_STREAM_NONBLOCK)
             domain.openChannel(PORT, stream, 0)
             try:

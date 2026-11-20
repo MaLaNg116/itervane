@@ -10,7 +10,7 @@ import native_job as host
 
 class FakeStream:
     def __init__(self, *frames):
-        self.incoming = io.BytesIO(b"".join(wire.FRAME.pack(*frame) for frame in frames))
+        self.incoming = io.BytesIO(wire.READY + b"".join(wire.FRAME.pack(*frame) for frame in frames))
         self.outgoing = io.BytesIO()
 
     def send(self, data):
@@ -39,6 +39,13 @@ class NativeJobTest(unittest.TestCase):
             self.exchange(runner, stream)
         self.assertEqual(stream.outgoing.getvalue()[wire.FRAME.size:], self.body[:wire.CHUNK_BYTES])
         self.assertIsNone(runner.evidence)
+
+    def test_requires_the_guest_greeting_before_sending_job_input(self):
+        stream = FakeStream()
+        stream.incoming = io.BytesIO(b"ITR2")
+        with self.assertRaisesRegex(wire.ProtocolError, "unexpected guest greeting"):
+            self.exchange(host.ProbeJob("job"), stream)
+        self.assertEqual(stream.outgoing.getvalue(), b"")
 
     def test_requires_the_actual_terminal_digest_and_records_the_mismatch(self):
         inconsistent = FakeStream(self.prefix, (wire.VERIFIED, self.run_id.bytes, len(self.body), b"\0" * 32))

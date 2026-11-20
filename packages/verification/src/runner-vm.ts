@@ -35,6 +35,7 @@ const jobSchema = z.strictObject({
   receivedSha256: sha256Schema.nullable(),
 });
 const scenarioSchema = z.enum(['heartbeat', 'job', 'job-reject-input', 'job-cancel', 'job-timeout']);
+const jobIssueSchema = z.enum(['open-channel', 'guest-ready', 'prefix', 'result']);
 type Scenario = z.infer<typeof scenarioSchema>;
 
 const resultSchema = z.strictObject({
@@ -44,6 +45,7 @@ const resultSchema = z.strictObject({
   profileIssue: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).nullable().optional(),
   cleanupConfirmed: z.boolean().optional(),
   job: jobSchema.nullable().optional(),
+  jobIssue: jobIssueSchema.nullable().optional(),
 });
 
 type DriverResult = z.infer<typeof resultSchema>;
@@ -58,6 +60,7 @@ export function parseRunnerProbeOutput(stdout: string, expectedDigest: string): 
     if (result.code === 'cleanup_unproven' && !result.runId) return lost;
     if ((result.cleanupConfirmed || result.job) && (!result.runId || !result.imageSha256)) return lost;
     if (result.code === 'cleanup_unproven' && result.cleanupConfirmed) return lost;
+    if (result.jobIssue && !['job_channel_unavailable', 'job_protocol_rejected', 'job_deadline_exceeded', 'cleanup_unproven'].includes(result.code)) return lost;
     if (result.job && result.job.startedBytes !== Math.min(result.job.byteCount, prefixBytes)) return lost;
     if (result.code === 'job_passed' || result.code === 'job_input_rejected') {
       if (!result.cleanupConfirmed || !result.job?.receivedSha256) return lost;
@@ -123,6 +126,7 @@ export async function probeRunnerVm(env: NodeJS.ProcessEnv = process.env) {
   if (result.runId) check.detail += (zh ? ' 运行标识 ' : ' Run ID ') + result.runId + '.';
   if (result.imageSha256) check.detail += ' SHA-256 ' + result.imageSha256 + '.';
   if (result.profileIssue) check.detail += (zh ? ' 配置差异 ' : ' Profile issue ') + result.profileIssue + '.';
+  if (result.jobIssue) check.detail += (zh ? ' 作业阶段 ' : ' Job phase ') + result.jobIssue + '.';
   const checks = [check];
   if (result.job) {
     checks.push({

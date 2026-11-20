@@ -19,7 +19,9 @@ class GuestJobTest(unittest.TestCase):
         source = io.BytesIO(incoming)
         sink = io.BytesIO()
         job.serve_job(lambda size: source.read(min(size, 512)), lambda body: sink.write(body[:9]), lambda: None)
-        return list(job.FRAME.iter_unpack(sink.getvalue()))
+        greeting, receipts = sink.getvalue()[:len(job.READY)], sink.getvalue()[len(job.READY):]
+        self.assertEqual(greeting, job.READY)
+        return list(job.FRAME.iter_unpack(receipts))
 
     def test_hashes_fragmented_input_and_proves_the_prefix_before_the_full_result(self):
         self.assertEqual(self.serve(self.request() + self.body), [
@@ -41,7 +43,7 @@ class GuestJobTest(unittest.TestCase):
         sink = io.BytesIO()
         with self.assertRaisesRegex(job.ProtocolError, "truncated"):
             job.serve_job(source.read, sink.write, lambda: None)
-        self.assertEqual(list(job.FRAME.iter_unpack(sink.getvalue())), [
+        self.assertEqual(list(job.FRAME.iter_unpack(sink.getvalue()[len(job.READY):])), [
             (job.STARTED, self.run_id, job.CHUNK_BYTES, hashlib.sha256(self.body[:job.CHUNK_BYTES]).digest()),
         ])
 
