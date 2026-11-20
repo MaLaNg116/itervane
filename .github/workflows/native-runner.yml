@@ -7,6 +7,7 @@ on:
       - '.github/workflows/native-runner.yml'
       - 'packages/runner/host/**'
       - 'packages/verification/src/runner-vm.ts'
+      - 'packages/verification/src/report.ts'
       - 'fixtures/runner/**'
   workflow_dispatch:
 
@@ -20,20 +21,67 @@ concurrency:
 jobs:
   kvm-evidence:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
       - name: Observe KVM API and an empty VM descriptor
+        id: capability
         run: |
           mkdir -p .reports/p0
           sudo -n /usr/bin/python3 -I -B packages/runner/host/kvm_preflight.py | tee .reports/p0/kvm-host.json
+          /usr/bin/python3 -c 'import json; d=json.load(open(".reports/p0/kvm-host.json")); print("available=" + ("true" if d["result"] == "vm_descriptor_created" else "false"))' >> "$GITHUB_OUTPUT"
+      - name: Install native lifecycle tools on the disposable host
+        if: steps.capability.outputs.available == 'true'
+        run: |
+          sudo -n apt-get update -qq
+          sudo -n apt-get install -y --no-install-recommends guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils
+          sudo -n systemctl start libvirtd.service
+          dpkg-query -W guestfs-tools libvirt-daemon-system python3-libvirt qemu-system-x86 > .reports/p0/kvm-packages.txt
+          cat .reports/p0/kvm-packages.txt
+      - name: Prepare and seal the trusted offline guest
+        id: image
+        if: steps.capability.outputs.available == 'true'
+        run: |
+          directory=$(sudo -n mktemp -d /var/lib/libvirt/images/itervane-native.XXXXXXXX)
+          sudo -n chmod 0711 "$directory"
+          sudo -n bash fixtures/runner/prepare-probe-image.sh "$directory"
+          sudo -n cat "$directory/image.json" > .reports/p0/kvm-image.json
+          sudo -n install -d -m 0711 "$directory/staging"
+          printf 'directory=%s\n' "$directory" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        if: steps.capability.outputs.available == 'true'
+        with:
+          node-version: 24.14.0
+      - name: Install locked verification dependencies
+        if: steps.capability.outputs.available == 'true'
+        run: |
+          npm install --global pnpm@11.9.0 --ignore-scripts
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Launch, observe and destroy the actual KVM guest
+        if: steps.capability.outputs.available == 'true'
+        env:
+          PROBE_DIRECTORY: ${{ steps.image.outputs.directory }}
+        run: |
+          digest=$(/usr/bin/python3 -c 'import json; print(json.load(open(".reports/p0/kvm-image.json"))["rawSha256"])')
+          outcome=0
+          sudo -n env ITERVANE_RUNNER_PROBE_ROOT="$PROBE_DIRECTORY/staging" \
+            ITERVANE_RUNNER_PROBE_IMAGE="$PROBE_DIRECTORY/probe.raw" ITERVANE_RUNNER_PROBE_IMAGE_SHA256="$digest" \
+            "$(command -v node)" node_modules/tsx/dist/cli.mjs packages/verification/src/entries/runner-vm.ts || outcome=$?
+          if test -f .reports/p0/runner-vm.json; then
+            sudo -n chmod a+r .reports/p0/runner-vm.json
+          fi
+          exit "$outcome"
       - name: Retain independent KVM evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: kvm-host-evidence
-          path: .reports/p0/kvm-host.json
+          path: |
+            .reports/p0/kvm-host.json
+            .reports/p0/kvm-image.json
+            .reports/p0/kvm-packages.txt
+            .reports/p0/runner-vm.json
           if-no-files-found: error
           retention-days: 14
