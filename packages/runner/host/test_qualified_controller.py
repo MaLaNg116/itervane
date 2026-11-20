@@ -27,12 +27,11 @@ def request():
     }
 
 
-def repair_request(command):
+def repair_request():
     data = request()
     del data["planSha256"]
     return {**data, "operation": controller.REPAIR, "operationId": str(uuid.uuid4()), "repairInputSha256": "d" * 64,
-            "baseSnapshotSha256": "e" * 64, "commandSha256": hashlib.sha256(command).hexdigest(),
-            "commandBytes": len(command)}
+            "baseSnapshotSha256": "e" * 64}
 
 
 class ControllerTest(unittest.TestCase):
@@ -125,14 +124,21 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(reply, controller.rejected("cleanup_unproven", data["requestId"], "unknown", result.runId))
 
     def test_repair_requires_enablement_current_pulse_and_exact_command_before_launch(self):
-        body = b"{}"
-        data = repair_request(body)
+        data = repair_request()
+        scope = {name: data[name] for name in ("operationId", "repairInputSha256", "baseSnapshotSha256")}
+        workspace = {**scope, "source": {"repositoryId": data["repositoryId"], "commit": data["commit"]}}
+        proposal = {"baseSnapshotSha256": data["baseSnapshotSha256"]}
+        body = json.dumps({"workspace": workspace, "patch": proposal}).encode()
+        original = {**data, "commandSha256": hashlib.sha256(body).hexdigest(), "commandBytes": len(body)}
+        stale = json.dumps({"workspace": workspace, "patch": {"baseSnapshotSha256": "f" * 64}}).encode()
+        stale_request = {**data, "commandSha256": hashlib.sha256(stale).hexdigest(), "commandBytes": len(stale)}
         launch = Mock(return_value=Result("not_ready"))
-        for enabled, authorization, outcome in (
-            (False, b"", "not_ready"),
-            (True, b"C", "lease_lost"),
-            (True, b"K" + b"[]", "invalid_request"),
-            (True, b"K" + body, "not_ready"),
+        for enabled, header, authorization, outcome in (
+            (False, original, b"", "not_ready"),
+            (True, original, b"C", "lease_lost"),
+            (True, original, b"K" + b"[" * len(body), "invalid_request"),
+            (True, stale_request, b"K" + stale, "invalid_request"),
+            (True, original, b"K" + body, "not_ready"),
         ):
             server, client = socket.socketpair()
             with self.subTest(enabled=enabled, outcome=outcome), server, client, ThreadPoolExecutor(max_workers=1) as pool:
@@ -140,12 +146,12 @@ class ControllerTest(unittest.TestCase):
                 with patch.object(controller, "PULSE_SECONDS", 0.05):
                     result = pool.submit(controller.serve_connection, server, os.getuid(), {ORIGIN: ORIGIN}, WORKSPACE,
                                          Mock(), launch, lambda: False, enabled)
-                    client.sendall(json.dumps(data).encode() + b"\n")
+                    client.sendall(json.dumps(header).encode() + b"\n")
                     if enabled:
                         with client.makefile("rb", buffering=0) as reader:
                             self.assertEqual(reader.readline(len(controller.READY)), controller.READY)
                         client.sendall(authorization)
                     self.assertEqual(result.result(timeout=2), controller.rejected(outcome, data["requestId"]))
         launch.assert_called_once()
-        self.assertEqual(launch.call_args.args[:2], (data, ORIGIN))
+        self.assertEqual(launch.call_args.args[:2], (original, ORIGIN))
         self.assertEqual(launch.call_args.args[3], body)

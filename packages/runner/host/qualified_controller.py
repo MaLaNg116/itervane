@@ -114,6 +114,17 @@ def read_command(connection, request):
         data.extend(block)
     if hashlib.sha256(data).hexdigest() != request["commandSha256"]:
         raise ValueError("repair command digest mismatch")
+    command = json.loads(data, object_pairs_hook=unique_fields)
+    if not isinstance(command, dict) or command.keys() != {"workspace", "patch"}:
+        raise ValueError("invalid repair command")
+    workspace, patch = command["workspace"], command["patch"]
+    source = {"repositoryId": request["repositoryId"], "commit": request["commit"]}
+    if (
+        not isinstance(workspace, dict) or not isinstance(patch, dict) or workspace.get("source") != source
+        or any(workspace.get(field) != request[field] for field in ("operationId", "repairInputSha256", "baseSnapshotSha256"))
+        or patch.get("baseSnapshotSha256") != request["baseSnapshotSha256"]
+    ):
+        raise ValueError("repair command authority mismatch")
     return bytes(data)
 
 
@@ -240,7 +251,7 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
         return rejected("lease_lost", request["requestId"])
     try:
         command = read_command(connection, request) if repair else None
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         return rejected("invalid_request", request["requestId"])
     if stopping():
         return rejected("lease_lost", request["requestId"])
