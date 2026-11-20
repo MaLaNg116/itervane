@@ -95,6 +95,14 @@ export class KomodoNativeClient {
 }
 
 const updateId = z.object({ _id: z.object({ $oid: objectId }) });
+const loginReply = z.object({
+  type: z.literal('Jwt'),
+  data: z.object({ jwt: z.string().min(1).max(4096) }),
+});
+export async function loginLocalAdmin(client: KomodoNativeClient, username: string, password: string) {
+  return (await client.call('auth', 'LoginLocalUser', { username, password }, loginReply)).data;
+}
+
 const finalUpdate = updateId.extend({
   operation: z.literal('Deploy'),
   operator: objectId,

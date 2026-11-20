@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { localeSchema, type Check } from '@itervane/contracts';
 import { z } from 'zod';
 import { report } from '../report.js';
-import { deployment, dockerDigest, KomodoError, KomodoNativeClient, komodoVersion, observeUpdate, readBounded, requestDeploy, resource } from './komodo.js';
+import { deployment, dockerDigest, KomodoError, KomodoNativeClient, komodoVersion, loginLocalAdmin, observeUpdate, readBounded, requestDeploy, resource } from './komodo.js';
 
 const execute = promisify(execFile);
 const coreOrigin = 'http://127.0.0.1:49120';
@@ -83,8 +83,8 @@ async function publishFixture(version: Version) {
 }
 
 async function bootstrap(password: string, sample: Manifest, name: string, mark: string) {
-  const session = await waitFor('CoreLogin', () => new KomodoNativeClient(coreOrigin).call(
-    'auth', 'LoginLocalUser', { username: 'itervane-bootstrap', password }, z.object({ jwt: z.string().min(1).max(4096) }),
+  const session = await waitFor('CoreLogin', () => loginLocalAdmin(
+    new KomodoNativeClient(coreOrigin), 'itervane-bootstrap', password,
   ), 75_000);
   const admin = new KomodoNativeClient(coreOrigin, session);
   const { version } = await admin.call('read', 'GetVersion', {}, z.object({ version: z.string() }));
@@ -175,7 +175,7 @@ async function deployFixture(
     updateId = await requestDeploy(client, target.id);
     if (!await observeUpdate(client, updateId, target.id, target.actor)) throw new KomodoError('DeployComplete', 'response');
     await readTarget(client, target, manifest.reference);
-    const observed = await observeFixture(target.name, mark, manifest, previousContainer);
+    const observed = await waitFor('ObserveFixture', () => observeFixture(target.name, mark, manifest, previousContainer), 12_000);
     return { updateId, observed };
   } catch (error) {
     // A timed-out dispatch might already have run. Read the actual target once.

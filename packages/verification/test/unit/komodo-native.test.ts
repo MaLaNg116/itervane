@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { describe, expect, it } from 'vitest';
-import { KomodoNativeClient, observeUpdate, requestDeploy } from '../../src/native/komodo.js';
+import { KomodoNativeClient, loginLocalAdmin, observeUpdate, requestDeploy } from '../../src/native/komodo.js';
 
 const target = '2'.repeat(24);
 const update = '3'.repeat(24);
@@ -23,6 +23,19 @@ async function withCore(
 }
 
 describe('P0 native Komodo protocol', () => {
+  it('accepts the native tagged JWT response and rejects second-factor prompts', async () => {
+    let calls = 0;
+    await withCore((req, res) => {
+      expect(req.url).toBe('/auth/login/LoginLocalUser');
+      req.resume();
+      calls++;
+      res.end(JSON.stringify(calls === 1 ? { type: 'Jwt', data: { jwt: 'fixture' } } : { type: 'Totp' }));
+    }, async client => {
+      await expect(loginLocalAdmin(client, 'fixture', 'test-only')).resolves.toEqual({ jwt: 'fixture' });
+      await expect(loginLocalAdmin(client, 'fixture', 'test-only')).rejects.toMatchObject({ reason: 'response' });
+    });
+  });
+
   it('uses one write and checks the exact native operation, target and actor on a separate read', async () => {
     const calls: string[] = [];
     await withCore((req, res) => {
