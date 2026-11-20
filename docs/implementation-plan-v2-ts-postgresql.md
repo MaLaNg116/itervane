@@ -10,6 +10,8 @@ P1-D1 追加源码检查计划、Git 内容校验与可信样例扫描适配；[
 
 P1-E 追加 [只读规则/Skill 查询与有限文本预审](plans/p1-e-rules-and-preaudit.md)，提供同一持久化报告的 API/MCP/双语门户入口。固定文本匹配不调用模型、不获取或执行仓库，不给发布资格；P2-A 自主 Agent、P4 规则/Skill 上传与沉淀、D2/D3 执行资格均保持原边界。
 
+P1-UX 追加[门户视觉与 GSAP 动效切片](plans/p1-ux-portal-design-motion.md)，只改善既有页面、状态反馈和可访问交互；没有迁移、领域接口或 capability 放行。GSAP 使用独立第三方许可，来源和自托管构建说明见[第三方 UI 记录](third-party-ui.md)。
+
 本计划完整保留已确认的 TypeScript + PostgreSQL 分阶段实施方案。完整愿景、Agent 架构、MVP 闭环和安全边界沿用 v6；更新控制面技术栈、数据访问、任务调度与并发方案。本文定义实施顺序，不提前宣称接口兼容、恢复正确或阶段验收已经通过。
 
 2026-11-18 按用户继续分批开发的要求，采用 [ADR 0001](decisions/0001-development-and-runtime-gates.md)：独立模块可先开发与可信测试，完整阶段及真实执行资格仍受原验收闸门约束。

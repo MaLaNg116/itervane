@@ -1,6 +1,6 @@
 # P1-UX：门户设计与动效增强
 
-- 日期：2026-11-20；状态：计划先行，随后按需求点实施。
+- 日期：2026-11-20；状态：计划先行已提交，U0—U4 本地交付通过；U5 文档与叠加草稿 PR 交付中，远端证据随后记录。
 - 前置：P1-E / [草稿 PR #6](https://github.com/MaLaNg116/itervane/pull/6)，基线 `2390bb3629f5567e90093fb3a737794b3bfdbb10`。使用 `feat/portal-design-motion`，PR 比较基线指向 `feat/p1-rules-preaudit`，不合并前置 PR。
 - 依据：v6、TS + PostgreSQL 实施计划、ADR 0001/0003/0005；独立体验切片，不新增 P2/P3/P4 能力，不代表完整 P1 验收。
 
@@ -81,3 +81,5 @@ GSAP 与 @gsap/react 保留自身 Standard No Charge License，不称作 Apache-
 依赖 U0 → U1/U2 → U3 → U4 → U5；实现保持可逐需求 review。测试聚焦生命周期/权限/真实交互，不为配色和 CSS 值编写镜像断言。既有 73 单元、66 真 PG、15 浏览器与 5 可信扫描器基线保留；按实际结果记录新增数量，不靠截图或模型自报完成验收。
 
 参考：[GSAP React](https://gsap.com/resources/React/)、[GSAP matchMedia](https://gsap.com/docs/v3/GSAP/gsap.matchMedia%28%29/)、[独立许可](https://gsap.com/community/standard-license/)。
+
+本地 strict types、73 单元、66 真 PG、20 真浏览器及生产构建通过；截图整理后 5 项新增浏览器用例再次通过。固定代码 `cd300546c0cb7f902b745989e2854e0fb598dfd8`，最终截图复验的源码指纹为 `d9594627846bc6276602b4dd97f0334e48f2766629102049431b324688b673d9`。运行/升级见[运行说明](../portal-design-motion.md)，关键设计和对应代码见[review guide](../reviews/p1-ux-portal-design-motion.md)。
