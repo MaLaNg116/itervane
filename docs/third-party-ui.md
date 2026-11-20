@@ -1,6 +1,6 @@
-# 门户设计参考与第三方动效
+# 门户设计参考与第三方组件
 
-Itervane 自有代码继续使用 Apache-2.0；第三方工具和依赖保留自身许可。本批没有复制第三方完整 Skill、字体、图像或运行时脚本到源码中。
+Itervane 自有代码继续使用 Apache-2.0，第三方工具和依赖保留自身许可。下表的设计 Skill 用于开发参考，完整 Skill、字体和图像未纳入源码。
 
 | 项目 | 固定版本/来源 | 本项目用途 |
 |---|---|---|
@@ -17,3 +17,9 @@ GSAP 与 @gsap/react 不是本项目重新许可的 Apache-2.0 代码；依赖�
 CI 字体先核对官方 Git blob，再固定 SHA-256 `2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b`，每次下载后校验，并在临时 runner 的字体目录保留 OFL。它不是用户主机的安装动作，也不改变运行时的系统字体选择。
 
 设计决策与验收范围见[本批计划](plans/p1-ux-portal-design-motion.md)，后续代码说明见[分批 review 索引](reviews/README.md)。
+
+## shadcn/ui 组件来源
+
+组件以 [shadcn/ui Git 快照 f50887a](https://github.com/shadcn-ui/ui/tree/f50887ae68d0fdcbfbe86b57be08af94a4c88a68/apps/v4/registry/bases/base/ui) 为来源，保留 [MIT 许可](https://github.com/shadcn-ui/ui/blob/f50887ae68d0fdcbfbe86b57be08af94a4c88a68/LICENSE.md)。Button、Badge、Alert、Card、Dialog、Input、Textarea、NativeSelect、Table 均按需调整，保留 data-slot、原生语义与必要的 Base UI 交互。调整包括项目色板、双语弹窗文案、按需的 variants 和表格滚动语义。运行和构建无需 shadcn CLI、组件 registry、CDN 或第三方字体服务。
+
+Base UI 1.9.0、Tailwind CSS 与 Vite 插件 4.3.5，以及 CVA、clsx、tailwind-merge 由锁文件管理。项目内的组件更新通过源码对比纳入，应用保留针对本地修改的回归。复制组件的完整许可位于 `packages/portal/public/shadcn-LICENSE.txt`，随 build 原样复制到发布目录。GSAP 的源码与许可仍按上文处理。

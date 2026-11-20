@@ -18,6 +18,8 @@ P1-E 按 [规则查询与有限预审计划](plans/p1-e-rules-and-preaudit.md) �
 
 P1-UX 按[门户设计与动效计划](plans/p1-ux-portal-design-motion.md) 独立完善现有中英文界面，参考固定版本 UI UX Pro Max/frontend-design，使用受控 GSAP 微反馈与系统减少动效。它保持原 API/领域记录、认证授权及 Runner 闸门；不是新一轮 Agent、规则上传或发布能力。
 
+P1-UX 后续按[组件验证与迁移计划](plans/p1-ux-shadcn-migration.md)先复核真实任务详情，再逐页采用 shadcn/ui。实现选择及验收见 [ADR 0006](decisions/0006-portal-components.md) 和[迁移导读](reviews/p1-ux-shadcn-migration.md)。
+
 ## 1. 开发约束
 
 - 单维护者、单工作区、全局一个执行中的业务工作流；人工暂停后释放槽位。

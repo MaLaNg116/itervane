@@ -1,5 +1,7 @@
 # P1-C：最小门户、登录与中英文
 
+本文记录 P1-C 的登录与运行基线。当前门户组件与升级说明见[门户组件迁移与运行](portal-shadcn.md)。
+
 - 日期：2026-11-18；范围见 [P1-C 计划](plans/p1-c-portal-and-login.md)，登录决定见 [ADR 0003](decisions/0003-browser-oidc.md)。
 - 安装与数据库权限沿用 [P1-A](control-plane-p1-a.md)、[P1-B](control-plane-p1-b.md)；本批没有新业务迁移。
 - 固定代码、验证和阅读路径见 [本批 review guide](reviews/p1-c-portal-login.md)。完整 P1 与 MVP 仍未验收。

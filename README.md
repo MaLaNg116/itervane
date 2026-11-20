@@ -56,6 +56,7 @@ The complete design documents are maintained in Chinese:
 - [P1-D1 source-inspection foundations](docs/control-plane-p1-d.md): immutable preparation, content verification, real trusted scanner checks, and the remaining KVM acceptance gates.
 - [P1-E rules and text preaudit](docs/control-plane-p1-e.md): advisory rules/Skill, finite non-executing text checks, immutable redacted reports, current project authorization, and the P2-A/P4 boundaries.
 - [P1-UX portal design and motion](docs/portal-design-motion.md): shared design tokens, bounded GSAP feedback, live reduced-motion support, stable session boundaries, and build notices.
+- [Portal component migration](docs/portal-shadcn.md): shadcn/ui source ownership, bilingual page and form review, and self-hosted upgrade instructions.
 
 Blueprint v6 remains the product and architecture baseline. The implementation plan records the agreed TypeScript stack and execution approach. No implementation phase has been accepted as complete. Commits are separated by requirement for review.
 
