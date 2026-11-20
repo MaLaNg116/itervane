@@ -6,6 +6,7 @@ import { eventReasonMessages, sourceInspectionObservationSchema, sourceInspectio
   type SourceInspectionPauseReason, type ToolResult } from '@itervane/contracts';
 import { queueName, type Database } from '../persistence/database.js';
 import { DomainError } from '../service/errors.js';
+import { prepareFormalAuditInput } from '../service/formal-audit.js';
 import { BudgetExhausted, ExecutionLost, type ExecutionScope } from './authority.js';
 import { GuardedCheckpointer } from './checkpointer.js';
 import { ExecutionCoordinator } from './coordinator.js';
@@ -106,6 +107,9 @@ export class DurableWorker {
       const result = await graph.getState(config);
       if (!result.tasks.some(task => task.interrupts?.length)) throw new DomainError('unavailable');
       const reason = sourceInspectionPauseReasonSchema.parse(result.values.inspectionReason ?? 'runner_unavailable');
+      if (reason === 'inspection_ready') {
+        await this.coordinator.withLease(scope, (tx, { task }) => prepareFormalAuditInput(tx, task, scope));
+      }
       await this.coordinator.pause(scope, reason);
     } catch (error) {
       if (!this.closing) {

@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
-  agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type InspectionPlan,
+  agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type InspectionPlan,
   type PreauditRecord, type QualifiedInspectionReceipt, type ReleaseDecision, type ReleaseOperationState,
 } from '@itervane/contracts';
 
@@ -174,6 +174,20 @@ export const inspectionAttempts = domain.table('inspection_attempts', {
       AND ${t.receipt}#>>'{snapshot,repositoryId}' = ${t.repositoryId}::text AND ${t.receipt}#>>'{snapshot,commit}' = ${t.commit}
       AND ${t.receipt}#>'{snapshot,offline}' = 'true'::jsonb AND ${t.receipt}#>'{snapshot,readOnly}' = 'true'::jsonb)
   ) IS TRUE`),
+]);
+
+export const formalAuditInputs = domain.table('formal_audit_inputs', {
+  runId: uuid('run_id').primaryKey(), taskId: uuid('task_id').notNull(), projectId: uuid('project_id').notNull(),
+  inspectionRequestId: uuid('inspection_request_id').notNull().references(() => inspectionAttempts.requestId),
+  preparedFence: integer('prepared_fence').notNull(), workerId: uuid('worker_id').notNull(),
+  sha256: text('sha256').notNull(), document: jsonb('document').$type<FormalAuditInput>().notNull(), createdAt: createdAt(),
+}, t => [
+  foreignKey({ name: 'formal_audit_run_task', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
+  foreignKey({ name: 'formal_audit_task_project', columns: [t.taskId, t.projectId], foreignColumns: [tasks.id, tasks.projectId] }),
+  check('formal_audit_input_binding', sql`(${t.preparedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.document}->>'version' = '1' AND ${t.document}->>'taskId' = ${t.taskId}::text AND ${t.document}->>'runId' = ${t.runId}::text
+    AND ${t.document}->>'projectId' = ${t.projectId}::text AND ${t.document}#>>'{inspection,requestId}' = ${t.inspectionRequestId}::text
+    AND octet_length(${t.document}::text) <= 65536) IS TRUE`),
 ]);
 
 export const preaudits = domain.table('preaudits', {

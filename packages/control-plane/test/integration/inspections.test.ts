@@ -3,11 +3,11 @@ import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
-import { qualifiedInspectionResponseSchema, type QualifiedInspectionRequest } from '@itervane/contracts';
+import { formalAuditInputSchema, qualifiedInspectionResponseSchema, type QualifiedInspectionRequest } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { queueName } from '../../src/persistence/database.js';
-import { inspectionAttempts } from '../../src/persistence/schema.js';
+import { formalAuditInputs, inspectionAttempts } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
 import { ToolGateway } from '../../src/runtime/tools.js';
@@ -15,6 +15,7 @@ import { DurableWorker } from '../../src/runtime/worker.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
 import { InspectionService, prepareInspection } from '../../src/service/inspections.js';
+import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
 import { TaskService } from '../../src/service/tasks.js';
 import { databaseFixture } from '../helpers/database.js';
 import { identityFixture } from '../helpers/identity.js';
@@ -201,11 +202,40 @@ it('publishes a receipt and its tool event atomically, and reuses the receipt af
     result: { requestId: attempt.request_id, receiptSha256: attempt.receipt_sha256,
       scans: [{ scanner: 'gitleaks', status: 'completed' }, { scanner: 'trivy', status: 'completed' }] } });
   expect(JSON.stringify(summary)).not.toContain('workspaceSha256');
+  const [auditInput] = await database.storage.db.select().from(formalAuditInputs);
+  const handoff = formalAuditInputSchema.parse(auditInput?.document);
+  expect(handoff).toMatchObject({ taskId: task.id, runId: scope.runId, projectId: task.projectId, source: task.source,
+    locale: 'zh-CN', purposeSha256: sha256(task.purpose), inspection: { requestId: attempt.request_id, receiptSha256: attempt.receipt_sha256 } });
+  expect(sha256(JSON.stringify(handoff))).toBe(auditInput?.sha256);
+  expect(handoff.catalog.rules.every(rule => rule.material.enforcement === 'advisory')).toBe(true);
+  expect(JSON.stringify(handoff)).not.toContain(origin);
   expect((await tasks.events(identity, task.id, 50, 'zh-CN')).at(-1)).toMatchObject({
     reason: 'inspection_ready', reasonMessage: '源码检查证据已入库，等待进入审计阶段。',
   });
   await expect(tasks.resume(identity, task.id, { expectedVersion: current.version })).rejects.toMatchObject({ code: 'unsupported_state' });
   expect(dispatched).toBe(1);
+});
+
+it('freezes the audit input under the current lease and rejects a substituted snapshot or planned-only source', async () => {
+  const scope = await claim();
+  const prepare = () => coordinator.withLease(scope, (tx, current) => prepareFormalAuditInput(tx, current.task, scope));
+  await expect(prepare()).rejects.toMatchObject({ code: 'unavailable' });
+  await new ToolGateway(coordinator).call(scope, 'source.inspect', {}, 'plan-only');
+  await expect(prepare()).rejects.toMatchObject({ code: 'unavailable' });
+  const runner = inspectionRunner(async (request, authorize) => { await authorize(); return testReceipt(request); });
+  await new ToolGateway(coordinator, runner).call(scope, 'source.inspect', {}, 'qualified');
+  const frozen = await prepare();
+  expect(await prepare()).toEqual(frozen);
+  const [row] = await database.storage.db.select().from(formalAuditInputs);
+  const changed = { ...frozen.document, inspection: { ...frozen.document.inspection, snapshotSha256: '0'.repeat(64) } };
+  await expect(database.storage.db.insert(formalAuditInputs).values({ ...row!, document: changed })).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'formal_audit_input_authority_or_inspection_mismatch' } });
+  await expect(database.storage.db.insert(formalAuditInputs).values({ ...row!, preparedFence: scope.fence + 1 })).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'formal_audit_input_authority_or_inspection_mismatch' } });
+  await expect(database.storage.db.update(formalAuditInputs).set({ document: changed })).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'formal_audit_input_is_retained' } });
+  await expect(database.storage.db.delete(formalAuditInputs)).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'formal_audit_input_is_retained' } });
 });
 
 it('drops a late receipt when a real cancellation races the scan', async () => {
@@ -320,6 +350,7 @@ it('requires a matching idle workspace before a new fence, and retains incomplet
     expect(dispatched).toBe(2);
     expect(await inspections.get(identity, task.id)).toMatchObject({ status: 'incomplete', snapshotVerified: true, scanCompleted: false,
       result: { scans: [{ status: 'completed' }, { status: 'unsupported', reason: 'missing_inventory', findingsCount: 0 }] } });
+    expect(await database.storage.db.select().from(formalAuditInputs)).toHaveLength(0);
     const { rows } = await database.admin.query('SELECT state, settled_fence, fence, receipt FROM itervane.inspection_attempts ORDER BY fence');
     expect(rows).toMatchObject([{ state: 'closed', settled_fence: rows[1].fence, receipt: null },
       { state: 'recorded', receipt: { snapshot: { reports: [{ status: 'completed' }, { status: 'unsupported', reason: 'missing_inventory' }] } } }]);
