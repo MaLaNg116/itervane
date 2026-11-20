@@ -1,5 +1,3 @@
-import { useEffect } from 'react';
-import type { FormInstance } from 'antd';
 import type { Locale, TaskState } from '@itervane/contracts';
 import { ApiFailure, errorText } from './api.js';
 import { ui, stateLabel } from './messages.js';
@@ -43,9 +41,3 @@ export function EmptyState({ title, description }: { title: string; description?
   return <div className="empty-state"><strong>{title}</strong>{description && <p className="muted">{description}</p>}</div>;
 }
 export const formatTime = (value: string, locale: Locale) => new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
-export function useTranslatedValidation(form: FormInstance, locale: Locale) {
-  useEffect(() => {
-    const errors = form.getFieldsError().filter(field => field.errors.length).map(field => field.name);
-    if (errors.length) void form.validateFields(errors).catch(() => {});
-  }, [form, locale]);
-}

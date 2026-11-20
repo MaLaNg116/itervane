@@ -1,9 +1,6 @@
-import { lazy, Suspense, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { Alert, Button, ConfigProvider, Result } from 'antd';
 import { CSPProvider } from '@base-ui/react/csp-provider';
-import enUS from 'antd/locale/en_US.js';
-import zhCN from 'antd/locale/zh_CN.js';
 import { meDtoSchema, portalConfigSchema, type Locale, type PortalConfig } from '@itervane/contracts';
 import { BrowserSession } from './auth.js';
 import { ApiFailure, PortalApi } from './api.js';
@@ -12,7 +9,9 @@ import { PortalContext } from './context.js';
 import { Failure, Loading } from './components.js';
 import { readRoute } from './router.js';
 import { BrandMark } from './brand.js';
-import { designCss, portalTheme } from './design.js';
+import { Alert, AlertTitle } from './ui/alert.js';
+import { Button } from './ui/button.js';
+import { Card, CardContent } from './ui/card.js';
 
 const ProjectsPage = lazy(async () => ({ default: (await import('./pages/projects.js')).ProjectsPage }));
 const ProjectPage = lazy(async () => ({ default: (await import('./pages/project.js')).ProjectPage }));
@@ -41,10 +40,8 @@ export function PortalApp() {
   }, [retry]);
   const t = (key: Parameters<typeof ui>[1]) => ui(locale, key);
   const nonce = document.querySelector<HTMLMetaElement>('meta[name="itervane-csp-nonce"]')?.content ?? '';
-  return <ConfigProvider locale={locale === 'zh-CN' ? zhCN : enUS} csp={{ nonce }} theme={portalTheme}>
-    <CSPProvider nonce={nonce}>
+  return <CSPProvider nonce={nonce}>
     <QueryClientProvider client={queries}>
-      <style nonce={nonce}>{designCss}</style>
       <div className="portal-root">
       <a className="skip-link" href="#main" onClick={event => { event.preventDefault(); const main = document.getElementById('main'); if (main) { main.tabIndex = -1; main.focus(); } }}>{t('skip')}</a>
       <header className="topbar"><a href="#/projects" className="brand" aria-label="Itervane"><BrandMark />Itervane</a>
@@ -53,12 +50,19 @@ export function PortalApp() {
         </select></div>
       </header>
       {!config ? <main id="main" className="login-main">{configError ? <Failure error={new ApiFailure('networkError')} locale={locale} retry={() => setRetry(retry + 1)} /> : <Loading locale={locale} />}</main>
-        : !config.enabled ? <main id="main" className="login-main"><Result status="info" title={t('loginDisabled')} subTitle={t('loginDisabledHelp')} /></main>
+        : !config.enabled ? <main id="main" className="login-main"><PortalNotice title={t('loginDisabled')} description={t('loginDisabledHelp')} /></main>
         : <SessionGate config={config} locale={locale} />}
       </div>
     </QueryClientProvider>
-    </CSPProvider>
-  </ConfigProvider>;
+  </CSPProvider>;
+}
+
+function PortalNotice({ title, description, children }: { title: string; description?: string; children?: ReactNode }) {
+  return <Card><CardContent>
+    <h1 className="m-0 text-xl font-semibold">{title}</h1>
+    {description && <p className="muted">{description}</p>}
+    {children}
+  </CardContent></Card>;
 }
 
 function SessionGate({ config, locale }: { config: Extract<PortalConfig, { enabled: true }>; locale: Locale }) {
@@ -71,8 +75,10 @@ function SessionGate({ config, locale }: { config: Extract<PortalConfig, { enabl
   if (snapshot.status === 'loading') return <main id="main"><Loading locale={locale} /></main>;
   if (snapshot.status !== 'authenticated') return <main id="main" className="login-main"><section className="login-card">
     <span className="eyebrow">Itervane / {t('appTitle')}</span><h1>{t('welcome')}</h1><p className="login-intro">{t('intro')}</p>
-    {snapshot.message && <Alert showIcon className="section-gap" type={snapshot.message === 'signedOut' ? 'success' : 'warning'} title={t(snapshot.message)} />}
-    <Button type="primary" size="large" loading={snapshot.status === 'redirecting'} onClick={() => { void session.login(locale); }}>{t('signIn')}</Button>
+    {snapshot.message && <Alert className="section-gap" variant={snapshot.message === 'signedOut' ? 'success' : 'warning'} role="status">
+      <AlertTitle>{t(snapshot.message)}</AlertTitle>
+    </Alert>}
+    <Button disabled={snapshot.status === 'redirecting'} aria-busy={snapshot.status === 'redirecting'} onClick={() => { void session.login(locale); }}>{t('signIn')}</Button>
     <p className="muted login-hint">{t('loginHint')}</p>
   </section></main>;
   return <AuthorizedWorkspace api={api} session={session} epoch={snapshot.epoch} name={snapshot.name ?? snapshot.subject ?? ''} locale={locale} />;
@@ -84,19 +90,21 @@ function AuthorizedWorkspace({ api, session, epoch, name, locale }: { api: Porta
   const t = (key: Parameters<typeof ui>[1]) => ui(locale, key);
   if (me.isPending) return <main id="main"><Loading locale={locale} /></main>;
   if (me.error) return <main id="main" className="login-main">
-    {me.error instanceof ApiFailure && me.error.code === 'forbidden' ? <Result status="403" title={t('accessDenied')} subTitle={t('accessDeniedHelp')} /> : <Failure error={me.error} locale={locale} retry={() => { void me.refetch(); }} />}
-    <Button onClick={() => { void session.logout(); }}>{t('signOut')}</Button>
+    {me.error instanceof ApiFailure && me.error.code === 'forbidden'
+      ? <PortalNotice title={t('accessDenied')} description={t('accessDeniedHelp')} />
+      : <Failure error={me.error} locale={locale} retry={() => { void me.refetch(); }} />}
+    <Button variant="outline" className="mt-4" onClick={() => { void session.logout(); }}>{t('signOut')}</Button>
   </main>;
   return <PortalContext value={{ api, session, epoch, locale, me: me.data }}>
     <div className="workspace-layout"><aside className="sidebar"><p className="eyebrow">{t('appTitle')}</p><nav aria-label={t('projects')}><a href="#/projects" aria-current={route.page === 'projects' ? 'page' : undefined}>
       <svg viewBox="0 0 20 20" className="nav-icon" aria-hidden="true" focusable="false"><path d="M3 4h5l2 2h7v10H3Z" /></svg>{t('projects')}</a></nav>
       <div className="workspace-note"><strong>{t('workspaceGuide')}</strong><p>{t('workspaceGuideDetail')}</p></div>
       <div className="account"><span className="account-avatar" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span><div><strong>{name}</strong><span className="muted">{t(me.data.isWorkspaceOwner ? 'owner' : 'account')}</span></div></div>
-      <Button block className="signout" onClick={() => { void session.logout(); }}>{t('signOut')}</Button>
+      <Button variant="outline" className="signout w-full" onClick={() => { void session.logout(); }}>{t('signOut')}</Button>
     </aside><main id="main" className="workspace-main">
       <Suspense fallback={<Loading locale={locale} />}>{route.page === 'projects' ? <ProjectsPage /> : route.page === 'project' ? <ProjectPage key={route.id} id={route.id} />
         : route.page === 'task' ? <TaskPage key={route.id} id={route.id} /> : route.page === 'preaudit' ? <PreauditPage key={route.id} id={route.id} />
-          : route.page === 'preaudit-report' ? <PreauditReportPage key={route.id} id={route.id} /> : <Result status="404" title={t('notFound')} extra={<a href="#/projects">{t('backProjects')}</a>} />}</Suspense>
+          : route.page === 'preaudit-report' ? <PreauditReportPage key={route.id} id={route.id} /> : <PortalNotice title={t('notFound')}><p><a href="#/projects">{t('backProjects')}</a></p></PortalNotice>}</Suspense>
     </main></div>
   </PortalContext>;
 }

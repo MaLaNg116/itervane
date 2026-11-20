@@ -131,7 +131,7 @@ function PreauditForm({ projectId, catalogSha256 }: { projectId: string; catalog
       <Failure error={mutation.error} locale={locale} />
       <Alert variant="warning"><AlertTitle>{t('unknownSubmission')}</AlertTitle></Alert>
     </>}
-    <div className="actions justify-start">
+    <div className="actions">
       {locked && mutation.error
         ? <Button disabled={mutation.isPending} onClick={send}>{t('retrySubmission')}</Button>
         : <Button type="submit" disabled={locked || mutation.isPending}>{t('runPreaudit')}</Button>}
