@@ -16,6 +16,7 @@
     "probe:cloud": "tsx --env-file-if-exists=.env packages/verification/src/entries/cloud.ts",
     "probe:mcp": "tsx packages/verification/src/entries/mcp.ts",
     "probe:evaluation": "tsx packages/verification/src/entries/evaluation.ts",
+    "probe:agent": "tsx --env-file-if-exists=.env packages/verification/src/entries/agent.ts",
     "verify:p0": "tsx --env-file-if-exists=.env packages/verification/src/cli.ts readiness",
     "start:api": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/server.ts",
     "build:portal": "pnpm --filter @itervane/portal build",

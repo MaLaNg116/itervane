@@ -6,8 +6,10 @@
   "type": "module",
   "exports": "./src/index.ts",
   "dependencies": {
+    "@itervane/agent": "workspace:*",
     "@itervane/contracts": "workspace:*",
     "@itervane/model": "workspace:*",
+    "@itervane/rules": "workspace:*",
     "@langchain/core": "1.4.1",
     "@langchain/langgraph": "1.7.4",
     "@langchain/langgraph-checkpoint-postgres": "1.1.3",

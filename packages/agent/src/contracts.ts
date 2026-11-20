@@ -51,7 +51,9 @@ export const checkSchema = z.object({
 export type ProtectedCheck = z.infer<typeof checkSchema>;
 
 const evidenceDataSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('context'), section: contextSectionSchema, text: z.string().min(1).max(1_200) }).strict(),
+  z.object({ kind: z.literal('context'), section: contextSectionSchema, text: z.string().min(1).max(1_200),
+    suggestedSection: contextSectionSchema.optional(),
+  }).strict(),
   z.object({ kind: z.literal('rule'), ruleId: keySchema, sha256: shaSchema, guidance: note, limitation: note }).strict(),
   z.object({ kind: z.literal('findings'), coverage: z.enum(['complete', 'partial']), limits: z.array(note).max(6),
     findings: z.array(findingSchema).max(16).refine(items => new Set(items.map(item => item.id)).size === items.length),

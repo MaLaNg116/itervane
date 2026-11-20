@@ -218,12 +218,18 @@ importers:
 
   packages/verification:
     dependencies:
+      '@itervane/agent':
+        specifier: workspace:*
+        version: link:../agent
       '@itervane/contracts':
         specifier: workspace:*
         version: link:../contracts
       '@itervane/model':
         specifier: workspace:*
         version: link:../model
+      '@itervane/rules':
+        specifier: workspace:*
+        version: link:../rules
       '@langchain/core':
         specifier: 1.4.1
         version: 1.4.1(@opentelemetry/api@1.10.0)(openai@7.57.0(zod@4.6.7))
