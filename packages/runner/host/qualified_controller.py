@@ -1,5 +1,6 @@
 """Local, single-job inspection controller for the dedicated KVM account."""
 
+import hashlib
 import json
 import os
 import re
@@ -17,9 +18,9 @@ from urllib.parse import urlsplit
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from libvirt_probe import IMAGE_DIGEST, Rejected, check_kvm, probe, start_channel_events
+from libvirt_probe import IMAGE_DIGEST, Rejected, check_kvm, closed, connect, locked_workspace, probe, start_channel_events
 from native_source import SourceProbe
-from session_boundary import SessionRejected, prepare_session
+from session_boundary import SESSION_URI, SessionRejected, prepare_session
 from source_gateway import COMMIT, RegisteredOrigin, SourceGateway, SourceRejected
 
 
@@ -28,9 +29,10 @@ RESPONSE_LIMIT = 4 * 1024 * 1024 + 8192
 HANDSHAKE_SECONDS = 3
 PULSE_SECONDS = 2
 READY = b"READY 1\n"
+STATUS = b"STATUS 1\n"
 IDS = ("requestId", "taskId", "runId", "projectId", "repositoryId")
 COUNTERS = ("generation", "fence")
-FIELDS = {*IDS, *COUNTERS, "version", "planSha256", "commit", "origin"}
+FIELDS = {*IDS, *COUNTERS, "version", "planSha256", "workspaceSha256", "commit", "origin"}
 PEER = struct.Struct("3i")
 
 
@@ -61,7 +63,7 @@ def parse_request(line):
         raise ValueError("invalid request identity")
     if not all(type(data[name]) is int and 0 < data[name] <= 2147483647 for name in COUNTERS):
         raise ValueError("invalid request authority")
-    for name, pattern in (("planSha256", IMAGE_DIGEST), ("commit", COMMIT)):
+    for name, pattern in (("planSha256", IMAGE_DIGEST), ("workspaceSha256", IMAGE_DIGEST), ("commit", COMMIT)):
         if not isinstance(data[name], str) or not pattern.fullmatch(data[name]):
             raise ValueError("invalid fixed reference")
     if not isinstance(data["origin"], str) or not 0 < len(data["origin"]) <= 768:
@@ -69,7 +71,7 @@ def parse_request(line):
     return data
 
 
-def read_request(connection):
+def read_frame(connection):
     expires = time.monotonic() + HANDSHAKE_SECONDS
     line = bytearray()
     while len(line) <= REQUEST_LIMIT:
@@ -83,7 +85,31 @@ def read_request(connection):
         line.extend(byte)
         if byte == b"\n":
             break
-    return parse_request(line)
+    return bytes(line)
+
+
+def workspace_binding(root, metadata):
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    if not is_v4(boot):
+        raise Rejected("config_required")
+    identity = f"{boot}:{metadata.st_uid}:{metadata.st_dev}:{metadata.st_ino}:{root}"
+    return hashlib.sha256(os.fsencode(identity)).hexdigest()
+
+
+def workspace_idle(libvirt, root, image, fingerprint):
+    try:
+        with locked_workspace(root) as metadata:
+            if workspace_binding(root, metadata) != fingerprint or any(root.iterdir()):
+                return False
+            prepare_session(root, image)
+            conn = connect(libvirt, SESSION_URI)
+            try:
+                idle = not conn.listAllDomains(0)
+            finally:
+                disconnected = closed(libvirt, conn)
+            return idle and disconnected
+    except (OSError, Rejected, SessionRejected, libvirt.libvirtError):
+        return False
 
 
 class LiveConnection:
@@ -144,15 +170,20 @@ def response_for(request, result):
     return rejected("not_ready", request_id)
 
 
-def serve_connection(connection, worker_uid, origins, launch, stopping):
+def serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping):
     connection.settimeout(HANDSHAKE_SECONDS)
     _, uid, _ = PEER.unpack(connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, PEER.size))
     if uid != worker_uid:
         return rejected("peer_denied")
     try:
-        request = read_request(connection)
+        frame = read_frame(connection)
+        if frame == STATUS:
+            return observe()
+        request = parse_request(frame)
     except (OSError, ValueError, RecursionError):
         return rejected("invalid_request")
+    if request["workspaceSha256"] != fingerprint:
+        return rejected("not_ready", request["requestId"])
     origin = origins.get(request["origin"])
     if origin is None:
         return rejected("origin_denied", request["requestId"])
@@ -178,7 +209,7 @@ def socket_parent(path):
         raise ValueError("invalid socket directory")
 
 
-def run_server(path, worker_uid, origins, launch, stopping):
+def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping):
     socket_parent(path)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(os.fspath(path))
@@ -193,7 +224,7 @@ def run_server(path, worker_uid, origins, launch, stopping):
                     continue
                 with connection:
                     try:
-                        result = serve_connection(connection, worker_uid, origins, launch, stopping)
+                        result = serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping)
                         encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
                         if len(encoded) > RESPONSE_LIMIT:
                             encoded = b'{"kind":"rejected","requestId":null,"code":"cleanup_unproven","cleanup":"unknown","domainId":null}\n'
@@ -237,16 +268,25 @@ def main():
         origins = {value: RegisteredOrigin.parse(value, {urlsplit(value).hostname}) for value in allowed}
         check_kvm()
         prepare_session(root, image)
+        with locked_workspace(root) as metadata:
+            fingerprint = workspace_binding(root, metadata)
         import libvirt
         import libvirt_qemu
         libvirt.registerErrorHandler(lambda _ctx, _error: None, None)
         start_channel_events(libvirt)
 
+        def observe():
+            idle = not stopped() and workspace_idle(libvirt, root, image, fingerprint)
+            return {"kind": "status", "version": 1, "workspaceSha256": fingerprint,
+                    "imageSha256": digest, "state": "idle" if idle else "blocked"}
+
         def launch(request, origin, cancelled):
+            if not workspace_idle(libvirt, root, image, fingerprint):
+                return Result("pending_cleanup")
             job = SourceProbe(SourceGateway(origin, request["commit"]), repository_id=request["repositoryId"])
             return probe(libvirt, libvirt_qemu, root, image, digest, cancelled, "inspect", True, source_override=job)
 
-        run_server(path, worker_uid, origins, launch, stopped)
+        run_server(path, worker_uid, origins, fingerprint, observe, launch, stopped)
     except (ImportError, OSError, ValueError, Rejected, SessionRejected, SourceRejected):
         print("Qualified inspection controller could not start.", file=sys.stderr)
         return 1

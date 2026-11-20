@@ -13,6 +13,7 @@ import sys
 import time
 import uuid
 import xml.etree.ElementTree as xml
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -430,6 +431,24 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
     )
 
 
+@contextmanager
+def locked_workspace(root):
+    if not root.is_absolute() or root.resolve(strict=True) != root:
+        raise Rejected("config_required")
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        metadata = os.fstat(fd)
+        if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+            raise Rejected("config_required")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise Rejected("workspace_busy") from error
+        yield metadata
+    finally:
+        os.close(fd)
+
+
 def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat", session=False, *, source_override=None):
     deadline = time.monotonic() + DEADLINE_SECONDS
 
@@ -442,17 +461,9 @@ def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat", s
     try:
         if not session and (scenario in ("source", "inspect") or source_override is not None):
             raise Rejected("config_required")
-        if not root.is_absolute() or root.resolve(strict=True) != root or not image.is_absolute():
+        if not image.is_absolute():
             raise Rejected("config_required")
-        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        try:
-            metadata = os.fstat(fd)
-            if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
-                raise Rejected("config_required")
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as error:
-                raise Rejected("workspace_busy") from error
+        with locked_workspace(root):
             if any(path.name.startswith(PREFIX) for path in root.iterdir()):
                 raise Rejected("pending_cleanup")
             session_runtime = prepare_session(root, image) if session else None
@@ -463,8 +474,6 @@ def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat", s
             else:
                 job = None if scenario == "heartbeat" else ProbeJob(scenario, require_workload=session)
             return run_guest(libvirt, qemu, root, image, digest, check_deadline, job, session_runtime)
-        finally:
-            os.close(fd)
     except Rejected as error:
         return Result(str(error))
     except SessionRejected as error:

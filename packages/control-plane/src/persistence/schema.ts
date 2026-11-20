@@ -136,6 +136,7 @@ export const inspectionAttempts = domain.table('inspection_attempts', {
   repositoryId: uuid('repository_id').notNull(), commit: text('commit').notNull(),
   generation: integer('generation').notNull(), fence: integer('fence').notNull(), workerId: uuid('worker_id').notNull(),
   planSha256: text('plan_sha256').notNull(), originSha256: text('origin_sha256').notNull(), imageSha256: text('image_sha256').notNull(),
+  workspaceSha256: text('workspace_sha256'),
   state: text('state').$type<'reserved' | 'closed' | 'uncertain' | 'recorded'>().notNull().default('reserved'),
   settledFence: integer('settled_fence'), settledAt: timestamp('settled_at', { withTimezone: true }),
   receiptSha256: text('receipt_sha256'), receipt: jsonb('receipt').$type<QualifiedInspectionReceipt>(),
@@ -146,6 +147,9 @@ export const inspectionAttempts = domain.table('inspection_attempts', {
   foreignKey({ name: 'inspection_attempt_repository_project', columns: [t.repositoryId, t.projectId], foreignColumns: [repositories.id, repositories.projectId] }),
   unique('inspection_attempt_per_fence').on(t.runId, t.fence),
   uniqueIndex('inspection_open_attempt_per_run').on(t.runId).where(sql`${t.state} <> 'closed'`),
+  check('inspection_attempt_workspace_binding', sql`${t.workspaceSha256} IS NULL OR (
+    ${t.workspaceSha256} ~ '^[a-f0-9]{64}$' AND (${t.state} <> 'recorded'
+    OR (${t.receipt}#>>'{scope,workspaceSha256}' = ${t.workspaceSha256}) IS TRUE))`),
   check('inspection_attempt_coordinates', sql`
     ${t.generation} > 0 AND ${t.fence} > 0 AND ${t.commit} ~ '^[a-f0-9]{40}$'
     AND ${t.planSha256} ~ '^[a-f0-9]{64}$' AND ${t.originSha256} ~ '^[a-f0-9]{64}$' AND ${t.imageSha256} ~ '^[a-f0-9]{64}$'`),

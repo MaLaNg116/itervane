@@ -71,6 +71,13 @@
       "when": 1795186093847,
       "tag": "0009_inspection_attempts",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795187275465,
+      "tag": "0010_inspection_workspace",
+      "breakpoints": true
     }
   ]
 }

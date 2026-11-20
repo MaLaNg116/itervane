@@ -81,7 +81,7 @@ async function attempt(scope: ExecutionScope) {
   const binding = {
     requestId: randomUUID(), taskId: task.id, projectId: task.projectId, runId: scope.runId,
     repositoryId: task.source.repositoryId, commit: task.source.commit, generation: scope.generation,
-    fence: scope.fence, planSha256: plan.sha256,
+    fence: scope.fence, planSha256: plan.sha256, workspaceSha256: 'd'.repeat(64),
   };
   const imageSha256 = 'a'.repeat(64);
   const originSha256 = sha256('https://example.invalid/inspection.git');
@@ -112,7 +112,11 @@ async function attempt(scope: ExecutionScope) {
 
 it('fences a late inspection receipt and requires closure of an earlier attempt before reserving a recovered one', async () => {
   const old = await claim(); const first = await attempt(old);
+  await expect(database.storage.db.insert(inspectionAttempts).values({ ...first.row, workspaceSha256: null })).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'inspection_workspace_required' } });
   await first.reserve();
+  await expect(database.storage.db.update(inspectionAttempts).set({ workspaceSha256: '0'.repeat(64), state: 'closed', settledFence: old.fence, settledAt: new Date() })).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'inspection_workspace_is_immutable' } });
   await expect(database.storage.db.update(inspectionAttempts).set({ workerId: randomUUID() })).rejects
     .toMatchObject({ cause: { code: '23514', message: 'inspection_attempt_binding_is_immutable' } });
   await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
@@ -125,6 +129,8 @@ it('fences a late inspection receipt and requires closure of an earlier attempt 
   }).where(eq(inspectionAttempts.requestId, first.row.requestId));
   await second.reserve();
   await expect(second.record(first.receipt)).rejects.toMatchObject({ cause: { code: '23514', constraint: 'inspection_attempt_receipt_binding' } });
+  await expect(second.record({ ...second.receipt, scope: { ...second.receipt.scope, workspaceSha256: '0'.repeat(64) } })).rejects
+    .toMatchObject({ cause: { code: '23514', constraint: 'inspection_attempt_workspace_binding' } });
   await second.record();
   const observed = await database.admin.query('SELECT state, settled_fence FROM itervane.inspection_attempts ORDER BY fence');
   expect(observed.rows).toEqual([{ state: 'closed', settled_fence: current.fence }, { state: 'recorded', settled_fence: current.fence }]);

@@ -3,8 +3,9 @@ import { createConnection, type Socket } from 'node:net';
 import { dirname, isAbsolute } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
-  qualifiedInspectionRequestSchema, qualifiedInspectionResponseSchema, sha256Schema,
+  qualifiedInspectionRequestSchema, qualifiedInspectionResponseSchema, qualifiedInspectionStatusSchema, sha256Schema,
   type QualifiedInspectionReceipt, type QualifiedInspectionRequest, type QualifiedInspectionResponse,
+  type QualifiedInspectionScope, type QualifiedInspectionStatus,
 } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from './profiles.js';
 import { sourcePath } from './snapshot.js';
@@ -59,12 +60,12 @@ async function verifySocket(address: QualifiedControllerAddress) {
   }
 }
 
-function verifyReceipt(receipt: QualifiedInspectionReceipt, request: QualifiedInspectionRequest, imageSha256: string) {
-  const { origin, ...scope } = request;
+export function verifyQualifiedInspectionReceipt(receipt: QualifiedInspectionReceipt,
+  scope: QualifiedInspectionScope, binding: { imageSha256: string; originSha256: string }) {
   const { snapshot } = receipt;
   if (Object.entries(scope).some(([key, value]) => receipt.scope[key as keyof typeof scope] !== value)
-      || receipt.imageSha256 !== imageSha256 || receipt.originSha256 !== sha256(origin)
-      || receipt.domainId !== snapshot.runId || snapshot.commit !== request.commit || snapshot.repositoryId !== request.repositoryId) {
+      || receipt.imageSha256 !== binding.imageSha256 || receipt.originSha256 !== binding.originSha256
+      || receipt.domainId !== snapshot.runId || snapshot.commit !== scope.commit || snapshot.repositoryId !== scope.repositoryId) {
     throw new Error('runner_receipt_binding');
   }
   for (const [index, expected] of scannerProfiles.entries()) {
@@ -86,6 +87,29 @@ export class QualifiedInspectionClient {
   private readonly imageSha256: string;
   constructor(private readonly address: QualifiedControllerAddress) {
     this.imageSha256 = sha256Schema.parse(address.imageSha256);
+  }
+
+  async observe(signal?: AbortSignal): Promise<QualifiedInspectionStatus | null> {
+    if (signal?.aborted) return null;
+    try { await verifySocket(this.address); }
+    catch { return null; }
+    const socket = createConnection(this.address.socketPath);
+    const lines = new Lines(socket);
+    const stop = () => socket.destroy();
+    const deadline = setTimeout(stop, 6_000);
+    signal?.addEventListener('abort', stop, { once: true });
+    try {
+      if (signal?.aborted) return null;
+      socket.write('STATUS 1\n');
+      const status = qualifiedInspectionStatusSchema.parse(JSON.parse(await lines.read(requestLimit)));
+      return status.imageSha256 === this.imageSha256 ? status : null;
+    } catch {
+      return null;
+    } finally {
+      signal?.removeEventListener('abort', stop);
+      clearTimeout(deadline);
+      stop();
+    }
   }
 
   async inspect(
@@ -134,7 +158,10 @@ export class QualifiedInspectionClient {
       if (signal?.aborted) cancel();
       else void pulse();
       const response = qualifiedInspectionResponseSchema.parse(JSON.parse(await lines.read(responseLimit)));
-      if (response.kind === 'receipt') verifyReceipt(response, request, this.imageSha256);
+      if (response.kind === 'receipt') {
+        const { origin, ...scope } = request;
+        verifyQualifiedInspectionReceipt(response, scope, { imageSha256: this.imageSha256, originSha256: sha256(origin) });
+      }
       else if (response.requestId !== request.requestId || (response.cleanup === 'confirmed' && !response.domainId)
           || (response.cleanup === 'not_started' && response.domainId)) throw new Error('runner_response_binding');
       return response;
