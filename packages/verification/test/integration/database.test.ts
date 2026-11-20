@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { sql } from 'drizzle-orm';
 import { Annotation, Command, END, START, StateGraph, interrupt } from '@langchain/langgraph';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { openDatabaseProbe } from '../../src/database.js';
@@ -123,16 +124,22 @@ describe('real PostgreSQL 17 admission and recovery', () => {
       worker.kill('SIGKILL');
       await exited;
       expect((await probe.boss.findJobs(queueName))[0]?.state).toBe('active');
-      // Expiry is observed by the supervisor, not by fetch(). Let the one-second
-      // lease expire before the first manual pass, which also stamps monitor time.
-      await new Promise(resolveDelay => setTimeout(resolveDelay, 1_250));
-      const deadline = Date.now() + 5_000;
-      let recovered;
-      while (!recovered && Date.now() < deadline) {
-        await new Promise(resolveDelay => setTimeout(resolveDelay, 250));
-        await probe.boss.supervise(queueName);
-        [recovered] = await probe.boss.fetch(queueName);
-      }
+      const queue = await probe.boss.getQueue(queueName);
+      if (!queue) throw new Error('Missing recovery queue');
+      const schema = sql.identifier(probe.queueSchema);
+      // Supervision stamps its monitor time. PostgreSQL must observe expiry before the first pass.
+      await vi.waitFor(async () => {
+        const check = await probe.db.execute<{ expired: boolean }>(sql`
+          SELECT started_on + expire_seconds * interval '1 second' < ${schema}.job_now() AS expired
+          FROM ${schema}.${sql.identifier(queue.table)} WHERE name = ${queueName} AND id = ${jobId}`);
+        expect(check.rows[0]?.expired).toBe(true);
+      }, { timeout: 8_000, interval: 100 });
+      await probe.boss.supervise(queueName);
+      const recovered = await vi.waitFor(async () => {
+        const [job] = await probe.boss.fetch(queueName);
+        if (!job) throw new Error('Waiting for recovered job');
+        return job;
+      }, { timeout: 5_000, interval: 100 });
       expect(recovered?.id).toBe(jobId);
       expect(recovered?.retryCount).toBe(1);
       await probe.boss.complete(queueName, recovered!);

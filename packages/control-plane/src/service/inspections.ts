@@ -1,12 +1,13 @@
-import { and, eq } from 'drizzle-orm';
-import { idSchema, inspectionPlanSchema, sourceInspectionDtoSchema } from '@itervane/contracts';
+import { and, eq, sql } from 'drizzle-orm';
+import { idSchema, inspectionPlanSchema, sourceInspectionBlockReasonSchema, sourceInspectionDtoSchema } from '@itervane/contracts';
 import { createInspectionPlan, inspectionPlanHash } from '@itervane/runner';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import type { Database } from '../persistence/database.js';
-import { inspectionPlans, taskRuns, tasks } from '../persistence/schema.js';
+import { executionSlot, inspectionPlans, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import type { TaskRow } from '../runtime/authority.js';
 import { requireActor, requireProject, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
+import { currentInspectionAttempt, inspectionCoverage, readInspectionEvidence } from './inspection-evidence.js';
 
 function validateStored(row: typeof inspectionPlans.$inferSelect, task: TaskRow, runId: string) {
   const document = inspectionPlanSchema.parse(row.document);
@@ -36,9 +37,32 @@ export class InspectionService {
       const [run] = await tx.select().from(taskRuns).where(and(eq(taskRuns.taskId, task.id), eq(taskRuns.generation, task.generation)));
       if (!run) throw new Error('inspection_run_missing');
       const [row] = await tx.select().from(inspectionPlans).where(eq(inspectionPlans.runId, run.id));
-      return sourceInspectionDtoSchema.parse({ taskId: task.id, runId: run.id, requestedSource: { repositoryId: task.repositoryId, commit: task.commit },
-        status: row ? 'blocked' : 'not_prepared', reason: 'runner_unavailable', sourceFetched: false, snapshotVerified: false, scanCompleted: false,
-        plan: row ? validateStored(row, task, run.id) : null });
+      const coordinates = { taskId: task.id, runId: run.id, requestedSource: { repositoryId: task.repositoryId, commit: task.commit } };
+      const unverified = { ...coordinates, sourceFetched: false, snapshotVerified: false, scanCompleted: false };
+      if (!row) return sourceInspectionDtoSchema.parse({ ...unverified, status: 'not_prepared', reason: 'runner_unavailable', plan: null });
+
+      const plan = validateStored(row, task, run.id);
+      const attempt = await currentInspectionAttempt(tx, run.id);
+      if (attempt?.state === 'recorded' && attempt.workspaceSha256) {
+        const { receipt, sha256 } = readInspectionEvidence(attempt, plan);
+        const complete = inspectionCoverage(receipt) === 'complete';
+        return sourceInspectionDtoSchema.parse({ ...coordinates, plan, sourceFetched: true, snapshotVerified: true, scanCompleted: complete,
+          status: complete ? 'completed' : 'incomplete', reason: complete ? 'inspection_ready' : 'inspection_incomplete',
+          result: { requestId: attempt.requestId, receiptSha256: sha256, snapshotSha256: receipt.snapshot.manifestSha256,
+            recordedAt: attempt.settledAt?.toISOString(), files: receipt.snapshot.files,
+            scans: receipt.snapshot.reports.map(({ scanner, status, reason, findings, database }) =>
+              ({ scanner, status, reason, findingsCount: findings.length, database })) } });
+      }
+      if (attempt) {
+        const [slot] = await tx.select({ live: sql<boolean>`${executionSlot.leaseUntil} > clock_timestamp()` }).from(executionSlot)
+          .where(and(eq(executionSlot.runId, run.id), eq(executionSlot.fence, attempt.fence)));
+        const active = attempt.state === 'reserved' && slot?.live === true;
+        return sourceInspectionDtoSchema.parse({ ...unverified, plan, requestId: attempt.requestId,
+          status: active ? 'checking' : 'reconciling', reason: active ? null : 'inspection_reconciling' });
+      }
+      const [runtime] = await tx.select({ reason: runRuntime.reason }).from(runRuntime).where(eq(runRuntime.runId, run.id));
+      const reason = sourceInspectionBlockReasonSchema.safeParse(runtime?.reason);
+      return sourceInspectionDtoSchema.parse({ ...unverified, plan, status: 'blocked', reason: reason.success ? reason.data : 'runner_unavailable' });
     });
   }
 }

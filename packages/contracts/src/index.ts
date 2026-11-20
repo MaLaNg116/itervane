@@ -54,6 +54,7 @@ export const toolResultSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('waiting_approval'), operationId: idSchema }).strict(),
   z.object({ status: z.literal('unknown'), operationId: idSchema, requiresReconciliation: z.literal(true) }).strict(),
 ]);
+export type ToolResult = z.infer<typeof toolResultSchema>;
 
 const transitions: Record<TaskState, readonly TaskState[]> = {
   queued: ['running', 'cancelled'],

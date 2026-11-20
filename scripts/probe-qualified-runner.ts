@@ -26,11 +26,13 @@ async function probe() {
       || Boolean(trigger) !== ['revoke', 'disconnect'].includes(mode)) throw new Error('controller_probe_config');
   await requireUnprivilegedCaller();
   const client = new QualifiedInspectionClient({ socketPath, controllerUid: Number(uid), imageSha256 });
+  const status = await client.observe();
+  if (status?.state !== 'idle') throw new Error('controller_probe_not_idle');
   const taskId = randomUUID(); const runId = randomUUID(); const repositoryId = randomUUID();
   const plan = createInspectionPlan({ taskId, runId, requestedSource: { repositoryId, commit } });
   const request: QualifiedInspectionRequest = {
     version: 1, taskId, runId, projectId: randomUUID(), requestId: randomUUID(), repositoryId, commit,
-    planSha256: plan.sha256, generation: 1, fence: 1,
+    planSha256: plan.sha256, workspaceSha256: status.workspaceSha256, generation: 1, fence: 1,
     origin: mode === 'origin' ? 'https://example.invalid/unregistered.git' : origin,
   };
   const outcome = await client.inspect(request, async () => {

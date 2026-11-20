@@ -1,6 +1,6 @@
 # P1-D：隔离 Runner、固定源码快照与真实扫描
 
-- 日期 2026-11-18。D1 已通过本地及三组 Linux CI，托管 KVM 已验证 D2 的专用会话和客体作业隔离。D3-A 验证固定公开来源获取及关闭，D3-B 实测固定只读快照和离线 Gitleaks／Trivy，D3-C1 实测本机控制器、作用域回执和断连回收。D3-C2 继续验收正式执行权、证据持久化和恢复。 [D1 导读](../reviews/p1-d-source-inspection.md) · [D2-C 导读](../reviews/p1-d2-runner-isolation.md) · [D3-A 导读](../reviews/p1-d3-source-acquisition.md) · [D3-B 导读](../reviews/p1-d3-offline-inspection.md) · [D3-C 计划](p1-d3-qualified-inspection.md) · [D3-C1 导读](../reviews/p1-d3-qualified-controller.md)
+- 日期 2026-11-18。D1 已通过本地及三组 Linux CI，托管 KVM 已验证 D2 的专用会话和客体作业隔离。D3-A 验证固定公开来源获取及关闭，D3-B 实测固定只读快照和离线 Gitleaks／Trivy，D3-C1 实测本机控制器、作用域回执和断连回收。D3-C2 已实测批准范围内的 Worker 检查、持久化回执、取消、撤权及崩溃重领。 [D1 导读](../reviews/p1-d-source-inspection.md) · [D2-C 导读](../reviews/p1-d2-runner-isolation.md) · [D3-A 导读](../reviews/p1-d3-source-acquisition.md) · [D3-B 导读](../reviews/p1-d3-offline-inspection.md) · [D3-C 计划](p1-d3-qualified-inspection.md) · [D3-C1 导读](../reviews/p1-d3-qualified-controller.md) · [D3-C2 导读](../reviews/p1-d3-worker-inspection.md)
 - 前置：P1-C / PR #4，代码 `f274c914d54fdcfc9785aa0836ff59f41a200bd4`；新草稿 PR 比较基线为 `feat/p1-portal-login`，不合并前置 PR。
 - 依据：v6 §9/§15—18、TS + PostgreSQL 实施计划 P1.4/P1.5、ADR 0001/0002/0004。
 - D1 开发时没有已验证的 KVM 宿主。后续原生验收使用 GitHub 托管工作机，完整隔离条件仍以 D2 验收为准。
@@ -20,6 +20,7 @@ D2 首个交付切片的范围与本机复跑方式见 [D2-A 生命周期探针]
 托管机上的 KVM 客体启动、重建与清理证据见 [原生复跑计划](p1-d2-runner-native.md) 和 [导读](../reviews/p1-d2-runner-native.md)。
 D2-B 的固定客体作业、取消和超时实测见 [作业通道计划](p1-d2-guest-job.md) 和 [实测导读](../reviews/p1-d2-guest-job.md)。
 D2-C 的专用宿主身份、离线工作负载限制及跨任务隔离见 [验收计划](p1-d2-runner-isolation.md) 和 [实测导读](../reviews/p1-d2-runner-isolation.md)。
+D3-C2 的正式 Worker 准入、证据发布和重领见 [分批计划](p1-d3-worker-inspection.md) 与 [实测导读](../reviews/p1-d3-worker-inspection.md)。
 
 P2 自主 Agent 审计/修复/独立复验、候选/批准/发布，P3 运维 MCP，P4 规则沉淀保持原路线。本批不增加第二套业务工作流，也不调整单维护者/单工作区/全局一个执行中工作流。
 

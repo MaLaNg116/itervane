@@ -1,6 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { fromDrizzle, type Job } from 'pg-boss';
-import { idSchema, wakeupSchema, type TaskEventReason } from '@itervane/contracts';
+import { idSchema, wakeupSchema, type SourceInspectionPauseReason, type TaskEventReason } from '@itervane/contracts';
 import { queueName, type Database } from '../persistence/database.js';
 import { executionSlot, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { requireProject, requireStoredActor, type Transaction } from '../service/access.js';
@@ -91,18 +91,20 @@ export class ExecutionCoordinator {
     }, { allowCancel: true });
   }
 
-  async pause(scope: ExecutionScope) {
+  async pause(scope: ExecutionScope, reason: SourceInspectionPauseReason = 'runner_unavailable') {
     await this.withLease(scope, async (tx, { task, runtime }) => {
       if (!runtime.checkpointId) throw new DomainError('unavailable');
-      await tx.update(runRuntime).set({ reason: 'runner_unavailable', resumePending: false, waitingForTaskId: null }).where(eq(runRuntime.runId, scope.runId));
-      await appendEvent(tx, task, 'task.paused', 'waiting_input', { workerId: scope.workerId, reason: 'runner_unavailable' });
+      await tx.update(runRuntime).set({ reason, resumePending: false, waitingForTaskId: null }).where(eq(runRuntime.runId, scope.runId));
+      const event = reason === 'runner_unavailable' ? 'task.paused' : 'task.inspection_paused';
+      await appendEvent(tx, task, event, 'waiting_input', { workerId: scope.workerId, reason });
       await clearSlot(tx);
     });
   }
 
-  async stop(scope: ExecutionScope, reason: TaskEventReason) {
+  async stop(scope: ExecutionScope, reason: TaskEventReason, onlyIfCancelled = false) {
     await this.withLease(scope, async (tx, { task }) => {
       const cancelled = task.state === 'cancel_requested';
+      if (onlyIfCancelled && !cancelled) return;
       await tx.update(runRuntime).set({ reason, resumePending: false }).where(eq(runRuntime.runId, scope.runId));
       await appendEvent(tx, task, cancelled ? 'task.cancelled' : 'task.needs_human', cancelled ? 'cancelled' : 'needs_human', { workerId: scope.workerId, reason });
       await clearSlot(tx);

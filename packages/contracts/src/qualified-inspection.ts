@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { sha256Schema } from './inspection.js';
+import { scannerDatabaseSchema, scannerReasonSchema, scannerStatusSchema, sha256Schema } from './inspection.js';
 
 const uuid = z.uuidv4();
 const gitId = z.string().regex(/^[0-9a-f]{40}$/);
@@ -17,10 +17,9 @@ const finding = z.strictObject({
 const report = z.strictObject({
   scanner: z.enum(['gitleaks', 'trivy']), version: z.string().regex(/^\d+\.\d+\.\d+$/),
   policySha256: sha256Schema, snapshotSha256: sha256Schema,
-  status: z.enum(['completed', 'failed', 'unavailable', 'unsupported']),
-  reason: z.enum(['timeout', 'scanner_error', 'invalid_report', 'missing_inventory', 'database_unavailable', 'empty_source']).nullable(),
+  status: scannerStatusSchema, reason: scannerReasonSchema.nullable(),
   findings: z.array(finding).max(2000),
-  database: z.strictObject({ sha256: sha256Schema, updatedAt: z.iso.datetime() }).nullable(),
+  database: scannerDatabaseSchema.nullable(),
 }).superRefine((value, ctx) => {
   if (value.status === 'completed'
     ? value.reason !== null || (value.scanner === 'trivy') !== (value.database !== null)
@@ -31,9 +30,13 @@ const report = z.strictObject({
 
 export const qualifiedInspectionScopeSchema = z.strictObject({
   version: z.literal(1), requestId: uuid, taskId: uuid, runId: uuid, projectId: uuid, repositoryId: uuid,
-  generation: counter, fence: counter, planSha256: sha256Schema, commit: gitId,
+  generation: counter, fence: counter, planSha256: sha256Schema, workspaceSha256: sha256Schema, commit: gitId,
 });
 export const qualifiedInspectionRequestSchema = qualifiedInspectionScopeSchema.extend({ origin: z.string().min(1).max(768) });
+export const qualifiedInspectionStatusSchema = z.strictObject({
+  kind: z.literal('status'), version: z.literal(1), workspaceSha256: sha256Schema,
+  imageSha256: sha256Schema, state: z.enum(['idle', 'blocked']),
+});
 export const qualifiedInspectionResponseSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('receipt'), scope: qualifiedInspectionScopeSchema, domainId: uuid, imageSha256: sha256Schema,
@@ -47,5 +50,7 @@ export const qualifiedInspectionResponseSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 export type QualifiedInspectionRequest = z.infer<typeof qualifiedInspectionRequestSchema>;
+export type QualifiedInspectionScope = z.infer<typeof qualifiedInspectionScopeSchema>;
+export type QualifiedInspectionStatus = z.infer<typeof qualifiedInspectionStatusSchema>;
 export type QualifiedInspectionResponse = z.infer<typeof qualifiedInspectionResponseSchema>;
 export type QualifiedInspectionReceipt = Extract<QualifiedInspectionResponse, { kind: 'receipt' }>;

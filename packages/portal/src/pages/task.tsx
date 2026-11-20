@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
-import { projectAccessDtoSchema, sourceInspectionDtoSchema, taskDtoSchema, taskEventDtoSchema } from '@itervane/contracts';
+import { eventReasonMessages, projectAccessDtoSchema, retrySourceInspectionReasonSchema, sourceInspectionDtoSchema,
+  taskDtoSchema, taskEventDtoSchema, translate, type SourceInspectionDto } from '@itervane/contracts';
 import { usePortal, useRemote, useText } from '../context.js';
 import { Failure, Loading, PageHeading, Panel, Status, formatTime } from '../components.js';
 import { ApiFailure } from '../api.js';
 import { StateMarker, useNewEventMotion } from '../motion.js';
-import { Alert, AlertDescription, AlertTitle } from '../ui/alert.js';
+import { Alert, AlertTitle } from '../ui/alert.js';
 import { Badge } from '../ui/badge.js';
 import { Button } from '../ui/button.js';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '../ui/dialog.js';
@@ -34,7 +35,7 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
     onSettled: () => { inFlight.current = false; setConfirmation(null); void cache.invalidateQueries(); },
   });
   const canCancel = ['queued', 'running', 'waiting_input', 'waiting_approval'].includes(task.state);
-  const canResume = task.state === 'waiting_input' && events.data?.items.at(-1)?.reason === 'runner_unavailable';
+  const canResume = task.state === 'waiting_input' && retrySourceInspectionReasonSchema.safeParse(events.data?.items.at(-1)?.reason).success;
   if (access.error) return <Failure error={access.error} locale={locale} />;
   const cancelling = confirmation?.action === 'cancel';
   return <>
@@ -45,7 +46,6 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
     </>} />
     {control.error && <div className="section-gap">{control.error instanceof ApiFailure && control.error.code === 'version_conflict'
       ? <Alert variant="warning" role="alert"><AlertTitle>{t('controlConflict')}</AlertTitle></Alert> : <Failure error={control.error} locale={locale} />}</div>}
-    {canResume && <Alert className="section-gap" variant="warning"><AlertTitle>{t('preflightOnly')}</AlertTitle><AlertDescription>{t('runnerNotice')}</AlertDescription></Alert>}
     <section className="task-state-panel section-gap" aria-label={t('latestState')}>
       <div className="task-current-state" role="status" aria-atomic="true"><StateMarker value={task.state} /><div><p className="muted">{t('latestState')}</p><Status state={task.state} locale={locale} /></div></div>
       <div><p className="muted">{t('dataClass')}</p><strong>{t(task.dataClass === 'public' ? 'publicData' : 'synthetic')}</strong></div>
@@ -69,15 +69,8 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
         : events.data.items.length ? <ActivityTimeline items={events.data.items} /> : <p className="muted">{t('emptyEvents')}</p>}
     </Panel>
     <Panel title={t('inspection')} data-testid="source-inspection">
-      {inspection.isPending ? <Loading locale={locale} /> : inspection.error ? <Failure error={inspection.error} locale={locale} retry={() => { void inspection.refetch(); }} /> : <>
-        <Badge variant="warning">{t(inspection.data.status === 'blocked' ? 'inspectionBlocked' : 'inspectionPending')}</Badge>
-        <p>{t('inspectionBoundary')}</p>
-        <dl className="detail-grid"><div><dt>{t('requestedCommit')}</dt><dd><code>{inspection.data.requestedSource.commit}</code></dd></div>
-          <div><dt>{t('requiredIsolation')}</dt><dd>{t('disposableVm')}</dd></div>
-          {inspection.data.plan && <div><dt>{t('planDigest')}</dt><dd><code>{inspection.data.plan.sha256}</code></dd></div>}</dl>
-        {inspection.data.plan && <><h3>{t('scannerProfiles')}</h3><ul>{inspection.data.plan.document.scanners.map(profile => <li key={profile.scanner}>{profile.scanner} {profile.version}</li>)}</ul></>}
-        <p className="muted">{t('scannerCoverage')}</p>
-      </>}
+      {inspection.isPending ? <Loading locale={locale} /> : inspection.error ? <Failure error={inspection.error} locale={locale} retry={() => { void inspection.refetch(); }} />
+        : <InspectionDetails inspection={inspection.data} />}
     </Panel>
     </div>
     {canWrite && <Dialog open={confirmation !== null} disablePointerDismissal onOpenChange={(open, event) => {
@@ -99,6 +92,49 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>}
+  </>;
+}
+
+const inspectionStatus = {
+  not_prepared: { label: 'inspectionPending', variant: 'default' }, blocked: { label: 'inspectionBlocked', variant: 'warning' },
+  checking: { label: 'inspectionChecking', variant: 'info' }, reconciling: { label: 'inspectionReconciling', variant: 'warning' },
+  completed: { label: 'inspectionCompleted', variant: 'success' }, incomplete: { label: 'inspectionIncomplete', variant: 'warning' },
+} as const;
+const scanStatus = { completed: 'scanCompleted', failed: 'scanFailed', unavailable: 'scanUnavailable', unsupported: 'scanUnsupported' } as const;
+const scanReason = { timeout: 'scanTimeout', scanner_error: 'scanError', invalid_report: 'scanInvalid', missing_inventory: 'scanNoInventory',
+  database_unavailable: 'scanNoDatabase', empty_source: 'scanEmptySource' } as const;
+
+function InspectionDetails({ inspection }: { inspection: SourceInspectionDto }) {
+  const { locale } = usePortal(); const t = useText();
+  const state = inspectionStatus[inspection.status];
+  const result = 'result' in inspection ? inspection.result : undefined;
+  return <>
+    <Badge variant={state.variant}>{t(state.label)}</Badge>
+    {inspection.status !== 'not_prepared' && inspection.reason && <p>{translate(locale, eventReasonMessages[inspection.reason])}</p>}
+    <dl className="detail-grid">
+      <div><dt>{t('requestedCommit')}</dt><dd><code className="break-text">{inspection.requestedSource.commit}</code></dd></div>
+      <div><dt>{t('requiredIsolation')}</dt><dd>{t('disposableVm')}</dd></div>
+      {inspection.plan && <div><dt>{t('planDigest')}</dt><dd><code className="break-text">{inspection.plan.sha256}</code></dd></div>}
+      {result && <>
+        <div><dt>{t('snapshotDigest')}</dt><dd><code className="break-text">{result.snapshotSha256}</code></dd></div>
+        <div><dt>{t('inspectionReceipt')}</dt><dd><code className="break-text">{result.receiptSha256}</code></dd></div>
+      </>}
+    </dl>
+    {inspection.plan && <>
+      <h3>{t('scannerProfiles')}</h3>
+      <ul>{inspection.plan.document.scanners.map((profile, index) => {
+        const scan = result?.scans[index];
+        return <li key={profile.scanner} className="py-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <strong>{profile.scanner} {profile.version}</strong>
+            {scan && <Badge variant={scan.status === 'completed' ? 'success' : 'warning'}>{t(scanStatus[scan.status])}</Badge>}
+            {scan?.status === 'completed' && <span className="muted">{t('scanFindings')} {scan.findingsCount}</span>}
+          </div>
+          {scan?.reason && <p className="muted">{t(scanReason[scan.reason])}</p>}
+        </li>;
+      })}</ul>
+    </>}
+    <p className="muted">{t('scannerCoverage')}</p>
   </>;
 }
 

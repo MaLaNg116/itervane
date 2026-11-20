@@ -187,8 +187,11 @@ class LifecycleTest(unittest.TestCase):
             target.set("name", runner.ProbeJob.port)
 
         self.libvirt.profile_change = substitute_port
+        fd = os.open(self.image, os.O_RDONLY)
         with (
             patch.object(runner, "prepare_session", return_value=self.root),
+            patch.object(runner, "verify_qemu_process", return_value=fd),
+            patch.object(runner, "process_exited", return_value=True),
             patch.object(runner.SourceProbe, "run") as run,
         ):
             result = self.launch("source", session=True)
@@ -332,11 +335,12 @@ class LifecycleTest(unittest.TestCase):
             patch.object(runner, "verify_qemu_process", side_effect=runner.SessionRejected("qemu-process")),
         ):
             result = self.launch(session=True)
-        self.assertEqual(result.code, "session_rejected")
+        self.assertEqual(result.code, "cleanup_unproven")
         self.assertEqual(result.profileIssue, "qemu-process")
         self.assertNotIn("resume", self.libvirt.events)
         self.assertFalse(result.sessionVerified)
-        self.assertEqual(list(self.root.iterdir()), [])
+        self.assertTrue((self.root / (runner.PREFIX + result.runId) / "run.json").exists())
+        self.assertEqual(self.launch(session=True).code, "pending_cleanup")
 
     def test_workspace_lock_and_permissions_fail_closed(self):
         fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)

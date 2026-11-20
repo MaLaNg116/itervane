@@ -4,27 +4,32 @@ import socket
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Event
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import qualified_controller as controller
-from libvirt_probe import Result
+from libvirt_probe import Result, locked_workspace
 
 
 ORIGIN = "https://example.invalid/project.git"
+WORKSPACE = "c" * 64
 
 
 def request():
     return {
         **{name: str(uuid.uuid4()) for name in controller.IDS},
         "version": 1, "generation": 3, "fence": 8, "planSha256": "a" * 64,
-        "commit": "b" * 40, "origin": ORIGIN,
+        "commit": "b" * 40, "origin": ORIGIN, "workspaceSha256": WORKSPACE,
     }
 
 
 class ControllerTest(unittest.TestCase):
     def test_member_and_exact_origin_are_required_before_launch(self):
         launch = Mock()
+        observe = Mock()
         for uid, code, data in (
             (os.getuid() + 1, "peer_denied", b""),
             (os.getuid(), "origin_denied", json.dumps(request()).encode() + b"\n"),
@@ -34,10 +39,48 @@ class ControllerTest(unittest.TestCase):
             with self.subTest(code=code), server, client:
                 if data:
                     client.sendall(data)
-                reply = controller.serve_connection(server, uid, {}, launch, lambda: False)
+                reply = controller.serve_connection(server, uid, {}, WORKSPACE, observe, launch, lambda: False)
                 self.assertEqual(reply["code"], code)
                 self.assertEqual(reply["cleanup"], "not_started")
         launch.assert_not_called()
+        observe.assert_not_called()
+
+    def test_status_is_read_only_and_workspace_must_match_before_ready(self):
+        launch = Mock()
+        observe = Mock(return_value={"kind": "status", "state": "idle"})
+        server, client = socket.socketpair()
+        with server, client:
+            client.sendall(controller.STATUS)
+            reply = controller.serve_connection(server, os.getuid(), {}, WORKSPACE, observe, launch, lambda: False)
+            self.assertEqual(reply, observe.return_value)
+        server, client = socket.socketpair()
+        with server, client:
+            data = {**request(), "workspaceSha256": "e" * 64}
+            client.sendall(json.dumps(data).encode() + b"\n")
+            reply = controller.serve_connection(server, os.getuid(), {ORIGIN: ORIGIN}, WORKSPACE, observe, launch, lambda: False)
+            self.assertEqual(reply, controller.rejected("not_ready", data["requestId"]))
+        observe.assert_called_once_with()
+        launch.assert_not_called()
+
+    def test_idle_requires_same_workspace_lock_empty_staging_and_empty_session(self):
+        libvirt = SimpleNamespace(libvirtError=RuntimeError)
+        with TemporaryDirectory() as temporary, patch.object(controller, "prepare_session"):
+            root = Path(temporary).resolve()
+            fingerprint = controller.workspace_binding(root, root.stat())
+            conn = Mock()
+            conn.listAllDomains.return_value = []
+            conn.close.return_value = 0
+            with patch.object(controller, "connect", return_value=conn):
+                self.assertTrue(controller.workspace_idle(libvirt, root, root, fingerprint))
+                self.assertFalse(controller.workspace_idle(libvirt, root, root, "f" * 64))
+                with locked_workspace(root):
+                    self.assertFalse(controller.workspace_idle(libvirt, root, root, fingerprint))
+                journal = root / "pending"
+                journal.touch()
+                self.assertFalse(controller.workspace_idle(libvirt, root, root, fingerprint))
+                journal.unlink()
+                conn.listAllDomains.return_value = [object()]
+                self.assertFalse(controller.workspace_idle(libvirt, root, root, fingerprint))
 
     def test_dropping_pulses_stops_the_active_job(self):
         data = request()
@@ -56,7 +99,7 @@ class ControllerTest(unittest.TestCase):
                         idle.wait(0.01)
                     self.fail("lease watcher did not stop the active job")
 
-                future = pool.submit(controller.serve_connection, server, os.getuid(), {ORIGIN: ORIGIN}, run, lambda: False)
+                future = pool.submit(controller.serve_connection, server, os.getuid(), {ORIGIN: ORIGIN}, WORKSPACE, Mock(), run, lambda: False)
                 client.sendall(json.dumps(data).encode() + b"\n")
                 with client.makefile("rb", buffering=0) as reader:
                     self.assertEqual(reader.readline(len(controller.READY)), controller.READY)

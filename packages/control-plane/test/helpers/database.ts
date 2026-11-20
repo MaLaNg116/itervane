@@ -3,8 +3,7 @@ import pg from 'pg';
 import { openDatabase, queueName, releaseFixtureQueue } from '../../src/persistence/database.js';
 import { migrateDatabase } from '../../src/persistence/migrate.js';
 
-export async function databaseFixture() {
-  const base = process.env.DATABASE_URL;
+export async function databaseFixture(base = process.env.DATABASE_URL) {
   if (!base || !/^\/(itervane_test|itervane_p0)(_[a-z0-9]+)?$/.test(new URL(base).pathname)) throw new Error('Dedicated PostgreSQL test configuration required');
   const nonce = randomUUID().replaceAll('-', '').slice(0, 12);
   const databaseName = `itervane_test_${nonce}`;
@@ -60,7 +59,7 @@ export async function databaseFixture() {
       async reset() {
         await runtime.boss.deleteAllJobs(queueName);
         await runtime.boss.deleteAllJobs(releaseFixtureQueue);
-        await control.query(`TRUNCATE itervane.release_operations, itervane.release_decisions, itervane.release_candidates, itervane.preaudits, itervane.execution_slot, itervane.inspection_plans, itervane.checkpoint_write_receipts, itervane.tool_calls, itervane.run_runtime, itervane.task_events, itervane.task_runs, itervane.tasks,
+        await control.query(`TRUNCATE itervane.release_operations, itervane.release_decisions, itervane.release_candidates, itervane.preaudits, itervane.execution_slot, itervane.inspection_attempts, itervane.inspection_plans, itervane.checkpoint_write_receipts, itervane.tool_calls, itervane.run_runtime, itervane.task_events, itervane.task_runs, itervane.tasks,
           itervane.environments, itervane.applications, itervane.repositories, itervane.project_members,
           itervane.projects, itervane.workspace_members, itervane.workspaces, itervane.principals`);
         await control.query('INSERT INTO itervane.execution_slot(id) VALUES (1)');
