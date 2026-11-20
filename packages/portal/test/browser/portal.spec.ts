@@ -11,6 +11,8 @@ const test = base.extend<{}, { stack: Stack }>({ stack: [async ({}, use) => {
 
 test.afterEach(async ({ page, stack }, info) => {
   if (info.status === info.expectedStatus || page.isClosed()) return;
+  const origin = new URL(page.url()).origin;
+  info.annotations.push({ type: 'failure-surface', description: origin === stack.origin ? 'application' : origin === new URL(stack.issuer).origin ? 'identity' : 'other' });
   if (new URL(page.url()).origin === stack.origin) {
     await page.screenshot({ path: `.reports/p1-c/failed-${info.title.replace(/[^a-zA-Z0-9-]/g, '-')}.png`, fullPage: true });
     console.log(`Application view at failure: ${new URL(page.url()).pathname}`);
