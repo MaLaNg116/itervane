@@ -86,7 +86,7 @@ async function observeMotion(page: Page, origin: string) {
         if (element.matches('.heading-accent')) probe.headings++;
         if (element.matches('.disclosure-content')) probe.disclosures++;
       }
-      if (document.querySelector('main .ant-alert-error') && document.querySelector('[data-testid="rule-bounded-review-context"]')) probe.privateWithError = true;
+      if (document.querySelector('main [data-slot="alert"][role="alert"]') && document.querySelector('[data-testid="rule-bounded-review-context"]')) probe.privateWithError = true;
     }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['style'] });
   }, origin);
 }
@@ -103,6 +103,7 @@ async function expectMotionCsp(page: Page) {
 
 for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycle in ${locale}`, async ({ page, stack }) => {
   const zh = locale === 'zh-CN';
+  await observeMotion(page, stack.origin);
   let challenge = false;
   let identityMatches = false;
   page.on('request', request => {
@@ -165,8 +166,27 @@ for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycl
   flowPhase('capture');
   await page.screenshot({ path: `.reports/p1-c/portal-${locale}.png`, fullPage: true });
   flowPhase('resume');
-  await page.getByRole('button', { name: zh ? '重试前置检查' : 'Retry preflight', exact: true }).click();
-  await page.getByRole('button', { name: zh ? '确认重试' : 'Confirm retry', exact: true }).click();
+  const retry = page.getByRole('button', { name: zh ? '重试前置检查' : 'Retry preflight', exact: true });
+  const confirm = page.getByRole('button', { name: zh ? '确认重试' : 'Confirm retry', exact: true });
+  const back = page.getByRole('button', { name: zh ? '暂不操作' : 'Go back', exact: true });
+  const dialog = page.getByRole('dialog', { name: zh ? '确认重试前置检查？' : 'Retry this preflight?', exact: true });
+  for (const width of [375, 768, 1365]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  }
+  await page.setViewportSize({ width: 375, height: 812 });
+  await captureWorkspace(page, `.reports/p1-shadcn/task-mobile-${locale}.png`);
+  await retry.focus(); await retry.press('Enter');
+  await expect(dialog).toBeVisible(); await expect(back).toBeFocused();
+  const bounds = (await dialog.boundingBox())!;
+  expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.x + bounds.width).toBeLessThanOrEqual(375);
+  await page.keyboard.press('Shift+Tab'); await expect(confirm).toBeFocused();
+  await page.keyboard.press('Tab'); await expect(back).toBeFocused();
+  await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); await expect(retry).toBeFocused();
+  expect((await stack.database.admin.query('SELECT resume_count FROM itervane.run_runtime WHERE task_id=$1', [taskId])).rows[0]?.resume_count).toBe(0);
+  await page.setViewportSize({ width: 1365, height: 960 });
+  await retry.press('Enter');
+  await confirm.click();
   await expect.poll(async () => (await stack.database.admin.query('SELECT resume_count FROM itervane.run_runtime WHERE task_id=$1', [taskId])).rows[0]?.resume_count).toBe(1);
   await expect(page.getByText(zh ? '任务正在等待经过验证的 Runner。' : 'Task is waiting for a verified Runner.', { exact: true })).toHaveCount(2);
   await expect(page.getByRole('button', { name: zh ? '重试前置检查' : 'Retry preflight', exact: true })).toBeVisible();
@@ -177,6 +197,8 @@ for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycl
   await page.getByRole('button', { name: zh ? 'Cancel task' : '取消任务', exact: true }).click();
   await page.getByRole('button', { name: zh ? 'Confirm cancellation' : '确认取消', exact: true }).click();
   await expect.poll(async () => (await stack.database.admin.query('SELECT state FROM itervane.tasks WHERE id=$1', [taskId])).rows[0]?.state).toBe('cancelled');
+  await expectMotionCsp(page);
+  expect(await motionProbe(page)).toMatchObject({ headings: 0, state: 0, events: 0 });
   flowPhase('logout');
   await page.getByRole('button', { name: zh ? 'Sign out' : '退出登录', exact: true }).click();
   const logoutConfirmation = page.locator('#kc-logout');
@@ -263,9 +285,45 @@ test('a stale confirmation receives a real conflict and requires another explici
   await expect(page.getByText('The task changed. Review its latest state before confirming again.', { exact: true })).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   expect((await stack.database.admin.query('SELECT state FROM itervane.tasks WHERE id=$1', [task.id])).rows[0]?.state).toBe('waiting_input');
+  const release = Promise.withResolvers<void>();
+  let posts = 0;
+  await page.route(`${stack.origin}/v1/tasks/${task.id}/cancel`, async route => {
+    posts++; await release.promise; await route.continue();
+  });
   await page.getByRole('button', { name: 'Cancel task', exact: true }).click();
-  await page.getByRole('button', { name: 'Confirm cancellation', exact: true }).click();
+  const confirm = page.getByRole('button', { name: 'Confirm cancellation', exact: true });
+  try {
+    await confirm.click();
+    await expect.poll(() => posts).toBe(1);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(confirm).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Go back', exact: true })).toBeDisabled();
+  } finally { release.resolve(); }
   await expect.poll(async () => (await stack.database.admin.query('SELECT state FROM itervane.tasks WHERE id=$1', [task.id])).rows[0]?.state).toBe('cancelled');
+  expect(posts).toBe(1);
+});
+
+test('task confirmation closes when the current project role becomes read only', async ({ page, stack }) => {
+  const project = await seedProject(stack, true); const authorization = authorizationFrom(page);
+  await stack.database.admin.query("UPDATE itervane.project_members SET role='maintainer' WHERE project_id=$1", [project.id]);
+  await login(page, stack, 'viewer');
+  await expect(page.getByRole('link', { name: project.title, exact: true })).toBeVisible();
+  const task = await admit(stack, authorization(), project); await paused(stack, task.id);
+  await page.goto(`${stack.origin}/#/tasks/${task.id}`);
+  await page.getByRole('button', { name: 'Cancel task', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Cancel this task?' });
+  await expect(dialog).toBeVisible();
+  await stack.database.admin.query("UPDATE itervane.project_members SET role='viewer' WHERE project_id=$1", [project.id]);
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Cancel task', exact: true })).toHaveCount(0);
+  await expect(page.getByText(task.purpose, { exact: true })).toBeVisible();
+  const denied = await fetch(`${stack.origin}/v1/tasks/${task.id}/cancel`, { method: 'POST',
+    headers: { Authorization: authorization(), 'Content-Type': 'application/json' }, body: JSON.stringify({ expectedVersion: task.version }) });
+  expect(denied.status).toBe(403);
+  await stack.database.admin.query('DELETE FROM itervane.project_members WHERE project_id=$1', [project.id]);
+  await expect(page.getByText(task.purpose, { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('source-inspection')).toHaveCount(0);
 });
 
 test('real refresh is serialized and a revoked IdP session clears private views', async ({ page, stack }) => {
@@ -414,6 +472,7 @@ test('normal motion follows real task changes and remains quiet through polling 
   await captureWorkspace(page, '.reports/p1-ux/task-zh.png');
   await page.screenshot({ path: '.reports/p1-ux/workspace-preview.png' });
   await language(page, 'en'); await captureWorkspace(page, '.reports/p1-ux/task-en.png');
+  await expectMotionCsp(page);
   const capability = await (await fetch(`${stack.origin}/v1/capabilities`, { headers: { Authorization: authorization() } })).json();
   expect(capability).toMatchObject({ stage: 'p1-e', sourceScanning: false, taskExecution: false, deployment: false, operations: false });
 });
