@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { PgBoss } from 'pg-boss';
 
 export const queueName = 'workflow-v1';
+export const releaseFixtureQueue = 'release-fixture-v1';
 export const queueSchema = 'itervane_queue';
 
 export async function openDatabase(connectionString: string) {

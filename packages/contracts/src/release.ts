@@ -5,6 +5,7 @@ import { idSchema, sourceRefSchema } from './primitives.js';
 
 const version = z.number().int().min(0).max(2_147_483_647);
 const timestamp = z.iso.datetime({ precision: 3 });
+const imageDigest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
 export const fixtureReleaseManifestSchema = z.object({
   version: z.literal(1),
@@ -28,7 +29,7 @@ export const fixtureReleaseManifestSchema = z.object({
     targetedSha256: sha256Schema,
     imageScanSha256: sha256Schema,
   }).strict(),
-  imageDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  imageDigest,
   runtimeConfigSha256: sha256Schema,
   target: z.object({
     applicationId: idSchema,
@@ -70,3 +71,29 @@ export type FixtureReleaseManifest = z.infer<typeof fixtureReleaseManifestSchema
 export type ReleaseDecision = z.infer<typeof releaseDecisionSchema>;
 export type ReleaseCandidateStatus = z.infer<typeof releaseCandidateStatusSchema>;
 export type ReleaseCandidateDto = z.infer<typeof releaseCandidateDtoSchema>;
+
+export const fixtureReleaseWakeupSchema = z.object({ operationId: idSchema }).strict();
+export const fixtureReleaseObservationSchema = z.object({
+  version: z.literal(1),
+  origin: z.literal('trusted_fixture'),
+  operationId: idSchema,
+  fingerprint: sha256Schema,
+  environmentId: idSchema,
+  mappingSha256: sha256Schema,
+  imageDigest,
+  runtimeConfigSha256: sha256Schema,
+  downstreamId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/),
+  healthy: z.boolean(),
+  accessProtected: z.boolean(),
+}).strict();
+export const releaseOperationStateSchema = z.enum(['queued', 'dispatching', 'reconciling', 'verified_fixture', 'blocked']);
+export const fixtureReleaseOperationSchema = z.object({
+  id: idSchema, candidateId: idSchema, environmentId: idSchema,
+  state: releaseOperationStateSchema,
+  origin: z.literal('trusted_fixture'), releaseEligible: z.literal(false),
+  observation: fixtureReleaseObservationSchema.nullable(),
+  createdAt: timestamp, updatedAt: timestamp,
+  locale: localeSchema, message: z.string(),
+}).strict();
+export type FixtureReleaseObservation = z.infer<typeof fixtureReleaseObservationSchema>;
+export type ReleaseOperationState = z.infer<typeof releaseOperationStateSchema>;

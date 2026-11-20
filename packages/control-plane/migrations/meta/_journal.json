@@ -57,6 +57,13 @@
       "when": 1795156880414,
       "tag": "0007_release_candidates",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795162343480,
+      "tag": "0008_release_operations",
+      "breakpoints": true
     }
   ]
 }

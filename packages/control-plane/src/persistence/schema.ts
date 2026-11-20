@@ -1,6 +1,9 @@
 import { sql } from 'drizzle-orm';
-import { boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
-import { agentRoles, taskStates, type FixtureReleaseManifest, type InspectionPlan, type PreauditRecord, type ReleaseDecision } from '@itervane/contracts';
+import { boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import {
+  agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type InspectionPlan,
+  type PreauditRecord, type ReleaseDecision, type ReleaseOperationState,
+} from '@itervane/contracts';
 
 export const domain = pgSchema('itervane');
 const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
@@ -155,6 +158,7 @@ export const releaseCandidates = domain.table('release_candidates', {
   foreignKey({ name: 'release_candidate_environment_scope_fk', columns: [t.environmentId, t.projectId, t.applicationId],
     foreignColumns: [environments.id, environments.projectId, environments.applicationId] }),
   unique('release_candidate_evidence_version').on(t.taskId, t.evidenceVersion),
+  unique('release_candidate_environment_pair').on(t.id, t.environmentId),
   check('release_candidate_binding', sql`(${t.evidenceVersion} > 0 AND ${t.fingerprint} ~ '^[a-f0-9]{64}$'
     AND ${t.document}->>'version' = '1' AND ${t.document}->>'origin' = 'trusted_fixture'
     AND ${t.document}->'releaseEligible' = 'false'::jsonb
@@ -182,4 +186,32 @@ export const releaseDecisions = domain.table('release_decisions', {
   check('release_decision_action_version', sql`(${t.version} = 1 AND ${t.action} IN ('confirm', 'reject'))
     OR (${t.version} = 2 AND ${t.action} = 'revoke')`),
   check('release_decision_self_confirmed', sql`NOT ${t.selfConfirmed} OR ${t.action} = 'confirm'`),
+]);
+
+export const releaseOperations = domain.table('release_operations', {
+  id: uuid('id').primaryKey(),
+  candidateId: uuid('candidate_id').notNull(),
+  environmentId: uuid('environment_id').notNull(),
+  approvalVersion: integer('approval_version').notNull(),
+  state: text('state').$type<ReleaseOperationState>().notNull().default('queued'),
+  observation: jsonb('observation').$type<FixtureReleaseObservation>(),
+  createdAt: createdAt(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, t => [
+  foreignKey({ name: 'release_operation_candidate_scope_fk', columns: [t.candidateId, t.environmentId],
+    foreignColumns: [releaseCandidates.id, releaseCandidates.environmentId] }),
+  foreignKey({ name: 'release_operation_decision_fk', columns: [t.candidateId, t.approvalVersion],
+    foreignColumns: [releaseDecisions.candidateId, releaseDecisions.version] }),
+  unique('release_operation_candidate_unique').on(t.candidateId),
+  uniqueIndex('release_operation_environment_hold').on(t.environmentId).where(sql`${t.state} IN ('dispatching', 'reconciling')`),
+  check('release_operation_single_approval', sql`${t.approvalVersion} = 1`),
+  check('release_operation_state', sql`${t.state} IN ('queued', 'dispatching', 'reconciling', 'verified_fixture', 'blocked')`),
+  check('release_operation_observation', sql`(
+    (${t.state} <> 'verified_fixture' AND ${t.observation} IS NULL) OR
+    (${t.state} = 'verified_fixture' AND ${t.observation}->>'origin' = 'trusted_fixture'
+      AND ${t.observation}->>'operationId' = ${t.id}::text
+      AND ${t.observation}->>'environmentId' = ${t.environmentId}::text
+      AND ${t.observation}->'healthy' = 'true'::jsonb AND ${t.observation}->'accessProtected' = 'true'::jsonb
+      AND octet_length(${t.observation}::text) <= 4096)
+  ) IS TRUE`),
 ]);
