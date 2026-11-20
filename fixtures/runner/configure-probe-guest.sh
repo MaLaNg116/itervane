@@ -5,15 +5,20 @@ dpkg --install /var/tmp/itervane-probe-liburing.deb /var/tmp/itervane-probe-agen
 rm -- /var/tmp/itervane-probe-liburing.deb /var/tmp/itervane-probe-agent.deb
 test -x /usr/bin/python3
 useradd --system --user-group --no-create-home --shell /usr/sbin/nologin itervane-job
+useradd --system --user-group --no-create-home --shell /usr/sbin/nologin itervane-workload
 install -Dm 0644 /var/tmp/itervane-guest-job.py /usr/local/libexec/itervane-guest-job.py
-rm -- /var/tmp/itervane-guest-job.py
+install -Dm 0644 /var/tmp/verify-guest-workload.py /usr/local/libexec/itervane-probe-workload.py
+rm -- /var/tmp/itervane-guest-job.py /var/tmp/verify-guest-workload.py
+install -d -m 0755 /etc/itervane-probe
+(umask 077; printf '%s\n' 'synthetic protected guest marker' >/etc/itervane-probe/protected.marker)
 cat >/etc/udev/rules.d/60-itervane-guest-job.rules <<'EOF'
 SUBSYSTEM=="virtio-ports", ATTR{name}=="org.itervane.runner.job.0", OWNER="itervane-job", MODE="0600", TAG+="systemd", ENV{SYSTEMD_WANTS}+="itervane-guest-job.service"
 EOF
 cat >/etc/systemd/system/itervane-guest-job.service <<'EOF'
 [Unit]
 Requires=qemu-guest-agent.service
-After=qemu-guest-agent.service
+BindsTo=itervane-probe-workload.service
+After=qemu-guest-agent.service itervane-probe-workload.service
 
 [Service]
 ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/itervane-guest-job.py
@@ -30,6 +35,35 @@ DeviceAllow=/dev/virtio-ports/org.itervane.runner.job.0 rw
 MemoryMax=96M
 TasksMax=4
 RuntimeMaxSec=95
+UMask=0077
+EOF
+cat >/etc/systemd/system/itervane-probe-workload.service <<'EOF'
+[Unit]
+Requires=qemu-guest-agent.service
+After=qemu-guest-agent.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=12
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/itervane-probe-workload.py
+User=itervane-workload
+Group=itervane-workload
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+StateDirectory=itervane-probe-workload
+StateDirectoryMode=0700
+RuntimeDirectory=itervane-probe-workload
+RuntimeDirectoryMode=0755
+MemoryMax=64M
+TasksMax=4
+LimitFSIZE=65536
+RuntimeMaxSec=110
 UMask=0077
 EOF
 install -d -m 0755 /etc/qemu /etc/systemd/system/multi-user.target.wants
