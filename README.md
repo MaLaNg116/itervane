@@ -20,7 +20,7 @@ P1-C adds a minimal English/Simplified Chinese React portal with real OIDC Autho
 
 P1-D1 adds immutable source-inspection plans, Git object/manifest verification, redacted scanner adapters, and real Gitleaks/Trivy checks on maintainer-generated fixtures. The portal and MCP read the same preparation record. Submitted repositories are not fetched or scanned while the verified disposable-VM gate is closed. See [P1-D setup](docs/control-plane-p1-d.md) and the [D1/D2/D3 implementation and acceptance plan](docs/plans/p1-d-isolated-source-inspection.md).
 
-P1-D2-A adds a maintainer-only libvirt lifecycle probe for a pinned raw guest image. The native KVM run, guest job protocol and isolation evidence are pending. See the [D2-A plan](docs/plans/p1-d2-libvirt-lifecycle.md) and the [review and replay guide](docs/reviews/p1-d2-libvirt-lifecycle.md).
+P1-D2-A adds a maintainer-only libvirt lifecycle probe. Its pinned trusted image has booted and been removed twice on a KVM test host, with device checks and a fresh disk each time. The guest job protocol and full isolation acceptance remain pending. See the [native evidence and replay guide](docs/reviews/p1-d2-runner-native.md).
 
 P1-E adds a versioned, read-only bilingual rule/Skill catalogue and bounded text preaudit through the same API, external MCP and portal. Deterministic text checks on synthetic or public snippets and single-file diffs produce persistent, source-free reports with explicit coverage. See [P1-E setup and limits](docs/control-plane-p1-e.md), the [implementation plan](docs/plans/p1-e-rules-and-preaudit.md), and the [review guide](docs/reviews/p1-e-rules-preaudit.md).
 
