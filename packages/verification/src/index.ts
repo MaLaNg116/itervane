@@ -5,6 +5,6 @@ export { probeCloud, cloudArguments } from './cloud.js';
 export { probeMcp } from './mcp.js';
 export { probeModel } from './model/probe.js';
 export { runProbeLoop } from './model/loop.js';
-export { createAnthropic, createOpenAI } from './model/adapters.js';
-export type { ModelAdapter, ModelTurn, ConversationEntry } from './model/types.js';
+export { createAnthropic, createOpenAI } from '@itervane/model';
+export type { ModelAdapter, ModelTurn, ConversationEntry } from '@itervane/model';
 export { report, saveReport, executeProbe, sourceFingerprint } from './report.js';

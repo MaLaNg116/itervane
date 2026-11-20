@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { runProbeLoop, type ProbeTool } from '../../src/model/loop.js';
-import type { ModelAdapter, ModelTurn } from '../../src/model/types.js';
+import type { ModelAdapter, ModelTurn } from '@itervane/model';
 
 const call = (name: string, input: unknown = {}): ModelTurn => ({ text: '', calls: [{ id: 'call-1', name, input }], tokenUsage: 10 });
 function fake(turns: ModelTurn[]): ModelAdapter {

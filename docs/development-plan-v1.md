@@ -2,7 +2,7 @@
 
 - 日期：2026-11-16。
 - 依据：[蓝图 v6](blueprint-v6.md)、[TS + PostgreSQL 实施计划 v2](implementation-plan-v2-ts-postgresql.md)。
-- 当前：P0 基础设施闸门仍待验证，独立 P1-A/P1-B/P1-C/P1-D1/P1-E 已有局部实现，完整 P1 未验收。
+- 当前 P0 基础设施与完整 P1 待验。P1-A 到 P1-E 已推进可独立实现的切片，P2-A 已跑通可信样例的三角色循环。
 
 2026-11-18 补充：用户要求继续分阶段完成项目。按 [ADR 0001](decisions/0001-development-and-runtime-gates.md) 分开开发依赖与运行资格，允许独立的 [P1-A 身份/资源/任务底座](plans/p1-a-project-task-foundation.md) 开发；本文件原始阶段出口继续约束完整验收，VM/发布/运维待验不放行。
 
@@ -19,6 +19,8 @@ P1-E 按 [规则查询与有限预审计划](plans/p1-e-rules-and-preaudit.md) �
 P1-UX 按[门户设计与动效计划](plans/p1-ux-portal-design-motion.md) 独立完善现有中英文界面，参考固定版本 UI UX Pro Max/frontend-design，使用受控 GSAP 微反馈与系统减少动效。它保持原 API/领域记录、认证授权及 Runner 闸门；不是新一轮 Agent、规则上传或发布能力。
 
 P1-UX 后续按[组件验证与迁移计划](plans/p1-ux-shadcn-migration.md)先复核真实任务详情，再逐页采用 shadcn/ui。实现选择及验收见 [ADR 0006](decisions/0006-portal-components.md) 和[迁移导读](reviews/p1-ux-shadcn-migration.md)。
+
+P2-A 按 [内置 Agent Harness 计划](plans/p2-a-agent-harness.md) 交付双语 ReAct、审计、模板修复、独立复验及 PostgreSQL 检查点恢复。接入正式 Worker 依赖 D2/D3 确认可用 Runner，及领域层绑定授权、租约和已发布检查点。运行范围与验收入口见 [P2-A 运行说明](agent-harness-p2-a.md)。
 
 ## 1. 开发约束
 

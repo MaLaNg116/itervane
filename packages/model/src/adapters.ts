@@ -41,11 +41,12 @@ export function createAnthropic(config: Config): ModelAdapter {
   const client = new Anthropic({ apiKey: config.apiKey, baseURL: safeEndpoint(config.baseURL), fetch: privateFetch, maxRetries: 0 });
   return {
     protocol: 'anthropic',
-    async complete({ system, conversation, tools, signal }): Promise<ModelTurn> {
+    async complete({ system, conversation, tools, signal, maxOutputTokens = 1_024, singleTool }): Promise<ModelTurn> {
       const response = await client.messages.create({
-        model: config.model, max_tokens: 1_024, system,
+        model: config.model, max_tokens: maxOutputTokens, system,
         messages: anthropicMessages(conversation),
         tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: { ...t.inputSchema, type: 'object' } })),
+        ...(singleTool && tools.length ? { tool_choice: { type: 'auto', disable_parallel_tool_use: true } } : {}),
       }, { signal });
       return {
         text: response.content.filter(b => b.type === 'text').map(b => b.text).join('\n'),
@@ -60,10 +61,11 @@ export function createOpenAI(config: Config): ModelAdapter {
   const client = new OpenAI({ apiKey: config.apiKey, baseURL: safeEndpoint(config.baseURL), fetch: privateFetch, maxRetries: 0 });
   return {
     protocol: 'openai',
-    async complete({ system, conversation, tools, signal }): Promise<ModelTurn> {
+    async complete({ system, conversation, tools, signal, maxOutputTokens = 1_024, singleTool }): Promise<ModelTurn> {
       const response = await client.chat.completions.create({
-        model: config.model, messages: openaiMessages(system, conversation), max_completion_tokens: 1_024,
+        model: config.model, messages: openaiMessages(system, conversation), max_completion_tokens: maxOutputTokens,
         tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema } })),
+        ...(singleTool && tools.length ? { parallel_tool_calls: false } : {}),
       }, { signal });
       const message = response.choices[0]?.message;
       if (!message) throw new Error('Model returned no choice');

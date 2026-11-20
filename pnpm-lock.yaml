@@ -49,6 +49,24 @@ importers:
         specifier: 8.3.8
         version: 8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)
 
+  packages/agent:
+    dependencies:
+      '@itervane/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@itervane/model':
+        specifier: workspace:*
+        version: link:../model
+      '@langchain/core':
+        specifier: 1.4.1
+        version: 1.4.1(@opentelemetry/api@1.10.0)(openai@7.57.0(zod@4.6.7))
+      '@langchain/langgraph':
+        specifier: 1.7.4
+        version: 1.7.4(@langchain/core@1.4.1(@opentelemetry/api@1.10.0)(openai@7.57.0(zod@4.6.7)))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+
   packages/contracts:
     dependencies:
       zod:
@@ -109,6 +127,15 @@ importers:
       drizzle-kit:
         specifier: 0.31.11
         version: 0.31.11
+
+  packages/model:
+    dependencies:
+      '@anthropic-ai/sdk':
+        specifier: 1.8.0
+        version: 1.8.0(zod@4.6.7)
+      openai:
+        specifier: 7.57.0
+        version: 7.57.0(zod@4.6.7)
 
   packages/portal:
     dependencies:
@@ -191,12 +218,18 @@ importers:
 
   packages/verification:
     dependencies:
-      '@anthropic-ai/sdk':
-        specifier: 1.8.0
-        version: 1.8.0(zod@4.6.7)
+      '@itervane/agent':
+        specifier: workspace:*
+        version: link:../agent
       '@itervane/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@itervane/model':
+        specifier: workspace:*
+        version: link:../model
+      '@itervane/rules':
+        specifier: workspace:*
+        version: link:../rules
       '@langchain/core':
         specifier: 1.4.1
         version: 1.4.1(@opentelemetry/api@1.10.0)(openai@7.57.0(zod@4.6.7))
@@ -218,9 +251,6 @@ importers:
       drizzle-orm:
         specifier: 0.45.4
         version: 0.45.4(@opentelemetry/api@1.10.0)(@types/pg@8.23.1)(pg@8.23.1)
-      openai:
-        specifier: 7.57.0
-        version: 7.57.0(zod@4.6.7)
       pg:
         specifier: 8.23.1
         version: 8.23.1
