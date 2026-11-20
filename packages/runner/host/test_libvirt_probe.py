@@ -87,7 +87,9 @@ class Domain:
         source = self.document.find("devices/disk/source")
         self.disk = Path(source.get("file"))
         source.set("index", "1")
-        xml.SubElement(self.document.find("devices/channel"), "source", mode="bind", path="/test/qga.sock")
+        for channel in self.document.findall("devices/channel"):
+            port = channel.find("target").get("name")
+            xml.SubElement(channel, "source", mode="bind", path=f"/test/{port}.sock")
         self.document.find("os/type").set("machine", "pc-q35-8.2")
         self.libvirt.profile_change(self.document)
 
@@ -137,19 +139,38 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(domain.disk.read_bytes(), self.image.read_bytes())
         return '{"return":{}}'
 
-    def launch(self):
-        return runner.probe(self.libvirt, self, self.root, self.image, self.digest, lambda: self.cancelled)
+    def launch(self, scenario="heartbeat"):
+        return runner.probe(self.libvirt, self, self.root, self.image, self.digest, lambda: self.cancelled, scenario)
 
     def test_success_checks_and_destroys_before_removing_owned_disk(self):
         result = self.launch()
         self.assertEqual(result.code, "passed")
         self.assertEqual(result.imageSha256, self.digest)
+        self.assertTrue(result.cleanupConfirmed)
         self.assertEqual(self.libvirt.events, [
             "open", "lookup-name", "lookup-uuid", "create", "profile", "resume", "guest-ping",
             "destroy", "close", "open", "lookup-name", "lookup-uuid", "close",
         ])
         self.assertEqual(list(self.root.iterdir()), [])
         self.assertTrue(self.image.exists())
+
+    def test_approved_job_channel_is_distinct_from_the_heartbeat_channel(self):
+        with patch.object(runner.ProbeJob, "run", return_value="job_passed") as run:
+            result = self.launch("job")
+            self.assertEqual(result.code, "job_passed")
+            self.assertTrue(result.cleanupConfirmed)
+            run.assert_called_once()
+
+        def share_socket(doc):
+            channels = doc.findall("devices/channel/source")
+            channels[1].set("path", channels[0].get("path"))
+
+        self.libvirt.profile_change = share_socket
+        self.libvirt.events.clear()
+        result = self.launch("job")
+        self.assertEqual(result.profileIssue, "channel-transport")
+        self.assertTrue(result.cleanupConfirmed)
+        self.assertNotIn("resume", self.libvirt.events)
 
     def test_wrong_digest_is_rejected_before_creating_a_guest(self):
         self.digest = "0" * 64

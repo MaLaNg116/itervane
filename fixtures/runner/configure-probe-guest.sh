@@ -3,6 +3,35 @@ set -eu
 
 dpkg --install /var/tmp/itervane-probe-liburing.deb /var/tmp/itervane-probe-agent.deb
 rm -- /var/tmp/itervane-probe-liburing.deb /var/tmp/itervane-probe-agent.deb
+test -x /usr/bin/python3
+useradd --system --user-group --no-create-home --shell /usr/sbin/nologin itervane-job
+install -Dm 0644 /var/tmp/itervane-guest-job.py /usr/local/libexec/itervane-guest-job.py
+rm -- /var/tmp/itervane-guest-job.py
+cat >/etc/udev/rules.d/60-itervane-guest-job.rules <<'EOF'
+SUBSYSTEM=="virtio-ports", ATTR{name}=="org.itervane.runner.job.0", OWNER="itervane-job", MODE="0600", TAG+="systemd", ENV{SYSTEMD_WANTS}+="itervane-guest-job.service"
+EOF
+cat >/etc/systemd/system/itervane-guest-job.service <<'EOF'
+[Unit]
+Requires=qemu-guest-agent.service
+After=qemu-guest-agent.service
+
+[Service]
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/itervane-guest-job.py
+User=itervane-job
+Group=itervane-job
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+DeviceAllow=/dev/virtio-ports/org.itervane.runner.job.0 rw
+MemoryMax=96M
+TasksMax=4
+RuntimeMaxSec=95
+UMask=0077
+EOF
 install -d -m 0755 /etc/qemu /etc/systemd/system/multi-user.target.wants
 cat >/etc/qemu/qemu-ga.conf <<'EOF'
 [general]

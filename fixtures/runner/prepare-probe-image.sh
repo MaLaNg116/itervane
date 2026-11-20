@@ -9,6 +9,7 @@ base_digest='04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94'
 agent_digest='62abf54bf34fed34dc65cbd973b4b6b6f4685fef30fbaa3fb3e8865e957fda75'
 uring_digest='c2aef62accee92a06263c3ad4ef46132c13e409b54296c44792a20491830a7b0'
 recipe_dir=$(dirname -- "$(realpath -- "$0")")
+guest_job="$recipe_dir/../../packages/runner/host/guest_job.py"
 downloads="$work/downloads"
 mkdir -- "$downloads"
 
@@ -35,6 +36,7 @@ LIBGUESTFS_BACKEND=direct virt-customize --no-network --no-logfile --format qcow
   -a "$downloads/base.qcow2" \
   --upload "$downloads/agent.deb:/var/tmp/itervane-probe-agent.deb" \
   --upload "$downloads/liburing.deb:/var/tmp/itervane-probe-liburing.deb" \
+  --upload "$guest_job:/var/tmp/itervane-guest-job.py" \
   --run "$recipe_dir/configure-probe-guest.sh"
 
 qemu-img convert -f qcow2 -O raw "$downloads/base.qcow2" "$work/probe.raw"

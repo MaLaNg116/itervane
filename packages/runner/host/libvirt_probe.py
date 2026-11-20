@@ -15,6 +15,13 @@ import xml.etree.ElementTree as xml
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+# The CLI starts Python in isolated mode. Only add this trusted driver directory.
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from guest_job import PORT as JOB_PORT
+from native_job import SCENARIOS, JobEvidence, JobRejected, ProbeJob
+
 
 URI = "qemu:///system"
 ARCH = "x86_64"
@@ -39,6 +46,8 @@ class Result:
     runId: str | None = None
     imageSha256: str | None = None
     profileIssue: str | None = None
+    cleanupConfirmed: bool = False
+    job: JobEvidence | None = None
 
 
 def check_kvm():
@@ -83,7 +92,11 @@ def copy_image(image, disk, expected, check_deadline):
         raise Rejected("image_rejected") from error
 
 
-def domain_xml(name, run_id, disk):
+def channel_names(with_job):
+    return (GUEST_AGENT, JOB_PORT) if with_job else (GUEST_AGENT,)
+
+
+def domain_xml(name, run_id, disk, with_job=False):
     root = xml.Element("domain", type="kvm")
     xml.SubElement(root, "name").text = name
     xml.SubElement(root, "uuid").text = run_id
@@ -100,8 +113,9 @@ def domain_xml(name, run_id, disk):
     xml.SubElement(volume, "driver", name="qemu", type="raw")
     xml.SubElement(volume, "source", file=str(disk))
     xml.SubElement(volume, "target", dev="vda", bus="virtio")
-    channel = xml.SubElement(devices, "channel", type="unix")
-    xml.SubElement(channel, "target", type="virtio", name=GUEST_AGENT)
+    for target in channel_names(with_job):
+        channel = xml.SubElement(devices, "channel", type="unix")
+        xml.SubElement(channel, "target", type="virtio", name=target)
     xml.SubElement(devices, "controller", type="usb", model="none")
     xml.SubElement(devices, "memballoon", model="none")
     return xml.tostring(root, encoding="unicode")
@@ -112,7 +126,7 @@ def unexpected_tag(prefix, tags):
     return prefix + first if re.fullmatch(r"[a-z][a-z0-9-]{0,30}", first) else prefix + "unknown"
 
 
-def profile_issue(document, disk):
+def profile_issue(document, disk, with_job=False):
     root = xml.fromstring(document)
     guest = root.find("os/type")
     vcpu = root.find("vcpu")
@@ -140,9 +154,9 @@ def profile_issue(document, disk):
     volumes, channels = devices.findall("disk"), devices.findall("channel")
     if root.find("maxMemory") is not None:
         return "maximum-memory"
-    if len(volumes) != 1 or len(channels) != 1:
+    if len(volumes) != 1 or len(channels) != len(channel_names(with_job)):
         return "device-count"
-    volume, channel = volumes[0], channels[0]
+    volume = volumes[0]
     backing = volume.find("backingStore")
     source = volume.find("source")
     # Libvirt may add an index to the active storage source.
@@ -160,9 +174,19 @@ def profile_issue(document, disk):
         return "disk-target"
     if volume.find("dataStore") is not None or (backing is not None and (backing.attrib or len(backing))):
         return "disk-backing"
-    if channel.get("type") != "unix" or channel.find("source[@mode='bind']") is None:
-        return "channel-transport"
-    if channel.find(f"target[@type='virtio'][@name='{GUEST_AGENT}']") is None:
+    names, sockets = set(), set()
+    for channel in channels:
+        sources, targets = channel.findall("source"), channel.findall("target")
+        if channel.get("type") != "unix" or len(sources) != 1 or sources[0].get("mode") != "bind":
+            return "channel-transport"
+        socket = sources[0].get("path")
+        if not socket or socket in sockets:
+            return "channel-transport"
+        sockets.add(socket)
+        if len(targets) != 1 or targets[0].get("type") != "virtio" or targets[0].get("state", "disconnected") != "disconnected":
+            return "channel-target"
+        names.add(targets[0].get("name"))
+    if names != set(channel_names(with_job)):
         return "channel-target"
     if any(device.get("model") != "none" for device in devices.findall("controller[@type='usb']")):
         return "usb"
@@ -242,7 +266,7 @@ def ping_guest(libvirt, qemu, domain, check_deadline):
         raise Rejected("heartbeat_rejected")
 
 
-def run_guest(libvirt, qemu, root, image, digest, check_deadline):
+def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None):
     run_id = str(uuid.uuid4())
     name = PREFIX + run_id
     directory = root / name
@@ -254,6 +278,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline):
     verified_image = False
     attempted_create = False
     owns_domain = False
+    cleanup_confirmed = False
     code = "host_error"
     issue = None
     try:
@@ -275,7 +300,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline):
         check_deadline()
         flags = libvirt.VIR_DOMAIN_START_PAUSED | libvirt.VIR_DOMAIN_START_AUTODESTROY | libvirt.VIR_DOMAIN_START_VALIDATE
         attempted_create = True
-        domain = conn.createXML(domain_xml(name, run_id, disk), flags)
+        domain = conn.createXML(domain_xml(name, run_id, disk, with_job=job is not None), flags)
         owns_domain = (
             domain is not None
             and domain.name() == name
@@ -288,14 +313,14 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline):
         if domain.state(0)[0] != libvirt.VIR_DOMAIN_PAUSED:
             issue = "domain-state"
             raise Rejected("profile_rejected")
-        issue = profile_issue(domain.XMLDesc(0), disk)
+        issue = profile_issue(domain.XMLDesc(0), disk, with_job=job is not None)
         if issue:
             raise Rejected("profile_rejected")
         check_deadline()
         domain.resume()
         ping_guest(libvirt, qemu, domain, check_deadline)
-        code = "passed"
-    except Rejected as error:
+        code = "passed" if job is None else job.run(libvirt, conn, domain, run_id, check_deadline)
+    except (Rejected, JobRejected) as error:
         code = str(error)
     except (libvirt.libvirtError, OSError, xml.ParseError):
         code = "host_error"
@@ -320,19 +345,20 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline):
                     disk.unlink(missing_ok=True)
                     journal.unlink(missing_ok=True)
                     directory.rmdir()
+                    cleanup_confirmed = owns_domain
                 except (OSError, Rejected):
                     code = "cleanup_unproven"
             else:
                 code = "cleanup_unproven"
-    if code == "passed":
+    if code in ("passed", "job_passed"):
         try:
             check_deadline()
         except Rejected as error:
             code = str(error)
-    return Result(code, run_id, digest if verified_image else None, issue)
+    return Result(code, run_id, digest if verified_image else None, issue, cleanup_confirmed, job.evidence if job else None)
 
 
-def probe(libvirt, qemu, root, image, digest, cancelled):
+def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat"):
     deadline = time.monotonic() + DEADLINE_SECONDS
 
     def check_deadline():
@@ -355,7 +381,8 @@ def probe(libvirt, qemu, root, image, digest, cancelled):
                 raise Rejected("workspace_busy") from error
             if any(path.name.startswith(PREFIX) for path in root.iterdir()):
                 raise Rejected("pending_cleanup")
-            return run_guest(libvirt, qemu, root, image, digest, check_deadline)
+            job = None if scenario == "heartbeat" else ProbeJob(scenario)
+            return run_guest(libvirt, qemu, root, image, digest, check_deadline, job)
         finally:
             os.close(fd)
     except Rejected as error:
@@ -376,7 +403,10 @@ def main():
     os.umask(0o077)
     try:
         check_kvm()
-        if len(sys.argv) != 4 or not IMAGE_DIGEST.fullmatch(sys.argv[3]) or not all(sys.argv[1:3]):
+        if len(sys.argv) not in (4, 5) or not IMAGE_DIGEST.fullmatch(sys.argv[3]) or not all(sys.argv[1:3]):
+            raise Rejected("config_required")
+        scenario = sys.argv[4] if len(sys.argv) == 5 else "heartbeat"
+        if scenario not in SCENARIOS:
             raise Rejected("config_required")
         try:
             import libvirt
@@ -384,7 +414,7 @@ def main():
         except ImportError as error:
             raise Rejected("libvirt_unavailable") from error
         libvirt.registerErrorHandler(lambda _ctx, _error: None, None)
-        result = probe(libvirt, libvirt_qemu, Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], lambda: cancelled)
+        result = probe(libvirt, libvirt_qemu, Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], lambda: cancelled, scenario)
     except Rejected as error:
         result = Result(str(error))
     print(json.dumps(asdict(result)))
