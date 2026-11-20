@@ -53,6 +53,13 @@ const sourceSchema = z.strictObject({
 const scanProof = {
   policySha256: sha256Schema, findings: z.int().min(1).max(2000), resultSha256: sha256Schema,
 };
+const repairProof = z.strictObject({
+  path: z.literal('fixtures/runner/inspection-input/README.md'),
+  baseSnapshotSha256: sha256Schema, beforeSha256: sha256Schema, afterSha256: sha256Schema,
+  patchSha256: sha256Schema, candidateManifestSha256: sha256Schema,
+  replayed: z.literal(true), protectedRejected: z.literal(true), staleRejected: z.literal(true),
+  rangeRejected: z.literal(true), originalRetained: z.literal(true),
+});
 const inspectionSchema = z.strictObject({
   runId: z.uuidv4(), commit: gitObjectId, tree: gitObjectId, manifestSha256: sha256Schema,
   files: z.int().min(1).max(5000), totalBytes: z.int().positive().max(32 * 1024 * 1024),
@@ -60,6 +67,7 @@ const inspectionSchema = z.strictObject({
   controlsChecked: z.literal(true), missingDatabaseRejected: z.literal(true),
   gitleaks: z.strictObject({ ...scanProof, version: z.literal('8.30.1') }),
   trivy: z.strictObject({ ...scanProof, version: z.literal('0.76.2'), databaseSha256: sha256Schema, databaseUpdatedAt: z.iso.datetime() }),
+  repair: repairProof,
 });
 const probeSettingsSchema = z.object({
   scenario: z.enum(['heartbeat', 'job', 'job-reject-input', 'job-cancel', 'job-timeout', 'source', 'inspect']).default('heartbeat'),
@@ -120,7 +128,9 @@ export function parseRunnerProbeOutput(
     if (inspectionPassed) {
       const { inspection, source } = result;
       if (scenario !== 'inspect' || !inspection || !source || inspection.runId !== result.runId
-          || inspection.commit !== source.commit || inspection.tree !== source.tree || inspection.files !== source.files) return lost;
+          || inspection.commit !== source.commit || inspection.tree !== source.tree || inspection.files !== source.files
+          || inspection.repair.baseSnapshotSha256 !== inspection.manifestSha256
+          || inspection.repair.beforeSha256 === inspection.repair.afterSha256) return lost;
     } else if (result.inspection) return lost;
     if (sourceFailure && (!result.runId || !result.imageSha256 || !result.jobIssue)) return lost;
     if (result.jobIssue) {
@@ -224,7 +234,7 @@ export async function probeRunnerVm(env: NodeJS.ProcessEnv = process.env) {
     });
   }
   if (result.inspection) {
-    const { manifestSha256, totalBytes, inputsSha256, gitleaks, trivy } = result.inspection;
+    const { manifestSha256, totalBytes, inputsSha256, gitleaks, trivy, repair } = result.inspection;
     checks.push({
       id: 'runner-inspection-snapshot', status: 'passed',
       detail: zh ? `扫描前后均核验了 ${totalBytes} 字节。清单 SHA-256 ${manifestSha256}。`
@@ -243,6 +253,11 @@ export async function probeRunnerVm(env: NodeJS.ProcessEnv = process.env) {
       detail: zh
         ? `Trivy ${trivy.version} 归一化 ${trivy.findings} 个发现，锁文件对照及缺库拒绝通过。策略 ${trivy.policySha256}，结果 ${trivy.resultSha256}。数据库 SHA-256 ${trivy.databaseSha256}，更新于 ${trivy.databaseUpdatedAt}。`
         : `Trivy ${trivy.version} normalized ${trivy.findings} findings, passed the lockfile controls, and rejected the missing database. Policy ${trivy.policySha256}. Result ${trivy.resultSha256}. Database SHA-256 ${trivy.databaseSha256} at ${trivy.databaseUpdatedAt}.`,
+    }, {
+      id: 'runner-repair-replay', status: 'passed',
+      detail: zh
+        ? `对 ${repair.path} 的补丁已重放，保留原始文件，拒绝受保护路径、过期摘要和跨字符字节区间。修改前 SHA-256 ${repair.beforeSha256}，修改后 ${repair.afterSha256}。补丁 ${repair.patchSha256}，候选清单 ${repair.candidateManifestSha256}。`
+        : `Replayed the patch for ${repair.path} and preserved the original. Rejected a protected path, stale digest and split character. Before SHA-256 ${repair.beforeSha256}. After ${repair.afterSha256}. Patch ${repair.patchSha256}. Candidate manifest ${repair.candidateManifestSha256}.`,
     });
   }
   if (settings.success && settings.data.scenario !== 'heartbeat' && result.cleanupConfirmed) {
