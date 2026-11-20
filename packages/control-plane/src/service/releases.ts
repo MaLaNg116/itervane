@@ -25,10 +25,12 @@ function fingerprint(manifest: FixtureReleaseManifest) {
 }
 
 async function databaseNow(tx: Transaction) {
-  const { rows } = await tx.execute<{ timestamp: Date }>(sql`SELECT clock_timestamp() AS timestamp`);
-  const timestamp = rows[0]?.timestamp;
-  if (!timestamp) throw new DomainError('unavailable');
-  return timestamp;
+  const { rows } = await tx.execute<{ milliseconds: string }>(sql`
+    SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS milliseconds
+  `);
+  const milliseconds = Number(rows[0]?.milliseconds);
+  if (!Number.isSafeInteger(milliseconds)) throw new DomainError('unavailable');
+  return new Date(milliseconds);
 }
 
 async function lockTaskScope(tx: Transaction, taskId: string, lock: 'share' | 'update'): Promise<TaskScope> {
@@ -43,7 +45,7 @@ async function lockTaskScope(tx: Transaction, taskId: string, lock: 'share' | 'u
       source: { repositoryId: task.repositoryId, commit: task.commit },
     },
     requestedBy: task.requestedBy,
-    waiting: task.state === 'waiting_approval' && run.state === 'waiting_approval',
+    waiting: task.dataClass === 'synthetic' && task.state === 'waiting_approval' && run.state === 'waiting_approval',
   };
 }
 
