@@ -4,6 +4,7 @@ import {
   type AgentEvidence, type AuditReport, type RepairReport, type VerificationReport,
 } from './contracts.js';
 import { agentText } from './messages.js';
+import { finishRepairInputSchema, formalRepairCompletionSchema } from './repair-contracts.js';
 
 type Completion = { summary: string; evidenceIds: string[] };
 
@@ -62,6 +63,15 @@ export function finishRepair(evidence: readonly AgentEvidence[], raw: unknown): 
   const data = candidates[0]!.data;
   if (data.kind !== 'candidate') return;
   return repairReportSchema.parse({ ...input, candidate: data.candidate });
+}
+
+export function finishFormalRepair(evidence: readonly AgentEvidence[], raw: unknown) {
+  const result = finishRepairInputSchema.safeParse(raw);
+  if (!result.success) return;
+  const data = evidence.find(item => item.id === result.data.evidenceId)?.data;
+  if (data?.kind !== 'repair_candidate') return;
+  return formalRepairCompletionSchema.parse({ ...result.data, operationId: data.candidate.operationId,
+    receiptSha256: data.receiptSha256, candidateManifestSha256: data.candidate.candidateManifestSha256 });
 }
 
 export function finishVerify(evidence: readonly AgentEvidence[], raw: unknown, audit: AuditReport, repair: RepairReport): VerificationReport | undefined {
