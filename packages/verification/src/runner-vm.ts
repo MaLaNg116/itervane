@@ -34,6 +34,7 @@ const jobSchema = z.strictObject({
   startedBytes: z.int().positive().max(prefixBytes),
   inputSha256: sha256Schema,
   receivedSha256: sha256Schema.nullable(),
+  workloadVerified: z.boolean().optional(),
 });
 const probeSettingsSchema = z.object({
   scenario: z.enum(['heartbeat', 'job', 'job-reject-input', 'job-cancel', 'job-timeout']).default('heartbeat'),
@@ -68,6 +69,7 @@ export function parseRunnerProbeOutput(stdout: string, expectedDigest: string, m
     if (result.sessionVerified && (mode !== 'session' || !result.cleanupConfirmed || result.code === 'session_rejected')) return lost;
     const requiresSessionProof = result.code === 'passed' || result.code === 'job_passed' || (result.job && result.cleanupConfirmed);
     if (mode === 'session' && requiresSessionProof && !result.sessionVerified) return lost;
+    if (mode === 'session' && result.job && !result.job.workloadVerified) return lost;
     if (result.jobIssue && !['job_channel_unavailable', 'job_protocol_rejected', 'job_deadline_exceeded', 'cleanup_unproven'].includes(result.code)) return lost;
     if (result.job && result.job.startedBytes !== Math.min(result.job.byteCount, prefixBytes)) return lost;
     if (result.code === 'job_passed' || result.code === 'job_input_rejected') {
@@ -160,6 +162,14 @@ export async function probeRunnerVm(env: NodeJS.ProcessEnv = process.env) {
     checks.push({
       id: 'runner-dedicated-session', status: 'passed',
       detail: zh ? '已核对专用非 root 会话、宿主标记拒绝和实际 QEMU 进程退出。' : 'A dedicated non-root session denied access to the host marker, and the identified QEMU process exited.',
+    });
+  }
+  if (result.job?.workloadVerified) {
+    checks.push({
+      id: 'runner-guest-workload', status: 'passed',
+      detail: zh
+        ? '独立客体身份通过了可写作业目录、宿主标记不可见、受保护文件与设备、网络及资源限制检查。'
+        : 'The dedicated guest workload verified its writable task directory, hidden host marker, protected file and device, network, and resource limits.',
     });
   }
   return report('runner-vm', checks);

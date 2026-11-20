@@ -415,7 +415,7 @@ def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat", s
             if any(path.name.startswith(PREFIX) for path in root.iterdir()):
                 raise Rejected("pending_cleanup")
             session_runtime = prepare_session(root, image) if session else None
-            job = None if scenario == "heartbeat" else ProbeJob(scenario)
+            job = None if scenario == "heartbeat" else ProbeJob(scenario, require_workload=session)
             return run_guest(libvirt, qemu, root, image, digest, check_deadline, job, session_runtime)
         finally:
             os.close(fd)

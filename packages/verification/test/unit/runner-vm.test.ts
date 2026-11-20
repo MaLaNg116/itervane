@@ -71,5 +71,9 @@ describe('sanitized native VM probe result', () => {
     const timeout = { ...interrupted, code: 'job_deadline_exceeded', jobIssue: 'result' };
     expect(parseRunnerProbeOutput(JSON.stringify(timeout), imageSha256)).toEqual(timeout);
     expect(parseRunnerProbeOutput(JSON.stringify({ ...timeout, jobIssue: '/private/port' }), imageSha256).code).toBe('driver_lost');
+    const session = { ...valid, sessionVerified: true };
+    expect(parseRunnerProbeOutput(JSON.stringify(session), imageSha256, 'session').code).toBe('driver_lost');
+    const withWorkload = { ...session, job: { ...session.job, workloadVerified: true } };
+    expect(parseRunnerProbeOutput(JSON.stringify(withWorkload), imageSha256, 'session')).toEqual(withWorkload);
   });
 });
