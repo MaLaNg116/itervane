@@ -41,7 +41,7 @@ jobs:
         run: pnpm probe:komodo
       - name: Retain sanitized Komodo observations
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: komodo-native-evidence
           path: .reports/p0/komodo-native.json
