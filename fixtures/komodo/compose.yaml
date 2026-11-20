@@ -1,0 +1,59 @@
+services:
+  mongo:
+    image: docker.io/library/mongo:8.0@sha256:d819ca7f8e564eb253ae6dc9cac330386c56e6919f3570a74c04f04679433117
+    command: ["--quiet", "--wiredTigerCacheSizeGB", "0.25"]
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: native-probe
+      MONGO_INITDB_ROOT_PASSWORD: ${ITERVANE_PROBE_DB_PASSWORD:?}
+    volumes:
+      - mongo-data:/data/db
+      - mongo-config:/data/configdb
+  core:
+    image: ghcr.io/moghtech/komodo-core:2.3.4@sha256:2cbfe282519918f570c3ad6cbe79f233d1aedbc25ba10c22e70be60691623a5e
+    depends_on: [mongo]
+    init: true
+    restart: on-failure
+    ports: ["127.0.0.1:49120:9120"]
+    environment:
+      KOMODO_HOST: http://127.0.0.1:49120
+      KOMODO_TITLE: Itervane native verification
+      KOMODO_PERIPHERY_PUBLIC_KEY: file:/config/keys/periphery.pub
+      KOMODO_FIRST_SERVER_NAME: itervane-native
+      KOMODO_DATABASE_ADDRESS: mongo:27017
+      KOMODO_DATABASE_USERNAME: native-probe
+      KOMODO_DATABASE_PASSWORD: ${ITERVANE_PROBE_DB_PASSWORD:?}
+      KOMODO_LOCAL_AUTH: "true"
+      KOMODO_INIT_ADMIN_USERNAME: itervane-bootstrap
+      KOMODO_INIT_ADMIN_PASSWORD: ${ITERVANE_PROBE_ADMIN_PASSWORD:?}
+      KOMODO_JWT_SECRET: ${ITERVANE_PROBE_JWT_SECRET:?}
+      KOMODO_WEBHOOK_SECRET: ${ITERVANE_PROBE_WEBHOOK_SECRET:?}
+      KOMODO_DISABLE_USER_REGISTRATION: "true"
+      KOMODO_DISABLE_NON_ADMIN_CREATE: "true"
+      KOMODO_DISABLE_INIT_RESOURCES: "true"
+      KOMODO_MONITORING_INTERVAL: 1-sec
+    volumes:
+      - keys:/config/keys
+  periphery:
+    image: ghcr.io/moghtech/komodo-periphery:2.3.4@sha256:c9279783f9f96f74aa0c875ebad288a35ea4eddd0fc379483f2b8fb6494e7557
+    depends_on: [core]
+    init: true
+    restart: on-failure
+    environment:
+      PERIPHERY_CORE_ADDRESS: ws://core:9120
+      PERIPHERY_CONNECT_AS: itervane-native
+      PERIPHERY_CORE_PUBLIC_KEYS: file:/config/keys/core.pub
+      PERIPHERY_DISABLE_TERMINALS: "true"
+      PERIPHERY_DISABLE_CONTAINER_TERMINALS: "true"
+    volumes:
+      - keys:/config/keys
+      - /var/run/docker.sock:/var/run/docker.sock
+  registry:
+    image: docker.io/library/registry:3@sha256:52b489ad8e6f40d1a676702e3ce398ec796ce38f08fbb786e1f324baa12d84b8
+    ports: ["127.0.0.1:49500:5000"]
+    volumes:
+      - registry-data:/var/lib/registry
+volumes:
+  keys:
+  mongo-data:
+  mongo-config:
+  registry-data:
