@@ -29,7 +29,7 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Strict types and deterministic tests
         run: pnpm check
-      - name: Real PostgreSQL 17 domain, atomicity and recovery
+      - name: Real PostgreSQL 17 domain, Worker recovery and external MCP
         run: pnpm test:integration
       - name: Authenticated MCP protocol smoke
         run: pnpm probe:mcp

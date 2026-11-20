@@ -12,6 +12,13 @@ export async function requireActor(tx: Transaction, identity: VerifiedIdentity):
   const [principal] = await tx.select().from(principals)
     .where(and(eq(principals.issuer, identity.issuer), eq(principals.subject, identity.subject))).for('share');
   if (!principal) throw new DomainError('forbidden');
+  return requireStoredActor(tx, principal.id);
+}
+
+// Worker 只使用领域接受任务时保存的主体；它不能从 checkpoint 或队列自报权限。
+export async function requireStoredActor(tx: Transaction, principalId: string): Promise<Actor> {
+  const [principal] = await tx.select().from(principals).where(eq(principals.id, principalId)).for('share');
+  if (!principal) throw new DomainError('forbidden');
   // 权限只查当前领域记录；短事务内共享锁使撤销与当前命令有明确先后顺序。
   const [owner] = await tx.select().from(workspaceMembers).where(eq(workspaceMembers.principalId, principal.id)).for('share');
   return { principalId: principal.id, workspaceId: owner?.workspaceId ?? null };

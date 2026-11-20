@@ -3,7 +3,7 @@
 - 文档版本：实施计划 v2。
 - 整理日期：2026-11-16。
 - 对应蓝图：[蓝图 v6](blueprint-v6.md)。
-- 实现状态：P0 基础设施仍待验；已实现独立 P1-A 身份/资源/任务切片，完整 P1—P5 未验收；实际证据见 [P0 记录](p0-verification.md) 与 [P1-A 说明](control-plane-p1-a.md)。
+- 实现状态：P0 基础设施仍待验；独立 P1-A 身份/资源/任务及 P1-B 持久化 preflight/外部 MCP/双语切片已实现，完整 P1—P5 未验收；实际证据见 [P0 记录](p0-verification.md)、[P1-A](control-plane-p1-a.md) 与 [P1-B 说明](control-plane-p1-b.md)。
 - 阅读入口：[开发基线与一致性约束](baseline.md)。
 
 本计划完整保留已确认的 TypeScript + PostgreSQL 分阶段实施方案。完整愿景、Agent 架构、MVP 闭环和安全边界沿用 v6；更新控制面技术栈、数据访问、任务调度与并发方案。本文定义实施顺序，不提前宣称接口兼容、恢复正确或阶段验收已经通过。

@@ -8,6 +8,34 @@
       "when": 1794968831707,
       "tag": "0000_initial_control_plane",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794981442097,
+      "tag": "0001_durable_execution",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794982436590,
+      "tag": "0002_checkpoint_write_receipts",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794983711763,
+      "tag": "0003_checkpoint_step",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794984334903,
+      "tag": "0004_event_principal_kind",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,1347 @@
+{
+  "id": "122c1dfb-149c-4fc6-8534-644645fd330a",
+  "prevId": "d0d6a9f8-f071-4d31-ba9a-115fd7c16e62",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "itervane.applications": {
+      "name": "applications",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "applications_project_id_projects_id_fk": {
+          "name": "applications_project_id_projects_id_fk",
+          "tableFrom": "applications",
+          "tableTo": "projects",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "application_project_pair": {
+          "name": "application_project_pair",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "project_id"
+          ]
+        },
+        "application_name_unique": {
+          "name": "application_name_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "project_id",
+            "name"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "itervane.checkpoint_write_receipts": {
+      "name": "checkpoint_write_receipts",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_id": {
+          "name": "checkpoint_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "write_hash": {
+          "name": "write_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "checkpoint_write_receipts_run_id_task_runs_id_fk": {
+          "name": "checkpoint_write_receipts_run_id_task_runs_id_fk",
+          "tableFrom": "checkpoint_write_receipts",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "checkpoint_write_receipts_run_id_checkpoint_id_write_hash_pk": {
+          "name": "checkpoint_write_receipts_run_id_checkpoint_id_write_hash_pk",
+          "columns": [
+            "run_id",
+            "checkpoint_id",
+            "write_hash"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "itervane.environments": {
+      "name": "environments",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "application_id": {
+          "name": "application_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "access": {
+          "name": "access",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'protected'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "environments_project_id_projects_id_fk": {
+          "name": "environments_project_id_projects_id_fk",
+          "tableFrom": "environments",
+          "tableTo": "projects",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "environment_application_project_fk": {
+          "name": "environment_application_project_fk",
+          "tableFrom": "environments",
+          "tableTo": "applications",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "application_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "environment_name_unique": {
+          "name": "environment_name_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "application_id",
+            "name"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "environment_protected": {
+          "name": "environment_protected",
+          "value": "\"itervane\".\"environments\".\"access\" = 'protected'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.execution_slot": {
+      "name": "execution_slot",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fence": {
+          "name": "fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "lease_until": {
+          "name": "lease_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'-infinity'::timestamptz"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "execution_slot_task_id_tasks_id_fk": {
+          "name": "execution_slot_task_id_tasks_id_fk",
+          "tableFrom": "execution_slot",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "execution_slot_run_id_task_runs_id_fk": {
+          "name": "execution_slot_run_id_task_runs_id_fk",
+          "tableFrom": "execution_slot",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "one_execution_slot": {
+          "name": "one_execution_slot",
+          "value": "\"itervane\".\"execution_slot\".\"id\" = 1"
+        },
+        "slot_assignment": {
+          "name": "slot_assignment",
+          "value": "\n  (\"itervane\".\"execution_slot\".\"task_id\" IS NULL AND \"itervane\".\"execution_slot\".\"run_id\" IS NULL AND \"itervane\".\"execution_slot\".\"worker_id\" IS NULL)\n  OR (\"itervane\".\"execution_slot\".\"task_id\" IS NOT NULL AND \"itervane\".\"execution_slot\".\"run_id\" IS NOT NULL AND \"itervane\".\"execution_slot\".\"worker_id\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.principals": {
+      "name": "principals",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "issuer": {
+          "name": "issuer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject": {
+          "name": "subject",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "principal_identity_unique": {
+          "name": "principal_identity_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "issuer",
+            "subject"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "itervane.project_members": {
+      "name": "project_members",
+      "schema": "itervane",
+      "columns": {
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "project_members_project_id_projects_id_fk": {
+          "name": "project_members_project_id_projects_id_fk",
+          "tableFrom": "project_members",
+          "tableTo": "projects",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "project_members_principal_id_principals_id_fk": {
+          "name": "project_members_principal_id_principals_id_fk",
+          "tableFrom": "project_members",
+          "tableTo": "principals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "project_members_project_id_principal_id_pk": {
+          "name": "project_members_project_id_principal_id_pk",
+          "columns": [
+            "project_id",
+            "principal_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "project_role": {
+          "name": "project_role",
+          "value": "\"itervane\".\"project_members\".\"role\" IN ('maintainer', 'viewer')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.projects": {
+      "name": "projects",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "slug": {
+          "name": "slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "projects_workspace_id_workspaces_id_fk": {
+          "name": "projects_workspace_id_workspaces_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "workspaces",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "project_slug_unique": {
+          "name": "project_slug_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "workspace_id",
+            "slug"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "itervane.repositories": {
+      "name": "repositories",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "url": {
+          "name": "url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "repositories_project_id_projects_id_fk": {
+          "name": "repositories_project_id_projects_id_fk",
+          "tableFrom": "repositories",
+          "tableTo": "projects",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "repository_project_pair": {
+          "name": "repository_project_pair",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "project_id"
+          ]
+        },
+        "repository_url_unique": {
+          "name": "repository_url_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "project_id",
+            "url"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "itervane.run_runtime": {
+      "name": "run_runtime",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_id": {
+          "name": "checkpoint_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "checkpoint_step": {
+          "name": "checkpoint_step",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": -2
+        },
+        "resume_pending": {
+          "name": "resume_pending",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "resume_count": {
+          "name": "resume_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "tools_used": {
+          "name": "tools_used",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "max_tools": {
+          "name": "max_tools",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 8
+        },
+        "waiting_for_task_id": {
+          "name": "waiting_for_task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "run_runtime_run_id_task_runs_id_fk": {
+          "name": "run_runtime_run_id_task_runs_id_fk",
+          "tableFrom": "run_runtime",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "run_runtime_task_id_tasks_id_fk": {
+          "name": "run_runtime_task_id_tasks_id_fk",
+          "tableFrom": "run_runtime",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "run_runtime_waiting_for_task_id_tasks_id_fk": {
+          "name": "run_runtime_waiting_for_task_id_tasks_id_fk",
+          "tableFrom": "run_runtime",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "waiting_for_task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "runtime_limits": {
+          "name": "runtime_limits",
+          "value": "\"itervane\".\"run_runtime\".\"resume_count\" >= 0 AND \"itervane\".\"run_runtime\".\"tools_used\" >= 0 AND \"itervane\".\"run_runtime\".\"max_tools\" BETWEEN 1 AND 32"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.task_events": {
+      "name": "task_events",
+      "schema": "itervane",
+      "columns": {
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "task_state",
+          "typeSchema": "itervane",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_kind": {
+          "name": "actor_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'human'"
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "detail": {
+          "name": "detail",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "task_events_task_id_tasks_id_fk": {
+          "name": "task_events_task_id_tasks_id_fk",
+          "tableFrom": "task_events",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "task_events_actor_id_principals_id_fk": {
+          "name": "task_events_actor_id_principals_id_fk",
+          "tableFrom": "task_events",
+          "tableTo": "principals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "actor_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "task_events_task_id_sequence_pk": {
+          "name": "task_events_task_id_sequence_pk",
+          "columns": [
+            "task_id",
+            "sequence"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "event_sequence_positive": {
+          "name": "event_sequence_positive",
+          "value": "\"itervane\".\"task_events\".\"sequence\" > 0"
+        },
+        "event_actor_kind": {
+          "name": "event_actor_kind",
+          "value": "(\"itervane\".\"task_events\".\"actor_kind\" = 'human' AND \"itervane\".\"task_events\".\"worker_id\" IS NULL) OR (\"itervane\".\"task_events\".\"actor_kind\" = 'worker' AND \"itervane\".\"task_events\".\"worker_id\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.task_runs": {
+      "name": "task_runs",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "agent_role",
+          "typeSchema": "itervane",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "task_state",
+          "typeSchema": "itervane",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "wakeup_job_id": {
+          "name": "wakeup_job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "task_runs_task_id_tasks_id_fk": {
+          "name": "task_runs_task_id_tasks_id_fk",
+          "tableFrom": "task_runs",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "task_run_generation_unique": {
+          "name": "task_run_generation_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "task_id",
+            "generation"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "run_generation_positive": {
+          "name": "run_generation_positive",
+          "value": "\"itervane\".\"task_runs\".\"generation\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.tasks": {
+      "name": "tasks",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "repository_id": {
+          "name": "repository_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_by": {
+          "name": "requested_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "commit": {
+          "name": "commit",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "purpose": {
+          "name": "purpose",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "data_class": {
+          "name": "data_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_key": {
+          "name": "request_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_hash": {
+          "name": "request_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "task_state",
+          "typeSchema": "itervane",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "locale": {
+          "name": "locale",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'en'"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "tasks_project_id_projects_id_fk": {
+          "name": "tasks_project_id_projects_id_fk",
+          "tableFrom": "tasks",
+          "tableTo": "projects",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "tasks_requested_by_principals_id_fk": {
+          "name": "tasks_requested_by_principals_id_fk",
+          "tableFrom": "tasks",
+          "tableTo": "principals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "requested_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "task_repository_project_fk": {
+          "name": "task_repository_project_fk",
+          "tableFrom": "tasks",
+          "tableTo": "repositories",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "repository_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "task_request_unique": {
+          "name": "task_request_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "project_id",
+            "requested_by",
+            "request_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "task_version_positive": {
+          "name": "task_version_positive",
+          "value": "\"itervane\".\"tasks\".\"version\" > 0 AND \"itervane\".\"tasks\".\"generation\" > 0"
+        },
+        "task_data_class": {
+          "name": "task_data_class",
+          "value": "\"itervane\".\"tasks\".\"data_class\" IN ('synthetic', 'public')"
+        },
+        "task_fixed_commit": {
+          "name": "task_fixed_commit",
+          "value": "\"itervane\".\"tasks\".\"commit\" ~ '^([a-f0-9]{40}|[a-f0-9]{64})$'"
+        },
+        "task_locale": {
+          "name": "task_locale",
+          "value": "\"itervane\".\"tasks\".\"locale\" IN ('en', 'zh-CN')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.tool_calls": {
+      "name": "tool_calls",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_hash": {
+          "name": "key_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_hash": {
+          "name": "input_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tool": {
+          "name": "tool",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fence": {
+          "name": "fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "result": {
+          "name": "result",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "tool_calls_run_id_task_runs_id_fk": {
+          "name": "tool_calls_run_id_task_runs_id_fk",
+          "tableFrom": "tool_calls",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "tool_calls_run_id_key_hash_pk": {
+          "name": "tool_calls_run_id_key_hash_pk",
+          "columns": [
+            "run_id",
+            "key_hash"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "tool_call_status": {
+          "name": "tool_call_status",
+          "value": "\"itervane\".\"tool_calls\".\"status\" IN ('reserved', 'success', 'business_error', 'infrastructure_error')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.workspace_members": {
+      "name": "workspace_members",
+      "schema": "itervane",
+      "columns": {
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "workspace_members_workspace_id_workspaces_id_fk": {
+          "name": "workspace_members_workspace_id_workspaces_id_fk",
+          "tableFrom": "workspace_members",
+          "tableTo": "workspaces",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workspace_members_principal_id_principals_id_fk": {
+          "name": "workspace_members_principal_id_principals_id_fk",
+          "tableFrom": "workspace_members",
+          "tableTo": "principals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "workspace_members_workspace_id_principal_id_pk": {
+          "name": "workspace_members_workspace_id_principal_id_pk",
+          "columns": [
+            "workspace_id",
+            "principal_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "one_workspace_owner": {
+          "name": "one_workspace_owner",
+          "nullsNotDistinct": false,
+          "columns": [
+            "workspace_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "itervane.workspaces": {
+      "name": "workspaces",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "singleton": {
+          "name": "singleton",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "one_workspace": {
+          "name": "one_workspace",
+          "nullsNotDistinct": false,
+          "columns": [
+            "singleton"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "workspace_singleton": {
+          "name": "workspace_singleton",
+          "value": "\"itervane\".\"workspaces\".\"singleton\" = true"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "itervane.agent_role": {
+      "name": "agent_role",
+      "schema": "itervane",
+      "values": [
+        "audit",
+        "repair",
+        "verify",
+        "operations",
+        "rule-extraction"
+      ]
+    },
+    "itervane.task_state": {
+      "name": "task_state",
+      "schema": "itervane",
+      "values": [
+        "queued",
+        "running",
+        "waiting_approval",
+        "waiting_input",
+        "reconciling",
+        "succeeded",
+        "failed",
+        "cancel_requested",
+        "cancelled",
+        "needs_human"
+      ]
+    }
+  },
+  "schemas": {
+    "itervane": "itervane"
+  },
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

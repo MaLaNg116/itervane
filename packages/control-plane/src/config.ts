@@ -5,6 +5,14 @@ const databaseUrl = z.string().min(1).refine(value => {
   try { return ['postgres:', 'postgresql:'].includes(new URL(value).protocol); } catch { return false; }
 }, 'PostgreSQL URL required');
 
+export function canonicalPublicUrl(value: string): string {
+  const url = new URL(value);
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) || url.username || url.password
+    || url.search || url.hash || url.pathname !== '/' || url.href.length > 240) throw new Error('Invalid public URL');
+  return url.origin;
+}
+
 export function runtimeConfig(env: NodeJS.ProcessEnv = process.env) {
   const config = z.object({
     databaseUrl, issuer: z.string().min(1), audience: z.string().min(1),
@@ -12,7 +20,12 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env) {
   }).parse({ databaseUrl: env.DATABASE_URL, issuer: env.ITERVANE_OIDC_ISSUER,
     audience: env.ITERVANE_OIDC_AUDIENCE, host: env.ITERVANE_API_HOST ?? '127.0.0.1', port: env.ITERVANE_API_PORT ?? 4310 });
   validateIdentityConfig(config);
-  return config;
+  return { ...config, publicUrl: canonicalPublicUrl(env.ITERVANE_PUBLIC_URL ?? `http://127.0.0.1:${config.port}`) };
+}
+
+export function workerConfig(env: NodeJS.ProcessEnv = process.env) {
+  return z.object({ databaseUrl, leaseSeconds: z.coerce.number().int().min(2).max(60), pollMs: z.coerce.number().int().min(100).max(10_000) })
+    .parse({ databaseUrl: env.DATABASE_URL, leaseSeconds: env.ITERVANE_WORKER_LEASE_SECONDS ?? 10, pollMs: env.ITERVANE_WORKER_POLL_MS ?? 1_000 });
 }
 
 export function migrationConfig(env: NodeJS.ProcessEnv = process.env) {

@@ -1,0 +1,108 @@
+import { randomUUID } from 'node:crypto';
+import { Server, createMcpHandler, isSpecType, type CallToolResult } from '@modelcontextprotocol/server';
+import { toNodeHandler } from '@modelcontextprotocol/node';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import { z } from 'zod';
+import { cancelTaskSchema, idSchema, listQuerySchema, resumeTaskSchema, startTaskSchema, translate,
+  type Locale } from '@itervane/contracts';
+import { assertVerifiedIdentity, AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
+import { canonicalPublicUrl } from './config.js';
+import type { Database } from './persistence/database.js';
+import { DomainError, parseInput } from './service/errors.js';
+import { errorCode, localizedError } from './service/presentation.js';
+import { ResourceService } from './service/resources.js';
+import { TaskService } from './service/tasks.js';
+
+const taskIdInput = z.object({ taskId: idSchema }).strict();
+const versionInput = cancelTaskSchema.extend({ taskId: idSchema }).strict();
+const resumeInput = resumeTaskSchema.extend({ taskId: idSchema }).strict();
+const eventsInput = listQuerySchema.extend({ taskId: idSchema }).strict();
+const specs = [
+  { name: 'start_audit', key: 'mcp.start', input: startTaskSchema, write: true },
+  { name: 'get_task', key: 'mcp.query', input: taskIdInput, write: false },
+  { name: 'get_task_events', key: 'mcp.events', input: eventsInput, write: false },
+  { name: 'cancel_task', key: 'mcp.cancel', input: versionInput, write: true },
+  { name: 'resume_task', key: 'mcp.resume', input: resumeInput, write: true },
+] as const;
+
+export function createMcpEndpoint(database: Database, config: IdentityConfig & { publicUrl?: string }, onerror: () => void) {
+  const publicUrl = canonicalPublicUrl(config.publicUrl ?? 'http://127.0.0.1:4310');
+  const resource = `${publicUrl}/mcp`; const metadataUrl = `${publicUrl}/.well-known/oauth-protected-resource/mcp`;
+  const verify = createIdentityVerifier({ issuer: config.issuer, audience: resource });
+  const service = new TaskService(database); const resources = new ResourceService(database);
+  const allowedHosts = new Set([new URL(publicUrl).hostname, 'localhost', '127.0.0.1', '[::1]']);
+  const requiredScope = (body: unknown) => {
+    const parsed = z.object({ method: z.string(), params: z.object({ name: z.string() }).passthrough().optional() }).passthrough().safeParse(body);
+    return parsed.success && parsed.data.method === 'tools/call' && specs.some(tool => tool.name === parsed.data.params?.name && tool.write)
+      ? 'itervane:write' : 'itervane:read';
+  };
+  const hasScope = (identity: VerifiedIdentity, scope: string) => identity.scopes.includes('itervane:read') && identity.scopes.includes(scope);
+  const handler = createMcpHandler(ctx => {
+    const identity = ctx.authInfo?.extra?.identity as VerifiedIdentity | undefined;
+    if (!identity) throw new AuthenticationError();
+    assertVerifiedIdentity(identity);
+    const locale = ctx.authInfo?.extra?.locale as Locale;
+    const requestId = ctx.authInfo?.extra?.requestId as string;
+    const server = new Server({ name: 'itervane', version: '0.0.0' }, { capabilities: { tools: {} } });
+    server.onerror = onerror;
+    server.setRequestHandler('tools/list', async () => ({ tools: specs.filter(tool => !tool.write || hasScope(identity, 'itervane:write')).map(tool => {
+      const definition = { name: tool.name, description: translate(locale, tool.key), inputSchema: z.toJSONSchema(tool.input, { io: 'input' }),
+        annotations: { readOnlyHint: !tool.write, destructiveHint: false, idempotentHint: tool.name !== 'resume_task', openWorldHint: false } };
+      if (!isSpecType.Tool(definition)) throw new Error('Invalid MCP tool catalog');
+      return definition;
+    }) }));
+    server.setRequestHandler('tools/call', async request => {
+      let result: CallToolResult;
+      try {
+        const spec = specs.find(tool => tool.name === request.params.name);
+        if (!spec) throw new DomainError('not_found');
+        if (!hasScope(identity, spec.write ? 'itervane:write' : 'itervane:read')) throw new DomainError('forbidden');
+        // 在领域入口做同样的严格验证；不把 Zod 原始详情或请求内容泄露给客户端。
+        parseInput<unknown>(spec.input, request.params.arguments ?? {});
+        const args = request.params.arguments ?? {};
+        let output: Record<string, unknown>;
+        switch (spec.name) {
+          case 'start_audit': output = await service.admit(identity, args); break;
+          case 'get_task': output = await service.get(identity, taskIdInput.parse(args).taskId); break;
+          case 'get_task_events': {
+            const input = eventsInput.parse(args); output = { items: await service.events(identity, input.taskId, input.limit, locale) }; break;
+          }
+          case 'cancel_task': { const { taskId, expectedVersion } = versionInput.parse(args); output = await service.cancel(identity, taskId, { expectedVersion }); break; }
+          case 'resume_task': { const { taskId, expectedVersion } = resumeInput.parse(args); output = await service.resume(identity, taskId, { expectedVersion }); break; }
+        }
+        result = { content: [{ type: 'text', text: translate(locale, 'mcp.result') }], structuredContent: output };
+      } catch (error) {
+        const response = localizedError(errorCode(error), requestId, locale);
+        result = { isError: true, content: [{ type: 'text', text: response.error.message }], structuredContent: response };
+      }
+      return server.projectCallToolResult(result, undefined);
+    });
+    return server;
+  }, { maxRequestBodySize: 64 * 1024, onerror });
+  const node = toNodeHandler(handler, { maxRequestBodySize: 64 * 1024, onerror });
+  return {
+    verify, requiredScope, hasScope,
+    metadata: { resource, authorization_servers: [config.issuer], bearer_methods_supported: ['header'], scopes_supported: ['itervane:read', 'itervane:write'] },
+    challenge(scope?: string) { return `Bearer resource_metadata="${metadataUrl}"${scope ? `, error="insufficient_scope", scope="${scope}"` : ''}`; },
+    validateHeaders(headers: FastifyRequest['headers']) {
+      try {
+        const host = typeof headers.host === 'string' ? new URL(`http://${headers.host}`) : undefined;
+        if (!host || host.username || host.password || host.pathname !== '/' || host.search || host.hash || !allowedHosts.has(host.hostname)) throw new Error();
+        if (headers.origin !== undefined && headers.origin !== publicUrl) throw new Error();
+      } catch { throw new DomainError('forbidden'); }
+    },
+    async handle(request: FastifyRequest, reply: FastifyReply, identity: VerifiedIdentity, token: string) {
+      if (!hasScope(identity, requiredScope(request.body))) throw new DomainError('forbidden');
+      await resources.me(identity);
+      reply.raw.setHeader('Cache-Control', 'no-store'); reply.raw.setHeader('X-Content-Type-Options', 'nosniff');
+      reply.raw.setHeader('Content-Language', request.locale); reply.raw.setHeader('Vary', 'Accept-Language');
+      reply.hijack();
+      await node({ method: request.method, url: '/mcp', headers: request.headers,
+        auth: { token, clientId: identity.clientId, scopes: [...identity.scopes], expiresAt: identity.expiresAt,
+          resource: new URL(resource), resourceMetadataUrl: metadataUrl, extra: { identity, locale: request.locale, requestId: request.id ?? randomUUID() } },
+        [Symbol.asyncIterator]: () => request.raw[Symbol.asyncIterator](),
+      }, reply.raw, request.body);
+    },
+    close: () => handler.close(),
+  };
+}

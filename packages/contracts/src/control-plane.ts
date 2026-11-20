@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { idSchema, sourceRefSchema, taskStateSchema } from './primitives.js';
+import { localeSchema, messageKeySchema, taskEventTypes, taskEventReasonSchema } from './i18n.js';
 
 const nameSchema = z.string().trim().min(1).max(120);
 const timestampSchema = z.iso.datetime();
@@ -19,6 +20,7 @@ export const repositoryInputSchema = z.object({
 export const applicationInputSchema = z.object({ name: nameSchema }).strict();
 export const environmentInputSchema = z.object({ applicationId: idSchema, name: nameSchema }).strict();
 export const cancelTaskSchema = z.object({ expectedVersion: z.number().int().positive() }).strict();
+export const resumeTaskSchema = cancelTaskSchema;
 export const listQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(100).default(50) }).strict();
 
 export const projectDtoSchema = z.object({
@@ -37,25 +39,28 @@ export const environmentDtoSchema = z.object({
 export const taskDtoSchema = z.object({
   id: idSchema, projectId: idSchema, requestedBy: idSchema, runId: idSchema,
   source: sourceRefSchema, purpose: z.string(), dataClass: z.enum(['synthetic', 'public']),
-  state: taskStateSchema, version: z.number().int().positive(), createdAt: timestampSchema,
+  state: taskStateSchema, version: z.number().int().positive(), locale: localeSchema, createdAt: timestampSchema,
 }).strict();
 export const taskEventDtoSchema = z.object({
   taskId: idSchema, sequence: z.number().int().positive(),
-  type: z.enum(['task.accepted', 'task.cancelled']), state: taskStateSchema,
-  actorId: idSchema, createdAt: timestampSchema,
+  type: z.enum(taskEventTypes), state: taskStateSchema,
+  actorId: idSchema, actorKind: z.enum(['principal', 'worker']), workerId: idSchema.nullable(),
+  reason: taskEventReasonSchema.nullable(), reasonMessage: z.string().nullable(),
+  messageKey: messageKeySchema, message: z.string(), locale: localeSchema, createdAt: timestampSchema,
 }).strict();
 export const admissionDtoSchema = z.object({ task: taskDtoSchema, replayed: z.boolean() }).strict();
 export const meDtoSchema = z.object({
   principalId: idSchema, workspaceId: idSchema.nullable(), isWorkspaceOwner: z.boolean(),
 }).strict();
 export const capabilitiesSchema = z.object({
-  stage: z.literal('p1-a'), taskAdmission: z.literal(true), taskExecution: z.literal(false),
-  externalMcp: z.literal(false), sandbox: z.literal(false), deployment: z.literal(false), operations: z.literal(false),
+  stage: z.literal('p1-b'), taskAdmission: z.literal(true), taskExecution: z.literal(false), durableScheduling: z.literal(true),
+  externalMcp: z.boolean(), sandbox: z.literal(false), deployment: z.literal(false), operations: z.literal(false),
 }).strict();
 export const apiErrorSchema = z.object({ error: z.object({
   code: z.enum(['invalid_input', 'unauthenticated', 'forbidden', 'not_found', 'conflict',
-    'idempotency_conflict', 'version_conflict', 'unsupported_state', 'unavailable', 'internal_error']),
+    'idempotency_conflict', 'version_conflict', 'unsupported_state', 'unavailable', 'internal_error', 'resume_limit']),
   requestId: idSchema,
+  messageKey: messageKeySchema, message: z.string(), locale: localeSchema,
 }).strict() }).strict();
 
 export type ProjectInput = z.infer<typeof projectInputSchema>;

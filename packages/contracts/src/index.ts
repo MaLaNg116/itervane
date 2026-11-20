@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import { idSchema, sourceRefSchema, taskStateSchema } from './primitives.js';
+import { localeSchema } from './i18n.js';
 
 export * from './control-plane.js';
+export * from './i18n.js';
 export { idSchema, sourceRefSchema, taskStateSchema, agentRoleSchema, taskStates, agentRoles } from './primitives.js';
 export type TaskState = z.infer<typeof taskStateSchema>;
 
@@ -11,6 +13,7 @@ export const startTaskSchema = z.object({
   idempotencyKey: z.string().min(1).max(128),
   purpose: z.string().min(1).max(2_000),
   dataClass: z.enum(['synthetic', 'public']),
+  locale: localeSchema.default('en'),
 }).strict();
 export type StartTask = z.infer<typeof startTaskSchema>;
 

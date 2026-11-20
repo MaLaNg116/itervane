@@ -10,11 +10,11 @@ Itervane connects three evidence-based loops:
 
 ## Status
 
-P0 verification foundations and the independent P1-A control-plane slice are being implemented. [Blueprint v6](docs/blueprint-v6.md) and the [TypeScript + PostgreSQL implementation plan v2](docs/implementation-plan-v2-ts-postgresql.md) remain the design baseline. Full P0, P1, and the platform MVP have not been accepted as complete.
+P0 verification foundations and the independent P1-A/P1-B control-plane slices are implemented in part. [Blueprint v6](docs/blueprint-v6.md) and the [TypeScript + PostgreSQL implementation plan v2](docs/implementation-plan-v2-ts-postgresql.md) remain the design baseline. Full P0, P1, and the platform MVP have not been accepted as complete.
 
 Available now: strict shared contracts, Anthropic/OpenAI protocol adapters, a bounded tool-loop probe, authenticated local MCP checks, real PostgreSQL transaction/recovery tests, evaluation inputs, and a trusted reference application. The platform capabilities described below remain planned.
 
-The P1-A API adds verified identity, resource registration, durable task admission/query, and queued cancellation. It has no Worker; submitted tasks are not executed. See [control-plane setup and boundaries](docs/control-plane-p1-a.md) and the [P1-A plan](docs/plans/p1-a-project-task-foundation.md). Infrastructure gates remain pending under [ADR 0001](docs/decisions/0001-development-and-runtime-gates.md).
+The P1-A API adds verified identity, resource registration and durable tasks. P1-B adds a lease-fenced Worker, real PostgreSQL graph interrupts/recovery, a bounded read-only tool gateway, authenticated external MCP task tools, and English/Simplified Chinese messages. Tasks pause at the unavailable Runner gate; submitted code is not executed. See [P1-B setup and boundaries](docs/control-plane-p1-b.md), the [P1-B plan](docs/plans/p1-b-durable-execution-and-mcp.md), and the earlier [P1-A setup](docs/control-plane-p1-a.md). Infrastructure gates remain pending under [ADR 0001](docs/decisions/0001-development-and-runtime-gates.md).
 
 For P0 setup, observed versions, and outstanding gates, see [P0 verification](docs/p0-verification.md). The repository does not yet deploy applications, execute submitted code, or operate infrastructure through an Agent.
 
@@ -39,6 +39,7 @@ The complete design documents are maintained in Chinese:
 - [P0 verification](docs/p0-verification.md): reproducible checks, current evidence, candidate dependencies, and blockers.
 - [Delivery and review index](docs/reviews/README.md): per-delivery code walkthroughs, evidence, limitations, and review order.
 - [P1-A control plane](docs/control-plane-p1-a.md): identity, least-privilege database setup, API commands, and verification limits.
+- [P1-B durable runtime and MCP](docs/control-plane-p1-b.md): worker startup, checkpoint publication, cancellation/resume, MCP auth, and localization.
 
 Blueprint v6 remains the product and architecture baseline. The implementation plan records the agreed TypeScript stack and execution approach. No implementation phase has been accepted as complete. Commits are separated by requirement for review.
 

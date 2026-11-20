@@ -1,7 +1,8 @@
 import { createRemoteJWKSet, customFetch, errors, jwtVerify } from 'jose';
 
 const identityMarker = Symbol('verified-identity');
-export type VerifiedIdentity = Readonly<{ issuer: string; subject: string; [identityMarker]: true }>;
+export type VerifiedIdentity = Readonly<{ issuer: string; subject: string; scopes: readonly string[]; expiresAt: number;
+  clientId: string; [identityMarker]: true }>;
 export type IdentityConfig = { issuer: string; audience: string };
 
 export class AuthenticationError extends Error {
@@ -41,7 +42,10 @@ export function createIdentityVerifier(input: IdentityConfig) {
       });
       // Keycloak 的 access token 为 Bearer；同 realm 的 ID/refresh token 不能调用 API。
       if (payload.typ !== 'Bearer' || typeof payload.sub !== 'string' || !payload.sub || payload.sub.length > 255) throw new AuthenticationError();
-      return Object.freeze({ issuer: config.issuer, subject: payload.sub, [identityMarker]: true as const });
+      const scope = typeof payload.scope === 'string' && payload.scope.length <= 2_048 ? payload.scope.split(/\s+/).filter(Boolean) : [];
+      const clientId = typeof payload.azp === 'string' && payload.azp.length <= 255 ? payload.azp : 'signed-access-token';
+      return Object.freeze({ issuer: config.issuer, subject: payload.sub, scopes: Object.freeze(scope), expiresAt: payload.exp!, clientId,
+        [identityMarker]: true as const });
     } catch (error) {
       if (error instanceof AuthenticationError) throw error;
       if (error instanceof errors.JWKSTimeout || error instanceof errors.JWKSInvalid || error instanceof errors.JWKInvalid) throw new AuthenticationError('unavailable');

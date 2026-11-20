@@ -1,0 +1,1 @@
+ALTER TABLE "itervane"."run_runtime" ADD COLUMN "checkpoint_step" integer DEFAULT -2 NOT NULL;
