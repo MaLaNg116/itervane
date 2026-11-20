@@ -20,6 +20,7 @@ D2 首个交付切片的范围与本机复跑方式见 [D2-A 生命周期探针]
 托管机上的 KVM 客体启动、重建与清理证据见 [原生复跑计划](p1-d2-runner-native.md) 和 [导读](../reviews/p1-d2-runner-native.md)。
 D2-B 的固定客体作业、取消和超时实测见 [作业通道计划](p1-d2-guest-job.md) 和 [实测导读](../reviews/p1-d2-guest-job.md)。
 D2-C 的专用宿主身份、离线工作负载限制及跨任务隔离见 [验收计划](p1-d2-runner-isolation.md) 和 [实测导读](../reviews/p1-d2-runner-isolation.md)。
+D3-C2 的正式 Worker 准入、证据发布和重领见 [分批计划](p1-d3-worker-inspection.md) 与 [实测导读](../reviews/p1-d3-worker-inspection.md)。
 
 P2 自主 Agent 审计/修复/独立复验、候选/批准/发布，P3 运维 MCP，P4 规则沉淀保持原路线。本批不增加第二套业务工作流，也不调整单维护者/单工作区/全局一个执行中工作流。
 
