@@ -3,7 +3,7 @@ import { localeSchema, type Check } from '@itervane/contracts';
 import { confirmationId, toolText, WhiskersProbeClient, whiskersVersion } from '../../../verification/src/native/whiskers.js';
 import { executeProbe, report } from '../../../verification/src/report.js';
 import { eligibleHost, WhiskersFixture } from './whiskers-fixture.js';
-import { approveRestart, createWriteKey, openPermissions, signIn } from './whiskers-ui.js';
+import { approveRestart, createWriteKey, openPermissions, selectWriteLevel, signIn } from './whiskers-ui.js';
 
 const messages = {
   host: ['Use an isolated GitHub-hosted Linux test machine.', '需要独立的 GitHub 托管 Linux 测试机。'],
@@ -66,6 +66,8 @@ async function run() {
 
     step = 'native-key-settings';
     await openPermissions(page);
+    step = 'native-key-level';
+    await selectWriteLevel(page);
     step = 'primary-key';
     const key = await createWriteKey(page, 'itervane-probe-primary');
     step = 'alternate-key';

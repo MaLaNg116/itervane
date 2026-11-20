@@ -17,8 +17,12 @@ export async function openPermissions(page: Page) {
     if (!await field.isVisible()) await page.getByText('MCP permissions', { exact: true }).click({ timeout: 3000 });
     await expect(field).toBeVisible({ timeout: 1800 });
   }).toPass({ timeout: 16_000 });
-  await page.getByLabel('Level', { exact: true }).click();
-  await page.getByRole('option', { name: 'Write', exact: true }).click();
+}
+
+export async function selectWriteLevel(page: Page) {
+  const level = page.locator('.mud-select').filter({ has: page.locator('label').filter({ hasText: /^Level$/ }) });
+  await level.click();
+  await page.locator('.mud-popover-open').getByText('Write', { exact: true }).click();
 }
 
 export async function createWriteKey(page: Page, name: string) {
