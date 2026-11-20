@@ -29,6 +29,8 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Strict types and deterministic tests
         run: pnpm check
+      - name: Runner lifecycle sequencing and failure-path tests
+        run: python3 -B -m unittest discover -s packages/runner/host
       - name: Real PostgreSQL 17 domain, Worker recovery and external MCP
         run: pnpm test:integration
       - name: Authenticated MCP protocol smoke
