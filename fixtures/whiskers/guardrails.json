@@ -1,0 +1,16 @@
+{
+  "ActivePreset": "Itervane probe",
+  "Presets": [
+    {
+      "Name": "Itervane probe",
+      "Policy": {
+        "MaxAutonomousLevel": "read",
+        "RequireConfirmationForWrites": true,
+        "ToolMode": "allow",
+        "ToolAllowList": ["get_container_details", "restart_container"],
+        "ProtectedResources": ["whiskers*", "serverwatch*"],
+        "MaxActionsPerSession": 12
+      }
+    }
+  ]
+}

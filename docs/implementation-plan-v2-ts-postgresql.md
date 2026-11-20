@@ -243,7 +243,7 @@ pg-boss 提供心跳和取消信号，但取消信号不能强制停止忽略它
 - 个人模式中，人类身份可以按下游规则确认服务身份发起的操作。
 - Whiskers 批准后重试的参数必须保持一致，修改或过期不能复用批准。
 
-Whiskers 当前文档将直接 MCP 确认描述为批准后重试，且权限没有逐服务器或租户范围，因此首期继续限定单一运维信任域。[Whiskers 治理流程](https://github.com/LupusMalusDeviant/Whiskers/blob/v1.0.1/docs/governance.md)、[权限边界](https://github.com/LupusMalusDeviant/Whiskers/blob/v1.0.1/docs/v1/PRODUCT_CONTRACT.md)
+Whiskers 0.15.0 的直接 MCP 确认为批准后按相同调用身份、工具和实参重试一次。密钥授权按级别控制工具权限，因此首期继续限定单一运维信任域。 [原生审批实现](https://github.com/LupusMalusDeviant/Whiskers/blob/e10cfa62ed8c3129302f68e0b4ec6e3ece8994e4/src/Whiskers/Services/Agent/Guardrails/DirectMcpCallGuard.cs) · [固定版本实测](reviews/p0-whiskers-native-approval.md)
 
 **验收标准：**
 
