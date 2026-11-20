@@ -133,6 +133,11 @@ pnpm exec esbuild packages/control-plane/src/entries/worker.ts --bundle --platfo
   '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
   --outfile=.reports/p0/qualified-worker.mjs
 sudo -n install -m 0444 .reports/p0/qualified-worker.mjs "$shared/worker.mjs"
+pnpm exec esbuild packages/control-plane/test/native/worker-repair.ts --bundle --platform=node --format=esm --target=node24 \
+  '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
+  --outfile=.reports/p0/repair-worker.mjs
+sudo -n install -m 0444 .reports/p0/repair-worker.mjs "$shared/repair-worker.mjs"
 pnpm exec tsx packages/control-plane/test/native/worker-inspection.ts "$shared/worker.mjs" "$sock" "$(id -u "$runner")" "$digest" "$stage" \
+  "$shared/repair-worker.mjs" \
   > "$reports/runner-worker-inspection.json"
 assert_empty

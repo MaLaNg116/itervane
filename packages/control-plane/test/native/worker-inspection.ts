@@ -8,8 +8,9 @@ import { promisify } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   admissionDtoSchema, auditFindingsPerScan, formalAuditDtoSchema, projectDtoSchema, repositoryDtoSchema, sourceInspectionDtoSchema,
-  taskDtoSchema, taskEventDtoSchema, translate,
+  qualifiedRepairResponseSchema, taskDtoSchema, taskEventDtoSchema, translate,
 } from '@itervane/contracts';
+import { sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
 import { bootstrapOwner } from '../../src/service/resources.js';
 import { databaseFixture } from '../helpers/database.js';
@@ -63,12 +64,16 @@ async function boundedExit(child: ChildProcess, exit: Promise<number | null>, ti
   } finally { timeout.abort(); }
 }
 
+function sourceWorkerEnvironment(socket: string, controllerUid: string, image: string) {
+  return ['PATH=/usr/bin:/bin', 'LANG=C.UTF-8', `ITERVANE_RUNNER_SOCKET=${socket}`,
+    `ITERVANE_RUNNER_UID=${controllerUid}`, `ITERVANE_RUNNER_IMAGE_SHA256=${image}`, 'ITERVANE_WORKER_LEASE_SECONDS=30'];
+}
+
 async function startWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string, auditURL?: string) {
-  const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin', 'LANG=C.UTF-8',
-    `ITERVANE_RUNNER_SOCKET=${socket}`, `ITERVANE_RUNNER_UID=${controllerUid}`, `ITERVANE_RUNNER_IMAGE_SHA256=${image}`,
+  const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', ...sourceWorkerEnvironment(socket, controllerUid, image),
     ...(auditURL ? ['ITERVANE_AUDIT_MODEL_PROVIDER=anthropic', `ANTHROPIC_BASE_URL=${auditURL}`,
       `ANTHROPIC_MODEL=${auditFixtureModel}`, `ANTHROPIC_API_KEY=${auditFixtureKey}`] : []),
-    'ITERVANE_WORKER_LEASE_SECONDS=30', 'ITERVANE_WORKER_POLL_MS=100', '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c',
+    'ITERVANE_WORKER_POLL_MS=100', '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c',
     'set -eu; IFS= read -r DATABASE_URL; export DATABASE_URL; printf "%s\\n" "$$"; exec "$@"', 'itervane-worker', process.execPath, bundle,
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
   const exit = exitStatus(child);
@@ -89,6 +94,28 @@ async function startWorker(bundle: string, socket: string, controllerUid: string
       else notEqual(code, 0);
     } };
   } catch (error) { child.kill(); await boundedExit(child, exit, 5_000); throw error; }
+}
+
+async function runRepairWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string, args: string[]) {
+  const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', ...sourceWorkerEnvironment(socket, controllerUid, image),
+    '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c', 'set -eu; IFS= read -r DATABASE_URL; export DATABASE_URL; exec "$@"',
+    'itervane-repair-worker', process.execPath, bundle, ...args,
+  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const exit = exitStatus(child);
+  child.stderr.resume();
+  child.stdin.on('error', () => undefined);
+  child.stdin.end(databaseUrl + '\n');
+  let size = 0;
+  const output: Buffer[] = [];
+  child.stdout.on('data', (chunk: Buffer) => {
+    size += chunk.length;
+    if (size > 32768) child.kill();
+    else output.push(chunk);
+  });
+  equal(await boundedExit(child, exit, 193_000), 0);
+  const receipt = qualifiedRepairResponseSchema.parse(JSON.parse(Buffer.concat(output).toString('utf8')));
+  if (receipt.kind !== 'repair_receipt') throw new Error('worker_repair_missing_receipt');
+  return receipt;
 }
 
 async function hostsDomains(controllerUid: string, filter: '--all' | '--state-running') {
@@ -121,11 +148,12 @@ async function watchGuest(controllerUid: string) {
 }
 
 async function probe() {
-  const [bundle, socket, controllerUid, imageSha256, staging, ...extra] = process.argv.slice(2);
+  const [bundle, socket, controllerUid, imageSha256, staging, repairBundle, ...extra] = process.argv.slice(2);
   if (process.platform !== 'linux' || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted' || process.env.DATABASE_URL
     || process.env.ITERVANE_POSTGRES_IMAGE || extra.length || !bundle?.startsWith('/var/lib/libvirt/images/itervane-native.')
     || !socket?.endsWith('/qualified/inspection.sock') || !controllerUid || !/^[1-9][0-9]{0,9}$/.test(controllerUid)
-    || !imageSha256 || !/^[a-f0-9]{64}$/.test(imageSha256) || !staging?.endsWith('/staging')) throw new Error('worker_probe_config');
+    || !imageSha256 || !/^[a-f0-9]{64}$/.test(imageSha256) || !staging?.endsWith('/staging')
+    || repairBundle !== bundle.replace(/\/worker\.mjs$/, '/repair-worker.mjs')) throw new Error('worker_probe_config');
 
   phase = 'postgres';
   const postgres = await temporaryPostgres();
@@ -293,6 +321,30 @@ async function probe() {
     deepStrictEqual(provider.calls, ['read_scan', 'read_rule', 'read_scan', 'finish_role', 'read_scan', 'unavailable']);
     deepStrictEqual(await attempts(recovered.id), [closed, replacement]);
     await assertDrained(controllerUid, staging);
+
+    phase = 'formal_repair_execution';
+    await worker.stop('TERM'); worker = undefined;
+    const fixture = checklist.findings.find(item => item.scanner === 'gitleaks'
+      && item.path === 'fixtures/runner/inspection-input/original/config.txt');
+    ok(fixture);
+    // The dedicated test database holds the audit. Requeue it for this repair execution check.
+    await db.admin.query("UPDATE itervane.tasks SET state='queued' WHERE id=$1", [first.id]);
+    await db.admin.query("UPDATE itervane.task_runs SET state='queued' WHERE id=$1", [first.runId]);
+    const receipt = await runRepairWorker(repairBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+      [first.id, first.runId, scan.result.snapshotSha256, fixture.id]);
+    equal(receipt.scope.taskId, first.id); equal(receipt.scope.runId, first.runId);
+    equal(receipt.snapshot.manifestSha256, scan.result.snapshotSha256);
+    ok(!domains.includes(receipt.domainId));
+    const [change] = receipt.snapshot.candidate.changes;
+    deepStrictEqual(change, { path: fixture.path, beforeBytes: 158, afterBytes: 38, edits: 1,
+      beforeSha256: '3812bc54c3579d8c67275c573f0ff1bf7dde70bfb4a9150621459ae510a87afc',
+      afterSha256: '8622a031ac1fa18220f30c313f1bfd2762ef9461ea69e2c108b115cf6fa00962' });
+    const saved = (await db.admin.query(`SELECT operation.command_sha256, operation.finding_ids, attempt.state, attempt.receipt_sha256
+      FROM itervane.formal_repair_operations operation JOIN itervane.formal_repair_attempts attempt USING(operation_id)
+      WHERE operation.run_id=$1`, [first.runId])).rows;
+    const receiptSha256 = sha256(JSON.stringify(receipt));
+    deepStrictEqual(saved, [{ command_sha256: receipt.scope.commandSha256, finding_ids: [fixture.id], state: 'recorded', receipt_sha256: receiptSha256 }]);
+    await assertDrained(controllerUid, staging);
     return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, commit, domains,
       initial: scan.result, replacement: recoveredScan.result, previousFence: closed.fence, recoveredFence: replacement.fence,
       cancellation: { processExited: true, closed: true, receiptPublished: false },
@@ -304,6 +356,9 @@ async function probe() {
           coverage: checklist.coverage, findings: checklist.findings.length, trace: reviewed.result.trace.map(item => item.tool), usage: reviewed.result.usage },
         interrupted: { sha256: failed.sha256, inspectionSha256: failed.result.inspectionSha256, reason: failed.result.reason, usage: failed.result.usage },
         httpMcpAgreement: true, reusedRecordedScans: true },
+      repair: { operationId: receipt.scope.operationId, requestId: receipt.scope.requestId, fence: receipt.scope.fence,
+        domainId: receipt.domainId, receiptSha256, baseSnapshotSha256: receipt.scope.baseSnapshotSha256,
+        candidateManifestSha256: receipt.snapshot.candidate.candidateManifestSha256, change, reusedReceipt: true, cleanupConfirmed: true },
     };
   } finally {
     try { await worker?.stop('TERM'); }
