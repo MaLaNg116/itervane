@@ -119,6 +119,10 @@ PY
   test -z "$(as_runner find "$stage" -mindepth 1 -print -quit)"
 }
 
+if [[ -f "$reports/kvm-inspection-inputs.json" ]]; then
+  bash fixtures/runner/run-qualified-session.sh "$directory"
+fi
+
 capture first heartbeat en "$digest" 0 passed
 if [[ -f "$reports/kvm-inspection-inputs.json" ]]; then
   capture inspection inspect en "$digest" 0 inspection-passed

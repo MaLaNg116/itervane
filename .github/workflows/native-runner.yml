@@ -11,6 +11,7 @@ on:
       - 'packages/verification/src/report.ts'
       - 'fixtures/runner/**'
       - 'scripts/prepare-runner-inspection.ts'
+      - 'scripts/probe-qualified-runner.ts'
       - 'scripts/scanner-tools.ts'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -108,5 +109,6 @@ jobs:
             .reports/p0/kvm-inspection-inputs.json
             .reports/p0/kvm-packages.txt
             .reports/p0/runner-vm*.json
+            .reports/p0/runner-qualified-*.json
           if-no-files-found: error
           retention-days: 14
