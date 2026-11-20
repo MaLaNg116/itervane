@@ -132,7 +132,9 @@ async function run() {
       const actual = await fixture.snapshot(fixture.primary).catch(() => undefined);
       console.log('Whiskers recovery observation: ' + (actual ? 'fixture_observed' : 'unavailable'));
     }
-    const location = error instanceof NativeBrowserFailure ? step + ' (' + error.reason + ')' : step;
+    const location = error instanceof NativeBrowserFailure
+      ? step + ' (' + error.reason + (error.outcome ? ', ' + error.outcome : '') + ')'
+      : step;
     checks.push({ id: 'native-verification', status: 'failed', detail: messages.stopped[language] + ' ' + location + '.' });
   } finally {
     await Promise.allSettled([...clients].map(client => client.close()));

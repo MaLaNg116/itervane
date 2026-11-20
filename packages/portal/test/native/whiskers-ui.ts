@@ -3,7 +3,10 @@ import { restartTool, whiskersOrigin } from '../../../verification/src/native/wh
 import { adminEmail } from './whiskers-fixture.js';
 
 export class NativeBrowserFailure extends Error {
-  constructor(readonly reason: 'login-form' | 'login-submit' | 'login-rejected' | 'login-navigation' | 'level-control' | 'level-option') {
+  constructor(
+    readonly reason: 'login-form' | 'login-submit' | 'login-rejected' | 'login-navigation' | 'level-control' | 'level-option',
+    readonly outcome?: string,
+  ) {
     super(reason);
   }
 }
@@ -21,7 +24,13 @@ export async function signIn(page: Page, password: string) {
       page.locator('form[action="login-local"] button[type=submit]').click(),
     ]);
   } catch { throw new NativeBrowserFailure('login-submit'); }
-  if (response.status() !== 302 || response.headers().location !== '/') throw new NativeBrowserFailure('login-rejected');
+  const location = response.headers().location;
+  const destination = location ? new URL(location, whiskersOrigin) : undefined;
+  const failure = destination?.pathname === '/login' ? destination.searchParams.get('error') : null;
+  const recognizedFailure = failure === 'invalid' || failure === 'unauthorized' ? failure : 'unexpected';
+  if (!destination || destination.origin !== whiskersOrigin || destination.pathname !== '/' || response.status() !== 302) {
+    throw new NativeBrowserFailure('login-rejected', 'HTTP ' + response.status() + ', ' + recognizedFailure);
+  }
   try {
     await page.waitForURL(url => url.origin === whiskersOrigin && url.pathname === '/', { waitUntil: 'domcontentloaded' });
   } catch { throw new NativeBrowserFailure('login-navigation'); }
