@@ -8,7 +8,10 @@ import uuid
 from dataclasses import dataclass, replace
 from threading import Thread
 
-from guest_job import CHUNK_BYTES, FRAME, PORT, READY, REJECTED, REQUEST, STARTED, VERIFIED, ProtocolError, read_exact, write_all
+from guest_job import (
+    CHUNK_BYTES, FRAME, PORT, READY, REJECTED, REQUEST, STARTED, VERIFIED, WORKLOAD_READY,
+    ProtocolError, read_exact, write_all,
+)
 
 
 SCENARIOS = ("heartbeat", "job", "job-reject-input", "job-cancel", "job-timeout")
@@ -28,6 +31,7 @@ class JobEvidence:
     startedBytes: int
     inputSha256: str
     receivedSha256: str | None = None
+    workloadVerified: bool = False
 
 
 def stream_io(operation, argument):
@@ -53,8 +57,9 @@ def start_channel_events(libvirt):
 
 
 class ProbeJob:
-    def __init__(self, scenario):
+    def __init__(self, scenario, require_workload=False):
         self.scenario = scenario
+        self.greetings = (WORKLOAD_READY,) if require_workload else (READY, WORKLOAD_READY)
         self.evidence = None
         self.phase = "open-channel"
 
@@ -72,7 +77,8 @@ class ProbeJob:
             return read_exact(lambda remaining: stream_io(stream.recv, remaining), size, check_deadline)
 
         self.phase = "guest-ready"
-        if receive(len(READY)) != READY:
+        greeting = receive(len(READY))
+        if greeting not in self.greetings:
             raise ProtocolError("unexpected guest greeting")
 
         self.phase = "prefix"
@@ -82,7 +88,7 @@ class ProbeJob:
         if FRAME.unpack(receive(FRAME.size)) != (STARTED, identity, len(prefix), hashlib.sha256(prefix).digest()):
             raise ProtocolError("unexpected prefix receipt")
         check_deadline()
-        self.evidence = JobEvidence(len(payload), len(prefix), expected.hex())
+        self.evidence = JobEvidence(len(payload), len(prefix), expected.hex(), workloadVerified=greeting == WORKLOAD_READY)
         after_prefix()
 
         self.phase = "result"

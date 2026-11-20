@@ -8,12 +8,13 @@ const outcomes = {
   passed: ['passed', 'The paused KVM guest met the profile, replied to the heartbeat, and was removed.', 'KVM 临时域通过暂停状态配置核对与心跳，并已销毁清理。'],
   kvm_unavailable: ['blocked', 'A usable x86-64 Linux KVM device is required.', '需要可用的 Linux x86-64 KVM 设备。'],
   config_required: ['blocked', 'Provide a private staging directory, a trusted raw image, and its SHA-256.', '请提供专用暂存目录、可信 raw 镜像和对应 SHA-256。'],
-  libvirt_unavailable: ['blocked', 'The local system libvirt connection and KVM capabilities are required.', '需要本机 system libvirt 连接及 KVM 域能力。'],
+  libvirt_unavailable: ['blocked', 'The selected local libvirt instance and KVM capabilities are required.', '需要选定的本机 libvirt 实例及 KVM 域能力。'],
   workspace_busy: ['blocked', 'Another probe holds the staging lock.', '另一轮探针占用了暂存目录锁。'],
   pending_cleanup: ['blocked', 'Reconcile a previous run in the staging directory before starting again.', '暂存目录有上一轮待核对记录，请核对后再启动。'],
   image_rejected: ['failed', 'The raw image could not be copied within the disk and digest constraints.', '复制 raw 镜像时未满足磁盘或摘要约束。'],
   domain_conflict: ['failed', 'The generated domain identity is already in use.', '本轮生成的临时域标识已被占用。'],
   profile_rejected: ['failed', 'The domain did not match the paused transient profile.', '实际域与暂停状态下的临时域配置不一致。'],
+  session_rejected: ['failed', 'The dedicated session isolation check did not pass.', '专用会话隔离检查未通过。'],
   heartbeat_rejected: ['failed', 'The guest heartbeat returned an unexpected response.', '客体心跳返回了非预期响应。'],
   job_passed: ['passed', 'The isolated guest verified the complete job input.', '隔离客体已核验完整的作业输入。'],
   job_input_rejected: ['failed', 'The isolated guest rejected the job input digest.', '隔离客体拒绝了作业输入摘要。'],
@@ -33,10 +34,14 @@ const jobSchema = z.strictObject({
   startedBytes: z.int().positive().max(prefixBytes),
   inputSha256: sha256Schema,
   receivedSha256: sha256Schema.nullable(),
+  workloadVerified: z.boolean().optional(),
 });
-const scenarioSchema = z.enum(['heartbeat', 'job', 'job-reject-input', 'job-cancel', 'job-timeout']);
+const probeSettingsSchema = z.object({
+  scenario: z.enum(['heartbeat', 'job', 'job-reject-input', 'job-cancel', 'job-timeout']).default('heartbeat'),
+  mode: z.enum(['system', 'session']).default('system'),
+});
 const jobIssueSchema = z.enum(['open-channel', 'guest-ready', 'prefix', 'result']);
-type Scenario = z.infer<typeof scenarioSchema>;
+type ProbeSettings = z.infer<typeof probeSettingsSchema>;
 
 const resultSchema = z.strictObject({
   code: z.enum(Object.keys(outcomes) as (keyof typeof outcomes)[]),
@@ -46,20 +51,25 @@ const resultSchema = z.strictObject({
   cleanupConfirmed: z.boolean().optional(),
   job: jobSchema.nullable().optional(),
   jobIssue: jobIssueSchema.nullable().optional(),
+  sessionVerified: z.boolean().optional(),
 });
 
 type DriverResult = z.infer<typeof resultSchema>;
 const lost: DriverResult = { code: 'driver_lost', runId: null, imageSha256: null };
 
-export function parseRunnerProbeOutput(stdout: string, expectedDigest: string): DriverResult {
+export function parseRunnerProbeOutput(stdout: string, expectedDigest: string, mode: ProbeSettings['mode'] = 'system'): DriverResult {
   try {
     const result = resultSchema.parse(JSON.parse(stdout));
     if (result.imageSha256 !== null && result.imageSha256 !== expectedDigest) return lost;
     if (result.code === 'passed' && (!result.runId || !result.imageSha256)) return lost;
-    if (result.profileIssue && result.code !== 'profile_rejected' && result.code !== 'cleanup_unproven') return lost;
+    if (result.profileIssue && !['profile_rejected', 'session_rejected', 'host_error', 'cleanup_unproven'].includes(result.code)) return lost;
     if (result.code === 'cleanup_unproven' && !result.runId) return lost;
     if ((result.cleanupConfirmed || result.job) && (!result.runId || !result.imageSha256)) return lost;
     if (result.code === 'cleanup_unproven' && result.cleanupConfirmed) return lost;
+    if (result.sessionVerified && (mode !== 'session' || !result.cleanupConfirmed || result.code === 'session_rejected')) return lost;
+    const requiresSessionProof = result.code === 'passed' || result.code === 'job_passed' || (result.job && result.cleanupConfirmed);
+    if (mode === 'session' && requiresSessionProof && !result.sessionVerified) return lost;
+    if (mode === 'session' && result.job && !result.job.workloadVerified) return lost;
     if (result.jobIssue && !['job_channel_unavailable', 'job_protocol_rejected', 'job_deadline_exceeded', 'cleanup_unproven'].includes(result.code)) return lost;
     if (result.job && result.job.startedBytes !== Math.min(result.job.byteCount, prefixBytes)) return lost;
     if (result.code === 'job_passed' || result.code === 'job_input_rejected') {
@@ -73,11 +83,11 @@ export function parseRunnerProbeOutput(stdout: string, expectedDigest: string): 
   }
 }
 
-function launch(root: string, image: string, digest: string, scenario: Scenario): Promise<DriverResult> {
+function launch(root: string, image: string, digest: string, settings: ProbeSettings): Promise<DriverResult> {
   const script = fileURLToPath(new URL('../../runner/host/libvirt_probe.py', import.meta.url));
   return new Promise(resolve => {
     let cancelled = false;
-    const child = execFile('/usr/bin/python3', ['-I', '-B', script, root, image, digest, scenario], {
+    const child = execFile('/usr/bin/python3', ['-I', '-B', script, root, image, digest, settings.scenario, settings.mode], {
       env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' },
       timeout: 200_000,
       killSignal: 'SIGKILL',
@@ -86,7 +96,7 @@ function launch(root: string, image: string, digest: string, scenario: Scenario)
       process.off('SIGINT', requestStop);
       process.off('SIGTERM', requestStop);
       if (error) return resolve(lost);
-      const result = parseRunnerProbeOutput(stdout, digest);
+      const result = parseRunnerProbeOutput(stdout, digest, settings.mode);
       const succeeded = result.code === 'passed' || result.code === 'job_passed';
       resolve(cancelled && succeeded ? { ...result, code: 'cancelled' } : result);
     });
@@ -99,7 +109,7 @@ function launch(root: string, image: string, digest: string, scenario: Scenario)
     process.on('SIGINT', requestStop);
     process.on('SIGTERM', requestStop);
 
-    if (scenario === 'job-cancel') {
+    if (settings.scenario === 'job-cancel') {
       let event = '';
       child.stderr?.on('data', (chunk: Buffer | string) => {
         event += chunk.toString();
@@ -112,13 +122,13 @@ function launch(root: string, image: string, digest: string, scenario: Scenario)
 export async function probeRunnerVm(env: NodeJS.ProcessEnv = process.env) {
   const locale = localeSchema.catch('en').parse(env.ITERVANE_RUNNER_PROBE_LOCALE);
   const zh = locale === 'zh-CN';
-  const scenario = scenarioSchema.safeParse(env.ITERVANE_RUNNER_PROBE_SCENARIO ?? 'heartbeat');
+  const settings = probeSettingsSchema.safeParse({ scenario: env.ITERVANE_RUNNER_PROBE_SCENARIO, mode: env.ITERVANE_RUNNER_PROBE_MODE });
   const { ITERVANE_RUNNER_PROBE_ROOT = '', ITERVANE_RUNNER_PROBE_IMAGE = '',
     ITERVANE_RUNNER_PROBE_IMAGE_SHA256 = '' } = env;
-  const result: DriverResult = !scenario.success
+  const result: DriverResult = !settings.success
     ? { code: 'config_required', runId: null, imageSha256: null }
     : process.platform === 'linux' && process.arch === 'x64'
-      ? await launch(ITERVANE_RUNNER_PROBE_ROOT, ITERVANE_RUNNER_PROBE_IMAGE, ITERVANE_RUNNER_PROBE_IMAGE_SHA256, scenario.data)
+      ? await launch(ITERVANE_RUNNER_PROBE_ROOT, ITERVANE_RUNNER_PROBE_IMAGE, ITERVANE_RUNNER_PROBE_IMAGE_SHA256, settings.data)
       : { code: 'kvm_unavailable', runId: null, imageSha256: null };
 
   const [status, english, chinese] = outcomes[result.code];
@@ -142,10 +152,24 @@ export async function probeRunnerVm(env: NodeJS.ProcessEnv = process.env) {
       });
     }
   }
-  if (scenario.success && scenario.data !== 'heartbeat' && result.cleanupConfirmed) {
+  if (settings.success && settings.data.scenario !== 'heartbeat' && result.cleanupConfirmed) {
     checks.push({
       id: 'runner-job-cleaned', status: 'passed',
       detail: zh ? '已独立核对域消失，临时磁盘和运行记录已移除。' : 'A fresh lookup confirmed domain removal. The working disk and run journal were removed.',
+    });
+  }
+  if (result.sessionVerified) {
+    checks.push({
+      id: 'runner-dedicated-session', status: 'passed',
+      detail: zh ? '已核对专用非 root 会话、宿主标记拒绝和实际 QEMU 进程退出。' : 'A dedicated non-root session denied access to the host marker, and the identified QEMU process exited.',
+    });
+  }
+  if (result.job?.workloadVerified) {
+    checks.push({
+      id: 'runner-guest-workload', status: 'passed',
+      detail: zh
+        ? '独立客体身份通过了可写作业目录、宿主标记不可见、受保护文件与设备、网络及资源限制检查。'
+        : 'The dedicated guest workload verified its writable task directory, hidden host marker, protected file and device, network, and resource limits.',
     });
   }
   return report('runner-vm', checks);

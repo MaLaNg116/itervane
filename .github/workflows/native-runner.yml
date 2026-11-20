@@ -37,84 +37,39 @@ jobs:
         run: |
           sudo -n apt-get update -qq
           sudo -n apt-get install -y --no-install-recommends guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils
-          sudo -n systemctl start libvirtd.service
           dpkg-query -W guestfs-tools libvirt-daemon-system python3-libvirt qemu-system-x86 > .reports/p0/kvm-packages.txt
           cat .reports/p0/kvm-packages.txt
-      - name: Prepare and seal the trusted offline guest
-        id: image
+      - name: Prepare the dedicated KVM session
+        id: session
         if: steps.capability.outputs.available == 'true'
+        env:
+          PROBE_HOST_ENVIRONMENT: ${{ runner.environment }}
         run: |
           directory=$(sudo -n mktemp -d /var/lib/libvirt/images/itervane-native.XXXXXXXX)
           sudo -n chmod 0711 "$directory"
-          sudo -n bash fixtures/runner/prepare-probe-image.sh "$directory"
-          sudo -n cat "$directory/image.json" > .reports/p0/kvm-image.json
-          sudo -n install -d -m 0711 "$directory/staging"
+          bash fixtures/runner/prepare-native-session.sh "$directory"
           printf 'directory=%s\n' "$directory" >> "$GITHUB_OUTPUT"
+      - name: Prepare and seal the trusted offline guest
+        if: steps.capability.outputs.available == 'true'
+        env:
+          PROBE_DIRECTORY: ${{ steps.session.outputs.directory }}
+        run: |
+          sudo -n bash fixtures/runner/prepare-probe-image.sh "$PROBE_DIRECTORY"
+          sudo -n cat "$PROBE_DIRECTORY/image.json" > .reports/p0/kvm-image.json
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         if: steps.capability.outputs.available == 'true'
         with:
           node-version: 24.14.0
-      - name: Install locked verification dependencies
+      - name: Install the pinned workspace package manager
         if: steps.capability.outputs.available == 'true'
         run: |
           npm install --global pnpm@11.9.0 --ignore-scripts
-          pnpm install --frozen-lockfile --ignore-scripts
-      - name: Launch, observe and destroy the actual KVM guest
+      - name: Verify the dedicated session and guest workloads on KVM
         if: steps.capability.outputs.available == 'true'
         env:
-          PROBE_DIRECTORY: ${{ steps.image.outputs.directory }}
-        run: |
-          digest=$(/usr/bin/python3 -c 'import json; print(json.load(open(".reports/p0/kvm-image.json"))["rawSha256"])')
-          probe() {
-            local locale=$1 expected_digest=$2 scenario=${3:-heartbeat} outcome=0
-            sudo -n env ITERVANE_RUNNER_PROBE_ROOT="$PROBE_DIRECTORY/staging" \
-              ITERVANE_RUNNER_PROBE_IMAGE="$PROBE_DIRECTORY/probe.raw" ITERVANE_RUNNER_PROBE_IMAGE_SHA256="$expected_digest" \
-              ITERVANE_RUNNER_PROBE_LOCALE="$locale" ITERVANE_RUNNER_PROBE_SCENARIO="$scenario" \
-              "$(command -v node)" node_modules/tsx/dist/cli.mjs packages/verification/src/entries/runner-vm.ts || outcome=$?
-            if test -f .reports/p0/runner-vm.json; then
-              sudo -n chmod a+r .reports/p0/runner-vm.json
-            fi
-            return "$outcome"
-          }
-          probe en "$digest"
-          mv .reports/p0/runner-vm.json .reports/p0/runner-vm-first.json
-          probe zh-CN "$digest"
-          mv .reports/p0/runner-vm.json .reports/p0/runner-vm-repeat.json
-          bad_digest=$(/usr/bin/python3 -c 'import sys; d=sys.argv[1]; print(("1" if d[0] == "0" else "0") + d[1:])' "$digest")
-          outcome=0
-          probe en "$bad_digest" || outcome=$?
-          test "$outcome" -eq 1
-          /usr/bin/python3 -c 'import json; d=json.load(open(".reports/p0/runner-vm.json")); assert d["checks"][0]["id"] == "runner-image-rejected"'
-          mv .reports/p0/runner-vm.json .reports/p0/runner-vm-rejected-image.json
-          test -z "$(sudo -n find "$PROBE_DIRECTORY/staging" -mindepth 1 -print -quit)"
-
-          run_job() {
-            local scenario=$1 locale=$2 expected_exit=$3 primary_check=$4 outcome=0
-            local report=".reports/p0/runner-vm-$scenario.json"
-            probe "$locale" "$digest" "$scenario" || outcome=$?
-            mv .reports/p0/runner-vm.json "$report"
-            test "$outcome" -eq "$expected_exit"
-            /usr/bin/python3 - "$report" "$primary_check" "$expected_exit" <<'PY'
-          import json
-          import sys
-
-          path, primary, exit_code = sys.argv[1:]
-          with open(path) as evidence:
-              report = json.load(evidence)
-          outcome = {"0": "passed", "1": "failed", "2": "blocked"}[exit_code]
-          expected = [("runner-" + primary, outcome), ("runner-job-started", "passed")]
-          if primary in ("job-passed", "job-input-rejected"):
-              expected.append(("runner-job-receipt", "passed"))
-          expected.append(("runner-job-cleaned", "passed"))
-          observed = [(check["id"], check["status"]) for check in report["checks"]]
-          assert report["status"] == outcome and observed == expected, observed
-          PY
-            test -z "$(sudo -n find "$PROBE_DIRECTORY/staging" -mindepth 1 -print -quit)"
-          }
-          run_job job en 0 job-passed
-          run_job job-reject-input zh-CN 1 job-input-rejected
-          run_job job-cancel en 2 cancelled
-          run_job job-timeout zh-CN 1 job-deadline-exceeded
+          PROBE_DIRECTORY: ${{ steps.session.outputs.directory }}
+          PROBE_HOST_ENVIRONMENT: ${{ runner.environment }}
+        run: bash fixtures/runner/run-native-session.sh "$PROBE_DIRECTORY"
       - name: Retain independent KVM evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -122,6 +77,7 @@ jobs:
           name: kvm-host-evidence
           path: |
             .reports/p0/kvm-host.json
+            .reports/p0/kvm-session-host.json
             .reports/p0/kvm-image.json
             .reports/p0/kvm-packages.txt
             .reports/p0/runner-vm*.json

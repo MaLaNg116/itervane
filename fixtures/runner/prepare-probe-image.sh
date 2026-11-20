@@ -37,6 +37,7 @@ LIBGUESTFS_BACKEND=direct virt-customize --no-network --no-logfile --format qcow
   --upload "$downloads/agent.deb:/var/tmp/itervane-probe-agent.deb" \
   --upload "$downloads/liburing.deb:/var/tmp/itervane-probe-liburing.deb" \
   --upload "$guest_job:/var/tmp/itervane-guest-job.py" \
+  --upload "$recipe_dir/verify-guest-workload.py:/var/tmp/verify-guest-workload.py" \
   --run "$recipe_dir/configure-probe-guest.sh"
 
 qemu-img convert -f qcow2 -O raw "$downloads/base.qcow2" "$work/probe.raw"
