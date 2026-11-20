@@ -1,12 +1,15 @@
-import { eq } from 'drizzle-orm';
-import type { FormalAuditReport } from '@itervane/agent';
-import { formalAuditInputSchema, formalAuditResultSchema, type FormalAuditResult } from '@itervane/contracts';
+import { and, eq } from 'drizzle-orm';
+import { agentText, type FormalAuditReport } from '@itervane/agent';
+import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, idSchema, translate,
+  type FormalAuditResult, type Locale } from '@itervane/contracts';
 import { catalogSnapshot, validCatalog } from '@itervane/rules';
 import { sha256 } from '@itervane/runner';
-import { formalAuditInputs, formalAuditResults, formalAuditRuntime, runRuntime } from '../persistence/schema.js';
+import type { VerifiedIdentity } from '../auth/identity.js';
+import type { Database } from '../persistence/database.js';
+import { formalAuditInputs, formalAuditResults, formalAuditRuntime, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { appendEvent, clearSlot, type ExecutionScope, type TaskRow } from '../runtime/authority.js';
-import type { Transaction } from './access.js';
-import { DomainError } from './errors.js';
+import { requireActor, requireProject, type Transaction } from './access.js';
+import { DomainError, parseInput } from './errors.js';
 import { currentInspectionAttempt, inspectionCoverage, readInspectionEvidence } from './inspection-evidence.js';
 import { readInspectionPlan } from './inspections.js';
 
@@ -94,4 +97,40 @@ export async function publishFormalAudit(tx: Transaction, task: TaskRow, scope: 
   });
   await clearSlot(tx);
   signal.throwIfAborted();
+}
+
+export class FormalAuditService {
+  constructor(private readonly database: Database) {}
+
+  async get(identity: VerifiedIdentity, taskId: string, locale: Locale) {
+    parseInput(idSchema, taskId);
+    return this.database.db.transaction(async tx => {
+      const actor = await requireActor(tx, identity);
+      const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId)).for('share');
+      if (!task) throw new DomainError('not_found');
+      await requireProject(tx, actor, task.projectId);
+      const [current] = await tx.select({ runId: taskRuns.id, runtimeReason: runRuntime.reason,
+        inputSha256: formalAuditInputs.sha256, pointerId: formalAuditRuntime.checkpointId, row: formalAuditResults }).from(taskRuns)
+        .innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id))
+        .leftJoin(formalAuditInputs, eq(formalAuditInputs.runId, taskRuns.id))
+        .leftJoin(formalAuditRuntime, eq(formalAuditRuntime.runId, taskRuns.id))
+        .leftJoin(formalAuditResults, eq(formalAuditResults.runId, taskRuns.id))
+        .where(and(eq(taskRuns.taskId, taskId), eq(taskRuns.generation, task.generation)));
+      if (!current) throw new DomainError('unavailable');
+      const base = { taskId, runId: current.runId, locale };
+      const { row } = current;
+      if (!row) {
+        const unavailable = current.runtimeReason === 'audit_failed';
+        return formalAuditDtoSchema.parse({ ...base, status: unavailable ? 'unavailable' : 'pending', result: null,
+          message: translate(locale, unavailable ? 'reason.audit_failed' : 'audit.pending') });
+      }
+      const result = formalAuditResultSchema.parse(row.document);
+      if (result.taskId !== taskId || result.runId !== current.runId || result.projectId !== task.projectId || result.generation !== task.generation
+        || result.inputSha256 !== current.inputSha256 || result.checkpointId !== current.pointerId || sha256(JSON.stringify(result)) !== row.sha256) {
+        throw new Error('formal_audit_result_integrity');
+      }
+      return formalAuditDtoSchema.parse({ ...base, status: 'recorded', sha256: row.sha256, recordedAt: row.createdAt.toISOString(), result,
+        message: agentText(locale).reason[result.reason] });
+    });
+  }
 }

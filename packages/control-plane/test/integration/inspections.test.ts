@@ -3,12 +3,14 @@ import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
-import { formalAuditInputSchema, formalAuditResultSchema, qualifiedInspectionResponseSchema, type QualifiedInspectionRequest } from '@itervane/contracts';
+import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, qualifiedInspectionResponseSchema, type QualifiedInspectionRequest } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
 import { scannerProfiles, sha256 } from '@itervane/runner';
+import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, inspectionAttempts } from '../../src/persistence/schema.js';
@@ -288,6 +290,37 @@ it('publishes provider failure with already recorded scan evidence and measured 
     usage: { turns: 2, toolCalls: 1, tokens: 30 }, evidence: [{ kind: 'scan', scanner: 'gitleaks' }] });
   expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'needs_human' });
   expect((await database.admin.query('SELECT task_id FROM itervane.execution_slot')).rows).toEqual([{ task_id: null }]);
+});
+
+it('shares one recorded audit across authorized HTTP and external MCP with independent display languages', async () => {
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, {
+    runner: completedRunner(fixtureFindingPath), auditModel: auditModel(),
+  });
+  try { await worker.tick(); } finally { await worker.close(); }
+  const publicUrl = 'https://itervane.example';
+  const api = createApi(database.storage, { ...issuer.config, publicUrl }, { logger: false });
+  const client = new Client({ name: 'audit-reader', version: '0.0.0' });
+  try {
+    const address = await api.listen({ host: '127.0.0.1', port: 0 });
+    const token = await issuer.token('owner', { aud: `${publicUrl}/mcp`, scope: 'itervane:read' });
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+      requestInit: { headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'zh-CN' } },
+    }));
+    const response = await client.callTool({ name: 'get_audit', arguments: { taskId: task.id } });
+    const view = formalAuditDtoSchema.parse(response.structuredContent);
+    const url = `/v1/tasks/${task.id}/audit`;
+    const authorization = `Bearer ${await issuer.token()}`;
+    const zh = await api.inject({ url, headers: { authorization, 'Accept-Language': 'zh-CN' } });
+    const en = await api.inject({ url, headers: { authorization, 'Accept-Language': 'en' } });
+    expect(zh.statusCode).toBe(200);
+    expect(zh.headers['cache-control']).toBe('no-store');
+    expect(zh.json()).toEqual(view);
+    expect(en.json()).toMatchObject({ locale: 'en', message: 'The audit checklist is grounded in both protected scans.', result: view.result });
+    expect(view).toMatchObject({ status: 'recorded', locale: 'zh-CN', result: { locale: 'zh-CN', status: 'completed',
+      checklist: { findings: [{ path: fixtureFindingPath, certainty: 'suspected' }] } } });
+    expect(response.isError).not.toBe(true);
+    expect(JSON.stringify(view)).not.toContain('workspaceSha256');
+  } finally { await client.close(); await api.close(); }
 });
 
 it.each(['runner_missing', 'incomplete_scan'])('keeps the model off when source evidence is %s', async condition => {

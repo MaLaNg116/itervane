@@ -47,3 +47,10 @@ export const formalAuditResultSchema = z.strictObject({
 }).refine(record => (record.status === 'completed') === (record.reason === 'audit_complete')
   && (record.status === 'completed' ? record.checklist?.coverage === 'complete' : true));
 export type FormalAuditResult = z.infer<typeof formalAuditResultSchema>;
+
+const auditView = { taskId: idSchema, runId: idSchema, locale: localeSchema, message: z.string() };
+export const formalAuditDtoSchema = z.discriminatedUnion('status', [
+  z.strictObject({ ...auditView, status: z.enum(['pending', 'unavailable']), result: z.null() }),
+  z.strictObject({ ...auditView, status: z.literal('recorded'), sha256: sha256Schema, recordedAt: z.iso.datetime(), result: formalAuditResultSchema }),
+]);
+export type FormalAuditDto = z.infer<typeof formalAuditDtoSchema>;
