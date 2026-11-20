@@ -1,44 +1,58 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button, Card, Empty, Form, Input, Modal, Tag } from 'antd';
 import { z } from 'zod';
-import { projectDtoSchema, projectInputSchema } from '@itervane/contracts';
+import { projectDtoSchema, projectInputSchema, type ProjectInput } from '@itervane/contracts';
 import { usePortal, useRemote, useText } from '../context.js';
-import { Failure, Loading, PageHeading, useTranslatedValidation } from '../components.js';
+import { EmptyState, Failure, Loading, PageHeading } from '../components.js';
+import { FormDialog, FormError, FormField, useFormValidation } from '../forms.js';
 import { navigate } from '../router.js';
+import { Badge } from '../ui/badge.js';
+import { Button } from '../ui/button.js';
+import { Card } from '../ui/card.js';
+import { Input } from '../ui/fields.js';
 
 export function ProjectsPage() {
   const { locale, me } = usePortal(); const t = useText();
   const projects = useRemote('/v1/projects?limit=100', z.object({ items: projectDtoSchema.array() }).strict());
-  const [creating, setCreating] = useState(false);
   return <>
     <PageHeading title={t('projects')} description={t('projectsHint')} actions={<>
-      <Button onClick={() => { void projects.refetch(); }}>{t('refresh')}</Button>
-      {me.isWorkspaceOwner && <Button type="primary" onClick={() => setCreating(true)}>{t('createProject')}</Button>}
+      <Button variant="outline" onClick={() => { void projects.refetch(); }}>{t('refresh')}</Button>
+      {me.isWorkspaceOwner && <CreateProject />}
     </>} />
     {projects.isPending ? <Loading locale={locale} /> : projects.error ? <Failure error={projects.error} locale={locale} retry={() => { void projects.refetch(); }} />
-      : projects.data.items.length === 0 ? <Card><Empty description={<><strong>{t('emptyProjects')}</strong><p>{t(me.isWorkspaceOwner ? 'emptyProjectsHelp' : 'readOnly')}</p></>} /></Card>
+      : projects.data.items.length === 0 ? <Card><EmptyState title={t('emptyProjects')} description={t(me.isWorkspaceOwner ? 'emptyProjectsHelp' : 'readOnly')} /></Card>
       : <div className="project-index">{projects.data.items.map(project => <article className="project-entry" key={project.id}>
         <span className="project-monogram" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</span>
         <div className="project-entry-copy"><h2><a href={`#/projects/${project.id}`}>{project.name}</a></h2><p className="muted">{t('projectContents')}</p></div>
-        <Tag>{project.slug}</Tag>
+        <Badge>{project.slug}</Badge>
       </article>)}</div>}
     {projects.data?.items.length === 100 && <p className="muted">{t('shownLimit')}</p>}
-    <Modal open={creating} onCancel={() => setCreating(false)} footer={null} title={t('createProject')} destroyOnHidden>
-      <CreateProject onComplete={id => { setCreating(false); navigate(`#/projects/${id}`); }} />
-    </Modal>
   </>;
 }
 
-function CreateProject({ onComplete }: { onComplete: (id: string) => void }) {
-  const { api, locale } = usePortal(); const t = useText(); const cache = useQueryClient(); const [form] = Form.useForm();
-  useTranslatedValidation(form, locale);
-  const mutation = useMutation({ retry: false, mutationFn: (values: unknown) => api.request('/v1/projects', projectDtoSchema, locale,
-    { method: 'POST', body: projectInputSchema.parse(values) }), onSuccess: project => { void cache.invalidateQueries(); onComplete(project.id); } });
-  return <Form form={form} layout="vertical" onFinish={values => mutation.mutate(values)} disabled={mutation.isPending}>
-    <Form.Item name="name" label={t('projectName')} rules={[{ required: true, whitespace: true, message: t('required') }, { max: 120, message: t('tooLong') }]}><Input autoFocus maxLength={120} /></Form.Item>
-    <Form.Item name="slug" label={t('projectSlug')} extra={t('slugHint')} rules={[{ required: true, message: t('required') }, { pattern: /^[a-z0-9]+(?:-[a-z0-9]+)*$/, message: t('invalidSlug') }, { max: 64, message: t('tooLong') }]}><Input maxLength={64} autoCapitalize="none" /></Form.Item>
-    {mutation.error && <Failure error={mutation.error} locale={locale} />}
-    <Button type="primary" htmlType="submit" loading={mutation.isPending}>{t('createProject')}</Button>
-  </Form>;
+function CreateProject() {
+  const { api, locale } = usePortal(); const t = useText(); const cache = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const validation = useFormValidation();
+  const mutation = useMutation({ retry: false, mutationFn: (input: ProjectInput) => api.request('/v1/projects', projectDtoSchema, locale,
+    { method: 'POST', body: input }), onSuccess: project => { void cache.invalidateQueries(); setOpen(false); navigate(`#/projects/${project.id}`); } });
+  function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (mutation.isPending) return;
+    const form = event.currentTarget;
+    const input = validation.validate(form, projectInputSchema.safeParse(Object.fromEntries(new FormData(form))), { name: 'required', slug: 'invalidSlug' });
+    if (input) mutation.mutate(input);
+  }
+  return <FormDialog title={t('createProject')} trigger={<Button>{t('createProject')}</Button>} open={open} pending={mutation.isPending}
+    setOpen={next => { if (next) { validation.reset(); mutation.reset(); } setOpen(next); }}>
+    <form className="form-stack" noValidate onSubmit={submit}>
+      <fieldset className="form-stack" disabled={mutation.isPending}>
+        <FormField label={t('projectName')} issue={validation.issues.name}>{attributes => <Input {...attributes} name="name" required maxLength={120} />}</FormField>
+        <FormField label={t('projectSlug')} hint={t('slugHint')} issue={validation.issues.slug}>{attributes => <Input {...attributes} name="slug" required maxLength={64} autoCapitalize="none" />}</FormField>
+      </fieldset>
+      <FormError issue={validation.issues.form} />
+      {mutation.error && <Failure error={mutation.error} locale={locale} />}
+      <Button className="justify-self-start" type="submit" disabled={mutation.isPending}>{t('createProject')}</Button>
+    </form>
+  </FormDialog>;
 }

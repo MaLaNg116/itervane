@@ -12,6 +12,7 @@
   --color-muted: var(--iv-soft);
   --color-muted-foreground: var(--iv-muted);
   --color-border: var(--iv-border);
+  --color-control: var(--iv-control);
   --color-success: var(--iv-success);
   --color-warning: var(--iv-warning);
   --color-destructive: var(--iv-error);

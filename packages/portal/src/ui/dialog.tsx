@@ -5,6 +5,7 @@ import { cn } from './cn.js';
 
 export const Dialog = DialogPrimitive.Root;
 export const DialogClose = DialogPrimitive.Close;
+export const DialogTrigger = DialogPrimitive.Trigger;
 
 export function DialogContent({ className, children, ...props }: Omit<DialogPrimitive.Popup.Props, 'className'> & { className?: string }) {
   return <DialogPrimitive.Portal>

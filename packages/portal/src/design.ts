@@ -2,7 +2,7 @@ import type { ThemeConfig } from 'antd';
 
 const colors = {
   ink: '#102A43', brand: '#126D74', canvas: '#F4F7FA', surface: '#FFFFFF', muted: '#526574', border: '#D9E2EC',
-  accent: '#74DED3', soft: '#EDF5F5', success: '#24744B', warning: '#936316', error: '#B43E45', info: '#206A94',
+  accent: '#74DED3', soft: '#EDF5F5', control: '#8799A7', success: '#24744B', warning: '#936316', error: '#B43E45', info: '#206A94',
 } as const;
 const fontFamily = '"Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
 

@@ -39,6 +39,9 @@ export function Panel({ title, actions, children, ...props }: React.ComponentPro
     <CardContent>{children}</CardContent>
   </Card>;
 }
+export function EmptyState({ title, description }: { title: string; description?: string }) {
+  return <div className="empty-state"><strong>{title}</strong>{description && <p className="muted">{description}</p>}</div>;
+}
 export const formatTime = (value: string, locale: Locale) => new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
 export function useTranslatedValidation(form: FormInstance, locale: Locale) {
   useEffect(() => {
