@@ -1,0 +1,198 @@
+"""Git acquisition in the sealed guest, using only a private loopback relay."""
+
+import hashlib
+import os
+import re
+import subprocess
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from tempfile import TemporaryDirectory, TemporaryFile
+
+# Isolated Python ignores its script directory. Only load our sealed modules.
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from guest_job import ProtocolError, verify_workload_receipt
+from source_wire import (
+    CLOSED, MAX_FILES, MAX_REQUEST_BYTES, MAX_TRANSFER_BYTES, PACK_TYPE, RECEIPT,
+    REFS_TYPE, SOURCE_PORT, START, UPLOAD_TYPE, SourceWire,
+)
+
+
+WORK = "/var/lib/itervane-probe-source"
+GIT_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"}
+
+
+class GuestFailure(Exception):
+    pass
+
+
+class GitRequest(BaseHTTPRequestHandler):
+    def log_message(self, *unused):
+        pass
+
+    def do_GET(self):
+        if (self.path != "/source.git/info/refs?service=git-upload-pack" or "Transfer-Encoding" in self.headers
+                or self.headers.get("Content-Length", "0") != "0"):
+            self.send_error(400)
+            return
+        self.transfer(b"I", b"", REFS_TYPE)
+
+    def do_POST(self):
+        sizes = self.headers.get_all("Content-Length", [])
+        if (self.path != "/source.git/git-upload-pack" or "Transfer-Encoding" in self.headers
+                or self.headers.get_content_type() != UPLOAD_TYPE or len(sizes) != 1
+                or not re.fullmatch(r"[0-9]{1,5}", sizes[0]) or not 0 < int(sizes[0]) <= MAX_REQUEST_BYTES):
+            self.send_error(400)
+            return
+        size = int(sizes[0])
+        body = self.rfile.read(size)
+        if len(body) != size:
+            self.send_error(400)
+            return
+        self.transfer(b"P", body, PACK_TYPE)
+
+    def transfer(self, kind, body, media):
+        self.server.wire.send(kind, body)
+        _, payload = self.server.wire.receive({b"O": MAX_TRANSFER_BYTES})
+        self.send_response(200)
+        self.send_header("Content-Type", media)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+class GitLoopback(HTTPServer):
+    def __init__(self, wire):
+        super().__init__(("127.0.0.1", 0), GitRequest)
+        self.timeout = 0.1
+        self.wire = wire
+        self.failed = False
+
+    def get_request(self):
+        connection, address = super().get_request()
+        connection.settimeout(5)
+        return connection, address
+
+    def handle_error(self, request, address):
+        self.failed = True
+
+
+def git_command(root, *arguments):
+    return [
+        "/usr/bin/git", "-C", root, "--no-replace-objects",
+        "-c", "core.hooksPath=/dev/null", "-c", "protocol.allow=never", "-c", "protocol.http.allow=always",
+        "-c", "protocol.version=0", "-c", "http.followRedirects=false", "-c", "http.maxRequests=1",
+        "-c", "http.proxy=", "-c", "credential.helper=", "-c", "fetch.fsckObjects=true",
+        "-c", "gc.auto=0", "-c", "maintenance.auto=false", *arguments,
+    ]
+
+
+def git_output(root, *arguments, limit=65536):
+    with TemporaryFile(dir=root) as output:
+        outcome = subprocess.run(
+            git_command(root, *arguments), env=GIT_ENV, stdin=subprocess.DEVNULL, stdout=output,
+            stderr=subprocess.DEVNULL, timeout=15, check=False,
+        )
+        output.seek(0)
+        data = output.read(limit + 1)
+    if outcome.returncode or len(data) > limit:
+        raise GuestFailure("git-objects")
+    return data
+
+
+def acquire(root, wire, commit, check_deadline):
+    git_output(root, "init", "--bare", "--quiet", "--template=", "--object-format=sha1")
+    with GitLoopback(wire) as server:
+        target = f"http://127.0.0.1:{server.server_port}/source.git"
+        with subprocess.Popen(
+            git_command(root, "fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", target, commit),
+            env=GIT_ENV, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ) as child:
+            try:
+                while child.poll() is None:
+                    check_deadline()
+                    server.handle_request()
+                    if server.failed:
+                        raise GuestFailure("git-fetch")
+                if child.returncode:
+                    raise GuestFailure("git-fetch")
+            finally:
+                if child.poll() is None:
+                    child.kill()
+
+
+def verify_objects(root, identity, commit):
+    observed = git_output(root, "rev-parse", "--verify", "FETCH_HEAD^{commit}", limit=128).strip()
+    if observed != commit.encode("ascii"):
+        raise GuestFailure("git-objects")
+    git_output(root, "fsck", "--strict", "--no-reflogs", commit)
+    raw_commit = git_output(root, "cat-file", "commit", commit)
+    tree = git_output(root, "rev-parse", "--verify", commit + "^{tree}", limit=128).strip()
+    if not re.fullmatch(b"[0-9a-f]{40}", tree) or not raw_commit.startswith(b"tree " + tree + b"\n"):
+        raise GuestFailure("git-objects")
+    body = b"commit " + str(len(raw_commit)).encode("ascii") + b"\0" + raw_commit
+    if hashlib.sha1(body).hexdigest() != commit:
+        raise GuestFailure("git-objects")
+    records = git_output(root, "ls-tree", "-rz", "--full-tree", commit, limit=MAX_FILES * 600).split(b"\0")
+    if records[-1] or not 0 < len(records) - 1 <= MAX_FILES:
+        raise GuestFailure("git-objects")
+    for record in records[:-1]:
+        metadata, separator, name = record.partition(b"\t")
+        if not separator or not 0 < len(name) <= 512 or not re.fullmatch(b"100(?:644|755) blob [0-9a-f]{40}", metadata):
+            raise GuestFailure("git-objects")
+    return RECEIPT.pack(identity, bytes.fromhex(commit), bytes.fromhex(tree.decode()), hashlib.sha256(raw_commit).digest(), len(records) - 1)
+
+
+def serve_source(wire, work):
+    wire.greeting()
+    _, start = wire.receive({b"S": START.size})
+    if len(start) != START.size:
+        raise GuestFailure("guest-input")
+    identity, commit_bytes = START.unpack(start)
+    commit = commit_bytes.hex()
+    with TemporaryDirectory(prefix="fixed-", dir=work) as repository:
+        acquire(repository, wire, commit, wire.check_deadline)
+        wire.send(b"D")
+        wire.receive({b"O": 0})
+        # Prove that the previously approved route is closed before reading objects.
+        wire.send(b"I")
+        if wire.receive({b"X": len(CLOSED)})[1] != CLOSED:
+            raise GuestFailure("guest-input")
+        wire.send(b"M", verify_objects(repository, identity, commit))
+
+
+def main():
+    if os.geteuid() == 0:
+        return 1
+    deadline = time.monotonic() + 90
+
+    def check_deadline():
+        if time.monotonic() >= deadline:
+            raise GuestFailure("guest-io")
+
+    try:
+        verify_workload_receipt()
+        port = os.open(f"/dev/virtio-ports/{SOURCE_PORT}", os.O_RDWR | os.O_NONBLOCK | os.O_NOCTTY)
+        try:
+            wire = SourceWire(lambda size: os.read(port, size), lambda body: os.write(port, body), check_deadline)
+            try:
+                serve_source(wire, WORK)
+            except GuestFailure as error:
+                wire.send(b"E", str(error).encode("ascii"))
+                return 1
+            except (OSError, ProtocolError, subprocess.SubprocessError):
+                wire.send(b"E", b"guest-io")
+                return 1
+        finally:
+            os.close(port)
+    except (KeyError, OSError, ProtocolError, GuestFailure):
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -8,14 +8,11 @@ import ssl
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from source_wire import MAX_REQUEST_BYTES, MAX_TRANSFER_BYTES, PACK_TYPE, REFS_TYPE, UPLOAD_TYPE
 
-MAX_REQUEST_BYTES = 65536
-MAX_TRANSFER_BYTES = 32 * 1024 * 1024
+
 MAX_REQUESTS = 8
 IO_SECONDS = 5
-REFS_TYPE = "application/x-git-upload-pack-advertisement"
-PACK_TYPE = "application/x-git-upload-pack-result"
-UPLOAD_TYPE = "application/x-git-upload-pack-request"
 LABEL = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 SEGMENT = re.compile(r"[A-Za-z0-9._-]{1,120}")
 COMMIT = re.compile(r"[0-9a-f]{40}")

@@ -37,6 +37,8 @@ LIBGUESTFS_BACKEND=direct virt-customize --no-network --no-logfile --format qcow
   --upload "$downloads/agent.deb:/var/tmp/itervane-probe-agent.deb" \
   --upload "$downloads/liburing.deb:/var/tmp/itervane-probe-liburing.deb" \
   --upload "$guest_job:/var/tmp/itervane-guest-job.py" \
+  --upload "$recipe_dir/../../packages/runner/host/source_guest.py:/var/tmp/source_guest.py" \
+  --upload "$recipe_dir/../../packages/runner/host/source_wire.py:/var/tmp/source_wire.py" \
   --upload "$recipe_dir/verify-guest-workload.py:/var/tmp/verify-guest-workload.py" \
   --run "$recipe_dir/configure-probe-guest.sh"
 
