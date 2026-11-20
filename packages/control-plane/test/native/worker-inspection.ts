@@ -7,7 +7,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
-  admissionDtoSchema, projectDtoSchema, repositoryDtoSchema, sourceInspectionDtoSchema, taskDtoSchema, taskEventDtoSchema, translate,
+  admissionDtoSchema, auditFindingsPerScan, formalAuditDtoSchema, projectDtoSchema, repositoryDtoSchema, sourceInspectionDtoSchema,
+  taskDtoSchema, taskEventDtoSchema, translate,
 } from '@itervane/contracts';
 import { createApi } from '../../src/api.js';
 import { bootstrapOwner } from '../../src/service/resources.js';
@@ -15,6 +16,7 @@ import { databaseFixture } from '../helpers/database.js';
 import { identityFixture } from '../helpers/identity.js';
 import { temporaryPostgres } from '../../../verification/src/postgres-fixture.js';
 import { sourceFingerprint } from '../../../verification/src/report.js';
+import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from './audit-provider.js';
 
 const execute = promisify(execFile);
 const commit = '9167604c888416d7b6518e1c76485d7308cffb5c';
@@ -61,9 +63,11 @@ async function boundedExit(child: ChildProcess, exit: Promise<number | null>, ti
   } finally { timeout.abort(); }
 }
 
-async function startWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string) {
+async function startWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string, auditURL?: string) {
   const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin', 'LANG=C.UTF-8',
     `ITERVANE_RUNNER_SOCKET=${socket}`, `ITERVANE_RUNNER_UID=${controllerUid}`, `ITERVANE_RUNNER_IMAGE_SHA256=${image}`,
+    ...(auditURL ? ['ITERVANE_AUDIT_MODEL_PROVIDER=anthropic', `ANTHROPIC_BASE_URL=${auditURL}`,
+      `ANTHROPIC_MODEL=${auditFixtureModel}`, `ANTHROPIC_API_KEY=${auditFixtureKey}`] : []),
     'ITERVANE_WORKER_LEASE_SECONDS=30', 'ITERVANE_WORKER_POLL_MS=100', '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c',
     'set -eu; IFS= read -r DATABASE_URL; export DATABASE_URL; printf "%s\\n" "$$"; exec "$@"', 'itervane-worker', process.execPath, bundle,
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -129,6 +133,7 @@ async function probe() {
   let identity: Awaited<ReturnType<typeof identityFixture>> | undefined;
   let api: ReturnType<typeof createApi> | undefined;
   let worker: Awaited<ReturnType<typeof startWorker>> | undefined;
+  let auditProvider: Awaited<ReturnType<typeof auditProtocolFixture>> | undefined;
   const client = new Client({ name: 'itervane-native-worker', version: '0.0.0' });
   try {
     const db = database = await databaseFixture(postgres.url);
@@ -239,16 +244,71 @@ async function probe() {
     await assertDrained(controllerUid, staging);
     const domains = [recorded.domain_id, cancelledGuest.domainId, revokedGuest.domainId, crashedGuest.domainId, replacement.domain_id];
     equal(new Set(domains).size, 5);
+
+    phase = 'formal_audit_start';
+    await worker.stop('TERM'); worker = undefined;
+    const provider = auditProvider = await auditProtocolFixture();
+    worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, provider.baseURL);
+    const finishAudit = async (taskId: string) => {
+      const waiting = taskDtoSchema.parse(await request(`/v1/tasks/${taskId}`));
+      equal(waiting.state, 'waiting_input');
+      equal(taskDtoSchema.parse(await request(`/v1/tasks/${taskId}/resume`, { expectedVersion: waiting.version })).state, 'queued');
+      const [pointer] = await poll(async () => {
+        const rows = (await db.admin.query(`SELECT result.checkpoint_id, result.sha256, runtime.reason
+          FROM itervane.formal_audit_results result
+          JOIN itervane.run_runtime runtime ON runtime.run_id = result.run_id WHERE result.run_id=$1`, [waiting.runId])).rows;
+        return rows.length ? rows : undefined;
+      }, 90_000, 'formal_audit_record');
+      const view = formalAuditDtoSchema.parse((await client.callTool({ name: 'get_audit', arguments: { taskId } })).structuredContent);
+      const http = formalAuditDtoSchema.parse(await request(`/v1/tasks/${taskId}/audit`));
+      if (view.status !== 'recorded' || http.status !== 'recorded') throw new Error('formal_audit_unpublished');
+      deepStrictEqual(http.result, view.result); equal(http.sha256, view.sha256);
+      equal(view.locale, 'zh-CN'); equal(http.locale, 'en'); notEqual(http.message, view.message);
+      equal(view.result.checkpointId, pointer.checkpoint_id); equal(view.sha256, pointer.sha256);
+      return { ...view, taskReason: pointer.reason };
+    };
+    phase = 'formal_audit_checklist';
+    const reviewed = await finishAudit(first.id);
+    const partial = scan.result.scans.some(item => item.findingsCount > auditFindingsPerScan);
+    equal(reviewed.result.reason, partial ? 'audit_incomplete' : 'audit_complete');
+    equal(reviewed.taskReason, partial ? 'audit_needs_human' : 'audit_ready');
+    equal(reviewed.result.inspectionSha256, recorded.receipt_sha256);
+    equal(reviewed.result.snapshotSha256, scan.result.snapshotSha256);
+    const checklist = reviewed.result.checklist;
+    ok(checklist);
+    equal(checklist.coverage, partial ? 'partial' : 'complete');
+    ok(checklist.findings.some(item => item.scanner === 'gitleaks' && item.certainty === 'suspected'));
+    ok(checklist.findings.some(item => item.scanner === 'trivy' && item.certainty === 'confirmed'));
+    deepStrictEqual(reviewed.result.trace.map(item => item.tool), ['read_scan', 'read_rule', 'read_scan']);
+    deepStrictEqual(reviewed.result.usage, { turns: 4, toolCalls: 3, tokens: 188 });
+    deepStrictEqual(await attempts(first.id), [recorded]);
+
+    phase = 'formal_audit_provider_failure';
+    provider.fail();
+    const failed = await finishAudit(recovered.id);
+    equal(failed.result.reason, 'provider_error'); equal(failed.taskReason, 'audit_needs_human');
+    equal(failed.result.checklist, null); equal(failed.result.inspectionSha256, replacement.receipt_sha256);
+    deepStrictEqual(failed.result.usage, { turns: 2, toolCalls: 1, tokens: 47 });
+    deepStrictEqual(failed.result.evidence.map(item => item.kind === 'scan' && item.scanner), ['gitleaks']);
+    deepStrictEqual(provider.calls, ['read_scan', 'read_rule', 'read_scan', 'finish_role', 'read_scan', 'unavailable']);
+    deepStrictEqual(await attempts(recovered.id), [closed, replacement]);
+    await assertDrained(controllerUid, staging);
     return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, commit, domains,
       initial: scan.result, replacement: recoveredScan.result, previousFence: closed.fence, recoveredFence: replacement.fence,
       cancellation: { processExited: true, closed: true, receiptPublished: false },
       revocation: { processExited: true, closed: true, receiptPublished: false },
       recovery: { processExited: true, originalWorkspace: true, replacedWorker: true },
-      httpMcpAgreement: true, stagedFilesRemaining: false };
+      httpMcpAgreement: true, stagedFilesRemaining: false,
+      audit: { mode: 'deterministic_anthropic_http_fixture',
+        checklist: { sha256: reviewed.sha256, inspectionSha256: reviewed.result.inspectionSha256, reason: reviewed.result.reason,
+          coverage: checklist.coverage, findings: checklist.findings.length, trace: reviewed.result.trace.map(item => item.tool), usage: reviewed.result.usage },
+        interrupted: { sha256: failed.sha256, inspectionSha256: failed.result.inspectionSha256, reason: failed.result.reason, usage: failed.result.usage },
+        httpMcpAgreement: true, reusedRecordedScans: true },
+    };
   } finally {
     try { await worker?.stop('TERM'); }
     finally {
-      await client.close(); await api?.close(); await identity?.close(); await database?.close(); await postgres.close();
+      await auditProvider?.close(); await client.close(); await api?.close(); await identity?.close(); await database?.close(); await postgres.close();
     }
   }
 }

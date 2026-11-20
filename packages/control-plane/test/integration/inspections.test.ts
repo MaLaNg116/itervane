@@ -15,6 +15,7 @@ import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/id
 import { queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, inspectionAttempts } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
+import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
 import { GuardedCheckpointer } from '../../src/runtime/checkpointer.js';
 import { ToolGateway } from '../../src/runtime/tools.js';
@@ -26,6 +27,7 @@ import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
 import { TaskService } from '../../src/service/tasks.js';
 import { databaseFixture } from '../helpers/database.js';
 import { identityFixture } from '../helpers/identity.js';
+import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from '../native/audit-provider.js';
 
 let database: Awaited<ReturnType<typeof databaseFixture>>; let issuer: Awaited<ReturnType<typeof identityFixture>>;
 let identity: VerifiedIdentity; let coordinator: ExecutionCoordinator; let task: Awaited<ReturnType<TaskService['admit']>>['task'];
@@ -281,22 +283,27 @@ it('publishes a receipt and its tool event atomically, and reuses the receipt af
 });
 
 it('publishes provider failure with already recorded scan evidence and measured usage', async () => {
-  const complete = vi.fn<ModelAdapter['complete']>().mockResolvedValueOnce(auditTurn('read_scan', { scanner: 'gitleaks' }))
-    .mockRejectedValue(new Error('Test provider unavailable'));
-  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(), auditModel: auditModel(complete) });
-  try { await worker.tick(); } finally { await worker.close(); }
+  const provider = await auditProtocolFixture(); provider.fail();
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(),
+    auditModel: configuredAuditModel({ protocol: 'anthropic', baseURL: provider.baseURL, apiKey: auditFixtureKey, model: auditFixtureModel }),
+  });
+  try { await worker.tick(); } finally { try { await worker.close(); } finally { await provider.close(); } }
   const [record] = await database.storage.db.select().from(formalAuditResults);
   expect(formalAuditResultSchema.parse(record?.document)).toMatchObject({ status: 'requires_human', reason: 'provider_error', checklist: null,
-    usage: { turns: 2, toolCalls: 1, tokens: 30 }, evidence: [{ kind: 'scan', scanner: 'gitleaks' }] });
+    usage: { turns: 2, toolCalls: 1, tokens: 47 }, evidence: [{ kind: 'scan', scanner: 'gitleaks' }] });
+  expect(provider.calls).toEqual(['read_scan', 'unavailable']);
   expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'needs_human' });
   expect((await database.admin.query('SELECT task_id FROM itervane.execution_slot')).rows).toEqual([{ task_id: null }]);
 });
 
 it('shares one recorded audit across authorized HTTP and external MCP with independent display languages', async () => {
+  const provider = await auditProtocolFixture();
   const worker = new DurableWorker(database.storage, database.runtimeUrl, {
-    runner: completedRunner(fixtureFindingPath), auditModel: auditModel(),
+    runner: completedRunner(fixtureFindingPath), auditModel: configuredAuditModel({ protocol: 'anthropic', baseURL: provider.baseURL,
+      apiKey: auditFixtureKey, model: auditFixtureModel }),
   });
-  try { await worker.tick(); } finally { await worker.close(); }
+  try { await worker.tick(); } finally { try { await worker.close(); } finally { await provider.close(); } }
+  expect(provider.calls).toEqual(['read_scan', 'read_rule', 'read_scan', 'finish_role']);
   const publicUrl = 'https://itervane.example';
   const api = createApi(database.storage, { ...issuer.config, publicUrl }, { logger: false });
   const client = new Client({ name: 'audit-reader', version: '0.0.0' });
