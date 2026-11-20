@@ -1,0 +1,19 @@
+/* Omit Preflight so this layer can coexist with the portal's native elements. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "../";
+
+@theme inline {
+  --color-foreground: var(--iv-ink);
+  --color-primary: var(--iv-brand);
+  --color-primary-foreground: var(--iv-surface);
+  --color-card: var(--iv-surface);
+  --color-muted: var(--iv-soft);
+  --color-muted-foreground: var(--iv-muted);
+  --color-border: var(--iv-border);
+  --color-success: var(--iv-success);
+  --color-warning: var(--iv-warning);
+  --color-destructive: var(--iv-error);
+  --color-info: var(--iv-info);
+}

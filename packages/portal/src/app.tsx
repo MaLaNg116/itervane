@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { Alert, Button, ConfigProvider, Result } from 'antd';
+import { CSPProvider } from '@base-ui/react/csp-provider';
 import enUS from 'antd/locale/en_US.js';
 import zhCN from 'antd/locale/zh_CN.js';
 import { meDtoSchema, portalConfigSchema, type Locale, type PortalConfig } from '@itervane/contracts';
@@ -41,6 +42,7 @@ export function PortalApp() {
   const t = (key: Parameters<typeof ui>[1]) => ui(locale, key);
   const nonce = document.querySelector<HTMLMetaElement>('meta[name="itervane-csp-nonce"]')?.content ?? '';
   return <ConfigProvider locale={locale === 'zh-CN' ? zhCN : enUS} csp={{ nonce }} theme={portalTheme}>
+    <CSPProvider nonce={nonce}>
     <QueryClientProvider client={queries}>
       <style nonce={nonce}>{designCss}</style>
       <div className="portal-root">
@@ -55,6 +57,7 @@ export function PortalApp() {
         : <SessionGate config={config} locale={locale} />}
       </div>
     </QueryClientProvider>
+    </CSPProvider>
   </ConfigProvider>;
 }
 
