@@ -38,10 +38,19 @@ download "$ubuntu_pool/main/libu/liburing/liburing2_2.5-1build1_amd64.deb" \
 qemu-img info -f qcow2 --output=json "$downloads/base.qcow2" \
   | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if 0 < d["virtual-size"] <= 8*1024**3 and "backing-filename" not in d else 1)'
 
+guest_image="$downloads/base.qcow2"
+if [[ ${#extra[@]} -gt 0 ]]; then
+  guest_image="$downloads/inspection.qcow2"
+  qemu-img create -f qcow2 -o preallocation=metadata "$guest_image" 6G
+  LIBGUESTFS_BACKEND=direct virt-resize --format qcow2 --output-format qcow2 \
+    --expand /dev/sda1 "$downloads/base.qcow2" "$guest_image"
+  rm -- "$downloads/base.qcow2"
+fi
+
 # The libguestfs appliance has no network. Any scanner payload was prepared
 # and hashed separately before being copied into the sealed guest.
 LIBGUESTFS_BACKEND=direct virt-customize --no-network --no-logfile --format qcow2 \
-  -a "$downloads/base.qcow2" \
+  -a "$guest_image" \
   --upload "$downloads/agent.deb:/var/tmp/itervane-probe-agent.deb" \
   --upload "$downloads/liburing.deb:/var/tmp/itervane-probe-liburing.deb" \
   --upload "$guest_job:/var/tmp/itervane-guest-job.py" \
@@ -52,7 +61,8 @@ LIBGUESTFS_BACKEND=direct virt-customize --no-network --no-logfile --format qcow
   "${extra[@]}" \
   --run "$recipe_dir/configure-probe-guest.sh"
 
-qemu-img convert -f qcow2 -O raw "$downloads/base.qcow2" "$work/probe.raw"
+qemu-img convert -f qcow2 -O raw "$guest_image" "$work/probe.raw"
+rm -- "$guest_image"
 /usr/bin/python3 -I -B - "$work" "$base_digest" "$agent_digest" "$uring_digest" <<'PY'
 import hashlib
 import json

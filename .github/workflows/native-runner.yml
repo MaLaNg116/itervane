@@ -82,6 +82,12 @@ jobs:
         run: |
           sudo -n bash fixtures/runner/prepare-probe-image.sh "$PROBE_DIRECTORY" "$INSPECTION_PAYLOAD"
           sudo -n cat "$PROBE_DIRECTORY/image.json" > .reports/p0/kvm-image.json
+          case "$INSPECTION_PAYLOAD" in
+            "$RUNNER_TEMP"/itervane-scan.????????/itervane-inspection)
+              rm -- "$INSPECTION_PAYLOAD/cache/db/trivy.db"
+              ;;
+            *) exit 1 ;;
+          esac
       - name: Verify source snapshots, offline scanners and guest lifecycle on KVM
         if: steps.capability.outputs.available == 'true'
         env:
