@@ -430,7 +430,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
     )
 
 
-def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat", session=False):
+def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat", session=False, *, source_override=None):
     deadline = time.monotonic() + DEADLINE_SECONDS
 
     def check_deadline():
@@ -440,7 +440,7 @@ def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat", s
             raise Rejected("deadline_exceeded")
 
     try:
-        if scenario in ("source", "inspect") and not session:
+        if not session and (scenario in ("source", "inspect") or source_override is not None):
             raise Rejected("config_required")
         if not root.is_absolute() or root.resolve(strict=True) != root or not image.is_absolute():
             raise Rejected("config_required")
@@ -456,7 +456,9 @@ def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat", s
             if any(path.name.startswith(PREFIX) for path in root.iterdir()):
                 raise Rejected("pending_cleanup")
             session_runtime = prepare_session(root, image) if session else None
-            if scenario in ("source", "inspect"):
+            if source_override is not None:
+                job = source_override
+            elif scenario in ("source", "inspect"):
                 job = maintainer_source(inspect=scenario == "inspect")
             else:
                 job = None if scenario == "heartbeat" else ProbeJob(scenario, require_workload=session)

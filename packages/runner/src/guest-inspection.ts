@@ -13,7 +13,6 @@ import { normalizeScan, type ScanSummary } from './scans.js';
 export const INSPECTION_TOOLS = '/usr/local/libexec/itervane-inspection';
 export const INSPECTION_SOURCE = '/var/lib/itervane-inspection-source';
 export const INSPECTION_OUTPUT = '/var/lib/itervane-inspection-output';
-export const PROBE_REPOSITORY_ID = 'a955164f-7cf2-45c5-8a53-7cdb556db805';
 export const MAX_DATABASE_BYTES = 2560 * 1024 * 1024;
 const reportBytes = 4 * 1024 * 1024;
 const controls = 'fixtures/runner/inspection-input';
@@ -89,7 +88,7 @@ function invoke(scanner: Scanner, tools: string, ready: string, output: string, 
 
 function readScanReport(output: string, scanner: Scanner) {
   try { return readBoundedFile(join(output, scanner + '.json'), reportBytes).toString('utf8'); }
-  catch { throw new Error('scan-' + scanner); }
+  catch { return ''; }
 }
 
 function fixtureControls(gitleaks: ScanSummary, trivy: ScanSummary) {
@@ -106,34 +105,37 @@ function summarize(scan: ScanSummary) {
 
 /** Runs from the sealed scan service after its kernel boundary checks. */
 export async function inspectGuestSnapshot(ready: string, tools: string) {
-  const { runId, manifest } = readGuestSnapshot(ready);
+  const { runId, mode, manifest } = readGuestSnapshot(ready);
   const { inputs, inputsSha256 } = await verifyInputs(tools);
   const output = mkdtempSync(join(tmpdir(), 'itervane-raw-scan-'));
   try {
     const gitleaksResult = invoke('gitleaks', tools, ready, output);
     const gitleaks = normalizeScan('gitleaks', { manifest, exitCode: gitleaksResult.code, sourceRoot: gitleaksResult.sourceRoot,
       timedOut: gitleaksResult.timedOut, report: readScanReport(output, 'gitleaks') });
-    if (gitleaks.status !== 'completed') throw new Error('scan-gitleaks');
-
-    const missing = join(output, 'missing-cache');
-    mkdirSync(missing);
-    const rejected = invoke('trivy', tools, ready, output, missing);
-    if (rejected.code !== 1 || rejected.timedOut) throw new Error('scan-trivy');
+    if (mode === 'fixture') {
+      if (gitleaks.status !== 'completed') throw new Error('scan-gitleaks');
+      const missing = join(output, 'missing-cache');
+      mkdirSync(missing);
+      const rejected = invoke('trivy', tools, ready, output, missing);
+      if (rejected.code !== 1 || rejected.timedOut) throw new Error('scan-trivy');
+    }
 
     const trivyResult = invoke('trivy', tools, ready, output, join(tools, 'cache'));
     const trivy = normalizeScan('trivy', { manifest, exitCode: trivyResult.code, sourceRoot: trivyResult.sourceRoot,
       timedOut: trivyResult.timedOut, report: readScanReport(output, 'trivy'),
       database: { sha256: inputs.databaseSha256, updatedAt: inputs.databaseUpdatedAt } });
-    if (trivy.status !== 'completed') throw new Error('scan-trivy');
-    fixtureControls(gitleaks, trivy);
-
     const checked = readGuestSnapshot(ready);
     if (await fileDigest(join(tools, 'cache/db/trivy.db'), MAX_DATABASE_BYTES) !== inputs.databaseSha256
-        || checked.runId !== runId || checked.manifest.sha256 !== manifest.sha256) throw new Error('scan-integrity');
-    return {
+        || checked.runId !== runId || checked.mode !== mode || checked.manifest.sha256 !== manifest.sha256) throw new Error('scan-integrity');
+    const proof = {
       runId, commit: manifest.source.commit, tree: manifest.tree, manifestSha256: manifest.sha256,
-      files: manifest.files.length, totalBytes: manifest.totalBytes, inputsSha256,
-      readOnly: true, offline: true, controlsChecked: true, missingDatabaseRejected: true,
+      files: manifest.files.length, totalBytes: manifest.totalBytes, inputsSha256, readOnly: true, offline: true,
+    };
+    if (mode === 'qualified') return { ...proof, repositoryId: manifest.source.repositoryId, reports: [gitleaks, trivy] };
+    if (trivy.status !== 'completed') throw new Error('scan-trivy');
+    fixtureControls(gitleaks, trivy);
+    return {
+      ...proof, controlsChecked: true, missingDatabaseRejected: true,
       gitleaks: summarize(gitleaks),
       trivy: { ...summarize(trivy), databaseSha256: inputs.databaseSha256, databaseUpdatedAt: inputs.databaseUpdatedAt },
     };

@@ -10,7 +10,8 @@ from guest_job import ProtocolError
 from native_job import JobRejected, open_channel, stream_io
 from source_gateway import RegisteredOrigin, SourceGateway, SourceRejected
 from source_wire import (
-    CLOSED, GUEST_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_REQUEST_BYTES, RECEIPT, SOURCE_PORT, START, SourceWire,
+    CLOSED, GUEST_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_QUALIFIED_RECEIPT,
+    MAX_REQUEST_BYTES, QUALIFIED_START, RECEIPT, SOURCE_PORT, START, SourceWire,
 )
 
 
@@ -36,10 +37,11 @@ class SourceEvidence:
 class SourceProbe:
     port = SOURCE_PORT
 
-    def __init__(self, gateway, inspect=False):
+    def __init__(self, gateway, inspect=False, repository_id=None):
         self.gateway = gateway
         self.evidence = None
-        self.inspect = inspect
+        self.inspect = inspect or repository_id is not None
+        self.repository_id = repository_id
         self.inspection = None
         self.scan_deadline = None
         self.phase = "source-open"
@@ -59,7 +61,10 @@ class SourceProbe:
         commit = bytes.fromhex(gateway.commit)
         self.phase = "source-ready"
         wire.expect_greeting()
-        wire.send(b"A" if self.inspect else b"S", START.pack(identity, commit))
+        if self.repository_id is None:
+            wire.send(b"A" if self.inspect else b"S", START.pack(identity, commit))
+        else:
+            wire.send(b"F", QUALIFIED_START.pack(identity, commit, uuid.UUID(self.repository_id).bytes))
         self.phase = "source-fetch"
         while True:
             kind, body = self.receive(wire, {b"I": 0, b"P": MAX_REQUEST_BYTES, b"D": 0})
@@ -99,7 +104,8 @@ class SourceProbe:
             return "source_passed"
         self.phase = "scan-results"
         self.scan_deadline = time.monotonic() + INSPECTION_SECONDS
-        _, response = self.receive(wire, {b"N": MAX_INSPECTION_RECEIPT})
+        size = MAX_QUALIFIED_RECEIPT if self.repository_id is not None else MAX_INSPECTION_RECEIPT
+        _, response = self.receive(wire, {b"N": size})
         try:
             inspection = json.loads(response)
         except (ValueError, RecursionError) as error:
@@ -108,6 +114,7 @@ class SourceProbe:
             not isinstance(inspection, dict) or inspection.get("runId") != run_id
             or inspection.get("commit") != self.evidence.commit or inspection.get("tree") != self.evidence.tree
             or inspection.get("files") != self.evidence.files
+            or inspection.get("repositoryId") != self.repository_id
         ):
             raise ProtocolError("invalid inspection identity")
         wire.check_deadline()
