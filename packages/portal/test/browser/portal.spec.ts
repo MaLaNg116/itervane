@@ -61,24 +61,15 @@ async function openPreaudit(page: Page, stack: Stack, project: Awaited<ReturnTyp
   await expect(page.getByTestId('rule-bounded-review-context')).toBeVisible();
 }
 
-type MotionProbe = { state: number; events: number; headings: number; disclosures: number; violations: number; csp: string[]; blockedProbes: number; privateWithError: boolean };
+type MotionProbe = { state: number; events: number; headings: number; disclosures: number; csp: string[]; privateWithError: boolean };
 async function observeMotion(page: Page, origin: string) {
   await page.addInitScript(origin => {
     if (location.origin !== origin) return;
-    const probe = { state: 0, events: 0, headings: 0, disclosures: 0, violations: 0, csp: [] as string[], blockedProbes: 0, privateWithError: false };
+    const probe = { state: 0, events: 0, headings: 0, disclosures: 0, csp: [] as string[], privateWithError: false };
     (window as unknown as { itervaneMotionProbe: typeof probe }).itervaneMotionProbe = probe;
-    document.addEventListener('securitypolicyviolation', event => { probe.violations++; probe.csp.push(`${event.effectiveDirective}:${event.blockedURI === 'inline' ? 'inline' : 'other'}:${new URL(event.sourceFile || location.href).pathname}:${event.lineNumber}`); });
+    document.addEventListener('securitypolicyviolation', event => { probe.csp.push(event.effectiveDirective); });
     new MutationObserver(records => {
       for (const record of records) {
-        // Existing rc-util scrollbar/scroll-lock and cssinjs feature styles are blocked by the unchanged CSP.
-        // Only their generated, non-private style shapes are classified; other violations still fail.
-        for (const node of record.addedNodes) if (node instanceof HTMLStyleElement && !node.nonce) {
-          const text = node.textContent ?? '';
-          if (/^\s*#rc-scrollbar-measure-[a-z0-9]+::-webkit-scrollbar\s*\{\s*(?:width:\s*[^;{}]+;\s*)?(?:height:\s*[^;{}]+;\s*)?\}\s*$/.test(text)
-            || (text.includes('_bAmBoO_') && text.includes('random-'))
-            || (/^\s*html body\s*\{\s*overflow-y:\s*hidden;\s*(?:width:\s*calc\(100% - \d+(?:\.\d+)?px\);\s*)?\}\s*$/.test(text)
-              && [...node.attributes].some(attribute => /^rc-util-locker-\d+_\d+$/.test(attribute.value)))) probe.blockedProbes++;
-        }
         const element = record.target;
         if (record.type !== 'attributes' || !(element instanceof HTMLElement) || !element.style.transform) continue;
         if (element.matches('.state-marker')) probe.state++;
@@ -96,9 +87,7 @@ async function captureWorkspace(page: Page, path: string) {
   await page.screenshot({ path, fullPage: true });
 }
 async function expectMotionCsp(page: Page) {
-  const probe = await motionProbe(page);
-  expect(probe.csp.filter(value => !value.startsWith('style-src-elem:inline:'))).toEqual([]);
-  expect(probe.violations).toBe(probe.blockedProbes);
+  expect((await motionProbe(page)).csp).toEqual([]);
 }
 
 for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycle in ${locale}`, async ({ page, stack }) => {
@@ -364,11 +353,13 @@ test('the bilingual portal remains usable on a narrow viewport without page over
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.getByRole('dialog').getByRole('button', { name: '创建项目', exact: true }).click();
   await expect(page.getByText('请填写此项。', { exact: true }).first()).toBeVisible();
+  await expect(page.getByLabel('项目名称', { exact: true })).toBeFocused();
   await page.screenshot({ path: '.reports/p1-c/portal-mobile-zh.png', fullPage: true });
 });
 
 for (const locale of ['en', 'zh-CN'] as const) test(`real rules and preaudit lifecycle in ${locale}`, async ({ page, stack }) => {
   const zh = locale === 'zh-CN'; const project = await seedProject(stack);
+  await observeMotion(page, stack.origin);
   await openPreaudit(page, stack, project, locale);
   const canary = `source-private-${randomUUID()}`;
   const source = `eval(value); // ${canary}\nnode.innerHTML = value;\n// gitleaks:allow\n<img src=x onerror=alert(1)>`;
@@ -392,6 +383,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`real rules and preaudit lif
   await page.getByRole('link', { name: zh ? /Back to rules and preaudit$/ : /返回规则与预审$/ }).click();
   await expect(page.getByRole('link', { name: id.slice(0, 8), exact: true })).toBeVisible();
   await expect(page.getByLabel(zh ? 'Supplied text' : '提供的文本', { exact: true })).toBeEmpty();
+  await expectMotionCsp(page);
 });
 
 test('preaudit retries an accepted request after response loss with the original key and no second record', async ({ page, stack }) => {
