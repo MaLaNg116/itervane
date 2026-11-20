@@ -102,4 +102,26 @@ describe('sanitized native VM probe result', () => {
       expect(parseRunnerProbeOutput(JSON.stringify(invalid), imageSha256, 'session', 'source').code).toBe('driver_lost');
     }
   });
+
+  it('accepts the scan receipt only with the same source, run and actual isolation evidence', () => {
+    const source = { originSha256: 'a'.repeat(64), commit: 'b'.repeat(40), tree: 'c'.repeat(40),
+      commitSha256: 'd'.repeat(64), files: 305, requests: 3, transferredBytes: 4200 };
+    const proof = { policySha256: 'e'.repeat(64), findings: 2, resultSha256: 'f'.repeat(64) };
+    const inspection = { runId, commit: source.commit, tree: source.tree, files: 305, totalBytes: 1200000,
+      manifestSha256: 'a'.repeat(64), inputsSha256: 'b'.repeat(64), offline: true, readOnly: true, controlsChecked: true,
+      missingDatabaseRejected: true, gitleaks: { ...proof, version: '8.30.1' },
+      trivy: { ...proof, version: '0.76.2', databaseSha256: 'c'.repeat(64), databaseUpdatedAt: '2026-11-19T10:00:00Z' } };
+    const valid = { code: 'inspection_passed', runId, imageSha256, cleanupConfirmed: true, sessionVerified: true, source, inspection };
+    expect(parseRunnerProbeOutput(JSON.stringify(valid), imageSha256, 'session', 'inspect')).toEqual(valid);
+    expect(parseRunnerProbeOutput(JSON.stringify(valid), imageSha256, 'session', 'source').code).toBe('driver_lost');
+    for (const invalid of [
+      { ...valid, inspection: { ...inspection, tree: 'd'.repeat(40) } },
+      { ...valid, inspection: { ...inspection, offline: false } },
+      { ...valid, inspection: { ...inspection, readOnly: false } },
+      { ...valid, inspection: { ...inspection, trivy: { ...inspection.trivy, raw: 'secret text' } } },
+      { ...valid, cleanupConfirmed: false },
+    ]) {
+      expect(parseRunnerProbeOutput(JSON.stringify(invalid), imageSha256, 'session', 'inspect').code).toBe('driver_lost');
+    }
+  });
 });

@@ -60,6 +60,7 @@ capture() {
   /usr/bin/python3 - "$result" "$primary" "$scenario" "$expected_exit" "$locale" <<'PY'
 import json
 import sys
+from pathlib import Path
 
 path, primary, scenario, exit_code, locale = sys.argv[1:]
 with open(path) as evidence:
@@ -67,37 +68,62 @@ with open(path) as evidence:
 outcome = {"0": "passed", "1": "failed", "2": "blocked"}[exit_code]
 expected = [("runner-" + primary, outcome)]
 if primary != "image-rejected":
-    if scenario == "source":
+    if scenario in ("source", "inspect"):
         expected.extend((item, "passed") for item in (
-            "runner-source-objects", "runner-source-egress-closed", "runner-job-cleaned",
+            "runner-source-objects", "runner-source-egress-closed",
         ))
+        if scenario == "inspect":
+            expected.extend((item, "passed") for item in (
+                "runner-inspection-snapshot", "runner-inspection-offline", "runner-inspection-gitleaks", "runner-inspection-trivy",
+            ))
+        expected.append(("runner-job-cleaned", "passed"))
     elif scenario != "heartbeat":
         expected.append(("runner-job-started", "passed"))
         if primary in ("job-passed", "job-input-rejected"):
             expected.append(("runner-job-receipt", "passed"))
         expected.append(("runner-job-cleaned", "passed"))
     expected.append(("runner-dedicated-session", "passed"))
-    if scenario not in ("heartbeat", "source"):
+    if scenario not in ("heartbeat", "source", "inspect"):
         expected.append(("runner-guest-workload", "passed"))
 observed = [(check["id"], check["status"]) for check in report["checks"]]
 assert report["status"] == outcome and observed == expected, observed
-if scenario == "source":
+if scenario in ("source", "inspect"):
     # Values independently computed from the fixed main commit, not the guest.
     objects, egress = (check["detail"] for check in report["checks"][1:3])
-    for value in (
+    expected_objects = (
         "a9276df7269444caeb61724ba490bf0387c4e3aa",
         "96a3baee0719fad7da783758d15592f1e4dc50b0",
         "789539d66651cbceb8b82079830f2559038e52b76ee7823ebdd1d88639e9e056",
         "290 个文件" if locale == "zh-CN" else "290 files",
-    ):
+    ) if scenario == "source" else (
+        "9167604c888416d7b6518e1c76485d7308cffb5c",
+        "8eef89792444aea73d0aa90b87e552bbfc2d25d9",
+        "9d5f74a574e8f93f95edc6be9577cd9ae7b9337777ee3cd0957ad7215e3186bb",
+        "305 个文件" if locale == "zh-CN" else "305 files",
+    )
+    for value in expected_objects:
         assert value in objects, report["checks"][1]["id"]
     assert "686b1c07b71366c6ff45e6773891ad3dbb3c6c61a03712a3be1e58331853810e" in egress
     assert ("出口关闭后的请求已被阻断。" if locale == "zh-CN" else "A request after closure was rejected.") in egress
+if scenario == "inspect":
+    with Path(path).with_name("kvm-inspection-inputs.json").open() as stream:
+        inputs = json.load(stream)
+    snapshot, enforcement, gitleaks, trivy = (check["detail"] for check in report["checks"][3:7])
+    assert "87e87fe4cddfcc6cbb4ed4ed4a2a7644e79a622919fd325f17e8b5841c7b2ca7" in snapshot
+    assert "1844359" in snapshot
+    assert inputs["inputsSha256"] in enforcement
+    assert inputs["databaseSha256"] in trivy and inputs["databaseUpdatedAt"] in trivy
+    assert ("合成密钥对照通过" if locale == "zh-CN" else "passed the synthetic secret controls") in gitleaks
+    assert ("锁文件对照及缺库拒绝通过" if locale == "zh-CN" else "rejected the missing database") in trivy
 PY
   test -z "$(as_runner find "$stage" -mindepth 1 -print -quit)"
 }
 
 capture first heartbeat en "$digest" 0 passed
+if [[ -f "$reports/kvm-inspection-inputs.json" ]]; then
+  capture inspection inspect en "$digest" 0 inspection-passed
+  capture inspection-repeat inspect zh-CN "$digest" 0 inspection-passed
+fi
 capture source source en "$digest" 0 source-passed
 capture source-repeat source zh-CN "$digest" 0 source-passed
 capture repeat heartbeat zh-CN "$digest" 0 passed

@@ -13,11 +13,16 @@ RECEIPT = struct.Struct("!16s20s20s32sH")
 MAX_REQUEST_BYTES = 65536
 MAX_TRANSFER_BYTES = 32 * 1024 * 1024
 MAX_FILES = 5000
+MAX_INSPECTION_RECEIPT = 2048
 REFS_TYPE = "application/x-git-upload-pack-advertisement"
 PACK_TYPE = "application/x-git-upload-pack-result"
 UPLOAD_TYPE = "application/x-git-upload-pack-request"
 CLOSED = b"source-closed"
-GUEST_ERRORS = frozenset((b"guest-input", b"git-fetch", b"git-objects", b"guest-io"))
+GUEST_ERRORS = frozenset((
+    b"guest-input", b"git-fetch", b"git-objects", b"guest-io",
+    b"snapshot-rejected", b"scan-boundary", b"scan-inputs", b"scan-gitleaks",
+    b"scan-trivy", b"scan-controls", b"scan-integrity",
+))
 
 
 class SourceWire:

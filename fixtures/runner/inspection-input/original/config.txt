@@ -1,0 +1,2 @@
+# Synthetic text for exercising the protected Gitleaks scanner.
+api_key = "a6b94e8afa5f3a1ec08474380363d635430a7e9710ff72c2dab61605574a254a" # gitleaks:allow

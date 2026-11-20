@@ -97,7 +97,7 @@ def notify_ready():
 
 def main():
     verify_inputs()
-    with subprocess.Popen(["/usr/bin/sleep", "100"], stdin=subprocess.DEVNULL) as child:
+    with subprocess.Popen(["/usr/bin/sleep", "168"], stdin=subprocess.DEVNULL) as child:
         try:
             verify_resources()
             require(child.poll() is None, "child-not-running")

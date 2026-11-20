@@ -6,9 +6,14 @@ on:
     paths:
       - '.github/workflows/native-runner.yml'
       - 'packages/runner/host/**'
+      - 'packages/runner/src/**'
       - 'packages/verification/src/runner-vm.ts'
       - 'packages/verification/src/report.ts'
       - 'fixtures/runner/**'
+      - 'scripts/prepare-runner-inspection.ts'
+      - 'scripts/scanner-tools.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
   workflow_dispatch:
 
 permissions:
@@ -36,8 +41,8 @@ jobs:
         if: steps.capability.outputs.available == 'true'
         run: |
           sudo -n apt-get update -qq
-          sudo -n apt-get install -y --no-install-recommends guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils
-          dpkg-query -W guestfs-tools libvirt-daemon-system python3-libvirt qemu-system-x86 > .reports/p0/kvm-packages.txt
+          sudo -n apt-get install -y --no-install-recommends gdisk guestfish guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils
+          dpkg-query -W gdisk guestfish guestfs-tools libvirt-daemon-system python3-libvirt qemu-system-x86 > .reports/p0/kvm-packages.txt
           cat .reports/p0/kvm-packages.txt
       - name: Prepare the dedicated KVM session
         id: session
@@ -49,13 +54,6 @@ jobs:
           sudo -n chmod 0711 "$directory"
           bash fixtures/runner/prepare-native-session.sh "$directory"
           printf 'directory=%s\n' "$directory" >> "$GITHUB_OUTPUT"
-      - name: Prepare and seal the trusted offline guest
-        if: steps.capability.outputs.available == 'true'
-        env:
-          PROBE_DIRECTORY: ${{ steps.session.outputs.directory }}
-        run: |
-          sudo -n bash fixtures/runner/prepare-probe-image.sh "$PROBE_DIRECTORY"
-          sudo -n cat "$PROBE_DIRECTORY/image.json" > .reports/p0/kvm-image.json
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         if: steps.capability.outputs.available == 'true'
         with:
@@ -64,12 +62,40 @@ jobs:
         if: steps.capability.outputs.available == 'true'
         run: |
           npm install --global pnpm@11.9.0 --ignore-scripts
-      - name: Verify the dedicated session, guest workloads and fixed Git source on KVM
+      - name: Prepare verified offline scanner inputs
+        id: inspection
+        if: steps.capability.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile --ignore-scripts
+          scratch=$(mktemp -d "$RUNNER_TEMP/itervane-scan.XXXXXXXX")
+          payload="$scratch/itervane-inspection"
+          pnpm exec tsx scripts/prepare-runner-inspection.ts "$payload" | tee "$scratch/preparation.log"
+          test -s "$payload/inputs.json"
+          tail -n 1 "$scratch/preparation.log" > .reports/p0/kvm-inspection-inputs.json
+          printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
+      - name: Prepare and seal the trusted offline guest
+        if: steps.capability.outputs.available == 'true'
+        env:
+          PROBE_DIRECTORY: ${{ steps.session.outputs.directory }}
+          INSPECTION_PAYLOAD: ${{ steps.inspection.outputs.payload }}
+        run: |
+          sudo -n bash fixtures/runner/prepare-probe-image.sh "$PROBE_DIRECTORY" "$INSPECTION_PAYLOAD"
+          sudo -n cat "$PROBE_DIRECTORY/image.json" > .reports/p0/kvm-image.json
+          case "$INSPECTION_PAYLOAD" in
+            "$RUNNER_TEMP"/itervane-scan.????????/itervane-inspection)
+              rm -- "$INSPECTION_PAYLOAD/cache/db/trivy.db"
+              ;;
+            *) exit 1 ;;
+          esac
+      - name: Verify source snapshots, offline scanners and guest lifecycle on KVM
         if: steps.capability.outputs.available == 'true'
         env:
           PROBE_DIRECTORY: ${{ steps.session.outputs.directory }}
           PROBE_HOST_ENVIRONMENT: ${{ runner.environment }}
-        run: bash fixtures/runner/run-native-session.sh "$PROBE_DIRECTORY"
+        run: |
+          test -s .reports/p0/kvm-inspection-inputs.json
+          bash fixtures/runner/run-native-session.sh "$PROBE_DIRECTORY"
       - name: Retain independent KVM evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -79,6 +105,7 @@ jobs:
             .reports/p0/kvm-host.json
             .reports/p0/kvm-session-host.json
             .reports/p0/kvm-image.json
+            .reports/p0/kvm-inspection-inputs.json
             .reports/p0/kvm-packages.txt
             .reports/p0/runner-vm*.json
           if-no-files-found: error

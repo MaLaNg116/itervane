@@ -24,6 +24,7 @@ const outcomes = {
   source_passed: ['passed', 'The isolated guest verified the registered repository at the fixed commit.', '隔离客体已核验登记仓库的固定提交。'],
   source_rejected: ['failed', 'The host source gateway rejected the Git transfer.', '宿主源码网关拒绝了 Git 传输。'],
   source_guest_failed: ['failed', 'The guest did not complete fixed Git acquisition or object verification.', '客体未完成固定 Git 版本的获取或对象核验。'],
+  inspection_passed: ['passed', 'The isolated guest verified and scanned the fixed source snapshot.', '隔离客体已核验并扫描固定源码快照。'],
   deadline_exceeded: ['failed', 'The lifecycle exceeded its deadline.', '探针超出了生命周期时限。'],
   cancelled: ['blocked', 'The lifecycle probe was cancelled.', '生命周期探针已取消。'],
   cleanup_unproven: ['failed', 'Cleanup could not be confirmed. Inspect the staging journal before another run.', '未能确认清理完成，请先核对暂存目录中的运行记录。'],
@@ -49,16 +50,28 @@ const sourceSchema = z.strictObject({
   requests: z.int().min(2).max(8),
   transferredBytes: z.int().min(1).max(32 * 1024 * 1024),
 });
+const scanProof = {
+  policySha256: sha256Schema, findings: z.int().min(1).max(2000), resultSha256: sha256Schema,
+};
+const inspectionSchema = z.strictObject({
+  runId: z.uuidv4(), commit: gitObjectId, tree: gitObjectId, manifestSha256: sha256Schema,
+  files: z.int().min(1).max(5000), totalBytes: z.int().positive().max(32 * 1024 * 1024),
+  inputsSha256: sha256Schema, readOnly: z.literal(true), offline: z.literal(true),
+  controlsChecked: z.literal(true), missingDatabaseRejected: z.literal(true),
+  gitleaks: z.strictObject({ ...scanProof, version: z.literal('8.30.1') }),
+  trivy: z.strictObject({ ...scanProof, version: z.literal('0.76.2'), databaseSha256: sha256Schema, databaseUpdatedAt: z.iso.datetime() }),
+});
 const probeSettingsSchema = z.object({
-  scenario: z.enum(['heartbeat', 'job', 'job-reject-input', 'job-cancel', 'job-timeout', 'source']).default('heartbeat'),
+  scenario: z.enum(['heartbeat', 'job', 'job-reject-input', 'job-cancel', 'job-timeout', 'source', 'inspect']).default('heartbeat'),
   mode: z.enum(['system', 'session']).default('system'),
-}).refine(({ scenario, mode }) => scenario !== 'source' || mode === 'session');
+}).refine(({ scenario, mode }) => !['source', 'inspect'].includes(scenario) || mode === 'session');
 const jobIssueSchema = z.enum(['open-channel', 'guest-ready', 'prefix', 'result']);
 const sourceIssueSchema = z.enum([
   'source-open', 'source-ready', 'source-fetch', 'source-closed', 'source-objects',
   'guest-input', 'git-fetch', 'git-objects', 'guest-io',
   'origin-rejected', 'address-rejected', 'fetch-request-rejected', 'commit-rejected',
   'request-budget', 'route-rejected', 'https-failed', 'redirect-rejected', 'response-rejected', 'transfer-budget',
+  'scan-results', 'snapshot-rejected', 'scan-boundary', 'scan-inputs', 'scan-gitleaks', 'scan-trivy', 'scan-controls', 'scan-integrity',
 ]);
 type ProbeSettings = z.infer<typeof probeSettingsSchema>;
 
@@ -72,6 +85,7 @@ const resultSchema = z.strictObject({
   jobIssue: z.union([jobIssueSchema, sourceIssueSchema]).nullable().optional(),
   sessionVerified: z.boolean().optional(),
   source: sourceSchema.nullable().optional(),
+  inspection: inspectionSchema.nullable().optional(),
 });
 
 type DriverResult = z.infer<typeof resultSchema>;
@@ -95,13 +109,19 @@ export function parseRunnerProbeOutput(
     const requiresSessionProof = result.code === 'passed' || result.code === 'job_passed' || (result.job && result.cleanupConfirmed);
     if (mode === 'session' && requiresSessionProof && !result.sessionVerified) return lost;
     if (mode === 'session' && result.job && !result.job.workloadVerified) return lost;
-    const sourceScenario = scenario === 'source';
+    const sourceScenario = scenario === 'source' || scenario === 'inspect';
     const sourceFailure = result.code === 'source_rejected' || result.code === 'source_guest_failed';
     const sourcePassed = result.code === 'source_passed';
+    const inspectionPassed = result.code === 'inspection_passed';
     if (sourceScenario && (mode !== 'session' || result.job || ['passed', 'job_passed', 'job_input_rejected'].includes(result.code))) return lost;
-    if (!sourceScenario && (result.source || sourceFailure || sourcePassed)) return lost;
-    if (sourcePassed && (!result.sessionVerified || !result.source || result.jobIssue)) return lost;
-    if (result.source && !sourcePassed) return lost;
+    if (!sourceScenario && (result.source || sourceFailure || sourcePassed || inspectionPassed)) return lost;
+    if ((sourcePassed || inspectionPassed) && (!result.sessionVerified || !result.source || result.jobIssue)) return lost;
+    if ((sourcePassed && scenario !== 'source') || (result.source && !sourcePassed && !inspectionPassed)) return lost;
+    if (inspectionPassed) {
+      const { inspection, source } = result;
+      if (scenario !== 'inspect' || !inspection || !source || inspection.runId !== result.runId
+          || inspection.commit !== source.commit || inspection.tree !== source.tree || inspection.files !== source.files) return lost;
+    } else if (result.inspection) return lost;
     if (sourceFailure && (!result.runId || !result.imageSha256 || !result.jobIssue)) return lost;
     if (result.jobIssue) {
       const issueSchema = sourceScenario ? sourceIssueSchema : jobIssueSchema;
@@ -134,8 +154,8 @@ function launch(root: string, image: string, digest: string, settings: ProbeSett
       process.off('SIGTERM', requestStop);
       if (error) return resolve(lost);
       const result = parseRunnerProbeOutput(stdout, digest, settings.mode, settings.scenario);
-      const succeeded = ['passed', 'job_passed', 'source_passed'].includes(result.code);
-      resolve(cancelled && succeeded ? { ...result, code: 'cancelled', source: null } : result);
+      const succeeded = ['passed', 'job_passed', 'source_passed', 'inspection_passed'].includes(result.code);
+      resolve(cancelled && succeeded ? { ...result, code: 'cancelled', source: null, inspection: null } : result);
     });
 
     function requestStop() {
@@ -201,6 +221,28 @@ export async function probeRunnerVm(env: NodeJS.ProcessEnv = process.env) {
       detail: zh
         ? `已核验固定来源 SHA-256 ${originSha256}。完成 ${requests} 次请求，接收 ${transferredBytes} 字节。出口关闭后的请求已被阻断。`
         : `The fixed origin SHA-256 was ${originSha256}. Transferred ${transferredBytes} bytes across ${requests} requests. A request after closure was rejected.`,
+    });
+  }
+  if (result.inspection) {
+    const { manifestSha256, totalBytes, inputsSha256, gitleaks, trivy } = result.inspection;
+    checks.push({
+      id: 'runner-inspection-snapshot', status: 'passed',
+      detail: zh ? `扫描前后均核验了 ${totalBytes} 字节。清单 SHA-256 ${manifestSha256}。`
+        : `Verified ${totalBytes} bytes before and after scanning. Manifest SHA-256 ${manifestSha256}.`,
+    }, {
+      id: 'runner-inspection-offline', status: 'passed',
+      detail: zh ? `扫描账户的源码挂载为只读，IP socket 和源码通道均被拒绝。封存输入 SHA-256 ${inputsSha256}。`
+        : `The scan account had read-only source mounts and was denied IP sockets and the source port. Sealed input SHA-256 ${inputsSha256}.`,
+    }, {
+      id: 'runner-inspection-gitleaks', status: 'passed',
+      detail: zh
+        ? `Gitleaks ${gitleaks.version} 归一化 ${gitleaks.findings} 个发现，合成密钥对照通过。策略 ${gitleaks.policySha256}，结果 ${gitleaks.resultSha256}。`
+        : `Gitleaks ${gitleaks.version} normalized ${gitleaks.findings} findings and passed the synthetic secret controls. Policy ${gitleaks.policySha256}. Result ${gitleaks.resultSha256}.`,
+    }, {
+      id: 'runner-inspection-trivy', status: 'passed',
+      detail: zh
+        ? `Trivy ${trivy.version} 归一化 ${trivy.findings} 个发现，锁文件对照及缺库拒绝通过。策略 ${trivy.policySha256}，结果 ${trivy.resultSha256}。数据库 SHA-256 ${trivy.databaseSha256}，更新于 ${trivy.databaseUpdatedAt}。`
+        : `Trivy ${trivy.version} normalized ${trivy.findings} findings, passed the lockfile controls, and rejected the missing database. Policy ${trivy.policySha256}. Result ${trivy.resultSha256}. Database SHA-256 ${trivy.databaseSha256} at ${trivy.databaseUpdatedAt}.`,
     });
   }
   if (settings.success && settings.data.scenario !== 'heartbeat' && result.cleanupConfirmed) {
