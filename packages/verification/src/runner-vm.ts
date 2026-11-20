@@ -62,7 +62,7 @@ export function parseRunnerProbeOutput(stdout: string, expectedDigest: string, m
     const result = resultSchema.parse(JSON.parse(stdout));
     if (result.imageSha256 !== null && result.imageSha256 !== expectedDigest) return lost;
     if (result.code === 'passed' && (!result.runId || !result.imageSha256)) return lost;
-    if (result.profileIssue && !['profile_rejected', 'session_rejected', 'cleanup_unproven'].includes(result.code)) return lost;
+    if (result.profileIssue && !['profile_rejected', 'session_rejected', 'host_error', 'cleanup_unproven'].includes(result.code)) return lost;
     if (result.code === 'cleanup_unproven' && !result.runId) return lost;
     if ((result.cleanupConfirmed || result.job) && (!result.runId || !result.imageSha256)) return lost;
     if (result.code === 'cleanup_unproven' && result.cleanupConfirmed) return lost;

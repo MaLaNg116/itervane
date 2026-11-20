@@ -184,6 +184,14 @@ class LifecycleTest(unittest.TestCase):
         self.assertNotIn("create", self.libvirt.events)
         self.assertEqual(list(self.root.iterdir()), [])
 
+    def test_capability_failure_records_only_the_phase_and_error_category(self):
+        with patch.object(Connection, "getDomainCapabilities", side_effect=LibvirtError(7, "Permission denied in /private/runtime")):
+            result = self.launch()
+        self.assertEqual(result.code, "host_error")
+        self.assertEqual(result.profileIssue, "capabilities-permission")
+        self.assertNotIn("create", self.libvirt.events)
+        self.assertEqual(list(self.root.iterdir()), [])
+
     def test_symlink_is_rejected_without_reading_its_target(self):
         linked = self.image.with_name("symlink.raw")
         linked.symlink_to(self.image)

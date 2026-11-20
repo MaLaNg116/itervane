@@ -1,5 +1,6 @@
 """Maintainer-only KVM lifecycle probe. No project input reaches this process."""
 
+import errno
 import fcntl
 import hashlib
 import json
@@ -277,6 +278,18 @@ def ping_guest(libvirt, qemu, domain, check_deadline):
         raise Rejected("heartbeat_rejected")
 
 
+def libvirt_issue(error, phase):
+    message = str(error).lower()
+    if "permission denied" in message:
+        return phase + "-permission"
+    if "too long" in message and "socket" in message:
+        return phase + "-socket-path"
+    if "failed to start qemu binary" in message:
+        return phase + "-emulator"
+    number = error.get_error_code()
+    return f"{phase}-libvirt-{number}" if isinstance(number, int) and 0 <= number <= 4096 else phase + "-libvirt"
+
+
 def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, session_runtime=None):
     run_id = str(uuid.uuid4())
     name = PREFIX + run_id
@@ -295,13 +308,16 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
     code = "host_error"
     issue = None
     job_issue = None
+    phase = "connection"
     uri = SESSION_URI if session_runtime is not None else URI
     try:
         check_deadline()
         conn = connect(libvirt, uri)
+        phase = "capabilities"
         capabilities = xml.fromstring(conn.getDomainCapabilities(None, ARCH, MACHINE, "kvm", 0))
         if capabilities.findtext("domain") != "kvm" or capabilities.findtext("arch") != ARCH:
             raise Rejected("libvirt_unavailable")
+        phase = "workspace"
         directory.mkdir(mode=0o700)
         created_directory = True
         if session_runtime is None:
@@ -311,12 +327,15 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
             json.dump({"schema": 1, "runId": run_id, "domainName": name}, record)
         copy_image(image, disk, digest, check_deadline)
         verified_image = True
+        phase = "domain-lookup"
         if not absent(libvirt, conn, name, run_id):
             raise Rejected("domain_conflict")
         check_deadline()
         flags = libvirt.VIR_DOMAIN_START_PAUSED | libvirt.VIR_DOMAIN_START_AUTODESTROY | libvirt.VIR_DOMAIN_START_VALIDATE
         attempted_create = True
+        phase = "domain-create"
         domain = conn.createXML(domain_xml(name, run_id, disk, with_job=job is not None), flags)
+        phase = "paused-domain"
         owns_domain = (
             domain is not None
             and domain.name() == name
@@ -335,7 +354,9 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
         if session_runtime is not None:
             process_fd = verify_qemu_process(session_runtime, name, run_id)
         check_deadline()
+        phase = "domain-resume"
         domain.resume()
+        phase = "guest-heartbeat"
         ping_guest(libvirt, qemu, domain, check_deadline)
         code = "passed" if job is None else job.run(libvirt, conn, domain, run_id, check_deadline)
     except JobRejected as error:
@@ -346,8 +367,15 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
         issue = str(error)
     except Rejected as error:
         code = str(error)
-    except (libvirt.libvirtError, OSError, xml.ParseError):
+    except libvirt.libvirtError as error:
         code = "host_error"
+        issue = libvirt_issue(error, phase)
+    except OSError as error:
+        code = "host_error"
+        issue = f"{phase}-{errno.errorcode.get(error.errno, 'io').lower()}"
+    except xml.ParseError:
+        code = "host_error"
+        issue = phase + "-xml"
     finally:
         if owns_domain:
             try:
