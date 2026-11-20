@@ -1,3 +1,4 @@
+import json
 import unittest
 from io import BytesIO
 from uuid import UUID
@@ -78,3 +79,11 @@ class SourceExchangeTest(unittest.TestCase):
             with self.subTest(frames=len(frames)), self.assertRaises(ProtocolError):
                 self.exchange(frames)
             self.assertIsNone(self.probe.evidence)
+
+    def test_scan_receipt_must_match_the_acquired_objects_and_run(self):
+        self.probe.inspect = True
+        proof = RECEIPT.pack(self.identity, self.commit, b"t" * 20, b"d" * 32, 2)
+        inconsistent = json.dumps({"runId": RUN, "commit": "b" * 40, "tree": (b"t" * 20).hex(), "files": 2}).encode()
+        with self.assertRaisesRegex(ProtocolError, "invalid inspection identity"):
+            self.exchange([*self.acquire_and_close, (b"M", proof), (b"N", inconsistent)])
+        self.assertIsNone(self.probe.inspection)

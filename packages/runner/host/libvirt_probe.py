@@ -53,6 +53,7 @@ class Result:
     jobIssue: str | None = None
     sessionVerified: bool = False
     source: SourceEvidence | None = None
+    inspection: dict | None = None
 
 
 def check_kvm():
@@ -410,7 +411,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
                     code = "cleanup_unproven"
             else:
                 code = "cleanup_unproven"
-    if code in ("passed", "job_passed", "source_passed"):
+    if code in ("passed", "job_passed", "source_passed", "inspection_passed"):
         try:
             check_deadline()
         except Rejected as error:
@@ -424,7 +425,8 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
         job=job.evidence if isinstance(job, ProbeJob) else None,
         jobIssue=job_issue,
         sessionVerified=cleanup_confirmed and process_exit_confirmed,
-        source=job.evidence if isinstance(job, SourceProbe) and code == "source_passed" else None,
+        source=job.evidence if isinstance(job, SourceProbe) and code in ("source_passed", "inspection_passed") else None,
+        inspection=job.inspection if isinstance(job, SourceProbe) and code == "inspection_passed" else None,
     )
 
 
@@ -438,7 +440,7 @@ def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat", s
             raise Rejected("deadline_exceeded")
 
     try:
-        if scenario == "source" and not session:
+        if scenario in ("source", "inspect") and not session:
             raise Rejected("config_required")
         if not root.is_absolute() or root.resolve(strict=True) != root or not image.is_absolute():
             raise Rejected("config_required")
@@ -454,8 +456,8 @@ def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat", s
             if any(path.name.startswith(PREFIX) for path in root.iterdir()):
                 raise Rejected("pending_cleanup")
             session_runtime = prepare_session(root, image) if session else None
-            if scenario == "source":
-                job = maintainer_source()
+            if scenario in ("source", "inspect"):
+                job = maintainer_source(inspect=scenario == "inspect")
             else:
                 job = None if scenario == "heartbeat" else ProbeJob(scenario, require_workload=session)
             return run_guest(libvirt, qemu, root, image, digest, check_deadline, job, session_runtime)
@@ -485,7 +487,7 @@ def main():
             raise Rejected("config_required")
         scenario = sys.argv[4] if len(sys.argv) >= 5 else "heartbeat"
         mode = sys.argv[5] if len(sys.argv) == 6 else "system"
-        if scenario not in (*SCENARIOS, "source") or mode not in ("system", "session"):
+        if scenario not in (*SCENARIOS, "source", "inspect") or mode not in ("system", "session"):
             raise Rejected("config_required")
         try:
             import libvirt

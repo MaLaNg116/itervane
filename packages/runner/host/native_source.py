@@ -1,6 +1,7 @@
 """Native source acquisition through an isolated guest's named port."""
 
 import hashlib
+import json
 import time
 import uuid
 from dataclasses import dataclass
@@ -8,13 +9,17 @@ from dataclasses import dataclass
 from guest_job import ProtocolError
 from native_job import JobRejected, open_channel, stream_io
 from source_gateway import RegisteredOrigin, SourceGateway, SourceRejected
-from source_wire import CLOSED, GUEST_ERRORS, MAX_FILES, MAX_REQUEST_BYTES, RECEIPT, SOURCE_PORT, START, SourceWire
+from source_wire import (
+    CLOSED, GUEST_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_REQUEST_BYTES, RECEIPT, SOURCE_PORT, START, SourceWire,
+)
 
 
 ACQUISITION_SECONDS = 65
+INSPECTION_SECONDS = 90
 # This probe selects an owner-authorized public repository at an immutable ref.
 PROBE_SOURCE = "https://github.com/MaLaNg116/itervane.git"
 PROBE_COMMIT = "a9276df7269444caeb61724ba490bf0387c4e3aa"
+INSPECTION_COMMIT = "9167604c888416d7b6518e1c76485d7308cffb5c"
 
 
 @dataclass(frozen=True)
@@ -31,9 +36,12 @@ class SourceEvidence:
 class SourceProbe:
     port = SOURCE_PORT
 
-    def __init__(self, gateway):
+    def __init__(self, gateway, inspect=False):
         self.gateway = gateway
         self.evidence = None
+        self.inspect = inspect
+        self.inspection = None
+        self.scan_deadline = None
         self.phase = "source-open"
 
     def receive(self, wire, limits):
@@ -51,7 +59,7 @@ class SourceProbe:
         commit = bytes.fromhex(gateway.commit)
         self.phase = "source-ready"
         wire.expect_greeting()
-        wire.send(b"S", START.pack(identity, commit))
+        wire.send(b"A" if self.inspect else b"S", START.pack(identity, commit))
         self.phase = "source-fetch"
         while True:
             kind, body = self.receive(wire, {b"I": 0, b"P": MAX_REQUEST_BYTES, b"D": 0})
@@ -87,14 +95,31 @@ class SourceProbe:
             hashlib.sha256(origin).hexdigest(), actual.hex(), tree.hex(), digest.hex(), count,
             gateway.requests, gateway.transferred,
         )
-        return "source_passed"
+        if not self.inspect:
+            return "source_passed"
+        self.phase = "scan-results"
+        self.scan_deadline = time.monotonic() + INSPECTION_SECONDS
+        _, response = self.receive(wire, {b"N": MAX_INSPECTION_RECEIPT})
+        try:
+            inspection = json.loads(response)
+        except (ValueError, RecursionError) as error:
+            raise ProtocolError("invalid inspection receipt") from error
+        if (
+            not isinstance(inspection, dict) or inspection.get("runId") != run_id
+            or inspection.get("commit") != self.evidence.commit or inspection.get("tree") != self.evidence.tree
+            or inspection.get("files") != self.evidence.files
+        ):
+            raise ProtocolError("invalid inspection identity")
+        wire.check_deadline()
+        self.inspection = inspection
+        return "inspection_passed"
 
     def run(self, libvirt, conn, domain, run_id, check_lifecycle):
         deadline = time.monotonic() + ACQUISITION_SECONDS
 
         def check_deadline():
             check_lifecycle()
-            if time.monotonic() >= deadline:
+            if time.monotonic() >= (self.scan_deadline or deadline):
                 raise JobRejected("job_deadline_exceeded")
 
         try:
@@ -113,6 +138,7 @@ class SourceProbe:
             self.gateway.close()
 
 
-def maintainer_source():
+def maintainer_source(inspect=False):
     origin = RegisteredOrigin.parse(PROBE_SOURCE, {"github.com"})
-    return SourceProbe(SourceGateway(origin, PROBE_COMMIT))
+    commit = INSPECTION_COMMIT if inspect else PROBE_COMMIT
+    return SourceProbe(SourceGateway(origin, commit), inspect)
