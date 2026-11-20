@@ -14,6 +14,7 @@
     "probe:scanners": "tsx scripts/probe-scanners.ts",
     "probe:model": "tsx --env-file-if-exists=.env packages/verification/src/entries/model.ts",
     "probe:cloud": "tsx --env-file-if-exists=.env packages/verification/src/entries/cloud.ts",
+    "probe:runner-vm": "tsx packages/verification/src/entries/runner-vm.ts",
     "probe:mcp": "tsx packages/verification/src/entries/mcp.ts",
     "probe:evaluation": "tsx packages/verification/src/entries/evaluation.ts",
     "probe:agent": "tsx --env-file-if-exists=.env packages/verification/src/entries/agent.ts",

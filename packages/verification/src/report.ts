@@ -16,7 +16,7 @@ export async function sourceFingerprint(): Promise<string> {
       if (entry.name === 'node_modules' || entry.name === 'dist') continue;
       const path = resolve(directory, entry.name);
       if (entry.isDirectory()) await walk(path);
-      else if (entry.isFile() && (/\.(ts|tsx|json|mjs|js|jsx|css|html|yaml|yml|sql)$/.test(entry.name) || entry.name === 'Dockerfile')) files.push(path);
+      else if (entry.isFile() && (/\.(ts|tsx|json|mjs|js|jsx|css|html|yaml|yml|sql|py)$/.test(entry.name) || entry.name === 'Dockerfile')) files.push(path);
     }
   }
   for (const directory of ['packages', 'scripts', 'fixtures', 'evaluation']) await walk(resolve(directory));
