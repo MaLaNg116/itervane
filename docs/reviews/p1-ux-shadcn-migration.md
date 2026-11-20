@@ -1,6 +1,6 @@
 # P1-UX 后续批次 · shadcn/ui 迁移导读
 
-先读[实施计划](../plans/p1-ux-shadcn-migration.md)。交付见[草稿 PR #8](https://github.com/MaLaNg116/itervane/pull/8)及其 [Linux CI](https://github.com/MaLaNg116/itervane/pull/8/checks)，比较基线为 [PR #7](https://github.com/MaLaNg116/itervane/pull/7) 的 `631525f08e7993035c5a4debabb5ae389a2bb7f8`。
+先读[实施计划](../plans/p1-ux-shadcn-migration.md)。交付见 [PR #8](https://github.com/MaLaNg116/itervane/pull/8)及其 [Linux CI](https://github.com/MaLaNg116/itervane/pull/8/checks)，原比较基线为 [PR #7](https://github.com/MaLaNg116/itervane/pull/7) 的 `631525f08e7993035c5a4debabb5ae389a2bb7f8`。
 
 ## 任务详情验证
 

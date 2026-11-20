@@ -4,14 +4,16 @@
 
 | 批次 | 交付范围 | PR | Review guide | 状态 |
 |---|---|---|---|---|
-| 001 | P0 起步：契约、模型循环、数据库与 MCP 探针、评测材料 | [#1](https://github.com/MaLaNg116/itervane/pull/1) | [P0 起步导读](pr-001-p0-foundation.md) | 草稿；自动检查通过，完整 P0 未验收 |
-| 002 | P1-A：身份、资源登记、持久化任务与排队取消 | [#2](https://github.com/MaLaNg116/itervane/pull/2)，基于 #1 | [P1-A 导读](p1-a-project-task-foundation.md) | 草稿；本地验证通过，完整 P1 未验收 |
-| 003 | P1-B：持久化调度、受控 preflight、外部 MCP、en/zh-CN | [#3](https://github.com/MaLaNg116/itervane/pull/3)，基于 #2 | [P1-B 导读](p1-b-durable-worker-mcp.md) | 草稿；47 单元/50 PG 及 Linux CI 通过，完整 P1 未验收 |
-| 004 | P1-C：最小门户、真实 OIDC 登录、双语任务界面 | [#4](https://github.com/MaLaNg116/itervane/pull/4)，基于 #3 | [P1-C 导读](p1-c-portal-login.md) | 草稿；48 单元/53 PG/9 浏览器及 Linux CI 通过，完整 P1 未验收 |
-| 005 | P1-D1：源码检查准备、Git 内容校验、扫描适配与可信样例 | [#5](https://github.com/MaLaNg116/itervane/pull/5)，基于 #4 | [P1-D1 导读](p1-d-source-inspection.md) | 草稿；60 单元/58 PG/9 浏览器/5 真实 CLI 及三组 Linux CI 通过；VM/完整 P1 待验 |
-| 006 | P1-E：规则/Skill 查询、有限文本预审、脱敏报告、双语 API/MCP/门户 | [#6](https://github.com/MaLaNg116/itervane/pull/6)，基于 #5 | [P1-E 导读](p1-e-rules-preaudit.md) | 草稿；73 单元/66 PG/15 浏览器/5 真实 CLI 及三组 Linux CI 通过；Runner 继续关闭 |
-| 007 | P1-UX：门户设计、双语 GSAP 反馈、减少动效与会话/CSP 回归 | [#7](https://github.com/MaLaNg116/itervane/pull/7)，基于 #6 | [P1-UX 导读](p1-ux-portal-design-motion.md) | 草稿；73 单元/66 PG/20 浏览器/5 CLI 及三组 Linux CI 全通过；执行闸门保持 |
-| 008 | P1-UX 后续：真实任务页验证、shadcn/ui 逐页迁移 | [#8](https://github.com/MaLaNg116/itervane/pull/8)，基于 #7 | [组件迁移导读](p1-ux-shadcn-migration.md) | 草稿，73 单元/66 PG/21 浏览器在本地通过，CSP 违规为零，[Linux CI](https://github.com/MaLaNg116/itervane/pull/8/checks) |
+| 001 | P0 起步：契约、模型循环、数据库与 MCP 探针、评测材料 | [#1](https://github.com/MaLaNg116/itervane/pull/1) | [P0 起步导读](pr-001-p0-foundation.md) | 自动检查通过，完整 P0 待验 |
+| 002 | P1-A：身份、资源登记、持久化任务与排队取消 | [#2](https://github.com/MaLaNg116/itervane/pull/2)，依赖 #1 | [P1-A 导读](p1-a-project-task-foundation.md) | 本地验证和 CI 通过，完整 P1 待验 |
+| 003 | P1-B：持久化调度、受控 preflight、外部 MCP、en/zh-CN | [#3](https://github.com/MaLaNg116/itervane/pull/3)，依赖 #2 | [P1-B 导读](p1-b-durable-worker-mcp.md) | 47 单元/50 PG 及 Linux CI 通过，完整 P1 待验 |
+| 004 | P1-C：最小门户、真实 OIDC 登录、双语任务界面 | [#4](https://github.com/MaLaNg116/itervane/pull/4)，依赖 #3 | [P1-C 导读](p1-c-portal-login.md) | 48 单元/53 PG/9 浏览器及 Linux CI 通过，完整 P1 待验 |
+| 005 | P1-D1：源码检查准备、Git 内容校验、扫描适配与可信样例 | [#5](https://github.com/MaLaNg116/itervane/pull/5)，依赖 #4 | [P1-D1 导读](p1-d-source-inspection.md) | 60 单元/58 PG/9 浏览器/5 真实 CLI 及三组 Linux CI 通过，VM 与完整 P1 待验 |
+| 006 | P1-E：规则/Skill 查询、有限文本预审、脱敏报告、双语 API/MCP/门户 | [#6](https://github.com/MaLaNg116/itervane/pull/6)，依赖 #5 | [P1-E 导读](p1-e-rules-preaudit.md) | 73 单元/66 PG/15 浏览器/5 真实 CLI 及三组 Linux CI 通过，Runner 继续关闭 |
+| 007 | P1-UX：门户设计、双语 GSAP 反馈、减少动效与会话/CSP 回归 | [#7](https://github.com/MaLaNg116/itervane/pull/7)，依赖 #6 | [P1-UX 导读](p1-ux-portal-design-motion.md) | 73 单元/66 PG/20 浏览器/5 CLI 及三组 Linux CI 通过 |
+| 008 | P1-UX 后续：真实任务页验证、shadcn/ui 逐页迁移 | [#8](https://github.com/MaLaNg116/itervane/pull/8)，依赖 #7 | [组件迁移导读](p1-ux-shadcn-migration.md) | 73 单元/66 PG/21 浏览器通过，受测路径零 CSP 违规，[Linux CI](https://github.com/MaLaNg116/itervane/pull/8/checks) |
+
+2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
 P1-B 已验证的远端交付版本为 `74706f95881c6435b98f26983654b725463483d3`，[PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44255791193) 与 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44255784496) 均通过。代码快照与证据见导读；后续仅补充文档，不把前置 PR 自动合并。
 
@@ -23,7 +25,7 @@ P1-E 固定代码快照为 `1f93809aef42c70bce52f3dd1fac7af58d929358`，对应�
 
 P1-E 文档交付版本 `54e095fd3add9a028105bf0141d95dbf0384efcc` 的 [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44501368994) 和 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44501335089) 均通过 deterministic/portal/scanners 三组。Linux/本地浏览器与扫描器源码指纹一致；5 项 CLI 仍只验证可信样例，runtimeQualified=false。本次随后只补充 PR/证据索引。
 
-P1-UX 固定代码/已验证交付为 `4234acdb5d9c664272417713389eeef433bc7db5`，[PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44663181433) 与 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44663174416) 均通过三组检查。本地与 Linux 指纹一致，完整 20 项真实浏览器通过；随后仅补文档证据。#7 依赖未合并 #6，未放宽 Runner 或完整阶段验收。
+P1-UX 固定代码/已验证交付为 `4234acdb5d9c664272417713389eeef433bc7db5`，[PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44663181433) 与 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44663174416) 均通过三组检查。本地与 Linux 指纹一致，完整 20 项真实浏览器通过；随后仅补文档证据。#7 的交付基于 #6，保留 Runner 和完整阶段的独立验收。
 
 ## 每批交付约定
 
