@@ -1,9 +1,9 @@
-# Loopstead 分阶段实施计划 v2：TypeScript + PostgreSQL
+# Itervane 分阶段实施计划 v2：TypeScript + PostgreSQL
 
 - 文档版本：实施计划 v2。
 - 整理日期：2026-11-16。
 - 对应蓝图：[蓝图 v6](blueprint-v6.md)。
-- 实现状态：规划阶段，P0 尚未开始；表内任务和验收均是后续工作。
+- 实现状态：P0 验证底座正在实现，P0 尚未完整验收，P1—P5 尚未开始；实际证据见 [P0 记录](p0-verification.md)。
 - 阅读入口：[开发基线与一致性约束](baseline.md)。
 
 本计划完整保留已确认的 TypeScript + PostgreSQL 分阶段实施方案。完整愿景、Agent 架构、MVP 闭环和安全边界沿用 v6；更新控制面技术栈、数据访问、任务调度与并发方案。本文定义实施顺序，不提前宣称接口兼容、恢复正确或阶段验收已经通过。
@@ -59,7 +59,7 @@
 | 门户 | React 19、Vite、Ant Design 6 | 延续原方案，采用项目自身的通用设计规范 |
 | Agent 运行基础 | LangGraph TS 开源库 | 复用图执行、检查点和人工中断 |
 | Agent Harness | 自研领域执行框架 | 目标、上下文、工具、预算、停止、交接和恢复 |
-| 模型接入 | 一种模型适配器 | 不将领域代码绑定到单个模型响应格式 |
+| 模型接入 | Anthropic/OpenAI 协议适配，首轮 Anthropic | 用户实施补充：每任务明确一种协议与模型，不静默切换；实际模型能力须验证 |
 | MCP | 官方 TypeScript SDK | 对外 Server、对内 Client；远程优先 Streamable HTTP |
 | 业务数据库 | PostgreSQL 17 | 延续此前版本线，P0 锁定具体小版本 |
 | 数据访问 | Drizzle＋node-postgres | 领域查询、事务、条件更新与必要的显式 SQL |

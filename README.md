@@ -1,8 +1,8 @@
-# Loopstead
+# Itervane
 
 An open-source, self-hostable platform for agent-driven application delivery, operations, and governance.
 
-Loopstead connects three evidence-based loops:
+Itervane connects three evidence-based loops:
 
 - Delivery: audit, repair, independently verify, freeze a release candidate, obtain human approval, deploy, and verify the running application.
 - Operations: observe, diagnose, propose a bounded action, obtain approval, execute, and verify recovery; code defects enter a linked delivery task.
@@ -10,9 +10,21 @@ Loopstead connects three evidence-based loops:
 
 ## Status
 
-Planning stage. [Blueprint v6](docs/blueprint-v6.md) and the [TypeScript + PostgreSQL implementation plan v2](docs/implementation-plan-v2-ts-postgresql.md) define the design baseline. Application implementation has not started.
+P0 verification foundations are being implemented. [Blueprint v6](docs/blueprint-v6.md) and the [TypeScript + PostgreSQL implementation plan v2](docs/implementation-plan-v2-ts-postgresql.md) remain the design baseline. P0 has not passed; P1 and the platform MVP are not complete.
 
-The capabilities below are planned, not available features.
+Available now: strict shared contracts, Anthropic/OpenAI protocol adapters, a bounded tool-loop probe, authenticated local MCP checks, real PostgreSQL transaction/recovery tests, evaluation inputs, and a trusted reference application. The platform capabilities described below remain planned.
+
+For setup, commands, observed versions, and outstanding gates, see [P0 verification](docs/p0-verification.md). This repository does not yet run a production control plane, deploy an application, or operate infrastructure through an Agent.
+
+```sh
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm check
+pnpm test:integration
+pnpm probe:mcp
+pnpm probe:evaluation
+```
+
+Use Node.js 24 and pnpm 11.9.0. Database tests need Docker with Linux containers, or an explicitly dedicated PostgreSQL 17 test database. Live model and read-only cloud checks are opt-in through an ignored local `.env`. `pnpm verify:p0` reports missing gates as blocked; green unit tests alone cannot pass P0.
 
 ## Development baseline
 
@@ -21,8 +33,11 @@ The complete design documents are maintained in Chinese:
 - [Baseline index and design consistency](docs/baseline.md): document responsibilities, invariant mapping, approved clarifications, and change records.
 - [Blueprint v6](docs/blueprint-v6.md): product vision, all three loops, five logical agent roles, security boundaries, and MVP scope.
 - [Implementation plan v2: TypeScript + PostgreSQL](docs/implementation-plan-v2-ts-postgresql.md): technology choices, modules, dependencies, database and concurrency design, P0-P5 tasks, and acceptance criteria.
+- [Development plan v1](docs/development-plan-v1.md): actionable P0/P1 tasks, dependencies, and the route to all three MVP loops.
+- [P0 verification](docs/p0-verification.md): reproducible checks, current evidence, candidate dependencies, and blockers.
+- [Delivery and review index](docs/reviews/README.md): per-delivery code walkthroughs, evidence, limitations, and review order.
 
-Blueprint v6 remains the product and architecture baseline. The implementation plan records the agreed TypeScript stack and execution approach. No implementation phase has been completed.
+Blueprint v6 remains the product and architecture baseline. The implementation plan records the agreed TypeScript stack and execution approach. No implementation phase has been accepted as complete. Commits are separated by requirement for review.
 
 ## Agent engineering
 
