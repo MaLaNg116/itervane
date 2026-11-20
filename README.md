@@ -34,6 +34,8 @@ P1-E adds a versioned, read-only bilingual rule/Skill catalogue and bounded text
 
 P2-A adds a bilingual, bounded ReAct harness and a complete audit, template repair, and independent verification loop for trusted fixtures. Formal delivery will use verified Worker evidence and the existing release gates. [P2-A fixture verification](docs/agent-harness-p2-a.md) · [P2-A review guide](docs/reviews/p2-a-agent-harness.md)
 
+P2-D1 binds an opt-in audit model to the verified scan evidence from a fixed task run. The Worker saves the evidence-linked audit outcome under its current execution lease. The portal, HTTP API and external MCP share that result under current project permissions. For Worker configuration, coverage and acceptance evidence, see the [formal audit guide](docs/reviews/p2-d1-formal-audit.md).
+
 P2-B adds PostgreSQL-backed fixture candidate freezing and bilingual human decision records. Rehearsals cover the exact candidate fingerprint, concurrent decisions, expiration, revocation, and owner reassignment. Fixture confirmations carry no release eligibility. See the [P2-B plan](docs/plans/p2-b-release-candidate.md) and [review guide](docs/reviews/p2-b-release-candidate.md).
 
 P2-C exercises atomic fixture confirmation, operation creation, and queue wakeup. Its ledger serializes reservations by environment and reconciles uncertain outcomes with independent fixture evidence for version, health, and protected access. Live release requires the qualified Runner and verified deployment target. See the [P2-C plan](docs/plans/p2-c-release-reconciliation.md) and [review guide](docs/reviews/p2-c-release-reconciliation.md).

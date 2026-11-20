@@ -1,28 +1,10 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createAgentHarness } from '@itervane/agent';
 import { MemorySaver } from '@langchain/langgraph';
-import { createAnthropic, createOpenAI, safeEndpoint } from '@itervane/model';
 import { createDeliveryFixture, deliveryCases } from '../agent/fixture.js';
+import { localModel } from '../agent/loopback-model.js';
 import { scriptedModel } from '../agent/scripted-model.js';
 import { sourceFingerprint } from '../report.js';
-
-function localModel() {
-  const { MODEL_PROVIDER = 'anthropic' } = process.env;
-  if (MODEL_PROVIDER !== 'anthropic' && MODEL_PROVIDER !== 'openai') return;
-  const prefix = MODEL_PROVIDER.toUpperCase();
-  const baseURL = process.env[`${prefix}_BASE_URL`];
-  const apiKey = process.env[`${prefix}_API_KEY`];
-  const model = process.env[`${prefix}_MODEL`];
-  if (!baseURL || !apiKey || !model) return;
-  try {
-    const endpoint = safeEndpoint(baseURL);
-    if (!['localhost', '127.0.0.1', '[::1]'].includes(new URL(endpoint).hostname)) return;
-    const config = { baseURL: endpoint, apiKey, model };
-    return MODEL_PROVIDER === 'anthropic' ? createAnthropic(config) : createOpenAI(config);
-  } catch {
-    return;
-  }
-}
 
 async function main(args: string[]) {
   if (args.length && (args.length !== 1 || args[0] !== '--live')) {
@@ -30,7 +12,7 @@ async function main(args: string[]) {
     return 2;
   }
   const live = args.includes('--live');
-  const adapter = live ? localModel() : undefined;
+  const adapter = live ? localModel()?.adapter : undefined;
   if (live && !adapter) {
     console.log('Blocked: configure the selected protocol with an explicit loopback base URL, key and model.');
     return 2;

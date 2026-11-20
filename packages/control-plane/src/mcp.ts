@@ -13,6 +13,7 @@ import { errorCode, localizedError } from './service/presentation.js';
 import { ResourceService } from './service/resources.js';
 import { TaskService } from './service/tasks.js';
 import { InspectionService } from './service/inspections.js';
+import { FormalAuditService } from './service/formal-audit.js';
 import { PreauditService, RuleService } from './service/preaudits.js';
 
 const taskIdInput = z.object({ taskId: idSchema }).strict();
@@ -28,6 +29,7 @@ const specs = [
   { name: 'get_task', key: 'mcp.query', input: taskIdInput, write: false },
   { name: 'get_task_events', key: 'mcp.events', input: eventsInput, write: false },
   { name: 'get_source_inspection', key: 'mcp.inspection', input: taskIdInput, write: false },
+  { name: 'get_audit', key: 'mcp.audit', input: taskIdInput, write: false },
   { name: 'cancel_task', key: 'mcp.cancel', input: versionInput, write: true },
   { name: 'resume_task', key: 'mcp.resume', input: resumeInput, write: true },
   { name: 'list_rules', key: 'mcp.rules', input: ruleListInput, write: false },
@@ -42,7 +44,7 @@ export function createMcpEndpoint(database: Database, config: IdentityConfig & {
   const resource = `${publicUrl}/mcp`; const metadataUrl = `${publicUrl}/.well-known/oauth-protected-resource/mcp`;
   const verify = createIdentityVerifier({ issuer: config.issuer, audience: resource });
   const service = new TaskService(database); const resources = new ResourceService(database);
-  const inspections = new InspectionService(database);
+  const inspections = new InspectionService(database); const audits = new FormalAuditService(database);
   const rules = new RuleService(database); const preaudits = new PreauditService(database);
   const allowedHosts = new Set([new URL(publicUrl).hostname, 'localhost', '127.0.0.1', '[::1]']);
   const requiredScope = (body: unknown) => {
@@ -79,6 +81,7 @@ export function createMcpEndpoint(database: Database, config: IdentityConfig & {
           case 'start_audit': output = await service.admit(identity, args); break;
           case 'get_task': output = await service.get(identity, taskIdInput.parse(args).taskId); break;
           case 'get_source_inspection': output = await inspections.get(identity, taskIdInput.parse(args).taskId); break;
+          case 'get_audit': output = await audits.get(identity, taskIdInput.parse(args).taskId, locale); break;
           case 'list_rules': { const { projectId, ...query } = ruleListInput.parse(args); output = await rules.list(identity, projectId, query, locale); break; }
           case 'get_rule': { const { projectId, ruleId, ...query } = ruleGetInput.parse(args); output = await rules.get(identity, projectId, ruleId, query, locale); break; }
           case 'preaudit_text': output = await preaudits.create(identity, args, 'mcp', locale); break;

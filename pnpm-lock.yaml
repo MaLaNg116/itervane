@@ -78,9 +78,15 @@ importers:
 
   packages/control-plane:
     dependencies:
+      '@itervane/agent':
+        specifier: workspace:*
+        version: link:../agent
       '@itervane/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@itervane/model':
+        specifier: workspace:*
+        version: link:../model
       '@itervane/rules':
         specifier: workspace:*
         version: link:../rules

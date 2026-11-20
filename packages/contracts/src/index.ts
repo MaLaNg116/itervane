@@ -3,6 +3,7 @@ import { idSchema, sourceRefSchema, taskStateSchema } from './primitives.js';
 import { localeSchema } from './i18n.js';
 
 export * from './control-plane.js';
+export * from './formal-audit.js';
 export * from './i18n.js';
 export * from './inspection.js';
 export * from './qualified-inspection.js';

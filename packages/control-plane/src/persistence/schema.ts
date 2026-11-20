@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
-  agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type InspectionPlan,
+  agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult, type InspectionPlan,
   type PreauditRecord, type QualifiedInspectionReceipt, type ReleaseDecision, type ReleaseOperationState,
 } from '@itervane/contracts';
 
@@ -117,9 +117,11 @@ export const toolCalls = domain.table('tool_calls', {
 
 // 底层 saver 与领域事务分离：只有已发布的中间写入才参与恢复。
 export const checkpointWrites = domain.table('checkpoint_write_receipts', {
-  runId: uuid('run_id').notNull().references(() => taskRuns.id), checkpointId: text('checkpoint_id').notNull(),
+  runId: uuid('run_id').notNull().references(() => taskRuns.id), graph: text('graph').$type<'preflight' | 'audit'>().notNull().default('preflight'),
+  checkpointId: text('checkpoint_id').notNull(),
   writeHash: text('write_hash').notNull(),
-}, t => [primaryKey({ columns: [t.runId, t.checkpointId, t.writeHash] })]);
+}, t => [primaryKey({ columns: [t.runId, t.graph, t.checkpointId, t.writeHash] }),
+  check('checkpoint_write_graph', sql`${t.graph} IN ('preflight', 'audit')`)]);
 
 // A prepared intent is not a fetched snapshot or a completed scan. One immutable policy per logical run.
 export const inspectionPlans = domain.table('inspection_plans', {
@@ -175,6 +177,36 @@ export const inspectionAttempts = domain.table('inspection_attempts', {
       AND ${t.receipt}#>'{snapshot,offline}' = 'true'::jsonb AND ${t.receipt}#>'{snapshot,readOnly}' = 'true'::jsonb)
   ) IS TRUE`),
 ]);
+
+export const formalAuditInputs = domain.table('formal_audit_inputs', {
+  runId: uuid('run_id').primaryKey(), taskId: uuid('task_id').notNull(), projectId: uuid('project_id').notNull(),
+  inspectionRequestId: uuid('inspection_request_id').notNull().references(() => inspectionAttempts.requestId),
+  preparedFence: integer('prepared_fence').notNull(), workerId: uuid('worker_id').notNull(),
+  sha256: text('sha256').notNull(), document: jsonb('document').$type<FormalAuditInput>().notNull(), createdAt: createdAt(),
+}, t => [
+  foreignKey({ name: 'formal_audit_run_task', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
+  foreignKey({ name: 'formal_audit_task_project', columns: [t.taskId, t.projectId], foreignColumns: [tasks.id, tasks.projectId] }),
+  check('formal_audit_input_binding', sql`(${t.preparedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.document}->>'version' = '1' AND ${t.document}->>'taskId' = ${t.taskId}::text AND ${t.document}->>'runId' = ${t.runId}::text
+    AND ${t.document}->>'projectId' = ${t.projectId}::text AND ${t.document}#>>'{inspection,requestId}' = ${t.inspectionRequestId}::text
+    AND octet_length(${t.document}::text) <= 65536) IS TRUE`),
+]);
+
+export const formalAuditRuntime = domain.table('formal_audit_runtime', {
+  runId: uuid('run_id').primaryKey().references(() => formalAuditInputs.runId), inputSha256: text('input_sha256').notNull(),
+  checkpointId: text('checkpoint_id').notNull(), checkpointStep: integer('checkpoint_step').notNull(),
+  publishedFence: integer('published_fence').notNull(), workerId: uuid('worker_id').notNull(),
+}, t => [check('formal_audit_runtime_binding', sql`${t.inputSha256} ~ '^[a-f0-9]{64}$' AND ${t.checkpointStep} >= -1 AND ${t.publishedFence} > 0`)]);
+
+export const formalAuditResults = domain.table('formal_audit_results', {
+  runId: uuid('run_id').primaryKey().references(() => formalAuditRuntime.runId),
+  inputSha256: text('input_sha256').notNull(), checkpointId: text('checkpoint_id').notNull(),
+  finalizedFence: integer('finalized_fence').notNull(), workerId: uuid('worker_id').notNull(),
+  sha256: text('sha256').notNull(), document: jsonb('document').$type<FormalAuditResult>().notNull(), createdAt: createdAt(),
+}, t => [check('formal_audit_result_binding', sql`(${t.finalizedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$' AND ${t.inputSha256} ~ '^[a-f0-9]{64}$'
+  AND ${t.document}->>'version' = '1' AND ${t.document}->>'runId' = ${t.runId}::text
+  AND ${t.document}->>'inputSha256' = ${t.inputSha256} AND ${t.document}->>'checkpointId' = ${t.checkpointId}
+  AND octet_length(${t.document}::text) <= 98304) IS TRUE`)]);
 
 export const preaudits = domain.table('preaudits', {
   id: uuid('id').primaryKey(), projectId: uuid('project_id').notNull().references(() => projects.id),

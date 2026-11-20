@@ -1,0 +1,50 @@
+# P2-D1 · 正式审计导读
+
+本批基于已合入的 P1-D3-C2，先固定正式审计使用的证据和规则，再接入检查点、模型及双语清单。 [实施计划](../plans/p2-d1-formal-audit.md)
+
+## D1.1 固定输入
+
+1. Worker 在固定源码扫描完成且覆盖完整时，以当前项目授权和租约准备输入。准备事务校验原回执、扫描策略和快照清单。输入包含任务范围、语言、用途摘要与规则目录。规则目录保留具体版本和材料，供后续审计复用。 [Worker 调用](https://github.com/MaLaNg116/itervane/blob/b4456bb614f1bfbb0e0a6d9cbbf7fb16a356602c/packages/control-plane/src/runtime/worker.ts#L108) · [输入构建](https://github.com/MaLaNg116/itervane/blob/b4456bb614f1bfbb0e0a6d9cbbf7fb16a356602c/packages/control-plane/src/service/formal-audit.ts#L13)
+2. PostgreSQL 的记录与同一个 run 绑定。插入触发器检查当前 fence、Worker、提交、已记录的完整扫描、回执摘要和任务输入。输入一旦保存便保留，重领会重新验证原记录及摘要。 [输入契约](https://github.com/MaLaNg116/itervane/blob/b4456bb614f1bfbb0e0a6d9cbbf7fb16a356602c/packages/contracts/src/formal-audit.ts) · [数据库迁移](https://github.com/MaLaNg116/itervane/blob/b4456bb614f1bfbb0e0a6d9cbbf7fb16a356602c/packages/control-plane/migrations/0012_formal_audit_inputs.sql)
+3. 本地通过 TypeScript 严格检查和 92 项真实 PostgreSQL 测试，其中 14 项覆盖源码检查与审计交接。测试端口提供固定的结构化回执，数据库回归核对计划态、覆盖不完整、重复准备、错误快照、错误执行权及不可修改的历史。 [集成用例](https://github.com/MaLaNg116/itervane/blob/b4456bb614f1bfbb0e0a6d9cbbf7fb16a356602c/packages/control-plane/test/integration/inspections.test.ts#L219) · [本批原生复跑](https://github.com/MaLaNg116/itervane/actions/runs/44776411861)
+
+## D1.2 检查点发布
+
+1. 审计与前置检查各有固定的 LangGraph thread 和领域发布指针。审计读取、发布和保存中间写入时检查当前租约、项目授权和已保存的输入摘要。现有中间写入迁移后标记为 `preflight`。 [发布包装](https://github.com/MaLaNg116/itervane/blob/2863b37fa88e193cf1646356c44e82bb92989619/packages/control-plane/src/runtime/checkpointer.ts) · [迁移](https://github.com/MaLaNg116/itervane/blob/2863b37fa88e193cf1646356c44e82bb92989619/packages/control-plane/migrations/0013_formal_audit_checkpoints.sql)
+2. 真实 PostgreSQL 上让两张图使用相同的底层 checkpoint ID，确认前置写入回执无法被审计复用。再让底层 saver 保存成功、领域指针提交失败，确认重领后仍从已发布指针恢复。专项 15 项通过，覆盖输入摘要变化与过期 Worker 写入。 [集成验收](https://github.com/MaLaNg116/itervane/blob/2863b37fa88e193cf1646356c44e82bb92989619/packages/control-plane/test/integration/inspections.test.ts)
+
+## D1.3 ReAct 审计循环与工具
+
+1. `createFormalAudit` 核对固定输入和扫描回执的摘要、任务与快照，按严重度和发现 ID 为每种扫描整理最多八条发现。模型上下文只含固定的审计目标、归一化发现和查询到的规则指导。精确路径保持在原始回执中，供按权限查询与后续修复使用。Gitleaks 模式命中标为疑似，Trivy 命中表示依赖与固定公告库匹配。 [证据投影与审计入口](https://github.com/MaLaNg116/itervane/blob/799c95ae8f6acf6290f087d0915b1cba568e9bc6/packages/agent/src/formal-audit.ts#L17)
+2. 正式审计复用 P2-A 的保存预算、模型决策和工具观察三个节点。`read_scan` 可分别读取两种扫描，`read_rule` 限定为任务固定目录中的规则。模型可以依据观察选择查阅指导或继续下一项扫描。恢复绑定输入及模型配置的摘要，沿用独立的 `audit:<runId>` 检查点。 [循环与恢复](https://github.com/MaLaNg116/itervane/blob/799c95ae8f6acf6290f087d0915b1cba568e9bc6/packages/agent/src/harness.ts#L155) · [工具范围](https://github.com/MaLaNg116/itervane/blob/799c95ae8f6acf6290f087d0915b1cba568e9bc6/packages/agent/src/tools.ts)
+3. 结束审计需要引用两种扫描，并为每条所列发现提供影响和防护建议。服务器取得严重度、确定性和覆盖范围。发现超过投影上限或存在待确认的假设时，阶段结果转人工。后续发布资格继续依据独立复验和人工确认。 [清单核对](https://github.com/MaLaNg116/itervane/blob/799c95ae8f6acf6290f087d0915b1cba568e9bc6/packages/agent/src/results.ts#L43)
+4. 11 项新增用例使用确定性的模型响应和内存检查点，覆盖不同观察引出的调查路径、摘要变化、虚构引用、截断、停止条件和在途调用恢复。`pnpm check` 通过 118 项单元测试，1 项 Linux 专用测试跳过。另通过 93 项真实 PostgreSQL 回归，其中 15 项覆盖源码检查和审计交接。 [专项验收](https://github.com/MaLaNg116/itervane/blob/799c95ae8f6acf6290f087d0915b1cba568e9bc6/packages/verification/test/unit/formal-audit.test.ts) · [D1.2 原生回归](https://github.com/MaLaNg116/itervane/actions/runs/44777551578)
+
+### 正式 Worker 接入与恢复
+
+1. 源码检查完成后，Worker 从已发布的前置检查中断进入审计。审计入口分别核对平台任务运行编号与虚拟机快照所属客体编号，校验原回执、固定输入与模型配置摘要。启用已配置的 Worker 后，可以从已有 `inspection_ready` 任务继续，复用固定回执和检查点。 [Worker 入口](https://github.com/MaLaNg116/itervane/blob/3f98056c6cc1511e68dd6ecc7c850ec95e51cc7f/packages/control-plane/src/runtime/worker.ts) · [回执校验](https://github.com/MaLaNg116/itervane/blob/3f98056c6cc1511e68dd6ecc7c850ec95e51cc7f/packages/agent/src/formal-audit.ts) · [继续任务](https://github.com/MaLaNg116/itervane/blob/3f98056c6cc1511e68dd6ecc7c850ec95e51cc7f/packages/control-plane/src/service/tasks.ts#L120)
+2. 在 Worker 本机配置 `ITERVANE_AUDIT_MODEL_PROVIDER=anthropic` 或 `openai`，并填对应的 `*_BASE_URL`、`*_API_KEY` 和 `*_MODEL`。密钥放在忽略提交的 `.env` 或部署环境变量中。端点使用 HTTPS，环回地址也允许 HTTP。省略启用项时，任务保持等待审计。已有任务可通过门户的“继续审计”或带当前任务版本的 `resume_task` 重新入队。 [配置](https://github.com/MaLaNg116/itervane/blob/3f98056c6cc1511e68dd6ecc7c850ec95e51cc7f/packages/control-plane/src/config.ts) · [Worker 模型连接](https://github.com/MaLaNg116/itervane/blob/3f98056c6cc1511e68dd6ecc7c850ec95e51cc7f/packages/control-plane/src/runtime/formal-audit.ts#L14)
+3. 模型调用前先保存本轮预算。模型和观察工具前后均核对当前租约及项目权限，调用期间由 Worker 心跳维持执行权。停止进程后重领只读取已发布的快照和已确认的中间写入。在途调用缺少已发布结果时记录为 `interrupted_action`，等待人工核对。 [Worker 执行](https://github.com/MaLaNg116/itervane/blob/3f98056c6cc1511e68dd6ecc7c850ec95e51cc7f/packages/control-plane/src/runtime/formal-audit.ts#L20) · [检查点](https://github.com/MaLaNg116/itervane/blob/3f98056c6cc1511e68dd6ecc7c850ec95e51cc7f/packages/control-plane/src/runtime/checkpointer.ts)
+
+## D1.4 持久化清单与双语读取
+
+1. Worker 重新核对引用的规则和扫描观察，用原回执中的发现 ID 还原准确路径和行号。最后一次租约事务校验确切检查点，保存结果及摘要、推进任务状态、写入事件并释放执行槽位。完整清单进入 `audit_ready` 等待修复。模型故障、覆盖截断和未核实的假设进入人工处理，可读已有证据和计量。取消与撤权沿用当前任务权限及状态约束。 [结果事务](https://github.com/MaLaNg116/itervane/blob/3f98056c6cc1511e68dd6ecc7c850ec95e51cc7f/packages/control-plane/src/service/formal-audit.ts) · [数据库约束](https://github.com/MaLaNg116/itervane/blob/3f98056c6cc1511e68dd6ecc7c850ec95e51cc7f/packages/control-plane/migrations/0014_formal_audit_results.sql)
+2. `GET /v1/tasks/:taskId/audit` 和 MCP `get_audit` 读同一记录，每次查询重新检查项目权限、任务运行与结果摘要。门户用同一契约展示覆盖、发现、影响、建议和证据编号。状态和界面标签跟随显示语言，模型清单保留任务语言。 [查询服务](https://github.com/MaLaNg116/itervane/blob/c52308976f6734e06f8ad4551415053e5a66eb67/packages/control-plane/src/service/formal-audit.ts#L102) · [MCP 工具](https://github.com/MaLaNg116/itervane/blob/c52308976f6734e06f8ad4551415053e5a66eb67/packages/control-plane/src/mcp.ts) · [门户清单](https://github.com/MaLaNg116/itervane/blob/0bbc3a19e972c6e2421dc7c256c22eefd4ae314e/packages/portal/src/pages/task-audit.tsx)
+3. 本地通过 120 项单元检查及 101 项 PostgreSQL 回归，1 项仅适用于 Linux 的单元测试跳过。换用实际 Anthropic SDK 和本地确定性 HTTP 服务后复跑 23 项源码与审计专项，成功和 HTTP 503 的持久化路径均通过。另通过 22 项浏览器测试，包含真实 OIDC、双语和权限回归，清单展示分支用固定响应验证，任务时间线继续使用 GSAP。 [PostgreSQL 验收](https://github.com/MaLaNg116/itervane/blob/18659dd4b65b86b665b17672ac06ca1eed2ef83e/packages/control-plane/test/integration/inspections.test.ts) · [浏览器验收](https://github.com/MaLaNg116/itervane/blob/0bbc3a19e972c6e2421dc7c256c22eefd4ae314e/packages/portal/test/browser/portal.spec.ts)
+
+## D1.5 原生验收入口
+
+托管 KVM 在 `f86690f` 产生的证据覆盖五个实际客体和 PostgreSQL 17.12。正式 Worker 复用固定源码的 Gitleaks 一条发现及 Trivy 六条发现，记录七项清单。另一条任务收到 HTTP 503 后保留先前的观察及 47 个已报告 token，转为人工处理。两条任务的 HTTP 与 MCP 响应一致，复用扫描回执后暂存已清空。此处模型端使用确定性 Anthropic 协议服务。 [原生运行及产物](https://github.com/MaLaNg116/itervane/actions/runs/44785621723) · [验收脚本](https://github.com/MaLaNg116/itervane/blob/18659dd4b65b86b665b17672ac06ca1eed2ef83e/packages/control-plane/test/native/worker-inspection.ts#L248)
+
+本机诊断先复现了工具消息回放后的 503，再确认只发送结构化观察时，模型会为一项真实发现提交多条说明。修正后，正式模型根据已接纳的持久化观察构建上下文。两种扫描齐备后，结论工具列出实际可引用的观察和发现，并约束说明数量。扫描观察优先占用上下文空间，服务端仍核对确切引用和发现。具体未决假设继续进入人工处理。 [模型上下文](https://github.com/MaLaNg116/itervane/blob/c62ef87c782c73cc064b53963b94547291be3ef5/packages/agent/src/harness.ts#L65) · [工具契约](https://github.com/MaLaNg116/itervane/blob/c62ef87c782c73cc064b53963b94547291be3ef5/packages/agent/src/tools.ts#L55) · [边界测试](https://github.com/MaLaNg116/itervane/blob/c62ef87c782c73cc064b53963b94547291be3ef5/packages/verification/test/unit/formal-audit.test.ts)
+
+### 本机真实模型记录
+
+2026-11-21 在获准的本机 Anthropic 环回服务执行 `pnpm probe:formal-audit --live`。输入为固定的模拟扫描元数据，输出记录源码指纹、工具路径、计量及证据校验结果。两条路径均保留扫描确定性，准确引用两种扫描，分别完成一项发现。 [评测入口](https://github.com/MaLaNg116/itervane/blob/9a9c480d59ec1e8f6f935dceaa5c77bee79f392b/packages/verification/src/entries/formal-audit.ts)
+
+| 样例 | 实际工具路径 | 轮数 / 工具调用 / token | 结果 |
+| --- | --- | --- | --- |
+| 疑似密钥，简体中文 | Gitleaks → Trivy → 指定版本规则 | 5 / 3 / 8,355 | `audit_complete`，疑似 |
+| 确认的依赖公告命中，英文 | Gitleaks → Trivy | 4 / 2 / 7,032 | `audit_complete`，确认 |
+
+对应源码指纹为 `9dd26a93ee8df26c8af4a58205d7d347ed473707441a9e4a172272e19fd9fd2d`。当前代码通过 123 项单元测试和 23 项 PostgreSQL 审计专项。早期完整回归记录见 D1.4。新版本的正式 Worker 与 KVM 复跑按 PR 最新提交核对。

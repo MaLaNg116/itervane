@@ -16,10 +16,15 @@ function validateStored(row: typeof inspectionPlans.$inferSelect, task: TaskRow,
   return { sha256: row.sha256, document, createdAt: row.createdAt.toISOString() };
 }
 
+export async function readInspectionPlan(tx: Transaction, task: TaskRow, runId: string) {
+  const [row] = await tx.select().from(inspectionPlans).where(eq(inspectionPlans.runId, runId));
+  return row ? validateStored(row, task, runId) : null;
+}
+
 // Caller is the fenced source.inspect transaction, never an upload/report endpoint.
 export async function prepareInspection(tx: Transaction, task: TaskRow, runId: string, fence: number) {
-  const [existing] = await tx.select().from(inspectionPlans).where(eq(inspectionPlans.runId, runId));
-  if (existing) return validateStored(existing, task, runId);
+  const existing = await readInspectionPlan(tx, task, runId);
+  if (existing) return existing;
   const plan = createInspectionPlan({ taskId: task.id, runId, requestedSource: { repositoryId: task.repositoryId, commit: task.commit } });
   const [created] = await tx.insert(inspectionPlans).values({ taskId: task.id, runId, preparedFence: fence, ...plan }).returning();
   return validateStored(created!, task, runId);
@@ -36,12 +41,11 @@ export class InspectionService {
       await requireProject(tx, actor, task.projectId);
       const [run] = await tx.select().from(taskRuns).where(and(eq(taskRuns.taskId, task.id), eq(taskRuns.generation, task.generation)));
       if (!run) throw new Error('inspection_run_missing');
-      const [row] = await tx.select().from(inspectionPlans).where(eq(inspectionPlans.runId, run.id));
+      const plan = await readInspectionPlan(tx, task, run.id);
       const coordinates = { taskId: task.id, runId: run.id, requestedSource: { repositoryId: task.repositoryId, commit: task.commit } };
       const unverified = { ...coordinates, sourceFetched: false, snapshotVerified: false, scanCompleted: false };
-      if (!row) return sourceInspectionDtoSchema.parse({ ...unverified, status: 'not_prepared', reason: 'runner_unavailable', plan: null });
+      if (!plan) return sourceInspectionDtoSchema.parse({ ...unverified, status: 'not_prepared', reason: 'runner_unavailable', plan: null });
 
-      const plan = validateStored(row, task, run.id);
       const attempt = await currentInspectionAttempt(tx, run.id);
       if (attempt?.state === 'recorded' && attempt.workspaceSha256) {
         const { receipt, sha256 } = readInspectionEvidence(attempt, plan);

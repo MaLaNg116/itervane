@@ -5,7 +5,7 @@ import { cancelTaskSchema, resumeTaskSchema, idSchema, listQuerySchema, startTas
   eventReasonMessages, retrySourceInspectionReasonSchema, taskEventReasonSchema, type Locale, type MessageKey } from '@itervane/contracts';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import { queueName, type Database } from '../persistence/database.js';
-import { repositories, runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
+import { formalAuditInputs, repositories, runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
 import { requireActor, requireProject, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 import { appendEvent, enqueue, lockSlot } from '../runtime/authority.js';
@@ -129,12 +129,16 @@ export class TaskService {
       if (task.state !== 'waiting_input') throw new DomainError('unsupported_state');
       const [run] = await tx.select().from(taskRuns).where(and(eq(taskRuns.taskId, taskId), eq(taskRuns.generation, task.generation)));
       const [runtime] = run ? await tx.select().from(runRuntime).where(eq(runRuntime.runId, run.id)) : [];
-      // 人工 resume 只重试 Runner 前置检查，不能代替子任务完成或高风险审批。
-      if (!run || !runtime?.checkpointId || !retrySourceInspectionReasonSchema.safeParse(runtime.reason).success
-        || runtime.waitingForTaskId) throw new DomainError('unsupported_state');
+      const readyForAudit = runtime?.reason === 'inspection_ready';
+      if (!run || !runtime?.checkpointId || runtime.waitingForTaskId
+        || (!readyForAudit && !retrySourceInspectionReasonSchema.safeParse(runtime.reason).success)) throw new DomainError('unsupported_state');
+      if (readyForAudit) {
+        const [record] = await tx.select({ runId: formalAuditInputs.runId }).from(formalAuditInputs).where(eq(formalAuditInputs.runId, run.id));
+        if (!record) throw new DomainError('unsupported_state');
+      }
       if (runtime.resumeCount >= 3) throw new DomainError('resume_limit');
       await tx.update(runRuntime).set({ resumePending: true, resumeCount: runtime.resumeCount + 1 }).where(eq(runRuntime.runId, run.id));
-      const next = await appendEvent(tx, task, 'task.resumed', 'queued', { actorId: actor.principalId });
+      const next = await appendEvent(tx, task, readyForAudit ? 'task.audit_resumed' : 'task.resumed', 'queued', { actorId: actor.principalId });
       await enqueue(tx, this.database, next, run.id);
       return taskView(tx, taskId);
     });

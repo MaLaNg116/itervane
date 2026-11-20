@@ -1,38 +1,46 @@
 import { Annotation, END, START, StateGraph, type BaseCheckpointSaver } from '@langchain/langgraph';
 import type { ConversationEntry, ModelAdapter } from '@itervane/model';
-import { agentSpecSchema, checkKinds, sha256, type AgentSpec, type AgentEvidence, type Candidate, type AuditReport, type DeliveryRole } from './contracts.js';
+import {
+  agentSpecSchema, auditScannerSchema, checkKinds, sha256, type AgentSpec, type AgentEvidence, type AgentOrigin,
+  type Candidate, type AuditReport, type DeliveryRole,
+} from './contracts.js';
 import { agentPrompt, agentText, type AgentReason, type Feedback } from './messages.js';
-import { finishAudit, finishRepair, finishVerify } from './results.js';
+import { finishAudit, finishFormalAudit, finishRepair, finishVerify } from './results.js';
 import { initialState, restoreState, stopped, type AgentState, type Stop } from './state.js';
 import { acceptReceipt, canCall, emptyArguments, hasObservation, plannedToolSchema, toolDefinitions, type PlannedTool } from './tools.js';
 
 export type AgentScope = Readonly<{
-  spec: Readonly<AgentSpec>; bindingSha256: string; snapshotSha256: string; role: DeliveryRole;
+  spec: Readonly<AgentSpec>; bindingSha256: string; snapshotSha256: string; role: DeliveryRole; origin: AgentOrigin;
 }>;
-export interface AgentFixtureHost {
+export interface AgentHost {
   authorize(scope: AgentScope, signal: AbortSignal): Promise<boolean>;
   observe(input: {
     scope: AgentScope; call: PlannedTool; operationId: string;
     candidate: Candidate | null; audit: AuditReport | null; signal: AbortSignal;
   }): Promise<unknown>;
 }
-type HarnessOptions = { model: ModelAdapter; checkpointer: BaseCheckpointSaver; host: AgentFixtureHost };
-type RunOptions = { signal?: AbortSignal; pauseAfter?: 'decision' | 'reservation' };
+export type AgentFixtureHost = AgentHost;
+type HarnessOptions = { model: ModelAdapter; checkpointer: BaseCheckpointSaver; host: AgentHost };
+type FormalAuditProfile = { origin: 'formal_audit'; inputSha256: string; providerSha256: string; ruleIds: readonly string[] };
+type HarnessProfile = { origin: 'trusted_fixture' } | FormalAuditProfile;
+export type AgentRunOptions = { signal?: AbortSignal; pauseAfter?: 'decision' | 'reservation' };
 type AgentStatus = Stop['status'] | 'paused';
 const graphState = Annotation.Root({ state: Annotation<AgentState>() });
 
-function report(spec: AgentSpec, status: AgentStatus, reason: AgentReason, state?: AgentState) {
+function agentReport<Origin extends AgentOrigin>(origin: Origin, spec: AgentSpec, bindingSha256: string,
+  status: AgentStatus, reason: AgentReason, state?: AgentState, checkpointId?: string) {
   const visible = reason === 'permission_denied' ? undefined : state;
   return {
     runId: spec.runId, status, reason, message: agentText(spec.locale).reason[reason],
-    origin: 'trusted_fixture' as const, releaseEligible: false as const,
-    bindingSha256: state?.bindingSha256 ?? sha256(JSON.stringify(spec)),
+    origin, releaseEligible: false as const, bindingSha256,
+    ...(checkpointId ? { checkpointId } : {}),
     role: state?.role ?? 'audit', usage: state?.usage ?? { turns: 0, toolCalls: 0, tokens: 0 },
     trace: visible?.trace.map(({ call, ...item }) => ({ ...item, tool: call.name })) ?? [], evidence: visible?.evidence ?? [],
     audit: visible?.audit ?? null, repairs: visible?.repairs ?? [], verifications: visible?.verifications ?? [],
   };
 }
-export type AgentFixtureReport = ReturnType<typeof report>;
+export type AgentFixtureReport = ReturnType<typeof agentReport<'trusted_fixture'>>;
+export type FormalAuditReport = ReturnType<typeof agentReport<'formal_audit'>>;
 
 function bounded<T>(signal: AbortSignal, start: () => Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -50,19 +58,23 @@ function currentEvidence(state: AgentState) {
   return state.evidence.filter(item => state.currentEvidence.includes(item.id));
 }
 
-function conversation(spec: AgentSpec, state: AgentState, entries: AgentEvidence[], system: string) {
+function missingObservations(role: DeliveryRole, entries: AgentEvidence[], origin: AgentOrigin) {
+  if (origin === 'formal_audit') return auditScannerSchema.options.filter(scanner =>
+    !hasObservation(entries, { name: 'read_scan', args: { scanner } }));
+  if (role === 'audit') return entries.some(item => item.data.kind === 'findings') ? [] : ['read_findings'];
+  if (role === 'repair') return entries.some(item => item.data.kind === 'candidate') ? [] : ['draft_repair'];
+  return checkKinds.filter(check => !hasObservation(entries, { name: 'check_candidate', args: { check } }));
+}
+
+function conversation(spec: AgentSpec, state: AgentState, entries: AgentEvidence[], origin: AgentOrigin, reservedBytes: number) {
   const observations: AgentEvidence[] = [];
   const latestVerification = state.verifications.at(-1);
   const candidate = state.repairs.at(-1)?.candidate;
-  const completionNeeds = state.role === 'audit'
-    ? (entries.some(item => item.data.kind === 'findings') ? [] : ['read_findings'])
-    : state.role === 'repair' ? (entries.some(item => item.data.kind === 'candidate') ? [] : ['draft_repair'])
-    : checkKinds.filter(check => !hasObservation(entries, { name: 'check_candidate', args: { check } }));
   const payload = {
-    goal: spec.goal, role: state.role, source: spec.source,
+    goal: spec.goal, role: state.role, source: origin === 'trusted_fixture' ? spec.source : undefined,
     snapshotSha256: state.role === 'verify' ? candidate?.snapshotSha256 : spec.snapshotSha256,
     feedback: state.feedback ? agentText(spec.locale).feedback[state.feedback] : null,
-    completionNeeds,
+    completionNeeds: missingObservations(state.role, entries, origin),
     handoff: {
       findings: state.audit?.findings.map(({ id, ruleId, severity, certainty }) => ({ id, ruleId, severity, certainty })) ?? [],
       previousChecks: latestVerification?.checks,
@@ -70,13 +82,14 @@ function conversation(spec: AgentSpec, state: AgentState, entries: AgentEvidence
     evidenceIndex: entries.map(({ id, data }) => ({
       id, kind: data.kind, check: data.kind === 'check' ? data.result.check : undefined,
       section: data.kind === 'context' ? data.section : undefined, ruleId: data.kind === 'rule' ? data.ruleId : undefined,
+      scanner: data.kind === 'scan' ? data.scanner : undefined,
     })),
     observations,
   };
-  // Replay the latest admitted exchange with synthetic correlation IDs and no provider prose.
+  // The formal model uses the admitted evidence payload for each turn. Trusted fixtures also exercise protocol replay.
   let exchange: ConversationEntry[] = [];
   const last = state.trace.at(-1);
-  if (last?.role === state.role && state.currentEvidence.includes(last.evidenceId)) {
+  if (origin === 'trusted_fixture' && last?.role === state.role && state.currentEvidence.includes(last.evidenceId)) {
     const id = `call_${last.operationId.slice(0, 24)}`;
     exchange = [
       { kind: 'assistant', turn: { text: '', calls: [{ id, name: last.call.name, input: last.call.args }], tokenUsage: 0 } },
@@ -84,18 +97,25 @@ function conversation(spec: AgentSpec, state: AgentState, entries: AgentEvidence
     ];
   }
   const build = (): ConversationEntry[] => [{ kind: 'user', text: JSON.stringify(payload) }, ...exchange];
-  const fits = (messages: ConversationEntry[]) => Buffer.byteLength(JSON.stringify(messages)) + Buffer.byteLength(system) <= spec.limits.maxContextBytes;
+  const fits = (messages: ConversationEntry[]) => Buffer.byteLength(JSON.stringify(messages)) + reservedBytes <= spec.limits.maxContextBytes;
   let messages = build();
   if (!fits(messages)) {
     exchange = [];
     messages = build();
     if (!fits(messages)) return;
   }
-  for (const entry of [...entries].reverse()) {
+  const latest = [...entries].reverse();
+  const ordered = origin === 'formal_audit'
+    ? [...latest.filter(item => item.data.kind === 'scan'), ...latest.filter(item => item.data.kind !== 'scan')]
+    : latest;
+  for (const entry of ordered) {
     observations.push(entry);
     const withEntry = build();
     if (fits(withEntry)) messages = withEntry;
-    else observations.pop();
+    else {
+      if (origin === 'formal_audit' && entry.data.kind === 'scan') return;
+      observations.pop();
+    }
   }
   return messages;
 }
@@ -104,8 +124,15 @@ function nextRole(state: AgentState, role: DeliveryRole): AgentState {
   return { ...state, role, currentEvidence: [], stalled: 0, feedback: null };
 }
 
-function finish(state: AgentState, spec: AgentSpec, input: unknown): AgentState | undefined {
+function finish(state: AgentState, spec: AgentSpec, input: unknown, origin: AgentOrigin): AgentState | undefined {
   const evidence = currentEvidence(state);
+  if (origin === 'formal_audit') {
+    const audit = finishFormalAudit(evidence, input, spec.locale);
+    if (!audit) return;
+    const audited = { ...state, audit };
+    return audit.coverage === 'complete' && !audit.hypotheses.length
+      ? stopped(audited, 'audit_complete', 'completed') : stopped(audited, 'audit_incomplete');
+  }
   if (state.role === 'audit') {
     const audit = finishAudit(evidence, input);
     if (!audit) return;
@@ -130,13 +157,22 @@ function finish(state: AgentState, spec: AgentSpec, input: unknown): AgentState 
   return state.repairs.length < spec.limits.maxRepairs ? nextRole(checked, 'repair') : stopped(checked, 'repair_limit');
 }
 
-export function createAgentHarness({ model, checkpointer, host }: HarnessOptions) {
+export function createAgentHarness(options: HarnessOptions) {
+  return createHarness(options, { origin: 'trusted_fixture' });
+}
+
+export function createFormalAuditHarness(options: HarnessOptions, profile: Omit<FormalAuditProfile, 'origin'>) {
+  return createHarness(options, { ...profile, origin: 'formal_audit' });
+}
+
+function createHarness<Profile extends HarnessProfile>({ model, checkpointer, host }: HarnessOptions, profile: Profile) {
+  const { origin } = profile;
   const active = new Set<string>();
   return {
-    async run(rawSpec: unknown, options: RunOptions = {}): Promise<AgentFixtureReport> {
+    async run(rawSpec: unknown, options: AgentRunOptions = {}) {
       const spec = agentSpecSchema.parse(rawSpec);
-      const bindingSha256 = sha256(JSON.stringify(spec));
-      if (active.has(spec.runId)) throw new Error('Fixture run already active in this harness');
+      const bindingSha256 = sha256(JSON.stringify(profile.origin === 'formal_audit' ? { profile, spec } : spec));
+      if (active.has(spec.runId)) throw new Error('Run already active in this harness');
       active.add(spec.runId);
       try {
         return await execute(spec, bindingSha256, options);
@@ -146,8 +182,14 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
     },
   };
 
-  async function execute(spec: AgentSpec, bindingSha256: string, options: RunOptions) {
+  async function execute(spec: AgentSpec, bindingSha256: string, options: AgentRunOptions) {
     const { limits } = spec;
+    const formal = profile.origin === 'formal_audit';
+    const ruleIds = formal ? profile.ruleIds : [];
+    const report = (status: AgentStatus, reason: AgentReason, state?: AgentState, checkpointId?: string) =>
+      agentReport<Profile['origin']>(origin, spec, bindingSha256, status, reason, state, checkpointId);
+    const permits = (role: DeliveryRole, call: PlannedTool) => canCall(role, call.name, origin)
+      && (!formal || call.name !== 'read_rule' || ruleIds.includes(call.args.ruleId));
     const externalSignal = options.signal;
     // The timer can abort before the wall clock reaches the exact deadline millisecond.
     const lapse = (state: AgentState, signal?: AbortSignal) => externalSignal?.aborted ? stopped(state, 'cancelled', 'cancelled')
@@ -158,7 +200,7 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
     };
     const target = (state: AgentState) => state.role === 'verify' ? state.repairs.at(-1)?.candidate ?? null : null;
     const scopeFor = (state: AgentState): AgentScope => ({
-      spec: structuredClone(spec), bindingSha256, role: state.role,
+      spec: structuredClone(spec), bindingSha256, role: state.role, origin,
       snapshotSha256: target(state)?.snapshotSha256 ?? spec.snapshotSha256,
     });
 
@@ -198,15 +240,17 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
         const signal = signalFor(state.deadlineAt);
         const before = await gate(state, signal);
         if (before) return { state: before };
-        const system = agentPrompt(spec.locale, state.role);
+        const system = agentPrompt(spec.locale, state.role, origin);
         const entries = currentEvidence(state);
-        const messages = conversation(spec, state, entries, system);
+        const tools = toolDefinitions(spec.locale, state.role, entries, origin, ruleIds);
+        const reservedBytes = Buffer.byteLength(system) + (formal ? Buffer.byteLength(JSON.stringify(tools)) : 0);
+        const messages = conversation(spec, state, entries, origin, reservedBytes);
         if (!messages) return { state: stopped(state, 'context_budget') };
         let turn;
         try {
           turn = await bounded(signal, () => model.complete({
-            system, conversation: messages, tools: toolDefinitions(spec.locale, state.role, entries), signal,
-            maxOutputTokens: Math.min(1_024, limits.maxTokens - state.usage.tokens), singleTool: true,
+            system, conversation: messages, tools, signal,
+            maxOutputTokens: Math.min(formal ? 3_072 : 1_024, limits.maxTokens - state.usage.tokens), singleTool: true,
           }));
         } catch {
           return { state: lapse(state, signal) ?? stopped(state, 'provider_error') };
@@ -221,16 +265,16 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
         if (turn.calls.length > 1) return { state: stalled(state, 'multiple_calls') };
         if (!call) return { state: stalled(state, 'invalid_call') };
         if (call.name === 'request_human' && emptyArguments.safeParse(call.input).success) return { state: stopped(state, 'manual_review') };
-        if (call.name === 'finish_role') return { state: finish(state, spec, call.input) ?? stalled(state, 'insufficient_evidence') };
+        if (call.name === 'finish_role') return { state: finish(state, spec, call.input, origin) ?? stalled(state, 'insufficient_evidence') };
         const planned = plannedToolSchema.safeParse({ name: call.name, args: call.input });
-        if (!planned.success || !canCall(state.role, planned.data.name)) return { state: stalled(state, 'invalid_call') };
+        if (!planned.success || !permits(state.role, planned.data)) return { state: stalled(state, 'invalid_call') };
         if (hasObservation(entries, planned.data)) return { state: stalled(state, 'no_new_evidence') };
         return { state: { ...state, nextTool: planned.data } };
       })
       .addNode('observation', async ({ state: reserved }) => {
         const state = { ...reserved, pending: null, nextTool: null };
         const call = reserved.nextTool;
-        if (!call || !canCall(state.role, call.name)) return { state: stopped(state, 'incompatible_checkpoint') };
+        if (!call || !permits(state.role, call)) return { state: stopped(state, 'incompatible_checkpoint') };
         const signal = signalFor(state.deadlineAt);
         const before = await gate(state, signal);
         if (before) return { state: before };
@@ -248,7 +292,7 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
         }
         const after = await gate(state, signal);
         if (after) return { state: after };
-        const receipt = acceptReceipt(raw, { bindingSha256, snapshotSha256: scope.snapshotSha256, call, audit: state.audit, candidate });
+        const receipt = acceptReceipt(raw, { origin, bindingSha256, snapshotSha256: scope.snapshotSha256, call, audit: state.audit, candidate });
         if (!receipt) return { state: stopped(state, 'invalid_receipt') };
         const trace = [...state.trace, { role: state.role, operationId, call, evidenceId: receipt.id }];
         if (state.currentEvidence.includes(receipt.id)) return { state: stalled({ ...state, trace }, 'no_new_evidence') };
@@ -263,38 +307,54 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
         ['observation', 'decision', END])
       .addConditionalEdges('decision', ({ state }) => state.stop ? END : 'reserve', ['reserve', END])
       .addConditionalEdges('observation', ({ state }) => state.stop ? END : 'reserve', ['reserve', END])
-      .compile({ checkpointer, name: 'fixture-delivery-agent' });
+      .compile({ checkpointer, name: formal ? 'formal-audit-agent' : 'fixture-delivery-agent' });
 
     const config = {
-      configurable: { thread_id: `fixture-agent:${spec.runId}` },
+      configurable: { thread_id: `${formal ? 'audit' : 'fixture-agent'}:${spec.runId}` },
       durability: 'sync' as const, recursionLimit: 2 * (limits.maxTurns + limits.maxToolCalls) + 8,
     };
     try {
       const checkpoint = await graph.getState(config);
-      const existing = checkpoint.config?.configurable?.checkpoint_id !== undefined || checkpoint.values?.state !== undefined;
-      const state = existing ? restoreState(checkpoint.values?.state, spec, bindingSha256) : initialState(spec, bindingSha256);
-      if (!state) return report(spec, 'requires_human', 'incompatible_checkpoint');
+      const publishedId = checkpoint.config?.configurable?.checkpoint_id;
+      const checkpointId = formal && typeof publishedId === 'string' ? publishedId : undefined;
+      const existing = publishedId !== undefined || checkpoint.values?.state !== undefined;
+      const state = existing ? restoreState(checkpoint.values?.state, spec, bindingSha256, origin) : initialState(spec, bindingSha256);
+      if (!state) return report('requires_human', 'incompatible_checkpoint', undefined, checkpointId);
       if (state.stop || state.pending) {
         if (!await authorized(state, signalFor(Date.now() + Math.min(1_000, limits.maxDurationMs)))) {
-          return report(spec, externalSignal?.aborted ? 'cancelled' : 'requires_human',
+          return report(externalSignal?.aborted ? 'cancelled' : 'requires_human',
             externalSignal?.aborted ? 'cancelled' : 'permission_denied');
         }
         return state.stop
-          ? report(spec, state.stop.status, state.stop.reason, state)
-          : report(spec, 'requires_human', 'interrupted_action', state);
+          ? report(state.stop.status, state.stop.reason, state, checkpointId)
+          : report('requires_human', 'interrupted_action', state, checkpointId);
       }
       const expired = lapse(state);
-      if (expired?.stop) return report(spec, expired.stop.status, expired.stop.reason);
+      if (expired?.stop) {
+        if (formal && checkpointId && !await authorized(state, signalFor(Date.now() + 1_000))) {
+          return report('requires_human', 'permission_denied');
+        }
+        return report(expired.stop.status, expired.stop.reason, checkpointId ? state : undefined, checkpointId);
+      }
       if (existing && (checkpoint.next.length !== 1 || checkpoint.next[0] !== 'reserve')) {
-        return report(spec, 'requires_human', 'incompatible_checkpoint');
+        return report('requires_human', 'incompatible_checkpoint', undefined, checkpointId);
       }
       const interruptAfter = options.pauseAfter ? [options.pauseAfter === 'decision' ? 'decision' : 'reserve'] as const : [];
       const result = (await graph.invoke(existing ? null : { state }, { ...config, interruptAfter: [...interruptAfter] })).state;
+      if (formal && result.stop) {
+        // Bind formal outcomes to the guarded, published snapshot, including only acknowledged writes.
+        const saved = await graph.getState(config);
+        const savedId = saved.config?.configurable?.checkpoint_id;
+        const settled = restoreState(saved.values?.state, spec, bindingSha256, origin);
+        return typeof savedId === 'string' && settled?.stop
+          ? report(settled.stop.status, settled.stop.reason, settled, savedId)
+          : report('requires_human', 'checkpoint_unavailable');
+      }
       return result.stop
-        ? report(spec, result.stop.status, result.stop.reason, result)
-        : report(spec, 'paused', 'checkpoint_paused', result);
+        ? report(result.stop.status, result.stop.reason, result)
+        : report('paused', 'checkpoint_paused', result);
     } catch {
-      return report(spec, 'requires_human', 'checkpoint_unavailable');
+      return report('requires_human', 'checkpoint_unavailable');
     }
   }
 }

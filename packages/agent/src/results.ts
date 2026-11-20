@@ -1,7 +1,9 @@
+import type { Locale } from '@itervane/contracts';
 import {
-  auditReportSchema, checkKinds, completionSchemas, repairReportSchema, verificationReportSchema,
+  auditReportSchema, auditScannerSchema, checkKinds, completionSchemas, repairReportSchema, verificationReportSchema,
   type AgentEvidence, type AuditReport, type RepairReport, type VerificationReport,
 } from './contracts.js';
+import { agentText } from './messages.js';
 
 type Completion = { summary: string; evidenceIds: string[] };
 
@@ -10,24 +12,43 @@ function cited(evidence: readonly AgentEvidence[], ids: readonly string[]) {
   return selected.every(item => item !== undefined) ? selected : undefined;
 }
 
-export function finishAudit(evidence: readonly AgentEvidence[], raw: unknown): AuditReport | undefined {
+function explainAudit(evidence: readonly AgentEvidence[], raw: unknown, requiredIds: readonly string[], facts: {
+  coverage: AuditReport['coverage']; limits: string[]; findings: Array<Omit<AuditReport['findings'][number], 'impact' | 'suggestion'>>;
+}): AuditReport | undefined {
   const result = completionSchemas.audit.safeParse(raw);
   if (!result.success) return;
   const input = result.data;
   const receipts = cited(evidence, input.evidenceIds);
-  const protectedReports = evidence.filter(item => item.data.kind === 'findings');
-  if (protectedReports.length !== 1 || !receipts?.includes(protectedReports[0]!)) return;
-  const found = protectedReports[0]!.data;
-  if (found?.kind !== 'findings' || input.explanations.length !== found.findings.length) return;
+  if (!receipts || !requiredIds.every(id => input.evidenceIds.includes(id)) || input.explanations.length !== facts.findings.length) return;
   const explanations = new Map(input.explanations.map(item => [item.findingId, item]));
-  if (found.findings.some(item => !explanations.has(item.id))) return;
+  const ids = new Set(facts.findings.map(item => item.id));
+  if (ids.size !== facts.findings.length || facts.findings.some(item => !explanations.has(item.id))) return;
   if (input.hypotheses.some(item => !cited(evidence, item.evidenceIds))) return;
   return auditReportSchema.parse({
     summary: input.summary, evidenceIds: input.evidenceIds, hypotheses: input.hypotheses,
-    coverage: found.coverage, limits: found.limits, findings: found.findings.map(item => {
+    coverage: facts.coverage, limits: facts.limits, findings: facts.findings.map(item => {
       const explanation = explanations.get(item.id)!;
       return { ...item, impact: explanation.impact, suggestion: explanation.suggestion };
     }),
+  });
+}
+
+export function finishAudit(evidence: readonly AgentEvidence[], raw: unknown): AuditReport | undefined {
+  const reports = evidence.filter(item => item.data.kind === 'findings');
+  const report = reports[0];
+  if (reports.length !== 1 || report?.data.kind !== 'findings') return;
+  return explainAudit(evidence, raw, [report.id], report.data);
+}
+
+export function finishFormalAudit(evidence: readonly AgentEvidence[], raw: unknown, locale: Locale): AuditReport | undefined {
+  const scans = evidence.flatMap(({ data, id }) => data.kind === 'scan' ? [{ ...data, id }] : []);
+  if (scans.length !== auditScannerSchema.options.length || new Set(scans.map(scan => scan.scanner)).size !== scans.length
+    || new Set(scans.map(scan => scan.inspectionSha256)).size !== 1) return;
+  const partial = scans.some(scan => scan.totalFindings > scan.findings.length);
+  const text = agentText(locale).formal;
+  return explainAudit(evidence, raw, scans.map(scan => scan.id), {
+    coverage: partial ? 'partial' : 'complete', limits: partial ? [text.scope, text.truncated] : [text.scope],
+    findings: scans.flatMap(scan => scan.findings),
   });
 }
 
