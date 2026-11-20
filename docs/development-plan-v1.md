@@ -24,6 +24,8 @@ P2-A 按 [内置 Agent Harness 计划](plans/p2-a-agent-harness.md) 交付双语
 
 P2-B 按 [候选冻结与人工确认计划](plans/p2-b-release-candidate.md) 完成可信样例的候选指纹、确认记录、撤权和失效验证。正式批准依赖 D2/D3、实际复验、镜像扫描与目标映射，批准、唯一操作记录和入队须同事务完成。代码和验收见 [P2-B 导读](reviews/p2-b-release-candidate.md)。
 
+P2-C 按 [发布事务与结果核对计划](plans/p2-c-release-reconciliation.md) 演练原子确认、唯一操作、专用队列、环境占用及独立结果核对。正式 Worker 执行权、真实 Komodo 调度和上线验证按 P2 出口验收。代码和验收见 [P2-C 导读](reviews/p2-c-release-reconciliation.md)。
+
 ## 1. 开发约束
 
 - 单维护者、单工作区、全局一个执行中的业务工作流；人工暂停后释放槽位。
