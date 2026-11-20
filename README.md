@@ -26,6 +26,8 @@ P2-A adds a bilingual, bounded ReAct harness and a complete audit, template repa
 
 P2-B adds PostgreSQL-backed fixture candidate freezing and bilingual human decision records. Rehearsals cover the exact candidate fingerprint, concurrent decisions, expiration, revocation, and owner reassignment. Fixture confirmations carry no release eligibility. See the [P2-B plan](docs/plans/p2-b-release-candidate.md) and [review guide](docs/reviews/p2-b-release-candidate.md).
 
+P2-C exercises atomic fixture confirmation, operation creation, and queue wakeup. Its ledger serializes reservations by environment and reconciles uncertain outcomes with independent fixture evidence for version, health, and protected access. Live release requires the qualified Runner and verified deployment target. See the [P2-C plan](docs/plans/p2-c-release-reconciliation.md) and [review guide](docs/reviews/p2-c-release-reconciliation.md).
+
 P1-UX refines that portal with a coherent bilingual workspace design and scoped GSAP feedback for actual state changes, new activity and metadata disclosure. Reduced-motion preferences apply live, with immediate permission/error handling. It adds no domain API, migration or execution capability. See [design and motion setup](docs/portal-design-motion.md), the [plan](docs/plans/p1-ux-portal-design-motion.md), and [third-party UI notices](docs/third-party-ui.md).
 
 For P0 setup, observed versions, and outstanding gates, see [P0 verification](docs/p0-verification.md). The repository does not yet deploy applications, execute submitted code, or operate infrastructure through an Agent.

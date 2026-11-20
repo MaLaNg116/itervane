@@ -6,8 +6,9 @@ import {
 } from '@itervane/contracts';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import type { Database } from '../persistence/database.js';
-import { environments, releaseCandidates, releaseDecisions, taskRuns, tasks, workspaceMembers } from '../persistence/schema.js';
-import { requireActor, requireProject, type Transaction } from './access.js';
+import { environments, projects, releaseCandidates, releaseDecisions, releaseOperations, taskRuns, tasks, workspaceMembers } from '../persistence/schema.js';
+import { enqueueReleaseFixture } from '../runtime/release-fixture-queue.js';
+import { requireActor, requireProject, requireStoredActor, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 
 type CandidateRow = typeof releaseCandidates.$inferSelect;
@@ -24,7 +25,13 @@ function fingerprint(manifest: FixtureReleaseManifest) {
   return createHash('sha256').update(JSON.stringify(manifest)).digest('hex');
 }
 
-async function databaseNow(tx: Transaction) {
+export function parseFrozenRelease(candidate: CandidateRow) {
+  const parsed = fixtureReleaseManifestSchema.safeParse(candidate.document);
+  if (!parsed.success || fingerprint(parsed.data) !== candidate.fingerprint) throw new DomainError('unavailable');
+  return parsed.data;
+}
+
+export async function databaseNow(tx: Transaction) {
   const { rows } = await tx.execute<{ milliseconds: string }>(sql`
     SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS milliseconds
   `);
@@ -144,7 +151,10 @@ export class ReleaseCandidateService {
       const replay = history.find(item => item.actorId === actor.principalId && item.idempotencyKey === input.idempotencyKey);
       if (replay) {
         if (replay.action !== input.action || replay.version !== input.expectedVersion + 1) throw new DomainError('idempotency_conflict');
-        return { candidate: present(candidate, manifest, history, status, locale), replayed: true };
+        const [operation] = input.action === 'confirm'
+          ? await tx.select({ id: releaseOperations.id }).from(releaseOperations).where(eq(releaseOperations.candidateId, candidate.id))
+          : [];
+        return { candidate: present(candidate, manifest, history, status, locale), operationId: operation?.id ?? null, replayed: true };
       }
       const decisionVersion = history.at(-1)?.version ?? 0;
       if (decisionVersion !== input.expectedVersion) throw new DomainError('version_conflict');
@@ -154,9 +164,27 @@ export class ReleaseCandidateService {
         action: input.action, selfConfirmed: input.action === 'confirm' && actor.principalId === candidate.requestedBy, decidedAt: now,
       };
       await tx.insert(releaseDecisions).values(decision);
+      const operationId = decision.action === 'confirm' ? await enqueueReleaseFixture(tx, this.database, {
+        candidateId, environmentId: candidate.environmentId, approvalVersion: decision.version,
+      }) : null;
       const decided = { confirm: 'confirmed', reject: 'rejected', revoke: 'revoked' } as const;
-      return { candidate: present(candidate, manifest, [...history, decision], decided[input.action], locale), replayed: false };
+      return { candidate: present(candidate, manifest, [...history, decision], decided[input.action], locale), operationId, replayed: false };
     });
+  }
+
+  async lockFixtureApproval(tx: Transaction, candidate: CandidateRow, approvalVersion: number) {
+    const [decision] = await tx.select().from(releaseDecisions).where(and(eq(releaseDecisions.candidateId, candidate.id),
+      eq(releaseDecisions.version, approvalVersion), eq(releaseDecisions.action, 'confirm')));
+    if (!decision) return;
+    // Match the human command's lock order before latching the task.
+    const approver = await requireStoredActor(tx, decision.actorId);
+    if (!approver.workspaceId) return;
+    const [project] = await tx.select({ workspaceId: projects.workspaceId }).from(projects)
+      .where(and(eq(projects.id, candidate.projectId), eq(projects.workspaceId, approver.workspaceId))).for('share');
+    if (!project) return;
+    const task = await lockTaskScope(tx, candidate.taskId, 'share');
+    const { manifest, status } = await this.assess(tx, candidate, project.workspaceId, task);
+    return status === 'confirmed' ? manifest : undefined;
   }
 
   private async visibleCandidate(tx: Transaction, identity: VerifiedIdentity, candidateId: string, lock: 'share' | 'update') {
@@ -175,9 +203,7 @@ export class ReleaseCandidateService {
   }
 
   private async assess(tx: Transaction, candidate: CandidateRow, workspaceId: string, task: TaskScope) {
-    const parsed = fixtureReleaseManifestSchema.safeParse(candidate.document);
-    if (!parsed.success || fingerprint(parsed.data) !== candidate.fingerprint) throw new DomainError('unavailable');
-    const manifest = parsed.data;
+    const manifest = parseFrozenRelease(candidate);
     const history = await tx.select().from(releaseDecisions).where(eq(releaseDecisions.candidateId, candidate.id)).orderBy(asc(releaseDecisions.version));
     const last = history.at(-1);
     let status: ReleaseCandidateStatus;

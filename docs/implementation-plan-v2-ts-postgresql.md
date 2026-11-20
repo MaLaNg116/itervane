@@ -16,6 +16,8 @@ P2-A 按 [Agent Harness 与三角色循环](plans/p2-a-agent-harness.md) 完成 
 
 P2-B 按 [候选冻结与人工确认](plans/p2-b-release-candidate.md) 完成 P2.4 的 PostgreSQL 可信样例切片。接入正式 P2.4 需要 P2.3 的完整发布证据；批准、操作和队列仍按正式发布事务一起验收。
 
+P2-C 的 [发布事务与结果核对](plans/p2-c-release-reconciliation.md) 演练了 P2.4 的原子写入以及 P2.5 的操作账本、结果未知和运行证据匹配。D2/D3、真实 Komodo 目标、正式调度和发布验收仍是完整 P2 的条件。
+
 本计划完整保留已确认的 TypeScript + PostgreSQL 分阶段实施方案。完整愿景、Agent 架构、MVP 闭环和安全边界沿用 v6；更新控制面技术栈、数据访问、任务调度与并发方案。本文定义实施顺序，不提前宣称接口兼容、恢复正确或阶段验收已经通过。
 
 2026-11-18 按用户继续分批开发的要求，采用 [ADR 0001](decisions/0001-development-and-runtime-gates.md)：独立模块可先开发与可信测试，完整阶段及真实执行资格仍受原验收闸门约束。
