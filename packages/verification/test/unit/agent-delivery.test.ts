@@ -148,6 +148,26 @@ it('compacts observation text while retaining its evidence reference', async () 
   expect(result).toMatchObject({ status: 'requires_human', reason: 'manual_review', evidence: [expect.objectContaining({ id: expect.any(String) })] });
 });
 
+it('rejects a provider batch and offers localized feedback before dispatching a single new decision', async () => {
+  const { spec, host } = createDeliveryFixture('display', 'zh-CN');
+  const observe = vi.fn(host.observe);
+  const complete = vi.fn<ModelAdapter['complete']>(async input => {
+    const message = input.conversation[0];
+    expect(input.singleTool).toBe(true);
+    if (message?.kind !== 'user') throw new Error('Missing user context');
+    if (JSON.parse(message.text).feedback?.includes('上一轮提出了多项调用')) return modelChoosing('request_human').complete(input);
+    return { text: '', tokenUsage: 1, calls: [
+      { id: 'first', name: 'read_context', input: { section: 'overview' } },
+      { id: 'second', name: 'read_findings', input: {} },
+    ] };
+  });
+  const result = await createAgentHarness({
+    host: { ...host, observe }, model: { protocol: 'anthropic', complete }, checkpointer: new MemorySaver(),
+  }).run(spec);
+  expect(result).toMatchObject({ status: 'requires_human', reason: 'manual_review', usage: { turns: 2, toolCalls: 0 } });
+  expect(observe).not.toHaveBeenCalled();
+});
+
 it('stops repeated observations, loss of authorization and cancellation before further effects', async () => {
   const { spec, host } = createDeliveryFixture('display', 'en');
   const run = (currentHost: AgentFixtureHost, model: ModelAdapter, signal?: AbortSignal) =>

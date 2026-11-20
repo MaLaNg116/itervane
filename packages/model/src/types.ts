@@ -19,6 +19,7 @@ export interface ModelAdapter {
     tools: ToolDefinition[];
     signal: AbortSignal;
     maxOutputTokens?: number;
+    singleTool?: boolean;
   }): Promise<ModelTurn>;
 }
 

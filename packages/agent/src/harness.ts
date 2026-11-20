@@ -64,6 +64,7 @@ function context(spec: AgentSpec, state: AgentState, system: string) {
     },
     evidenceIndex: entries.map(({ id, data }) => ({
       id, kind: data.kind, check: data.kind === 'check' ? data.result.check : undefined,
+      section: data.kind === 'context' ? data.section : undefined, ruleId: data.kind === 'rule' ? data.ruleId : undefined,
     })),
     observations,
   };
@@ -183,7 +184,7 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
         try {
           turn = await bounded(signal, () => model.complete({
             system, conversation: [{ kind: 'user', text: prompt }], tools: toolDefinitions(spec.locale, state.role), signal,
-            maxOutputTokens: Math.min(1_024, limits.maxTokens - state.usage.tokens),
+            maxOutputTokens: Math.min(1_024, limits.maxTokens - state.usage.tokens), singleTool: true,
           }));
         } catch {
           return { state: lapse(state) ?? stopped(state, 'provider_error') };
@@ -195,7 +196,8 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
         if (after) return { state: after };
         if (state.usage.tokens >= limits.maxTokens) return { state: stopped(state, 'token_budget') };
         const call = turn.calls[0];
-        if (turn.calls.length !== 1 || !call) return { state: stalled(state, 'invalid_call') };
+        if (turn.calls.length > 1) return { state: stalled(state, 'multiple_calls') };
+        if (!call) return { state: stalled(state, 'invalid_call') };
         if (call.name === 'request_human' && emptyArguments.safeParse(call.input).success) return { state: stopped(state, 'manual_review') };
         if (call.name === 'finish_role') return { state: finish(state, spec, call.input) ?? stalled(state, 'insufficient_evidence') };
         const planned = plannedToolSchema.safeParse({ name: call.name, args: call.input });
