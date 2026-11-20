@@ -6,6 +6,8 @@
 
 2026-11-18 补充：下文保留 2026-11-16 的 P0 观测快照。按 [ADR 0001](decisions/0001-development-and-runtime-gates.md)，独立 P1-A 身份/资源/任务模块已进入开发，见 [控制面说明](control-plane-p1-a.md)；这不改变 VM 隔离与原生集成仍待验、完整 P0 未通过的事实。
 
+2026-11-20 新增 P0.5-A 原生证据。固定 Komodo 2.3.4 已在专用工作机完成样例发布 A、升级 B 和恢复 A，三轮均核对 OCI、实际容器和 HTTP 健康。完整 P0 还有真实 VM 隔离、Whiskers 原生确认与兼容基线验收。 [Komodo 导读与复跑](reviews/p0-komodo-native-delivery.md)
+
 ## 1. 本轮实际实现
 
 `@itervane/contracts` 提供固定 Git 输入、五种角色标识、初版任务状态转换、主体能力判断、唤醒与工具结果契约。`@itervane/verification` 包含模型协议适配、受限观察循环、MCP/数据库/云机/评测探针和本地证据汇总。它们都是 P0 验证模块。

@@ -32,7 +32,9 @@ P2-C exercises atomic fixture confirmation, operation creation, and queue wakeup
 
 P1-UX refines that portal with a coherent bilingual workspace design and scoped GSAP feedback for actual state changes, new activity and metadata disclosure. Reduced-motion preferences apply live, with immediate permission/error handling. It adds no domain API, migration or execution capability. See [design and motion setup](docs/portal-design-motion.md), the [plan](docs/plans/p1-ux-portal-design-motion.md), and [third-party UI notices](docs/third-party-ui.md).
 
-For P0 setup, observed versions, and outstanding gates, see [P0 verification](docs/p0-verification.md). The repository does not yet deploy applications, execute submitted code, or operate infrastructure through an Agent.
+P0.5-A verifies native Komodo deployment, upgrade and digest-pinned rollback with trusted fixtures on a dedicated hosted runner. The [replay guide](docs/reviews/p0-komodo-native-delivery.md) records the real Komodo updates and runtime image evidence.
+
+For P0 setup, observed versions, and outstanding gates, see [P0 verification](docs/p0-verification.md). Managed project execution, release, and Agent operations require runtime qualification.
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
