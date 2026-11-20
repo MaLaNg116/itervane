@@ -126,3 +126,11 @@ assert outcome["domainId"] == sys.argv[2] and outcome["cleanup"] == "confirmed"
 PY
   fi
 done
+
+pnpm exec esbuild packages/control-plane/src/entries/worker.ts --bundle --platform=node --format=esm --target=node24 \
+  '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
+  --outfile=.reports/p0/qualified-worker.mjs
+sudo -n install -m 0444 .reports/p0/qualified-worker.mjs "$shared/worker.mjs"
+pnpm exec tsx packages/control-plane/test/native/worker-inspection.ts "$shared/worker.mjs" "$sock" "$(id -u "$runner")" "$digest" "$stage" \
+  > "$reports/runner-worker-inspection.json"
+assert_empty

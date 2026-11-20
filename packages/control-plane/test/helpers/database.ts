@@ -3,8 +3,7 @@ import pg from 'pg';
 import { openDatabase, queueName, releaseFixtureQueue } from '../../src/persistence/database.js';
 import { migrateDatabase } from '../../src/persistence/migrate.js';
 
-export async function databaseFixture() {
-  const base = process.env.DATABASE_URL;
+export async function databaseFixture(base = process.env.DATABASE_URL) {
   if (!base || !/^\/(itervane_test|itervane_p0)(_[a-z0-9]+)?$/.test(new URL(base).pathname)) throw new Error('Dedicated PostgreSQL test configuration required');
   const nonce = randomUUID().replaceAll('-', '').slice(0, 12);
   const databaseName = `itervane_test_${nonce}`;
