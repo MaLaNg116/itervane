@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
-  admissionDtoSchema, auditFindingsPerScan, formalAuditDtoSchema, projectDtoSchema, repositoryDtoSchema, sourceInspectionDtoSchema,
+  admissionDtoSchema, auditFindingsPerScan, formalAuditDtoSchema, idSchema, projectDtoSchema, repositoryDtoSchema, sha256Schema, sourceInspectionDtoSchema,
   qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, taskDtoSchema, taskEventDtoSchema, translate,
 } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
@@ -117,7 +117,13 @@ async function runRepairWorker(bundle: string, socket: string, controllerUid: st
   const receipt = qualifiedRepairResponseSchema.parse(response.receipt);
   const observation = qualifiedRepairObservationResponseSchema.parse(response.observation);
   if (receipt.kind !== 'repair_receipt' || observation.kind !== 'repair_observation') throw new Error('worker_repair_missing_receipt');
-  return { receipt, observation };
+  const { checkpointId, callKeySha256, trace, usage, releaseEligible } = response.agent;
+  deepStrictEqual(trace, ['read_repair_targets', 'apply_repair_patch']);
+  deepStrictEqual(usage, { turns: 3, toolCalls: 2, tokens: 90 });
+  equal(releaseEligible, false);
+  return { receipt, observation, agent: { checkpointId: idSchema.parse(checkpointId), callKeySha256: sha256Schema.parse(callKeySha256),
+    trace, usage, releaseEligible,
+  } };
 }
 
 async function hostsDomains(controllerUid: string, filter: '--all' | '--state-running') {
@@ -332,7 +338,7 @@ async function probe() {
     // The dedicated test database holds the audit. Requeue it for this repair execution check.
     await db.admin.query("UPDATE itervane.tasks SET state='queued' WHERE id=$1", [first.id]);
     await db.admin.query("UPDATE itervane.task_runs SET state='queued' WHERE id=$1", [first.runId]);
-    const { receipt, observation } = await runRepairWorker(repairBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+    const { receipt, observation, agent } = await runRepairWorker(repairBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
       [first.id, first.runId, scan.result.snapshotSha256, fixture.id]);
     equal(receipt.scope.taskId, first.id); equal(receipt.scope.runId, first.runId);
     equal(receipt.snapshot.manifestSha256, scan.result.snapshotSha256);
@@ -352,14 +358,22 @@ async function probe() {
     ok(fixture.line !== null);
     deepStrictEqual(target.range, expectedRanges[fixture.line - 1]);
     const [change] = receipt.snapshot.candidate.changes;
-    deepStrictEqual(change, { path: fixture.path, beforeBytes: 158, afterBytes: 38, edits: 1,
+    const expectedChanges = [
+      { afterBytes: 132, afterSha256: 'fb91303fd77793f09cf354f0640130d40dba8ad64ce3b2e64fc42d4a9b8a8624' },
+      { afterBytes: 102, afterSha256: 'f0d9a041c470d2a1c77ec6ce2a042a3f8eccb2cc98fc3d79ad0770709364a3f9' },
+    ];
+    deepStrictEqual(change, { path: fixture.path, beforeBytes: 158, edits: 1,
       beforeSha256: '3812bc54c3579d8c67275c573f0ff1bf7dde70bfb4a9150621459ae510a87afc',
-      afterSha256: '8622a031ac1fa18220f30c313f1bfd2762ef9461ea69e2c108b115cf6fa00962' });
-    const saved = (await db.admin.query(`SELECT operation.command_sha256, operation.finding_ids, attempt.state, attempt.receipt_sha256
+      ...expectedChanges[fixture.line - 1] });
+    const saved = (await db.admin.query(`SELECT operation.command_sha256, operation.finding_ids, operation.call_key_sha256,
+      attempt.state, attempt.receipt_sha256, runtime.checkpoint_id, runtime.published_fence
       FROM itervane.formal_repair_operations operation JOIN itervane.formal_repair_attempts attempt USING(operation_id)
+      JOIN itervane.formal_repair_runtime runtime ON runtime.run_id=operation.run_id
       WHERE operation.run_id=$1`, [first.runId])).rows;
     const receiptSha256 = sha256(JSON.stringify(receipt));
-    deepStrictEqual(saved, [{ command_sha256: receipt.scope.commandSha256, finding_ids: [fixture.id], state: 'recorded', receipt_sha256: receiptSha256 }]);
+    deepStrictEqual(saved, [{ command_sha256: receipt.scope.commandSha256, finding_ids: [fixture.id], state: 'recorded',
+      receipt_sha256: receiptSha256, checkpoint_id: agent.checkpointId, published_fence: receipt.scope.fence, call_key_sha256: agent.callKeySha256,
+    }]);
     await assertDrained(controllerUid, staging);
     return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, commit, domains,
       initial: scan.result, replacement: recoveredScan.result, previousFence: closed.fence, recoveredFence: replacement.fence,
@@ -375,6 +389,7 @@ async function probe() {
       repair: { operationId: receipt.scope.operationId, requestId: receipt.scope.requestId, fence: receipt.scope.fence,
         domainId: receipt.domainId, receiptSha256, baseSnapshotSha256: receipt.scope.baseSnapshotSha256,
         candidateManifestSha256: receipt.snapshot.candidate.candidateManifestSha256, change, reusedReceipt: true, cleanupConfirmed: true,
+        agent: { ...agent, mode: 'deterministic_model_fixture', reusedCheckpoint: true },
         observation: { domainId: observation.domainId, status: target.status, file: target.file, range: target.range, cleanupConfirmed: true } },
     };
   } finally {
