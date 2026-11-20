@@ -57,31 +57,49 @@ capture() {
   as_runner cat .reports/p0/runner-vm.json > "$result"
   as_runner rm -- .reports/p0/runner-vm.json
   test "$actual" -eq "$expected_exit"
-  /usr/bin/python3 - "$result" "$primary" "$scenario" "$expected_exit" <<'PY'
+  /usr/bin/python3 - "$result" "$primary" "$scenario" "$expected_exit" "$locale" <<'PY'
 import json
 import sys
 
-path, primary, scenario, exit_code = sys.argv[1:]
+path, primary, scenario, exit_code, locale = sys.argv[1:]
 with open(path) as evidence:
     report = json.load(evidence)
 outcome = {"0": "passed", "1": "failed", "2": "blocked"}[exit_code]
 expected = [("runner-" + primary, outcome)]
 if primary != "image-rejected":
-    if scenario != "heartbeat":
+    if scenario == "source":
+        expected.extend((item, "passed") for item in (
+            "runner-source-objects", "runner-source-egress-closed", "runner-job-cleaned",
+        ))
+    elif scenario != "heartbeat":
         expected.append(("runner-job-started", "passed"))
         if primary in ("job-passed", "job-input-rejected"):
             expected.append(("runner-job-receipt", "passed"))
         expected.append(("runner-job-cleaned", "passed"))
     expected.append(("runner-dedicated-session", "passed"))
-    if scenario != "heartbeat":
+    if scenario not in ("heartbeat", "source"):
         expected.append(("runner-guest-workload", "passed"))
 observed = [(check["id"], check["status"]) for check in report["checks"]]
 assert report["status"] == outcome and observed == expected, observed
+if scenario == "source":
+    # Values independently computed from the fixed main commit, not the guest.
+    objects, egress = (check["detail"] for check in report["checks"][1:3])
+    for value in (
+        "a9276df7269444caeb61724ba490bf0387c4e3aa",
+        "96a3baee0719fad7da783758d15592f1e4dc50b0",
+        "789539d66651cbceb8b82079830f2559038e52b76ee7823ebdd1d88639e9e056",
+        "290 个文件" if locale == "zh-CN" else "290 files",
+    ):
+        assert value in objects, report["checks"][1]["id"]
+    assert "686b1c07b71366c6ff45e6773891ad3dbb3c6c61a03712a3be1e58331853810e" in egress
+    assert ("出口关闭后的请求已被阻断。" if locale == "zh-CN" else "A request after closure was rejected.") in egress
 PY
   test -z "$(as_runner find "$stage" -mindepth 1 -print -quit)"
 }
 
 capture first heartbeat en "$digest" 0 passed
+capture source source en "$digest" 0 source-passed
+capture source-repeat source zh-CN "$digest" 0 source-passed
 capture repeat heartbeat zh-CN "$digest" 0 passed
 bad_digest=$(/usr/bin/python3 -c 'import sys; d=sys.argv[1]; print(("1" if d[0] == "0" else "0") + d[1:])' "$digest")
 capture rejected-image heartbeat en "$bad_digest" 1 image-rejected

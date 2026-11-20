@@ -11,7 +11,7 @@ from pathlib import Path
 
 HOST_MARKER = Path("/run/itervane-probe-private/control-plane.marker")
 PROTECTED = Path("/etc/itervane-probe/protected.marker")
-JOB_DEVICE = Path("/dev/virtio-ports/org.itervane.runner.job.0")
+CHANNELS = (Path("/dev/virtio-ports/org.itervane.runner.job.0"), Path("/dev/virtio-ports/org.itervane.runner.source.0"))
 WORK = Path("/var/lib/itervane-probe-workload")
 RECEIPT = Path("/run/itervane-probe-workload/ready")
 
@@ -55,7 +55,9 @@ def verify_inputs():
     else:
         raise RuntimeError("host-marker-visible")
     verify_denied(PROTECTED)
-    verify_denied(JOB_DEVICE)
+    channels = [device for device in CHANNELS if device.exists()]
+    require(len(channels) == 1, "workload-channel-profile")
+    verify_denied(channels[0])
     require(os.statvfs("/etc").f_flag & os.ST_RDONLY, "system-not-readonly")
     verify_network()
 

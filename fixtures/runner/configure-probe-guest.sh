@@ -4,15 +4,19 @@ set -eu
 dpkg --install /var/tmp/itervane-probe-liburing.deb /var/tmp/itervane-probe-agent.deb
 rm -- /var/tmp/itervane-probe-liburing.deb /var/tmp/itervane-probe-agent.deb
 test -x /usr/bin/python3
+test "$(/usr/bin/git --version)" = 'git version 2.43.0'
 useradd --system --user-group --no-create-home --shell /usr/sbin/nologin itervane-job
 useradd --system --user-group --no-create-home --shell /usr/sbin/nologin itervane-workload
-install -Dm 0644 /var/tmp/itervane-guest-job.py /usr/local/libexec/itervane-guest-job.py
+useradd --system --user-group --no-create-home --shell /usr/sbin/nologin itervane-source
+install -Dm 0644 /var/tmp/itervane-guest-job.py /usr/local/libexec/itervane/guest_job.py
+install -m 0644 /var/tmp/source_guest.py /var/tmp/source_wire.py /usr/local/libexec/itervane/
 install -Dm 0644 /var/tmp/verify-guest-workload.py /usr/local/libexec/itervane-probe-workload.py
-rm -- /var/tmp/itervane-guest-job.py /var/tmp/verify-guest-workload.py
+rm -- /var/tmp/itervane-guest-job.py /var/tmp/verify-guest-workload.py /var/tmp/source_guest.py /var/tmp/source_wire.py
 install -d -m 0755 /etc/itervane-probe
 (umask 077; printf '%s\n' 'synthetic protected guest marker' >/etc/itervane-probe/protected.marker)
 cat >/etc/udev/rules.d/60-itervane-guest-job.rules <<'EOF'
 SUBSYSTEM=="virtio-ports", ATTR{name}=="org.itervane.runner.job.0", OWNER="itervane-job", MODE="0600", TAG+="systemd", ENV{SYSTEMD_WANTS}+="itervane-guest-job.service"
+SUBSYSTEM=="virtio-ports", ATTR{name}=="org.itervane.runner.source.0", OWNER="itervane-source", MODE="0600", TAG+="systemd", ENV{SYSTEMD_WANTS}+="itervane-guest-source.service"
 EOF
 cat >/etc/systemd/system/itervane-guest-job.service <<'EOF'
 [Unit]
@@ -21,7 +25,7 @@ BindsTo=itervane-probe-workload.service
 After=qemu-guest-agent.service itervane-probe-workload.service
 
 [Service]
-ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/itervane-guest-job.py
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/itervane/guest_job.py
 User=itervane-job
 Group=itervane-job
 NoNewPrivileges=true
@@ -34,6 +38,32 @@ DevicePolicy=closed
 DeviceAllow=/dev/virtio-ports/org.itervane.runner.job.0 rw
 MemoryMax=96M
 TasksMax=4
+RuntimeMaxSec=95
+UMask=0077
+EOF
+cat >/etc/systemd/system/itervane-guest-source.service <<'EOF'
+[Unit]
+Requires=qemu-guest-agent.service
+BindsTo=itervane-probe-workload.service
+After=qemu-guest-agent.service itervane-probe-workload.service
+
+[Service]
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/itervane/source_guest.py
+User=itervane-source
+Group=itervane-source
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX AF_INET
+DevicePolicy=closed
+DeviceAllow=/dev/virtio-ports/org.itervane.runner.source.0 rw
+StateDirectory=itervane-probe-source
+StateDirectoryMode=0700
+MemoryMax=192M
+TasksMax=16
+LimitFSIZE=67108864
 RuntimeMaxSec=95
 UMask=0077
 EOF

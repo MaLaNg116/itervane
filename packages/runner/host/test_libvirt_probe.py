@@ -176,6 +176,28 @@ class LifecycleTest(unittest.TestCase):
         self.assertTrue(result.cleanupConfirmed)
         self.assertNotIn("resume", self.libvirt.events)
 
+    def test_source_is_session_only_and_rejects_an_unexpected_port_before_resume(self):
+        self.assertEqual(self.launch("source").code, "config_required")
+        self.assertEqual(self.libvirt.events, [])
+        self.libvirt.uri = runner.SESSION_URI
+
+        def substitute_port(document):
+            target = document.find("devices/channel/target[@name='org.itervane.runner.source.0']")
+            self.assertIsNotNone(target)
+            target.set("name", runner.ProbeJob.port)
+
+        self.libvirt.profile_change = substitute_port
+        with (
+            patch.object(runner, "prepare_session", return_value=self.root),
+            patch.object(runner.SourceProbe, "run") as run,
+        ):
+            result = self.launch("source", session=True)
+        self.assertEqual(result.code, "profile_rejected")
+        self.assertEqual(result.profileIssue, "channel-target")
+        self.assertTrue(result.cleanupConfirmed)
+        self.assertNotIn("resume", self.libvirt.events)
+        run.assert_not_called()
+
     def test_wrong_digest_is_rejected_before_creating_a_guest(self):
         self.digest = "0" * 64
         result = self.launch()

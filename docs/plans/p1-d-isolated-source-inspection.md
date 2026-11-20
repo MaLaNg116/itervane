@@ -1,6 +1,6 @@
 # P1-D：隔离 Runner、固定源码快照与真实扫描
 
-- 日期：2026-11-18；计划先行，D1 独立切片已实现并通过本地及三组 Linux CI；[交付与 review guide](../reviews/p1-d-source-inspection.md)。D2/D3 尚未验收。
+- 日期 2026-11-18。D1 已通过本地及三组 Linux CI，托管 KVM 已验证 D2 的专用会话和客体作业隔离。D3-A 已验证固定公开来源获取及关闭。D3 的快照、扫描和正式执行权仍待验收。 [D1 导读](../reviews/p1-d-source-inspection.md) · [D2-C 导读](../reviews/p1-d2-runner-isolation.md) · [D3-A 计划](p1-d3-source-acquisition.md) · [D3-A 导读](../reviews/p1-d3-source-acquisition.md)
 - 前置：P1-C / PR #4，代码 `f274c914d54fdcfc9785aa0836ff59f41a200bd4`；新草稿 PR 比较基线为 `feat/p1-portal-login`，不合并前置 PR。
 - 依据：v6 §9/§15—18、TS + PostgreSQL 实施计划 P1.4/P1.5、ADR 0001/0002/0004。
 - D1 开发时没有已验证的 KVM 宿主。后续原生验收使用 GitHub 托管工作机，完整隔离条件仍以 D2 验收为准。
