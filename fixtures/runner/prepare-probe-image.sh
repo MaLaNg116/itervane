@@ -12,6 +12,14 @@ recipe_dir=$(dirname -- "$(realpath -- "$0")")
 guest_job="$recipe_dir/../../packages/runner/host/guest_job.py"
 downloads="$work/downloads"
 mkdir -- "$downloads"
+extra=()
+if [[ $# -eq 2 ]]; then
+  inputs=$(realpath -- "$2")
+  test "$(basename -- "$inputs")" = itervane-inspection
+  test -f "$inputs/inputs.json"
+  test -f "$inputs/cache/db/trivy.db"
+  extra=(--mkdir /usr/local/libexec --copy-in "$inputs:/usr/local/libexec")
+fi
 
 download() {
   local url=$1 digest=$2 path=$3 limit=$4
@@ -30,8 +38,8 @@ download "$ubuntu_pool/main/libu/liburing/liburing2_2.5-1build1_amd64.deb" \
 qemu-img info -f qcow2 --output=json "$downloads/base.qcow2" \
   | /usr/bin/python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if 0 < d["virtual-size"] <= 8*1024**3 and "backing-filename" not in d else 1)'
 
-# The verified Ubuntu image is customized with only the two verified packages.
-# The libguestfs appliance and the final lifecycle guest have no network.
+# The libguestfs appliance has no network. Any scanner payload was prepared
+# and hashed separately before being copied into the sealed guest.
 LIBGUESTFS_BACKEND=direct virt-customize --no-network --no-logfile --format qcow2 \
   -a "$downloads/base.qcow2" \
   --upload "$downloads/agent.deb:/var/tmp/itervane-probe-agent.deb" \
@@ -39,7 +47,9 @@ LIBGUESTFS_BACKEND=direct virt-customize --no-network --no-logfile --format qcow
   --upload "$guest_job:/var/tmp/itervane-guest-job.py" \
   --upload "$recipe_dir/../../packages/runner/host/source_guest.py:/var/tmp/source_guest.py" \
   --upload "$recipe_dir/../../packages/runner/host/source_wire.py:/var/tmp/source_wire.py" \
+  --upload "$recipe_dir/../../packages/runner/host/scan_guest.py:/var/tmp/scan_guest.py" \
   --upload "$recipe_dir/verify-guest-workload.py:/var/tmp/verify-guest-workload.py" \
+  "${extra[@]}" \
   --run "$recipe_dir/configure-probe-guest.sh"
 
 qemu-img convert -f qcow2 -O raw "$downloads/base.qcow2" "$work/probe.raw"

@@ -1,11 +1,14 @@
 """Git acquisition in the sealed guest, using only a private loopback relay."""
 
 import hashlib
+import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory, TemporaryFile
@@ -16,12 +19,15 @@ if __name__ == "__main__":
 
 from guest_job import ProtocolError, verify_workload_receipt
 from source_wire import (
-    CLOSED, MAX_FILES, MAX_REQUEST_BYTES, MAX_TRANSFER_BYTES, PACK_TYPE, RECEIPT,
-    REFS_TYPE, SOURCE_PORT, START, UPLOAD_TYPE, SourceWire,
+    CLOSED, GUEST_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_REQUEST_BYTES, MAX_TRANSFER_BYTES,
+    PACK_TYPE, RECEIPT, REFS_TYPE, SOURCE_PORT, START, UPLOAD_TYPE, SourceWire,
 )
 
 
 WORK = "/var/lib/itervane-probe-source"
+INSPECTION_TOOLS = Path("/usr/local/libexec/itervane-inspection")
+INSPECTION_REQUEST = Path("/var/lib/itervane-inspection-source/scan-request")
+INSPECTION_RECEIPT = Path("/var/lib/itervane-inspection-output/receipt.json")
 GIT_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"}
 
@@ -147,9 +153,47 @@ def verify_objects(root, identity, commit):
     return RECEIPT.pack(identity, bytes.fromhex(commit), bytes.fromhex(tree.decode()), hashlib.sha256(raw_commit).digest(), len(records) - 1)
 
 
+def inspect_source(repository, identity, commit, wire):
+    result = subprocess.run(
+        [INSPECTION_TOOLS / "node", INSPECTION_TOOLS / "worker.mjs", "snapshot", repository,
+         str(uuid.UUID(bytes=identity)), commit],
+        env=GIT_ENV, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=35,
+    )
+    if result.returncode:
+        raise GuestFailure("snapshot-rejected")
+    INSPECTION_REQUEST.touch(mode=0o600, exist_ok=False)
+    try:
+        while True:
+            wire.check_deadline()
+            try:
+                fd = os.open(INSPECTION_RECEIPT, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            except FileNotFoundError:
+                time.sleep(0.1)
+            else:
+                break
+        with os.fdopen(fd, "rb") as report:
+            if not stat.S_ISREG(os.fstat(report.fileno()).st_mode):
+                raise GuestFailure("scan-integrity")
+            receipt = report.read(MAX_INSPECTION_RECEIPT + 1)
+    finally:
+        INSPECTION_REQUEST.unlink()
+    try:
+        proof = json.loads(receipt) if len(receipt) <= MAX_INSPECTION_RECEIPT else None
+        if not isinstance(proof, dict):
+            raise ValueError()
+        if "code" in proof:
+            code = proof["code"].encode("ascii")
+            if len(proof) == 1 and code.startswith((b"scan-", b"snapshot-")) and code in GUEST_ERRORS:
+                raise GuestFailure(code.decode("ascii"))
+            raise ValueError()
+    except (AttributeError, ValueError, RecursionError) as error:
+        raise GuestFailure("scan-integrity") from error
+    wire.send(b"N", receipt)
+
+
 def serve_source(wire, work):
     wire.greeting()
-    _, start = wire.receive({b"S": START.size})
+    scenario, start = wire.receive({b"S": START.size, b"A": START.size})
     if len(start) != START.size:
         raise GuestFailure("guest-input")
     identity, commit_bytes = START.unpack(start)
@@ -163,12 +207,14 @@ def serve_source(wire, work):
         if wire.receive({b"X": len(CLOSED)})[1] != CLOSED:
             raise GuestFailure("guest-input")
         wire.send(b"M", verify_objects(repository, identity, commit))
+        if scenario == b"A":
+            inspect_source(repository, identity, commit, wire)
 
 
 def main():
     if os.geteuid() == 0:
         return 1
-    deadline = time.monotonic() + 90
+    deadline = time.monotonic() + 163
 
     def check_deadline():
         if time.monotonic() >= deadline:

@@ -8,10 +8,12 @@ test "$(/usr/bin/git --version)" = 'git version 2.43.0'
 useradd --system --user-group --no-create-home --shell /usr/sbin/nologin itervane-job
 useradd --system --user-group --no-create-home --shell /usr/sbin/nologin itervane-workload
 useradd --system --user-group --no-create-home --shell /usr/sbin/nologin itervane-source
+useradd --system --user-group --no-create-home --shell /usr/sbin/nologin itervane-scan
+groupadd --system itervane-inspection
 install -Dm 0644 /var/tmp/itervane-guest-job.py /usr/local/libexec/itervane/guest_job.py
-install -m 0644 /var/tmp/source_guest.py /var/tmp/source_wire.py /usr/local/libexec/itervane/
+install -m 0644 /var/tmp/source_guest.py /var/tmp/source_wire.py /var/tmp/scan_guest.py /usr/local/libexec/itervane/
 install -Dm 0644 /var/tmp/verify-guest-workload.py /usr/local/libexec/itervane-probe-workload.py
-rm -- /var/tmp/itervane-guest-job.py /var/tmp/verify-guest-workload.py /var/tmp/source_guest.py /var/tmp/source_wire.py
+rm -- /var/tmp/itervane-guest-job.py /var/tmp/verify-guest-workload.py /var/tmp/source_guest.py /var/tmp/source_wire.py /var/tmp/scan_guest.py
 install -d -m 0755 /etc/itervane-probe
 (umask 077; printf '%s\n' 'synthetic protected guest marker' >/etc/itervane-probe/protected.marker)
 cat >/etc/udev/rules.d/60-itervane-guest-job.rules <<'EOF'
@@ -51,6 +53,7 @@ After=qemu-guest-agent.service itervane-probe-workload.service
 ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/itervane/source_guest.py
 User=itervane-source
 Group=itervane-source
+SupplementaryGroups=itervane-inspection
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
@@ -61,12 +64,55 @@ DevicePolicy=closed
 DeviceAllow=/dev/virtio-ports/org.itervane.runner.source.0 rw
 StateDirectory=itervane-probe-source
 StateDirectoryMode=0700
+ReadWritePaths=-/var/lib/itervane-inspection-source
 MemoryMax=192M
 TasksMax=16
 LimitFSIZE=67108864
-RuntimeMaxSec=95
+RuntimeMaxSec=165
 UMask=0077
 EOF
+if test -d /usr/local/libexec/itervane-inspection; then
+  chown -R root:root /usr/local/libexec/itervane-inspection
+  chmod -R a+rX,a-w /usr/local/libexec/itervane-inspection
+  install -d -m 2750 -o itervane-source -g itervane-inspection /var/lib/itervane-inspection-source
+  install -d -m 2750 -o itervane-scan -g itervane-inspection /var/lib/itervane-inspection-output
+  cat >/etc/systemd/system/itervane-guest-scan.path <<'EOF'
+[Path]
+PathExists=/var/lib/itervane-inspection-source/scan-request
+EOF
+  cat >/etc/systemd/system/itervane-guest-scan.service <<'EOF'
+[Unit]
+BindsTo=itervane-guest-source.service
+After=itervane-guest-source.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/itervane/scan_guest.py
+User=itervane-scan
+Group=itervane-scan
+SupplementaryGroups=itervane-inspection
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+DevicePolicy=closed
+ReadOnlyPaths=/var/lib/itervane-inspection-source
+ReadWritePaths=/var/lib/itervane-inspection-output
+InaccessiblePaths=/var/lib/itervane-probe-source
+MemoryMax=1G
+TasksMax=48
+LimitFSIZE=4194304
+TimeoutStartSec=90
+UMask=0027
+EOF
+  install -d -m 0755 /etc/systemd/system/multi-user.target.wants
+  ln -sfn /etc/systemd/system/itervane-guest-scan.path /etc/systemd/system/multi-user.target.wants/itervane-guest-scan.path
+fi
 cat >/etc/systemd/system/itervane-probe-workload.service <<'EOF'
 [Unit]
 Requires=qemu-guest-agent.service
@@ -93,7 +139,7 @@ RuntimeDirectoryMode=0755
 MemoryMax=64M
 TasksMax=4
 LimitFSIZE=65536
-RuntimeMaxSec=110
+RuntimeMaxSec=173
 UMask=0077
 EOF
 install -d -m 0755 /etc/qemu /etc/systemd/system/multi-user.target.wants
