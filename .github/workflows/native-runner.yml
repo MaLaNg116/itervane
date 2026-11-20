@@ -65,14 +65,28 @@ jobs:
           PROBE_DIRECTORY: ${{ steps.image.outputs.directory }}
         run: |
           digest=$(/usr/bin/python3 -c 'import json; print(json.load(open(".reports/p0/kvm-image.json"))["rawSha256"])')
+          probe() {
+            local locale=$1 expected_digest=$2 outcome=0
+            sudo -n env ITERVANE_RUNNER_PROBE_ROOT="$PROBE_DIRECTORY/staging" \
+              ITERVANE_RUNNER_PROBE_IMAGE="$PROBE_DIRECTORY/probe.raw" ITERVANE_RUNNER_PROBE_IMAGE_SHA256="$expected_digest" \
+              ITERVANE_RUNNER_PROBE_LOCALE="$locale" \
+              "$(command -v node)" node_modules/tsx/dist/cli.mjs packages/verification/src/entries/runner-vm.ts || outcome=$?
+            if test -f .reports/p0/runner-vm.json; then
+              sudo -n chmod a+r .reports/p0/runner-vm.json
+            fi
+            return "$outcome"
+          }
+          probe en "$digest"
+          mv .reports/p0/runner-vm.json .reports/p0/runner-vm-first.json
+          probe zh-CN "$digest"
+          mv .reports/p0/runner-vm.json .reports/p0/runner-vm-repeat.json
+          bad_digest=$(/usr/bin/python3 -c 'import sys; d=sys.argv[1]; print(("1" if d[0] == "0" else "0") + d[1:])' "$digest")
           outcome=0
-          sudo -n env ITERVANE_RUNNER_PROBE_ROOT="$PROBE_DIRECTORY/staging" \
-            ITERVANE_RUNNER_PROBE_IMAGE="$PROBE_DIRECTORY/probe.raw" ITERVANE_RUNNER_PROBE_IMAGE_SHA256="$digest" \
-            "$(command -v node)" node_modules/tsx/dist/cli.mjs packages/verification/src/entries/runner-vm.ts || outcome=$?
-          if test -f .reports/p0/runner-vm.json; then
-            sudo -n chmod a+r .reports/p0/runner-vm.json
-          fi
-          exit "$outcome"
+          probe en "$bad_digest" || outcome=$?
+          test "$outcome" -eq 1
+          /usr/bin/python3 -c 'import json; d=json.load(open(".reports/p0/runner-vm.json")); assert d["checks"][0]["id"] == "runner-image-rejected"'
+          mv .reports/p0/runner-vm.json .reports/p0/runner-vm-rejected-image.json
+          test -z "$(sudo -n find "$PROBE_DIRECTORY/staging" -mindepth 1 -print -quit)"
       - name: Retain independent KVM evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -82,6 +96,6 @@ jobs:
             .reports/p0/kvm-host.json
             .reports/p0/kvm-image.json
             .reports/p0/kvm-packages.txt
-            .reports/p0/runner-vm.json
+            .reports/p0/runner-vm*.json
           if-no-files-found: error
           retention-days: 14
