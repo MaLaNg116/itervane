@@ -47,4 +47,6 @@
 | 疑似密钥，简体中文 | Gitleaks → Trivy → 指定版本规则 | 5 / 3 / 8,355 | `audit_complete`，疑似 |
 | 确认的依赖公告命中，英文 | Gitleaks → Trivy | 4 / 2 / 7,032 | `audit_complete`，确认 |
 
-对应源码指纹为 `9dd26a93ee8df26c8af4a58205d7d347ed473707441a9e4a172272e19fd9fd2d`。当前代码通过 123 项单元测试和 23 项 PostgreSQL 审计专项。早期完整回归记录见 D1.4。新版本的正式 Worker 与 KVM 复跑按 PR 最新提交核对。
+对应源码指纹为 `9dd26a93ee8df26c8af4a58205d7d347ed473707441a9e4a172272e19fd9fd2d`。当前代码通过 123 项单元测试和 23 项 PostgreSQL 审计专项。早期完整回归记录见 D1.4。
+
+PR 最终提交 `1a229c0` 的托管 KVM 产物记录同一运行源码指纹、五个临时客体、七项正式发现及一次模型故障的保留观察。两条任务复用已登记的真实扫描，HTTP 与 MCP 结果一致，暂存清理通过。检查正式执行权、证据发布和报告后，PR 以 `4bb1ac7` 合入 main。 [最终原生运行及产物](https://github.com/MaLaNg116/itervane/actions/runs/44788702741) · [已合入的 PR 与审查记录](https://github.com/MaLaNg116/itervane/pull/22)

@@ -1,6 +1,6 @@
 # P2-D2 · 受控修复与候选制品
 
-本批从正式审计交接到真实修复。修复角色使用当前任务的有证据清单，在一次性虚拟机中生成可重放的补丁和候选快照，将产物交给 P2-D3 独立复验。基线为 P2-D1 已发布的扫描和审计记录。 [P2-D1 草稿 PR](https://github.com/MaLaNg116/itervane/pull/22) · [蓝图 v6 第 8 节](../blueprint-v6.md#8-审计修复和复验形成可验证循环) · [实施计划 P2](../implementation-plan-v2-ts-postgresql.md#p2-跑通-agent-审计修复复验和发布)
+本批从正式审计交接到真实修复。修复角色使用当前任务的有证据清单，在一次性虚拟机中生成可重放的补丁和候选快照，将产物交给 P2-D3 独立复验。基线为 P2-D1 已合入的扫描和审计记录。 [P2-D1 PR](https://github.com/MaLaNg116/itervane/pull/22) · [蓝图 v6 第 8 节](../blueprint-v6.md#8-审计修复和复验形成可验证循环) · [实施计划 P2](../implementation-plan-v2-ts-postgresql.md#p2-跑通-agent-审计修复复验和发布)
 
 ## 审计交接
 
