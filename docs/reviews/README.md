@@ -10,7 +10,7 @@
 | 004 | P1-C：最小门户、真实 OIDC 登录、双语任务界面 | [#4](https://github.com/MaLaNg116/itervane/pull/4)，基于 #3 | [P1-C 导读](p1-c-portal-login.md) | 草稿；48 单元/53 PG/9 浏览器及 Linux CI 通过，完整 P1 未验收 |
 | 005 | P1-D1：源码检查准备、Git 内容校验、扫描适配与可信样例 | [#5](https://github.com/MaLaNg116/itervane/pull/5)，基于 #4 | [P1-D1 导读](p1-d-source-inspection.md) | 草稿；60 单元/58 PG/9 浏览器/5 真实 CLI 及三组 Linux CI 通过；VM/完整 P1 待验 |
 | 006 | P1-E：规则/Skill 查询、有限文本预审、脱敏报告、双语 API/MCP/门户 | [#6](https://github.com/MaLaNg116/itervane/pull/6)，基于 #5 | [P1-E 导读](p1-e-rules-preaudit.md) | 草稿；73 单元/66 PG/15 浏览器/5 真实 CLI 及三组 Linux CI 通过；Runner 继续关闭 |
-| 007 | P1-UX：门户设计、双语 GSAP 反馈、减少动效与会话/CSP 回归 | 草稿 PR 待创建，基于 #6 | [P1-UX 导读](p1-ux-portal-design-motion.md) | 本地 73 单元/66 PG/20 浏览器通过；远端 CI 待验，执行闸门保持 |
+| 007 | P1-UX：门户设计、双语 GSAP 反馈、减少动效与会话/CSP 回归 | [#7](https://github.com/MaLaNg116/itervane/pull/7)，基于 #6 | [P1-UX 导读](p1-ux-portal-design-motion.md) | 草稿；73 单元/66 PG/20 浏览器/5 CLI 及三组 Linux CI 全通过；执行闸门保持 |
 
 P1-B 已验证的远端交付版本为 `74706f95881c6435b98f26983654b725463483d3`，[PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44255791193) 与 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44255784496) 均通过。代码快照与证据见导读；后续仅补充文档，不把前置 PR 自动合并。
 
@@ -21,6 +21,8 @@ P1-D1 固定代码快照为 `314664e702bdc6802533f8398dc4e4cbac8e7f99`；文档�
 P1-E 固定代码快照为 `1f93809aef42c70bce52f3dd1fac7af58d929358`，对应运行说明与固定源码链接见导读；后续仅整理文档/远端证据。保持 P2-A/P4/D2/D3 的独立验收，不将预审计入正式扫描或发布批准。
 
 P1-E 文档交付版本 `54e095fd3add9a028105bf0141d95dbf0384efcc` 的 [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44501368994) 和 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44501335089) 均通过 deterministic/portal/scanners 三组。Linux/本地浏览器与扫描器源码指纹一致；5 项 CLI 仍只验证可信样例，runtimeQualified=false。本次随后只补充 PR/证据索引。
+
+P1-UX 固定代码/已验证交付为 `4234acdb5d9c664272417713389eeef433bc7db5`，[PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44663181433) 与 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44663174416) 均通过三组检查。本地与 Linux 指纹一致，完整 20 项真实浏览器通过；随后仅补文档证据。#7 依赖未合并 #6，未放宽 Runner 或完整阶段验收。
 
 ## 每批交付约定
 

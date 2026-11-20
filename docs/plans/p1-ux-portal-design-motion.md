@@ -1,6 +1,6 @@
 # P1-UX：门户设计与动效增强
 
-- 日期：2026-11-20；状态：计划先行已提交，U0—U4 本地交付通过；U5 文档与叠加草稿 PR 交付中，远端证据随后记录。
+- 日期：2026-11-20；状态：U0—U5 本切片已交付为[草稿 PR #7](https://github.com/MaLaNg116/itervane/pull/7)，本地与三组 Linux CI 全通过；完整阶段和执行闸门不变。
 - 前置：P1-E / [草稿 PR #6](https://github.com/MaLaNg116/itervane/pull/6)，基线 `2390bb3629f5567e90093fb3a737794b3bfdbb10`。使用 `feat/portal-design-motion`，PR 比较基线指向 `feat/p1-rules-preaudit`，不合并前置 PR。
 - 依据：v6、TS + PostgreSQL 实施计划、ADR 0001/0003/0005；独立体验切片，不新增 P2/P3/P4 能力，不代表完整 P1 验收。
 
@@ -74,7 +74,7 @@ GSAP 与 @gsap/react 保留自身 Standard No Charge License，不称作 Apache-
 | U0 | 本计划、固定 Skill 参考、视觉方案和边界 | 首个独立文档提交 |
 | U1 | 语义 token、品牌/壳层、页面/表格/表单层级和双语文案 | 复用 AntD；375/768/1365px 无页面溢出，长文本可读，焦点可见 |
 | U2 | 固定依赖、可清理 GSAP primitives、动态减少动效 | 无 CSP 放宽/远程资产；StrictMode 和卸载无残留；默认内容可见 |
-| U3 | 任务状态/新增事件、规则与报告元数据展开，双语场景接入 | 真正状态来自同一 API；轮询不重播，旧视图无退出保留；版本确认与幂等不变 |
+| U3 | 任务状态/新增事件、规则目录层级与报告元数据展开，双语场景接入 | 真正状态来自同一 API；轮询不重播，旧视图无退出保留；版本确认与幂等不变 |
 | U4 | 真实 OIDC/PG/Chrome 正常及减少动效、键盘与隐私回归 | 运行已有 15 浏览器用例，补充必要的动效、媒体偏好切换、轮询稳定、展开、导航/撤权与窄屏验证；截图逐页复核 |
 | U5 | 运行/第三方说明、固定代码 guide、索引、叠加草稿 PR | 分项中文 Conventional Commits；类型/单元、真 PG、浏览器和三组 Linux CI；完整阶段仍未验收 |
 
@@ -82,4 +82,4 @@ GSAP 与 @gsap/react 保留自身 Standard No Charge License，不称作 Apache-
 
 参考：[GSAP React](https://gsap.com/resources/React/)、[GSAP matchMedia](https://gsap.com/docs/v3/GSAP/gsap.matchMedia%28%29/)、[独立许可](https://gsap.com/community/standard-license/)。
 
-本地 strict types、73 单元、66 真 PG、20 真浏览器及生产构建通过；截图整理后 5 项新增浏览器用例再次通过。固定代码 `cd300546c0cb7f902b745989e2854e0fb598dfd8`，最终截图复验的源码指纹为 `d9594627846bc6276602b4dd97f0334e48f2766629102049431b324688b673d9`。运行/升级见[运行说明](../portal-design-motion.md)，关键设计和对应代码见[review guide](../reviews/p1-ux-portal-design-motion.md)。
+本地 strict types、73 单元、66 真 PG、20 真浏览器及生产构建通过，Linux 三组 CI 同时通过。固定代码 `4234acdb5d9c664272417713389eeef433bc7db5`，本地与 Linux 源码指纹为 `10e9c945eb7e99750ceba21aa8983c7bc8bf3ada0a7d096179b8f757d351829c`。全局语言使用原生 select；CI 另校验安装中文字体，只用于验收、不进入产品运行。规则指导保持可读，只有报告的指纹等元数据折叠。运行/升级见[运行说明](../portal-design-motion.md)，关键设计和对应代码见[review guide](../reviews/p1-ux-portal-design-motion.md)。

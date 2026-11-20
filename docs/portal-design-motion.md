@@ -7,6 +7,8 @@
 
 门户采用统一语义 token、原创 SVG 品牌标记、深色导航和明亮内容区。项目目录以行组织，任务页突出当前状态、数据类别和任务语言；活动时间线只表达已经记录的事实，元数据保留精确 ID/hash 并支持换行。桌面长页面保持导航可达，窄屏使用流式布局；文案与组件继续支持 en/zh-CN。
 
+全局显示语言使用原生 select，避免简单两选项切换依赖浮层交互；仍复用原有 locale 偏好，不改变任务语言。CI 的中文截图使用固定来源、校验 SHA-256 的 Noto CJK 系统字体，仅安装在临时 runner；产品运行没有新增字体请求或字体服务。
+
 设计实际参考了固定版本 UI UX Pro Max 和 frontend-design，来源及采纳/不采纳的理由写入计划。完整 Skill、Python 工具及检索缓存仅用于开发，不是产品运行依赖，也不代表实现了 P4 Skill 上传。
 
 gsap@3.15.1 与 @gsap/react@2.1.2 精确锁定：
@@ -55,6 +57,6 @@ pnpm test:portal
 
 浏览器沿用临时、仅 loopback 的真实 Keycloak/PostgreSQL/API/Worker/Chrome，默认减少动效，新增用例显式启用正常动效并测试偏好切换。测试观察真实 DOM transform、真实任务取消和新增事件，不 mock 动画或服务端成功；已有隐私、撤权、幂等、旧版本确认及 API/MCP 一致性继续回归。
 
-脱敏浏览器报告仍在忽略目录 .reports/p1-c/browser.json；本批截图在 .reports/p1-ux/。不记录 token、身份响应、预审原文、浏览器 trace 或登录页截图；失败诊断保留类别与源码位置。
+脱敏浏览器报告仍在忽略目录 .reports/p1-c/browser.json；本批截图在 .reports/p1-ux/。不记录 token、身份响应、预审原文、浏览器 trace 或登录页截图；失败诊断保留固定阶段、源码位置和页面类别。CI 只保存经过应用 origin 检查的失败 PNG，排除原始 error-context 与登录页，保留 3 天。
 
 本批不宣称全面可访问性认证、性能基准或完成 P1。构建仍提示较大的共享组件 chunk；目前只记录真实构建体积，没有承诺所有设备的帧率。三条闭环、五种角色、双向 MCP、执行并发、P2-A/P4 和真实 VM 验收边界不变。

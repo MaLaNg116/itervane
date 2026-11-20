@@ -1,8 +1,8 @@
 # P1-UX Review guide：门户设计与 GSAP 动效
 
-- 批次：007；叠加草稿 PR 与远端证据见[交付索引](README.md)。
+- 批次：007，[草稿 PR #7](https://github.com/MaLaNg116/itervane/pull/7)；远端证据见[交付索引](README.md)。
 - 前置：[P1-E / PR #6](https://github.com/MaLaNg116/itervane/pull/6)，比较基线 `2390bb3629f5567e90093fb3a737794b3bfdbb10`；分支 `feat/portal-design-motion`，不合并前置 PR。
-- 固定代码快照：`cd300546c0cb7f902b745989e2854e0fb598dfd8`。下列源码链接固定到此版本，之后文档提交不改变讲解对象。
+- 固定代码快照：`4234acdb5d9c664272417713389eeef433bc7db5`。下列源码链接固定到此版本，之后文档提交不改变讲解对象。
 - 日期：2026-11-20；[实施计划](../plans/p1-ux-portal-design-motion.md)、[运行说明](../portal-design-motion.md)、[第三方 UI 记录](../third-party-ui.md)。
 
 ## 1. 本批交付与 v6 对照
@@ -25,19 +25,22 @@ Itervane 需要快速识别当前状态和证据，因而采用深色导航、�
 
 系统字体覆盖中文与英文，不增加远程字体/图像依赖。原创 SVG 品牌标记与导航图标具有装饰语义。正常文本 ink/白色对比度约 14.64:1，辅助 muted/白色约 6.05:1，brand/白色约 6.06:1，导航辅助文字/深色约 8.82:1；这是对应实色的数值检查，不是整个产品的可访问性认证。
 
+全局显示语言使用原生 select，保留两个 option 与键盘语义；切换仍只改变原 locale 偏好，不修改任务语言。这样取消了简单语言选择对浮层定位/焦点状态的依赖。临时 Linux CI 另以固定来源/SHA-256 安装 Noto CJK SC，仅作中文视觉验收；产品没有字体下载请求。
+
 ## 3. 建议阅读顺序
 
 | 顺序 | 固定源码 | 检查点 |
 |---|---|---|
-| 1 | [design.ts](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/src/design.ts)、[style.css](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/src/style.css) | 单一调色板、AntD 主题、全局公共变量、响应式/焦点/减少动效，长页面导航可达 |
-| 2 | [brand.tsx](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/src/brand.tsx)、[app.tsx](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/src/app.tsx) | 原创标记、固定 nonce 样式、同一 SessionGate/权限/路由，未引入退出保留层 |
-| 3 | [motion.tsx](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/src/motion.tsx) | MQL 订阅清理、useGSAP/contextSafe、固定时序、限定目标、无 API 或私有原文 |
-| 4 | [components.tsx](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/src/components.tsx)、[projects.tsx](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/src/pages/projects.tsx) | 标题装饰线和项目行；未因动画隐藏正文或改变访问行为 |
-| 5 | [task.tsx](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/src/pages/task.tsx) | 当前状态、类别与任务语言均来自原 DTO；新序号反馈，现有确认与异常路径保留 |
-| 6 | [preaudit-report.tsx](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/src/pages/preaudit-report.tsx) | 原生 Disclosure、报告指纹与覆盖，不动画化输入、不赋予发布资格 |
-| 7 | [browser-policy.ts](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/src/browser-policy.ts)、[main.tsx](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/src/main.tsx)、[bootstrap.tsx](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/src/bootstrap.tsx) | Zod 构造 object schema 前启用 jitless；明确异步模块边界，服务器配置不受影响 |
-| 8 | [messages.ts](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/src/messages.ts)、[真实浏览器用例](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/test/browser/portal.spec.ts) | typed en/zh-CN、真实登录、正常/减少动效、权限/轮询与键盘测试 |
-| 9 | [依赖](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/package.json)、[构建配置](https://github.com/MaLaNg116/itervane/blob/cd300546c0cb7f902b745989e2854e0fb598dfd8/packages/portal/vite.config.ts) | 只增加精确 GSAP/@gsap/react，保留许可提示和构建清单；不开放新静态路径 |
+| 1 | [design.ts](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/src/design.ts)、[style.css](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/src/style.css) | 单一调色板、AntD 主题、全局公共变量、响应式/焦点/减少动效，长页面导航可达 |
+| 2 | [brand.tsx](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/src/brand.tsx)、[app.tsx](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/src/app.tsx) | 原创标记、固定 nonce 样式、同一 SessionGate/权限/路由，未引入退出保留层 |
+| 3 | [motion.tsx](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/src/motion.tsx) | MQL 订阅清理、useGSAP/contextSafe、固定时序、限定目标、无 API 或私有原文 |
+| 4 | [components.tsx](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/src/components.tsx)、[projects.tsx](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/src/pages/projects.tsx) | 标题装饰线和项目行；未因动画隐藏正文或改变访问行为 |
+| 5 | [task.tsx](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/src/pages/task.tsx) | 当前状态、类别与任务语言均来自原 DTO；新序号反馈，现有确认与异常路径保留 |
+| 6 | [preaudit-report.tsx](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/src/pages/preaudit-report.tsx) | 原生 Disclosure、报告指纹与覆盖，不动画化输入、不赋予发布资格 |
+| 7 | [browser-policy.ts](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/src/browser-policy.ts)、[main.tsx](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/src/main.tsx)、[bootstrap.tsx](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/src/bootstrap.tsx) | Zod 构造 object schema 前启用 jitless；明确异步模块边界，服务器配置不受影响 |
+| 8 | [messages.ts](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/src/messages.ts)、[真实浏览器用例](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/test/browser/portal.spec.ts) | typed en/zh-CN、真实登录、正常/减少动效、权限/轮询与键盘测试 |
+| 9 | [依赖](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/package.json)、[构建配置](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/vite.config.ts) | 只增加精确 GSAP/@gsap/react，保留许可提示和构建清单；不开放新静态路径 |
+| 10 | [脱敏 Reporter](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/packages/portal/test/browser/reporter.ts)、[CI](https://github.com/MaLaNg116/itervane/blob/4234acdb5d9c664272417713389eeef433bc7db5/.github/workflows/verification.yml) | 固定阶段/位置、不输出调用参数；仅应用页失败 PNG，3 天保留；校验 CI 中文字体 |
 
 ## 4. 动效时序与数据权威
 
@@ -69,9 +72,9 @@ Disclosure 使用原生 details/summary，立即开关。contextSafe 记录事�
 |---|---|
 | strict types / 单元 | 73 通过；不为颜色值或 CSS 属性编写镜像单元测试 |
 | 真实 PostgreSQL | 原有 66 通过，涵盖事务、授权、幂等、fence/恢复、外部 MCP 等；没有新 schema 或后端逻辑 |
-| 真实浏览器 | 20 项整套回归通过；已有 15 + 新增 5 项，截图整理后另外复验这 5 项 |
+| 真实浏览器 | Windows 与 Linux 的 20 项整套回归通过；已有 15 + 新增 5 项，截图与语言控件调整后已重验 |
 | 生产构建 | 同源带哈希资产及第三方许可清单生成成功；共享组件 chunk 仍有体积提示 |
-| Linux CI | 沿用 deterministic/portal/scanners 三组，包含原 5 项可信扫描器回归；实际远端链接随后写入索引 |
+| Linux CI | deterministic/portal/scanners 三组全通过，包含原 5 项可信扫描器回归；具体版本/链接见 §8 |
 
 新增 5 项使用真实 Keycloak、PG、API/Worker 与 Chrome：
 
@@ -87,8 +90,16 @@ Disclosure 使用原生 details/summary，立即开关。contextSafe 记录事�
 
 原 rc-component 的无 nonce 辅助测量/滚动锁及 CSS 特性样式仍会被原 CSP 阻断，未为此加入 unsafe-inline；测试只分类其已知生成样式，其他脚本/样式违规仍失败。因此不把 CSP 总事件数称作零，也不宣称背景滚动锁已完整验收。
 
-没有全面无障碍认证、Lighthouse/所有设备帧率基准或完整暗色主题；深色导航配明亮内容不等于实现暗色模式开关。当前最大共享组件 chunk 约 805 kB（gzip 约 261 kB），保留后续性能优化，不通过修改警告阈值隐藏提示。
+没有全面无障碍认证、Lighthouse/所有设备帧率基准或完整暗色主题；深色导航配明亮内容不等于实现暗色模式开关。当前最大共享组件 chunk 约 799 kB（gzip 约 260 kB），保留后续性能优化，不通过修改警告阈值隐藏提示。
 
 升级只需锁定依赖、重建门户并重启 API 使其更新内存资产映射，无数据库迁移或新凭证。构建包保留 third-party-licenses.md；GSAP 保留独立许可，自有代码仍 Apache-2.0。没有调用真实模型、私人云机、Komodo 或 Whiskers；三条闭环与 Runner 闸门保持。
 
 本批先交付计划，再分别提交视觉、GSAP 生命周期、任务/报告接入、兼容修复、构建许可、真实浏览器及文档导读，均使用中文 Conventional Commits。后续仍按 v6 补齐 P1 余项和 P2—P5，不把体验批次当作完整 P1/MVP。
+
+## 8. 远端验收证据
+
+- 固定交付版本 `4234acdb5d9c664272417713389eeef433bc7db5` 的 [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44663181433) 与 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44663174416) 均 success。Ubuntu 24.04、Node 24.14.0、pnpm 11.9.0、Chrome 157 下，三组全部通过：73 单元、66 真 PG、20 真浏览器和 5 可信样例 CLI。
+- Windows 本地与 Linux 浏览器/扫描器的源码指纹均为 `10e9c945eb7e99750ceba21aa8983c7bc8bf3ada0a7d096179b8f757d351829c`；扫描器仍标记 runtimeQualified=false。
+- 最初 Linux 超时定位到语言浮层选择，另发现验收机缺少中文字体；已改原生控件并补固定 CI 字体后通过全套，没有扩大超时、跳过断言或用模拟响应代替。
+- Reporter 只记录固定阶段、源码位置与页面类别，失败工件只包含经过应用 origin 校验的 PNG，排除登录页、trace、请求/身份响应和原始 error-context。敏感值/私人标识/私钥头扫描无发现，缓存、字体、截图和本机配置未提交。
+- 后续仅补充证据文档；草稿 #7 依赖未合并 #6，Runner/正式阶段资格不变。
