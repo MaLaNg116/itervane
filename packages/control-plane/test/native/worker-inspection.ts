@@ -64,7 +64,7 @@ async function boundedExit(child: ChildProcess, exit: Promise<number | null>, ti
 async function startWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string) {
   const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin', 'LANG=C.UTF-8',
     `ITERVANE_RUNNER_SOCKET=${socket}`, `ITERVANE_RUNNER_UID=${controllerUid}`, `ITERVANE_RUNNER_IMAGE_SHA256=${image}`,
-    'ITERVANE_WORKER_LEASE_SECONDS=6', 'ITERVANE_WORKER_POLL_MS=100', '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c',
+    'ITERVANE_WORKER_LEASE_SECONDS=30', 'ITERVANE_WORKER_POLL_MS=100', '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c',
     'set -eu; IFS= read -r DATABASE_URL; export DATABASE_URL; printf "%s\\n" "$$"; exec "$@"', 'itervane-worker', process.execPath, bundle,
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
   const exit = exitStatus(child);
@@ -191,9 +191,14 @@ async function probe() {
     phase = 'cancellation';
     const cancelled = await start('Cancel a running native inspection');
     const cancelledGuest = await watchGuest(controllerUid);
+    phase = 'cancellation_request';
     const running = taskDtoSchema.parse(await request(`/v1/tasks/${cancelled.id}`));
     equal(taskDtoSchema.parse(await request(`/v1/tasks/${cancelled.id}/cancel`, { expectedVersion: running.version })).state, 'cancel_requested');
-    await cancelledGuest.confirm(); await reached(cancelled.id, 'cancelled'); await assertDrained(controllerUid, staging);
+    phase = 'cancellation_process_exit';
+    await cancelledGuest.confirm();
+    phase = 'cancellation_task_state';
+    await reached(cancelled.id, 'cancelled'); await assertDrained(controllerUid, staging);
+    phase = 'cancellation_settlement';
     const [cancelledAttempt] = await attempts(cancelled.id);
     equal(cancelledAttempt.state, 'closed'); equal(cancelledAttempt.receipt_sha256, null);
 
@@ -214,14 +219,17 @@ async function probe() {
     phase = 'worker_crash_and_recovery';
     const recovered = await start('Recover a crashed Worker in the original native workspace');
     const crashedGuest = await watchGuest(controllerUid);
+    phase = 'worker_crash_process_exit';
     const oldPid = worker.pid;
     await worker.stop('KILL'); worker = undefined;
     await crashedGuest.confirm(); await assertDrained(controllerUid, staging);
     const [unsettled] = await attempts(recovered.id);
     equal(unsettled.state, 'reserved'); equal(unsettled.receipt_sha256, null);
+    phase = 'worker_replacement';
     worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl);
     notEqual(worker.pid, oldPid);
     await reached(recovered.id, 'waiting_input');
+    phase = 'worker_recovery_settlement';
     const recoveredScan = await checkedScan(recovered.id);
     const [closed, replacement] = await attempts(recovered.id);
     equal(closed.state, 'closed'); equal(closed.request_id, unsettled.request_id);
@@ -246,4 +254,8 @@ async function probe() {
 }
 
 try { console.log(JSON.stringify(await probe())); }
-catch { console.error(`Native Worker inspection failed during ${phase}.`); process.exitCode = 1; }
+catch (error) {
+  const message = error instanceof Error && /^[a-z_]+_timeout$/.test(error.message) ? ` (${error.message})` : '';
+  console.error(`Native Worker inspection failed during ${phase}${message}.`);
+  process.exitCode = 1;
+}
