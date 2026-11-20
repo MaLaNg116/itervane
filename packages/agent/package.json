@@ -1,0 +1,15 @@
+{
+  "name": "@itervane/agent",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@itervane/contracts": "workspace:*",
+    "@itervane/model": "workspace:*",
+    "@langchain/core": "1.4.1",
+    "@langchain/langgraph": "1.7.4",
+    "zod": "4.6.7"
+  }
+}
