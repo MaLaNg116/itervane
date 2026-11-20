@@ -34,4 +34,17 @@
 
 ## D1.5 原生验收入口
 
-原生脚本从已有的两次 KVM 扫描取证。用单独配置的正式 Worker 读取同一回执，分别验证审计清单和模型 HTTP 503 之后的证据保留，同时对照 HTTP 与 MCP 读到的摘要。CI 使用环回的确定性 Anthropic 协议服务。托管执行及获准真实模型的两条调查路径仍待单独记录。 [原生 Worker 验收脚本](https://github.com/MaLaNg116/itervane/blob/18659dd4b65b86b665b17672ac06ca1eed2ef83e/packages/control-plane/test/native/worker-inspection.ts#L248) · [协议服务](https://github.com/MaLaNg116/itervane/blob/18659dd4b65b86b665b17672ac06ca1eed2ef83e/packages/control-plane/test/native/audit-provider.ts)
+托管 KVM 在 `f86690f` 产生的证据覆盖五个实际客体和 PostgreSQL 17.12。正式 Worker 复用固定源码的 Gitleaks 一条发现及 Trivy 六条发现，记录七项清单。另一条任务收到 HTTP 503 后保留先前的观察及 47 个已报告 token，转为人工处理。两条任务的 HTTP 与 MCP 响应一致，复用扫描回执后暂存已清空。此处模型端使用确定性 Anthropic 协议服务。 [原生运行及产物](https://github.com/MaLaNg116/itervane/actions/runs/44785621723) · [验收脚本](https://github.com/MaLaNg116/itervane/blob/18659dd4b65b86b665b17672ac06ca1eed2ef83e/packages/control-plane/test/native/worker-inspection.ts#L248)
+
+本机诊断先复现了工具消息回放后的 503，再确认只发送结构化观察时，模型会为一项真实发现提交多条说明。修正后，正式模型根据已接纳的持久化观察构建上下文。两种扫描齐备后，结论工具列出实际可引用的观察和发现，并约束说明数量。扫描观察优先占用上下文空间，服务端仍核对确切引用和发现。具体未决假设继续进入人工处理。 [模型上下文](https://github.com/MaLaNg116/itervane/blob/c62ef87c782c73cc064b53963b94547291be3ef5/packages/agent/src/harness.ts#L65) · [工具契约](https://github.com/MaLaNg116/itervane/blob/c62ef87c782c73cc064b53963b94547291be3ef5/packages/agent/src/tools.ts#L55) · [边界测试](https://github.com/MaLaNg116/itervane/blob/c62ef87c782c73cc064b53963b94547291be3ef5/packages/verification/test/unit/formal-audit.test.ts)
+
+### 本机真实模型记录
+
+2026-11-21 在获准的本机 Anthropic 环回服务执行 `pnpm probe:formal-audit --live`。输入为固定的模拟扫描元数据，输出记录源码指纹、工具路径、计量及证据校验结果。两条路径均保留扫描确定性，准确引用两种扫描，分别完成一项发现。 [评测入口](https://github.com/MaLaNg116/itervane/blob/9a9c480d59ec1e8f6f935dceaa5c77bee79f392b/packages/verification/src/entries/formal-audit.ts)
+
+| 样例 | 实际工具路径 | 轮数 / 工具调用 / token | 结果 |
+| --- | --- | --- | --- |
+| 疑似密钥，简体中文 | Gitleaks → Trivy → 指定版本规则 | 5 / 3 / 8,355 | `audit_complete`，疑似 |
+| 确认的依赖公告命中，英文 | Gitleaks → Trivy | 4 / 2 / 7,032 | `audit_complete`，确认 |
+
+对应源码指纹为 `9dd26a93ee8df26c8af4a58205d7d347ed473707441a9e4a172272e19fd9fd2d`。当前代码通过 123 项单元测试和 23 项 PostgreSQL 审计专项。早期完整回归记录见 D1.4。新版本的正式 Worker 与 KVM 复跑按 PR 最新提交核对。
