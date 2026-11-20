@@ -1,0 +1,70 @@
+import { z } from 'zod';
+import { idSchema, sourceRefSchema, taskStateSchema } from './primitives.js';
+
+const nameSchema = z.string().trim().min(1).max(120);
+const timestampSchema = z.iso.datetime();
+export const projectInputSchema = z.object({
+  name: nameSchema, slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64),
+}).strict();
+export const repositoryInputSchema = z.object({
+  name: nameSchema,
+  url: z.string().max(2_048).refine(value => {
+    try {
+      const url = new URL(value);
+      return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash;
+    } catch { return false; }
+  }, 'Repository URL must be HTTPS without credentials, query or fragment')
+    .transform(value => new URL(value).toString().replace(/\/$/, '')),
+}).strict();
+export const applicationInputSchema = z.object({ name: nameSchema }).strict();
+export const environmentInputSchema = z.object({ applicationId: idSchema, name: nameSchema }).strict();
+export const cancelTaskSchema = z.object({ expectedVersion: z.number().int().positive() }).strict();
+export const listQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(100).default(50) }).strict();
+
+export const projectDtoSchema = z.object({
+  id: idSchema, workspaceId: idSchema, name: nameSchema, slug: z.string(), createdAt: timestampSchema,
+}).strict();
+export const repositoryDtoSchema = z.object({
+  id: idSchema, projectId: idSchema, name: nameSchema, url: z.string(), createdAt: timestampSchema,
+}).strict();
+export const applicationDtoSchema = z.object({
+  id: idSchema, projectId: idSchema, name: nameSchema, createdAt: timestampSchema,
+}).strict();
+export const environmentDtoSchema = z.object({
+  id: idSchema, projectId: idSchema, applicationId: idSchema, name: nameSchema,
+  access: z.literal('protected'), createdAt: timestampSchema,
+}).strict();
+export const taskDtoSchema = z.object({
+  id: idSchema, projectId: idSchema, requestedBy: idSchema, runId: idSchema,
+  source: sourceRefSchema, purpose: z.string(), dataClass: z.enum(['synthetic', 'public']),
+  state: taskStateSchema, version: z.number().int().positive(), createdAt: timestampSchema,
+}).strict();
+export const taskEventDtoSchema = z.object({
+  taskId: idSchema, sequence: z.number().int().positive(),
+  type: z.enum(['task.accepted', 'task.cancelled']), state: taskStateSchema,
+  actorId: idSchema, createdAt: timestampSchema,
+}).strict();
+export const admissionDtoSchema = z.object({ task: taskDtoSchema, replayed: z.boolean() }).strict();
+export const meDtoSchema = z.object({
+  principalId: idSchema, workspaceId: idSchema.nullable(), isWorkspaceOwner: z.boolean(),
+}).strict();
+export const capabilitiesSchema = z.object({
+  stage: z.literal('p1-a'), taskAdmission: z.literal(true), taskExecution: z.literal(false),
+  externalMcp: z.literal(false), sandbox: z.literal(false), deployment: z.literal(false), operations: z.literal(false),
+}).strict();
+export const apiErrorSchema = z.object({ error: z.object({
+  code: z.enum(['invalid_input', 'unauthenticated', 'forbidden', 'not_found', 'conflict',
+    'idempotency_conflict', 'version_conflict', 'unsupported_state', 'unavailable', 'internal_error']),
+  requestId: idSchema,
+}).strict() }).strict();
+
+export type ProjectInput = z.infer<typeof projectInputSchema>;
+export type RepositoryInput = z.infer<typeof repositoryInputSchema>;
+export type ProjectDto = z.infer<typeof projectDtoSchema>;
+export type RepositoryDto = z.infer<typeof repositoryDtoSchema>;
+export type ApplicationDto = z.infer<typeof applicationDtoSchema>;
+export type EnvironmentDto = z.infer<typeof environmentDtoSchema>;
+export type TaskDto = z.infer<typeof taskDtoSchema>;
+export type TaskEventDto = z.infer<typeof taskEventDtoSchema>;
+export type MeDto = z.infer<typeof meDtoSchema>;
+export type ApiErrorCode = z.infer<typeof apiErrorSchema>['error']['code'];

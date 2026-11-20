@@ -10,11 +10,13 @@ Itervane connects three evidence-based loops:
 
 ## Status
 
-P0 verification foundations are being implemented. [Blueprint v6](docs/blueprint-v6.md) and the [TypeScript + PostgreSQL implementation plan v2](docs/implementation-plan-v2-ts-postgresql.md) remain the design baseline. P0 has not passed; P1 and the platform MVP are not complete.
+P0 verification foundations and the independent P1-A control-plane slice are being implemented. [Blueprint v6](docs/blueprint-v6.md) and the [TypeScript + PostgreSQL implementation plan v2](docs/implementation-plan-v2-ts-postgresql.md) remain the design baseline. Full P0, P1, and the platform MVP have not been accepted as complete.
 
 Available now: strict shared contracts, Anthropic/OpenAI protocol adapters, a bounded tool-loop probe, authenticated local MCP checks, real PostgreSQL transaction/recovery tests, evaluation inputs, and a trusted reference application. The platform capabilities described below remain planned.
 
-For setup, commands, observed versions, and outstanding gates, see [P0 verification](docs/p0-verification.md). This repository does not yet run a production control plane, deploy an application, or operate infrastructure through an Agent.
+The P1-A API adds verified identity, resource registration, durable task admission/query, and queued cancellation. It has no Worker; submitted tasks are not executed. See [control-plane setup and boundaries](docs/control-plane-p1-a.md) and the [P1-A plan](docs/plans/p1-a-project-task-foundation.md). Infrastructure gates remain pending under [ADR 0001](docs/decisions/0001-development-and-runtime-gates.md).
+
+For P0 setup, observed versions, and outstanding gates, see [P0 verification](docs/p0-verification.md). The repository does not yet deploy applications, execute submitted code, or operate infrastructure through an Agent.
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
@@ -36,6 +38,7 @@ The complete design documents are maintained in Chinese:
 - [Development plan v1](docs/development-plan-v1.md): actionable P0/P1 tasks, dependencies, and the route to all three MVP loops.
 - [P0 verification](docs/p0-verification.md): reproducible checks, current evidence, candidate dependencies, and blockers.
 - [Delivery and review index](docs/reviews/README.md): per-delivery code walkthroughs, evidence, limitations, and review order.
+- [P1-A control plane](docs/control-plane-p1-a.md): identity, least-privilege database setup, API commands, and verification limits.
 
 Blueprint v6 remains the product and architecture baseline. The implementation plan records the agreed TypeScript stack and execution approach. No implementation phase has been accepted as complete. Commits are separated by requirement for review.
 
