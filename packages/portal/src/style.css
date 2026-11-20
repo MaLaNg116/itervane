@@ -4,19 +4,19 @@ body { margin: 0; }
 .portal-root { color: var(--iv-ink); background: var(--iv-canvas); min-height: 100vh; font-size: 14px; line-height: 1.6; }
 a { color: var(--iv-brand); text-decoration: none; text-underline-offset: 3px; }
 a:hover { text-decoration: underline; }
-button, input, textarea { font: inherit; }
+button, input, textarea, select { font: inherit; }
 button, summary, a { touch-action: manipulation; }
 code { font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; }
 p { line-height: 1.7; }
 h1, h2, h3 { letter-spacing: -.02em; overflow-wrap: anywhere; }
-:where(a, button, input, textarea, summary, [tabindex]):focus-visible { outline: 3px solid var(--iv-brand); outline-offset: 4px; }
+:where(a, button, input, textarea, select, summary, [tabindex]):focus-visible { outline: 3px solid var(--iv-brand); outline-offset: 4px; }
 .topbar { position: sticky; top: 0; z-index: 20; min-height: 80px; display: flex; align-items: center; justify-content: space-between; padding: 16px 32px; background: var(--iv-surface); border-bottom: 1px solid var(--iv-border); gap: 20px; }
 .brand { font-size: 24px; font-weight: 700; color: var(--iv-ink); display: inline-flex; align-items: center; gap: 12px; letter-spacing: -.04em; }
 .brand:hover { text-decoration: none; }
 .brand-mark { width: 40px; height: 40px; flex-shrink: 0; }
 .brand-tile { fill: var(--iv-brand); }.brand-vane { fill: var(--iv-surface); }.brand-fold { fill: var(--iv-accent); }
 .topbar-end { display: flex; align-items: center; gap: 24px; }
-.topbar-end .ant-select { min-width: 124px; }
+.language-picker { min-width: 124px; min-height: 40px; padding: 8px 12px; border: 1px solid var(--iv-border); border-radius: 8px; background: var(--iv-surface); color: var(--iv-ink); cursor: pointer; }
 .workspace-label, .muted { color: var(--iv-muted); font-size: 13px; }
 .workspace-label { border-left: 1px solid var(--iv-border); padding-left: 24px; }
 .workspace-layout { display: grid; grid-template-columns: 244px minmax(0, 1fr); min-height: calc(100vh - 80px); }
@@ -36,7 +36,7 @@ h1, h2, h3 { letter-spacing: -.02em; overflow-wrap: anywhere; }
 .sidebar .signout { background: transparent; color: var(--iv-surface); border-color: #60798D; }
 .sidebar .signout:hover { color: var(--iv-surface); background: #23435C; border-color: var(--iv-accent); }
 .workspace-main { padding: 40px clamp(24px, 4vw, 64px) 64px; width: 100%; max-width: 1440px; margin: 0 auto; min-width: 0; }
-.workspace-main, :where(a, button, input, textarea, summary, [tabindex]) { scroll-margin-top: 100px; }
+.workspace-main, :where(a, button, input, textarea, select, summary, [tabindex]) { scroll-margin-top: 100px; }
 .page-heading { display: flex; align-items: start; justify-content: space-between; gap: 24px; margin-bottom: 32px; }
 .heading-copy { min-width: 0; }.heading-accent { display: block; width: 36px; height: 3px; background: var(--iv-brand); margin-bottom: 16px; transform-origin: left center; }
 .page-heading .ant-typography { margin: 0; font-size: 30px; font-weight: 700; line-height: 1.25; }

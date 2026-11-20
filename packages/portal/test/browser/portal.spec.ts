@@ -20,8 +20,7 @@ test.afterEach(async ({ page, stack }, info) => {
 });
 
 async function language(page: Page, locale: 'en' | 'zh-CN') {
-  await page.getByRole('combobox').first().click();
-  await page.getByRole('option', { name: locale === 'en' ? 'English' : '简体中文', exact: true }).click();
+  await page.getByRole('combobox').first().selectOption(locale);
 }
 function flowPhase(description: string) {
   const annotations = test.info().annotations; const current = annotations.find(value => value.type === 'flow-phase');

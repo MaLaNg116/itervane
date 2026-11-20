@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { Alert, Button, ConfigProvider, Result, Select } from 'antd';
+import { Alert, Button, ConfigProvider, Result } from 'antd';
 import enUS from 'antd/locale/en_US.js';
 import zhCN from 'antd/locale/zh_CN.js';
 import { meDtoSchema, portalConfigSchema, type Locale, type PortalConfig } from '@itervane/contracts';
@@ -46,7 +46,9 @@ export function PortalApp() {
       <div className="portal-root">
       <a className="skip-link" href="#main" onClick={event => { event.preventDefault(); const main = document.getElementById('main'); if (main) { main.tabIndex = -1; main.focus(); } }}>{t('skip')}</a>
       <header className="topbar"><a href="#/projects" className="brand" aria-label="Itervane"><BrandMark />Itervane</a>
-        <div className="topbar-end"><span className="workspace-label">{t('workspace')}</span><Select aria-label={t('language')} virtual={false} value={locale} onChange={setLocale} options={[{ value: 'en', label: 'English' }, { value: 'zh-CN', label: '简体中文' }]} /></div>
+        <div className="topbar-end"><span className="workspace-label">{t('workspace')}</span><select className="language-picker" aria-label={t('language')} value={locale} onChange={event => setLocale(event.currentTarget.value === 'zh-CN' ? 'zh-CN' : 'en')}>
+          <option value="en">English</option><option value="zh-CN">简体中文</option>
+        </select></div>
       </header>
       {!config ? <main id="main" className="login-main">{configError ? <Failure error={new ApiFailure('networkError')} locale={locale} retry={() => setRetry(retry + 1)} /> : <Loading locale={locale} />}</main>
         : !config.enabled ? <main id="main" className="login-main"><Result status="info" title={t('loginDisabled')} subTitle={t('loginDisabledHelp')} /></main>

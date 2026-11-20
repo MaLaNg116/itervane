@@ -18,7 +18,8 @@ export default class SafeReporter implements Reporter {
   }
   onTestEnd(test: TestCase, result: TestResult) {
     const category = !result.error ? '' : result.status === 'timedOut' ? 'Timed out' : result.error.message?.includes('expect(') ? 'Assertion failed' : 'Test execution failed';
-    const location = result.error?.stack?.match(/(?:portal\.spec|stack)\.ts:\d+:\d+/)?.[0] ?? (result.error ? this.locations.get(test.id) ?? '' : '');
+    const location = (result.status === 'timedOut' ? this.locations.get(test.id) : undefined)
+      ?? result.error?.stack?.match(/(?:portal\.spec|stack)\.ts:\d+:\d+/)?.[0] ?? (result.error ? this.locations.get(test.id) ?? '' : '');
     const infrastructure = result.error?.message?.match(/\bIDP_(?:IMPORT_UNREADABLE|MEMORY_LIMIT|IMPORT_FAILED|READINESS_TIMEOUT)\b/)?.[0] ?? '';
     const surface = test.annotations.find(value => value.type === 'failure-surface' && /^(?:application|identity|other)$/.test(value.description ?? ''))?.description ?? '';
     const phase = test.annotations.find(value => value.type === 'flow-phase' && /^(?:portal|login|callback|project|repository|task|inspection|mcp|capture|resume|localization|cancel|logout)$/.test(value.description ?? ''))?.description ?? '';
