@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { KomodoNativeClient, loginLocalAdmin, observeUpdate, requestDeploy } from '../../src/native/komodo.js';
 
 const target = '2'.repeat(24);
@@ -64,6 +65,19 @@ describe('P0 native Komodo protocol', () => {
       await expect(requestDeploy(client, target)).rejects.toMatchObject({ step: 'Deploy', reason: 'transport' });
     });
     expect(calls).toEqual(['/execute/Deploy']);
+  });
+
+  it('distinguishes the native permission denial from a generic HTTP 500', async () => {
+    const denial = 'User does not have required permissions on this Deployment. Must have at least Read permissions';
+    let requests = 0;
+    await withCore((req, res) => {
+      req.resume();
+      res.writeHead(500).end(JSON.stringify({ error: requests++ === 0 ? denial : 'Unexpected server failure' }));
+    }, async client => {
+      const read = () => client.call('read', 'GetDeployment', { deployment: target }, z.unknown());
+      await expect(read()).rejects.toMatchObject({ reason: 'permission', status: 500 });
+      await expect(read()).rejects.toMatchObject({ reason: 'http', status: 500 });
+    });
   });
 
   it('rejects a completed update with different actor even if the destination claims success', async () => {

@@ -123,9 +123,8 @@ async function bootstrap(password: string, sample: Manifest, name: string, mark:
   try {
     await client.call('read', 'GetDeployment', { deployment: foreign._id.$oid }, z.unknown());
   } catch (error) {
-    if (error instanceof KomodoError && error.reason === 'http' && [403, 404].includes(error.status ?? 0)) {
-      return { client, target };
-    }
+    if (error instanceof KomodoError && error.reason === 'permission') return { client, target };
+    if (error instanceof KomodoError) throw new KomodoError('UnrelatedTargetForbidden', error.reason, error.status);
     throw error;
   }
   throw new KomodoError('UnrelatedTargetForbidden', 'binding');
@@ -264,7 +263,7 @@ export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
     catch { cleanupFailed = true; }
     checks.push({
       id: 'cleanup', status: cleanupFailed ? 'failed' : 'passed',
-      detail: cleanupFailed ? text.failure[lang] + ' ComposeDown.' : text.cleaned[lang],
+      detail: cleanupFailed ? text.failure[lang] + ' FixtureCleanup.' : text.cleaned[lang],
     });
   }
   return report('komodo-native', checks);

@@ -32,7 +32,7 @@ type Routes = {
 };
 
 export class KomodoError extends Error {
-  constructor(readonly step: string, readonly reason: 'transport' | 'response' | 'http' | 'deadline' | 'binding', readonly status?: number) {
+  constructor(readonly step: string, readonly reason: 'transport' | 'response' | 'http' | 'deadline' | 'binding' | 'permission', readonly status?: number) {
     super(step);
   }
 }
@@ -58,6 +58,23 @@ export async function readBounded(response: Response, maxBytes: number) {
 
 type Credentials = { jwt: string } | { key: string; secret: string };
 
+const nativeError = z.object({ error: z.string(), trace: z.array(z.string()).default([]) });
+async function isDeploymentReadDenied(method: string, response: Response) {
+  if (method !== 'GetDeployment' || ![403, 500].includes(response.status)) {
+    await response.body?.cancel().catch(() => undefined);
+    return false;
+  }
+  try {
+    const body = await readBounded(response, 8192);
+    const error = nativeError.parse(JSON.parse(body.toString('utf8')));
+    // Komodo 2.3.4's permission helper wraps this denial as HTTP 500.
+    const denied = 'User does not have required permissions on this Deployment. Must have at least Read permissions';
+    return [error.error, ...error.trace].some(message => message === denied);
+  } catch {
+    return false;
+  }
+}
+
 export class KomodoNativeClient {
   constructor(private readonly origin: string, private readonly credentials?: Credentials) {
     if (!/^http:\/\/127\.0\.0\.1:[1-9]\d{0,4}$/.test(origin)) throw new KomodoError('CoreOrigin', 'binding');
@@ -82,8 +99,8 @@ export class KomodoNativeClient {
       throw new KomodoError(method, 'transport');
     }
     if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new KomodoError(method, 'http', response.status);
+      const denied = await isDeploymentReadDenied(method, response);
+      throw new KomodoError(method, denied ? 'permission' : 'http', response.status);
     }
     try {
       const body = await readBounded(response, 128 * 1024);
