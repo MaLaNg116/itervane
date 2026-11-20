@@ -5,6 +5,7 @@ set -euo pipefail
 test "${PROBE_HOST_ENVIRONMENT:-}" = github-hosted
 directory=$(realpath -- "$1")
 runner_user=itervane-probe
+runner_home=/home/itervane-probe
 node=$(command -v node)
 node_dir=$(dirname -- "$node")
 pnpm=$(command -v pnpm)
@@ -15,7 +16,8 @@ sealed_image="$directory/probe.raw"
 marker_dir=/run/itervane-probe-private
 
 sudo -n useradd --system --user-group --groups kvm --create-home \
-  --home-dir "$directory/account" --shell /usr/sbin/nologin "$runner_user"
+  --home-dir "$runner_home" --shell /usr/sbin/nologin "$runner_user"
+sudo -n chmod 0700 "$runner_home"
 runner_uid=$(id -u "$runner_user")
 sudo -n install -d -m 0700 -o "$runner_user" -g "$runner_user" -- "$stage" "$code" "/run/user/$runner_uid"
 sudo -n chgrp "$runner_user" "$sealed_image"
@@ -28,8 +30,8 @@ printf '%s\n' 'synthetic host-only marker' | sudo -n tee "$marker_dir/control-pl
 
 as_runner() {
   sudo -n -u "$runner_user" -- /usr/bin/env -i "PATH=$node_dir:/usr/bin:/bin" LANG=C.UTF-8 CI=true \
-    "XDG_CONFIG_HOME=$directory/account/.config" "XDG_CACHE_HOME=$directory/account/.cache" \
-    "XDG_DATA_HOME=$directory/account/.local/share" \
+    "XDG_CONFIG_HOME=$runner_home/.config" "XDG_CACHE_HOME=$runner_home/.cache" \
+    "XDG_DATA_HOME=$runner_home/.local/share" \
     /usr/bin/setpriv --no-new-privs /bin/sh -c '
       cd -- "$1" || exit 1
       shift
