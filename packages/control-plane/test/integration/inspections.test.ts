@@ -15,7 +15,7 @@ import { canonicalRepairCommand, canonicalRepairObservation, scannerProfiles, sh
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { queueName } from '../../src/persistence/database.js';
-import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations,
+import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairRuntime,
   inspectionAttempts } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
@@ -670,7 +670,7 @@ it('revalidates the same repair input after a new lease and seals existing compl
   await expect(database.storage.pool.query('UPDATE itervane.formal_repair_inputs SET sha256=sha256')).rejects
     .toMatchObject({ code: '23514', message: 'formal_repair_input_is_retained' });
   // The isolated test database now resembles a completed audit from before this migration.
-  await database.admin.query('TRUNCATE itervane.formal_repair_attempts, itervane.formal_repair_operations, itervane.formal_repair_inputs');
+  await database.admin.query('TRUNCATE itervane.formal_repair_attempts, itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs');
   expect(await prepare()).toEqual(prepared);
   expect((await database.storage.db.select().from(formalRepairInputs))[0]?.preparedFence).toBe(scope.fence);
 });
@@ -735,6 +735,47 @@ it('isolates the audit checkpoint, its acknowledged writes and its input from pr
     await coordinator.reconcile(randomUUID());
     const replacement = new GuardedCheckpointer(coordinator, await claim(), storage, { auditInputSha256 });
     expect((await replacement.getTuple(auditConfig))?.checkpoint.id).toBe(sharedId.id);
+  } finally { await storage.end(); }
+});
+
+it('recovers the repair checkpoint from the published input and filters unacknowledged intermediate writes', async () => {
+  const { scope } = await repairReady();
+  const [auditInput] = await database.storage.db.select().from(formalAuditInputs);
+  const [repairInput] = await database.storage.db.select().from(formalRepairInputs);
+  const storage = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+  try {
+    const audit = new GuardedCheckpointer(coordinator, scope, storage, { auditInputSha256: auditInput!.sha256 });
+    const repair = new GuardedCheckpointer(coordinator, scope, storage, { repairInputSha256: repairInput!.sha256 });
+    const auditConfig = { configurable: { thread_id: audit.threadId } };
+    const repairConfig = { configurable: { thread_id: repair.threadId } };
+    const auditCheckpoint = await audit.getTuple(auditConfig);
+    expect(auditCheckpoint).toBeDefined();
+    expect(await repair.getTuple(repairConfig)).toBeUndefined();
+    await expect(repair.getTuple(auditConfig)).rejects.toBeInstanceOf(ExecutionLost);
+    const invalid = new GuardedCheckpointer(coordinator, scope, storage, { repairInputSha256: auditInput!.sha256 });
+    await expect(invalid.getTuple(repairConfig)).rejects.toBeInstanceOf(ExecutionLost);
+
+    const first = { ...emptyCheckpoint(), id: auditCheckpoint!.checkpoint.id };
+    const bound = await repair.put(repairConfig, first, { source: 'input', step: -1, parents: {} }, {});
+    await repair.putWrites(bound, [['observed', true]], 'repair-node');
+    await storage.putWrites(bound, [['unpublished', true]], 'orphan-node');
+    const orphan = emptyCheckpoint();
+    await storage.put(bound, orphan, { source: 'loop', step: 0, parents: {} }, {});
+    expect((await repair.getTuple(repairConfig))?.checkpoint.id).toBe(first.id);
+    expect((await repair.getTuple(repairConfig))?.pendingWrites).toEqual([['repair-node', 'observed', true]]);
+    expect((await audit.getTuple(auditConfig))?.pendingWrites).not.toContainEqual(['repair-node', 'observed', true]);
+    const pointer = (await database.storage.db.select().from(formalRepairRuntime))[0]!;
+    expect(pointer).toMatchObject({ runId: scope.runId, checkpointId: first.id, publishedFence: scope.fence });
+    await expect(database.storage.db.update(formalRepairRuntime).set({ checkpointStep: pointer.checkpointStep })).rejects
+      .toMatchObject({ cause: { code: '23514', message: 'formal_repair_pointer_regression' } });
+
+    await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+    await expect(repair.putWrites(bound, [['expired', true]], 'old-node')).rejects.toBeInstanceOf(ExecutionLost);
+    await coordinator.reconcile(randomUUID());
+    const replacement = new GuardedCheckpointer(coordinator, await claim(), storage, { repairInputSha256: repairInput!.sha256 });
+    const recovered = await replacement.getTuple(repairConfig);
+    expect(recovered?.checkpoint.id).toBe(first.id);
+    expect(recovered?.pendingWrites).toEqual([['repair-node', 'observed', true]]);
   } finally { await storage.end(); }
 });
 

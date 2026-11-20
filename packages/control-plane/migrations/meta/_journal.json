@@ -120,6 +120,13 @@
       "when": 1795201045621,
       "tag": "0016_formal_repair_execution",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1795203178915,
+      "tag": "0017_formal_repair_checkpoint",
+      "breakpoints": true
     }
   ]
 }

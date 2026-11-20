@@ -118,11 +118,11 @@ export const toolCalls = domain.table('tool_calls', {
 
 // 底层 saver 与领域事务分离：只有已发布的中间写入才参与恢复。
 export const checkpointWrites = domain.table('checkpoint_write_receipts', {
-  runId: uuid('run_id').notNull().references(() => taskRuns.id), graph: text('graph').$type<'preflight' | 'audit'>().notNull().default('preflight'),
+  runId: uuid('run_id').notNull().references(() => taskRuns.id), graph: text('graph').$type<'preflight' | 'audit' | 'repair'>().notNull().default('preflight'),
   checkpointId: text('checkpoint_id').notNull(),
   writeHash: text('write_hash').notNull(),
 }, t => [primaryKey({ columns: [t.runId, t.graph, t.checkpointId, t.writeHash] }),
-  check('checkpoint_write_graph', sql`${t.graph} IN ('preflight', 'audit')`)]);
+  check('checkpoint_write_graph', sql`${t.graph} IN ('preflight', 'audit', 'repair')`)]);
 
 // A prepared intent is not a fetched snapshot or a completed scan. One immutable policy per logical run.
 export const inspectionPlans = domain.table('inspection_plans', {
@@ -216,6 +216,12 @@ export const formalRepairInputs = domain.table('formal_repair_inputs', {
 }, t => [check('formal_repair_input_binding', sql`(${t.preparedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
   AND ${t.document}->>'version' = '1' AND ${t.document}->>'runId' = ${t.runId}::text
   AND octet_length(${t.document}::text) <= 8192) IS TRUE`)]);
+
+export const formalRepairRuntime = domain.table('formal_repair_runtime', {
+  runId: uuid('run_id').primaryKey().references(() => formalRepairInputs.runId), inputSha256: text('input_sha256').notNull(),
+  checkpointId: text('checkpoint_id').notNull(), checkpointStep: integer('checkpoint_step').notNull(),
+  publishedFence: integer('published_fence').notNull(), workerId: uuid('worker_id').notNull(),
+}, t => [check('formal_repair_runtime_binding', sql`${t.inputSha256} ~ '^[a-f0-9]{64}$' AND ${t.checkpointStep} >= -1 AND ${t.publishedFence} > 0`)]);
 
 export const formalRepairOperations = domain.table('formal_repair_operations', {
   operationId: uuid('operation_id').primaryKey(),
