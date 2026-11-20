@@ -20,8 +20,8 @@ from pathlib import Path
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from guest_job import PORT as JOB_PORT
 from native_job import SCENARIOS, JobEvidence, JobRejected, ProbeJob, start_channel_events
+from native_source import SourceEvidence, SourceProbe, maintainer_source
 from session_boundary import SESSION_URI, SessionRejected, prepare_session, process_exited, verify_qemu_process
 
 
@@ -52,6 +52,7 @@ class Result:
     job: JobEvidence | None = None
     jobIssue: str | None = None
     sessionVerified: bool = False
+    source: SourceEvidence | None = None
 
 
 def check_kvm():
@@ -96,11 +97,11 @@ def copy_image(image, disk, expected, check_deadline):
         raise Rejected("image_rejected") from error
 
 
-def channel_names(with_job):
-    return (GUEST_AGENT, JOB_PORT) if with_job else (GUEST_AGENT,)
+def channel_names(port):
+    return (GUEST_AGENT, port) if port is not None else (GUEST_AGENT,)
 
 
-def domain_xml(name, run_id, disk, with_job=False):
+def domain_xml(name, run_id, disk, port=None):
     root = xml.Element("domain", type="kvm")
     xml.SubElement(root, "name").text = name
     xml.SubElement(root, "uuid").text = run_id
@@ -117,7 +118,7 @@ def domain_xml(name, run_id, disk, with_job=False):
     xml.SubElement(volume, "driver", name="qemu", type="raw")
     xml.SubElement(volume, "source", file=str(disk))
     xml.SubElement(volume, "target", dev="vda", bus="virtio")
-    for target in channel_names(with_job):
+    for target in channel_names(port):
         channel = xml.SubElement(devices, "channel", type="unix")
         xml.SubElement(channel, "target", type="virtio", name=target)
     xml.SubElement(devices, "controller", type="usb", model="none")
@@ -130,7 +131,7 @@ def unexpected_tag(prefix, tags):
     return prefix + first if re.fullmatch(r"[a-z][a-z0-9-]{0,30}", first) else prefix + "unknown"
 
 
-def profile_issue(document, disk, with_job=False):
+def profile_issue(document, disk, port=None):
     root = xml.fromstring(document)
     guest = root.find("os/type")
     vcpu = root.find("vcpu")
@@ -158,7 +159,7 @@ def profile_issue(document, disk, with_job=False):
     volumes, channels = devices.findall("disk"), devices.findall("channel")
     if root.find("maxMemory") is not None:
         return "maximum-memory"
-    if len(volumes) != 1 or len(channels) != len(channel_names(with_job)):
+    if len(volumes) != 1 or len(channels) != len(channel_names(port)):
         return "device-count"
     volume = volumes[0]
     backing = volume.find("backingStore")
@@ -190,7 +191,7 @@ def profile_issue(document, disk, with_job=False):
         if len(targets) != 1 or targets[0].get("type") != "virtio" or targets[0].get("state", "disconnected") != "disconnected":
             return "channel-target"
         names.add(targets[0].get("name"))
-    if names != set(channel_names(with_job)):
+    if names != set(channel_names(port)):
         return "channel-target"
     if any(device.get("model") != "none" for device in devices.findall("controller[@type='usb']")):
         return "usb"
@@ -310,6 +311,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
     job_issue = None
     phase = "connection"
     uri = SESSION_URI if session_runtime is not None else URI
+    port = job.port if job else None
     try:
         check_deadline()
         conn = connect(libvirt, uri)
@@ -334,7 +336,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
         flags = libvirt.VIR_DOMAIN_START_PAUSED | libvirt.VIR_DOMAIN_START_AUTODESTROY | libvirt.VIR_DOMAIN_START_VALIDATE
         attempted_create = True
         phase = "domain-create"
-        domain = conn.createXML(domain_xml(name, run_id, disk, with_job=job is not None), flags)
+        domain = conn.createXML(domain_xml(name, run_id, disk, port), flags)
         phase = "paused-domain"
         owns_domain = (
             domain is not None
@@ -348,7 +350,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
         if domain.state(0)[0] != libvirt.VIR_DOMAIN_PAUSED:
             issue = "domain-state"
             raise Rejected("profile_rejected")
-        issue = profile_issue(domain.XMLDesc(0), disk, with_job=job is not None)
+        issue = profile_issue(domain.XMLDesc(0), disk, port)
         if issue:
             raise Rejected("profile_rejected")
         if session_runtime is not None:
@@ -408,14 +410,21 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
                     code = "cleanup_unproven"
             else:
                 code = "cleanup_unproven"
-    if code in ("passed", "job_passed"):
+    if code in ("passed", "job_passed", "source_passed"):
         try:
             check_deadline()
         except Rejected as error:
             code = str(error)
     return Result(
-        code, run_id, digest if verified_image else None, issue, cleanup_confirmed,
-        job.evidence if job else None, job_issue, cleanup_confirmed and process_exit_confirmed,
+        code=code,
+        runId=run_id,
+        imageSha256=digest if verified_image else None,
+        profileIssue=issue,
+        cleanupConfirmed=cleanup_confirmed,
+        job=job.evidence if isinstance(job, ProbeJob) else None,
+        jobIssue=job_issue,
+        sessionVerified=cleanup_confirmed and process_exit_confirmed,
+        source=job.evidence if isinstance(job, SourceProbe) and code == "source_passed" else None,
     )
 
 
@@ -429,6 +438,8 @@ def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat", s
             raise Rejected("deadline_exceeded")
 
     try:
+        if scenario == "source" and not session:
+            raise Rejected("config_required")
         if not root.is_absolute() or root.resolve(strict=True) != root or not image.is_absolute():
             raise Rejected("config_required")
         fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -443,7 +454,10 @@ def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat", s
             if any(path.name.startswith(PREFIX) for path in root.iterdir()):
                 raise Rejected("pending_cleanup")
             session_runtime = prepare_session(root, image) if session else None
-            job = None if scenario == "heartbeat" else ProbeJob(scenario, require_workload=session)
+            if scenario == "source":
+                job = maintainer_source()
+            else:
+                job = None if scenario == "heartbeat" else ProbeJob(scenario, require_workload=session)
             return run_guest(libvirt, qemu, root, image, digest, check_deadline, job, session_runtime)
         finally:
             os.close(fd)
@@ -471,7 +485,7 @@ def main():
             raise Rejected("config_required")
         scenario = sys.argv[4] if len(sys.argv) >= 5 else "heartbeat"
         mode = sys.argv[5] if len(sys.argv) == 6 else "system"
-        if scenario not in SCENARIOS or mode not in ("system", "session"):
+        if scenario not in (*SCENARIOS, "source") or mode not in ("system", "session"):
             raise Rejected("config_required")
         try:
             import libvirt

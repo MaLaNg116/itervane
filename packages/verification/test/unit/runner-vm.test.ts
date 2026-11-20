@@ -76,4 +76,30 @@ describe('sanitized native VM probe result', () => {
     const withWorkload = { ...session, job: { ...session.job, workloadVerified: true } };
     expect(parseRunnerProbeOutput(JSON.stringify(withWorkload), imageSha256, 'session')).toEqual(withWorkload);
   });
+
+  it('requires the source scenario, dedicated session cleanup and a bounded object receipt', () => {
+    const source = {
+      originSha256: 'b'.repeat(64), commit: 'c'.repeat(40), tree: 'd'.repeat(40),
+      commitSha256: 'e'.repeat(64), files: 290, requests: 3, transferredBytes: 4000,
+    };
+    const valid = { code: 'source_passed', runId, imageSha256, cleanupConfirmed: true, sessionVerified: true, source };
+    const rejected = { code: 'source_rejected', runId, imageSha256, cleanupConfirmed: true,
+      sessionVerified: true, jobIssue: 'address-rejected' };
+    expect(parseRunnerProbeOutput(JSON.stringify(valid), imageSha256, 'session', 'source')).toEqual(valid);
+    expect(parseRunnerProbeOutput(JSON.stringify(rejected), imageSha256, 'session', 'source')).toEqual(rejected);
+    expect(parseRunnerProbeOutput(JSON.stringify(valid), imageSha256, 'session', 'job').code).toBe('driver_lost');
+    expect(parseRunnerProbeOutput(JSON.stringify(valid), imageSha256, 'system', 'source').code).toBe('driver_lost');
+    for (const invalid of [
+      { ...valid, cleanupConfirmed: false },
+      { ...valid, sessionVerified: false },
+      { ...valid, source: null },
+      { ...valid, source: { ...source, files: 5001 } },
+      { ...valid, source: { ...source, raw: 'source text' } },
+      { ...valid, code: 'cleanup_unproven', cleanupConfirmed: false },
+      { ...valid, code: 'passed', source: null },
+      { ...rejected, jobIssue: '/private/source' },
+    ]) {
+      expect(parseRunnerProbeOutput(JSON.stringify(invalid), imageSha256, 'session', 'source').code).toBe('driver_lost');
+    }
+  });
 });

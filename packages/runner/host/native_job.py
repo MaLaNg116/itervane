@@ -5,6 +5,7 @@ import secrets
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from threading import Thread
 
@@ -41,6 +42,20 @@ def stream_io(operation, argument):
     return result
 
 
+@contextmanager
+def open_channel(libvirt, conn, domain, port):
+    stream = conn.newStream(libvirt.VIR_STREAM_NONBLOCK)
+    try:
+        domain.openChannel(port, stream, 0)
+        yield stream
+    finally:
+        try:
+            stream.abort()
+        except libvirt.libvirtError:
+            # The lifecycle confirms domain removal independently.
+            pass
+
+
 def start_channel_events(libvirt):
     # The remote driver needs async socket processing for nonblocking
     # streams. This driver process serves one probe and owns the event loop.
@@ -57,6 +72,8 @@ def start_channel_events(libvirt):
 
 
 class ProbeJob:
+    port = PORT
+
     def __init__(self, scenario, require_workload=False):
         self.scenario = scenario
         self.greetings = (WORKLOAD_READY,) if require_workload else (READY, WORKLOAD_READY)
@@ -122,16 +139,8 @@ class ProbeJob:
 
         try:
             check_deadline()
-            stream = conn.newStream(libvirt.VIR_STREAM_NONBLOCK)
-            domain.openChannel(PORT, stream, 0)
-            try:
+            with open_channel(libvirt, conn, domain, self.port) as stream:
                 return self.exchange(stream, run_id, check_deadline, after_prefix)
-            finally:
-                try:
-                    stream.abort()
-                except libvirt.libvirtError:
-                    # The lifecycle confirms the domain's removal independently.
-                    pass
         except libvirt.libvirtError as error:
             raise JobRejected("job_channel_unavailable") from error
         except ProtocolError as error:

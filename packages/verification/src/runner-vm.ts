@@ -21,6 +21,9 @@ const outcomes = {
   job_channel_unavailable: ['failed', 'The named guest job channel could not be used.', '无法使用命名客体作业通道。'],
   job_protocol_rejected: ['failed', 'The guest job channel returned an invalid receipt or closed early.', '客体作业通道返回无效回执或提前关闭。'],
   job_deadline_exceeded: ['failed', 'The guest job exceeded its host-side deadline.', '客体作业超出了宿主设定的时限。'],
+  source_passed: ['passed', 'The isolated guest verified the registered repository at the fixed commit.', '隔离客体已核验登记仓库的固定提交。'],
+  source_rejected: ['failed', 'The host source gateway rejected the Git transfer.', '宿主源码网关拒绝了 Git 传输。'],
+  source_guest_failed: ['failed', 'The guest did not complete fixed Git acquisition or object verification.', '客体未完成固定 Git 版本的获取或对象核验。'],
   deadline_exceeded: ['failed', 'The lifecycle exceeded its deadline.', '探针超出了生命周期时限。'],
   cancelled: ['blocked', 'The lifecycle probe was cancelled.', '生命周期探针已取消。'],
   cleanup_unproven: ['failed', 'Cleanup could not be confirmed. Inspect the staging journal before another run.', '未能确认清理完成，请先核对暂存目录中的运行记录。'],
@@ -36,11 +39,27 @@ const jobSchema = z.strictObject({
   receivedSha256: sha256Schema.nullable(),
   workloadVerified: z.boolean().optional(),
 });
-const probeSettingsSchema = z.object({
-  scenario: z.enum(['heartbeat', 'job', 'job-reject-input', 'job-cancel', 'job-timeout']).default('heartbeat'),
-  mode: z.enum(['system', 'session']).default('system'),
+const gitObjectId = z.string().regex(/^[0-9a-f]{40}$/);
+const sourceSchema = z.strictObject({
+  originSha256: sha256Schema,
+  commit: gitObjectId,
+  tree: gitObjectId,
+  commitSha256: sha256Schema,
+  files: z.int().min(1).max(5000),
+  requests: z.int().min(2).max(8),
+  transferredBytes: z.int().min(1).max(32 * 1024 * 1024),
 });
+const probeSettingsSchema = z.object({
+  scenario: z.enum(['heartbeat', 'job', 'job-reject-input', 'job-cancel', 'job-timeout', 'source']).default('heartbeat'),
+  mode: z.enum(['system', 'session']).default('system'),
+}).refine(({ scenario, mode }) => scenario !== 'source' || mode === 'session');
 const jobIssueSchema = z.enum(['open-channel', 'guest-ready', 'prefix', 'result']);
+const sourceIssueSchema = z.enum([
+  'source-open', 'source-ready', 'source-fetch', 'source-closed', 'source-objects',
+  'guest-input', 'git-fetch', 'git-objects', 'guest-io',
+  'origin-rejected', 'address-rejected', 'fetch-request-rejected', 'commit-rejected',
+  'request-budget', 'route-rejected', 'https-failed', 'redirect-rejected', 'response-rejected', 'transfer-budget',
+]);
 type ProbeSettings = z.infer<typeof probeSettingsSchema>;
 
 const resultSchema = z.strictObject({
@@ -50,27 +69,45 @@ const resultSchema = z.strictObject({
   profileIssue: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).nullable().optional(),
   cleanupConfirmed: z.boolean().optional(),
   job: jobSchema.nullable().optional(),
-  jobIssue: jobIssueSchema.nullable().optional(),
+  jobIssue: z.union([jobIssueSchema, sourceIssueSchema]).nullable().optional(),
   sessionVerified: z.boolean().optional(),
+  source: sourceSchema.nullable().optional(),
 });
 
 type DriverResult = z.infer<typeof resultSchema>;
 const lost: DriverResult = { code: 'driver_lost', runId: null, imageSha256: null };
 
-export function parseRunnerProbeOutput(stdout: string, expectedDigest: string, mode: ProbeSettings['mode'] = 'system'): DriverResult {
+export function parseRunnerProbeOutput(
+  stdout: string,
+  expectedDigest: string,
+  mode: ProbeSettings['mode'] = 'system',
+  scenario?: ProbeSettings['scenario'],
+): DriverResult {
   try {
     const result = resultSchema.parse(JSON.parse(stdout));
     if (result.imageSha256 !== null && result.imageSha256 !== expectedDigest) return lost;
     if (result.code === 'passed' && (!result.runId || !result.imageSha256)) return lost;
     if (result.profileIssue && !['profile_rejected', 'session_rejected', 'host_error', 'cleanup_unproven'].includes(result.code)) return lost;
     if (result.code === 'cleanup_unproven' && !result.runId) return lost;
-    if ((result.cleanupConfirmed || result.job) && (!result.runId || !result.imageSha256)) return lost;
+    if ((result.cleanupConfirmed || result.job || result.source) && (!result.runId || !result.imageSha256)) return lost;
     if (result.code === 'cleanup_unproven' && result.cleanupConfirmed) return lost;
     if (result.sessionVerified && (mode !== 'session' || !result.cleanupConfirmed || result.code === 'session_rejected')) return lost;
     const requiresSessionProof = result.code === 'passed' || result.code === 'job_passed' || (result.job && result.cleanupConfirmed);
     if (mode === 'session' && requiresSessionProof && !result.sessionVerified) return lost;
     if (mode === 'session' && result.job && !result.job.workloadVerified) return lost;
-    if (result.jobIssue && !['job_channel_unavailable', 'job_protocol_rejected', 'job_deadline_exceeded', 'cleanup_unproven'].includes(result.code)) return lost;
+    const sourceScenario = scenario === 'source';
+    const sourceFailure = result.code === 'source_rejected' || result.code === 'source_guest_failed';
+    const sourcePassed = result.code === 'source_passed';
+    if (sourceScenario && (mode !== 'session' || result.job || ['passed', 'job_passed', 'job_input_rejected'].includes(result.code))) return lost;
+    if (!sourceScenario && (result.source || sourceFailure || sourcePassed)) return lost;
+    if (sourcePassed && (!result.sessionVerified || !result.source || result.jobIssue)) return lost;
+    if (result.source && !sourcePassed) return lost;
+    if (sourceFailure && (!result.runId || !result.imageSha256 || !result.jobIssue)) return lost;
+    if (result.jobIssue) {
+      const issueSchema = sourceScenario ? sourceIssueSchema : jobIssueSchema;
+      const jobFailure = ['job_channel_unavailable', 'job_protocol_rejected', 'job_deadline_exceeded', 'cleanup_unproven'].includes(result.code);
+      if ((!jobFailure && !sourceFailure) || !issueSchema.safeParse(result.jobIssue).success) return lost;
+    }
     if (result.job && result.job.startedBytes !== Math.min(result.job.byteCount, prefixBytes)) return lost;
     if (result.code === 'job_passed' || result.code === 'job_input_rejected') {
       if (!result.cleanupConfirmed || !result.job?.receivedSha256) return lost;
@@ -96,9 +133,9 @@ function launch(root: string, image: string, digest: string, settings: ProbeSett
       process.off('SIGINT', requestStop);
       process.off('SIGTERM', requestStop);
       if (error) return resolve(lost);
-      const result = parseRunnerProbeOutput(stdout, digest, settings.mode);
-      const succeeded = result.code === 'passed' || result.code === 'job_passed';
-      resolve(cancelled && succeeded ? { ...result, code: 'cancelled' } : result);
+      const result = parseRunnerProbeOutput(stdout, digest, settings.mode, settings.scenario);
+      const succeeded = ['passed', 'job_passed', 'source_passed'].includes(result.code);
+      resolve(cancelled && succeeded ? { ...result, code: 'cancelled', source: null } : result);
     });
 
     function requestStop() {
@@ -151,6 +188,20 @@ export async function probeRunnerVm(env: NodeJS.ProcessEnv = process.env) {
         detail: (zh ? '客体计算的完整输入 SHA-256 ' : 'Guest-computed SHA-256 of all received bytes ') + result.job.receivedSha256 + '.',
       });
     }
+  }
+  if (result.source) {
+    const { originSha256, commit, tree, commitSha256, files, requests, transferredBytes } = result.source;
+    checks.push({
+      id: 'runner-source-objects', status: 'passed',
+      detail: zh
+        ? `客体已核验提交 ${commit}、树 ${tree} 和 ${files} 个文件。提交内容 SHA-256 ${commitSha256}。`
+        : `The guest verified commit ${commit}, tree ${tree}, and ${files} files. Commit content SHA-256 ${commitSha256}.`,
+    }, {
+      id: 'runner-source-egress-closed', status: 'passed',
+      detail: zh
+        ? `已核验固定来源 SHA-256 ${originSha256}。完成 ${requests} 次请求，接收 ${transferredBytes} 字节。出口关闭后的请求已被阻断。`
+        : `The fixed origin SHA-256 was ${originSha256}. Transferred ${transferredBytes} bytes across ${requests} requests. A request after closure was rejected.`,
+    });
   }
   if (settings.success && settings.data.scenario !== 'heartbeat' && result.cleanupConfirmed) {
     checks.push({
