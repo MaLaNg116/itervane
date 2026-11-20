@@ -17,6 +17,7 @@
 | 011 | P2-C 原子确认入队、环境占用和运行结果核对 | [#11](https://github.com/MaLaNg116/itervane/pull/11)，基于已合入 #10 的 main | [P2-C 导读](p2-c-release-reconciliation.md) | 92 单元、83 PG、21 浏览器通过；正式 Runner 和 Komodo 目标待验 |
 | 012 | P1-D2-A 一次性 VM 生命周期探针 | [#12](https://github.com/MaLaNg116/itervane/pull/12)，基于已合入 #11 的 main | [D2-A 导读和复跑](p1-d2-libvirt-lifecycle.md) | 94 单元、83 PG、9 宿主流程测试通过；真实 KVM 与完整隔离待验 |
 | 013 | P0.5-A Komodo 真实发布、升级和指定版本恢复 | [#13](https://github.com/MaLaNg116/itervane/pull/13)，基于已合入 #12 的 main | [Komodo 原生证据与导读](p0-komodo-native-delivery.md) | [三轮原生验证通过](https://github.com/MaLaNg116/itervane/actions/runs/44711600569)；Whiskers 和正式任务接入待验 |
+| 014 | P0.5-B Whiskers 原生 MCP 观察、同参确认和单次重启 | [#14](https://github.com/MaLaNg116/itervane/pull/14)，基于已合入 #13 的 main | [Whiskers 原生证据与导读](p0-whiskers-native-approval.md) | [八项真机检查通过](https://github.com/MaLaNg116/itervane/actions/runs/44715989093)；正式平台绑定与过期实测待验 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 

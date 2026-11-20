@@ -206,7 +206,7 @@ MVP 使用一个运行时调度多个逻辑角色，先串行执行。后续根�
 
 Komodo 作为首个部署后端，Whiskers 作为首个运维 MCP 集成目标。适配器可替换，Agent 运维和 MCP 能力必须保留。
 
-Whiskers 1.0 的权限等级作用于全部受管服务器，且具有较强主机控制能力，因此 MVP 限定单一运维信任域，凭证保留在服务端，外部助手只连接平台 MCP。[Whiskers 权限边界](https://github.com/LupusMalusDeviant/Whiskers/blob/v1.0.1/docs/v1/PRODUCT_CONTRACT.md)
+Whiskers 0.15.0 按密钥级别校验工具权限，具备作用于受管服务器的主机控制能力，因此 MVP 限定单一运维信任域，凭证保留在服务端，外部助手只连接平台 MCP。 [Whiskers 权限实现](https://github.com/LupusMalusDeviant/Whiskers/blob/e10cfa62ed8c3129302f68e0b4ec6e3ece8994e4/src/Whiskers/Services/Mcp/McpPermissionService.cs)
 
 所有普通入口沿用同一治理规则。平台业务授权与下游原生权限、确认闸门关联到同一操作记录，未满足条件时保持暂停。
 

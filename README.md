@@ -34,6 +34,8 @@ P1-UX refines that portal with a coherent bilingual workspace design and scoped 
 
 P0.5-A verifies native Komodo deployment, upgrade and digest-pinned rollback with trusted fixtures on a dedicated hosted runner. The [replay guide](docs/reviews/p0-komodo-native-delivery.md) records the real Komodo updates and runtime image evidence.
 
+P0.5-B verifies Whiskers MCP observation, native approval, and a single authorized restart with trusted fixtures. The [review guide](docs/reviews/p0-whiskers-native-approval.md) records caller and target binding, the health check, and the audit observation.
+
 For P0 setup, observed versions, and outstanding gates, see [P0 verification](docs/p0-verification.md). Managed project execution, release, and Agent operations require runtime qualification.
 
 ```sh
