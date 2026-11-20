@@ -9,7 +9,7 @@ Itervane 自有代码继续使用 Apache-2.0；第三方工具和依赖保留自
 | gsap | 3.15.1，[官方来源](https://github.com/greensock/GSAP) / [Standard No Charge License](https://gsap.com/community/standard-license/) | 门户的局部 transform 微动效 |
 | @gsap/react | 2.1.2，[官方来源](https://github.com/greensock/react) / [Standard No Charge License](https://gsap.com/community/standard-license/) | useGSAP/context 生命周期清理 |
 
-GSAP 与 @gsap/react 不是本项目重新许可的 Apache-2.0 代码；依赖原始许可/版权声明随软件包保留。本项目的使用范围是界面显示，没有可视化动画编辑器。本次只接入 core/CSS transform，没有 ScrollTrigger、滚动接管或外部 CDN。
+GSAP 与 @gsap/react 不是本项目重新许可的 Apache-2.0 代码；依赖原始许可/版权声明随软件包保留。生产构建另外生成 dist/third-party-licenses.md，并在 JS 中保留许可提示，部署包应保留该说明；静态服务白名单仍只开放原有 JS/CSS，不扩大文件访问。本项目的使用范围是界面显示，没有可视化动画编辑器。本次只接入 core/CSS transform，没有 ScrollTrigger、滚动接管或外部 CDN。
 
 依赖由 pnpm 精确锁定，包版本与完整性随锁文件维护；安装继续使用 --ignore-scripts。门户资源由原有同源构建白名单提供，CSP 不增加 unsafe-inline/unsafe-eval 或第三方脚本/字体域。GSAP 不参与授权、任务状态、批准、Runner 或数据库写入。
 
