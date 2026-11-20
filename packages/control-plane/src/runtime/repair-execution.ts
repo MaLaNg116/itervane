@@ -3,8 +3,9 @@ import { and, eq, ne, sql } from 'drizzle-orm';
 import {
   qualifiedInspectionStatusSchema, qualifiedRepairRequestSchema, qualifiedRepairResponseSchema, repairPatchSchema, sha256Schema,
   type QualifiedInspectionReceipt, type QualifiedInspectionStatus, type QualifiedRepairRequest, type QualifiedRepairResponse, type RepairPatch,
+  type RepairTarget,
 } from '@itervane/contracts';
-import { canonicalRepairCommand, sha256, sourcePath, verifyQualifiedRepairReceipt, type QualifiedInspectionClient } from '@itervane/runner';
+import { canonicalRepairCommand, protectedRepairPath, sha256, sourcePath, verifyQualifiedRepairReceipt, type QualifiedInspectionClient } from '@itervane/runner';
 import { formalRepairAttempts, formalRepairOperations, repositories } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { DomainError, parseInput } from '../service/errors.js';
@@ -45,7 +46,7 @@ async function requireReservation(tx: Transaction, request: QualifiedRepairReque
   if (active?.state !== 'reserved' || active.requestId !== request.requestId || repo?.origin !== request.origin) throw new ExecutionLost();
 }
 
-async function repairBasis(tx: Transaction, task: TaskRow, scope: ExecutionScope) {
+export async function repairBasis(tx: Transaction, task: TaskRow, scope: ExecutionScope) {
   const input = await prepareFormalRepairInput(tx, task, scope);
   const plan = await readInspectionPlan(tx, task, scope.runId);
   const inspection = await currentInspectionAttempt(tx, scope.runId);
@@ -61,19 +62,17 @@ async function repairBasis(tx: Transaction, task: TaskRow, scope: ExecutionScope
   return { input, scan: scan.receipt, origin: repo.origin };
 }
 
-function editablePaths(scan: QualifiedInspectionReceipt, findingIds: readonly string[]) {
+export function repairTargets(scan: QualifiedInspectionReceipt, findingIds: readonly string[]) {
   const findings = new Map(scan.snapshot.reports.flatMap(report =>
-    report.findings.map(finding => [finding.id, { path: finding.path, scanner: report.scanner }] as const)));
-  const paths = new Set<string>();
-  for (const id of findingIds) {
+    report.findings.map(({ id, path, line }) => [id, { findingId: id, path, line, scanner: report.scanner }] as const)));
+  return findingIds.flatMap((id): RepairTarget[] => {
     const entry = findings.get(id);
     if (!entry) throw new Error('repair_finding_binding');
-    paths.add(entry.path);
     if (entry.scanner === 'trivy' && /(?:^|\/)package-lock\.json$/.test(entry.path)) {
-      paths.add(entry.path.replace(/package-lock\.json$/, 'package.json'));
+      return [entry, { ...entry, path: entry.path.replace(/package-lock\.json$/, 'package.json'), line: null }];
     }
-  }
-  return paths;
+    return [entry];
+  });
 }
 
 function dispatchFor(basis: Awaited<ReturnType<typeof repairBasis>>, attempt: Attempt, command: Command): Dispatch {
@@ -154,15 +153,9 @@ export class FormalRepairExecution {
     const { callKeySha256, findingIds, patch } = proposal;
     if (patch.baseSnapshotSha256 !== input.document.inspection.snapshotSha256) throw new DomainError('conflict');
     if (findingIds.some(id => !input.document.findingIds.includes(id))) throw new DomainError('forbidden');
-    const allowed = editablePaths(scan, findingIds);
+    const allowed = new Set(repairTargets(scan, findingIds).map(target => target.path));
     const paths = patch.files.map(file => file.path);
-    if (paths.some(path => {
-      const folded = path.toLowerCase();
-      return !allowed.has(path) || this.protectedPaths.some(protectedPath => {
-        const prefix = protectedPath.toLowerCase();
-        return folded === prefix || folded.startsWith(prefix + '/');
-      });
-    })) throw new DomainError('forbidden');
+    if (paths.some(path => !allowed.has(path) || protectedRepairPath(path, this.protectedPaths))) throw new DomainError('forbidden');
     const existing = await existingOperation(tx, scope.runId, callKeySha256);
     const operationId = existing?.operationId ?? randomUUID();
     const command = canonicalRepairCommand({

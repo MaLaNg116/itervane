@@ -8,10 +8,10 @@ import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairInputSchema,
-  qualifiedInspectionResponseSchema, qualifiedRepairRequestSchema, type QualifiedInspectionReceipt,
-  type QualifiedInspectionRequest, type QualifiedRepairReceipt, type RepairPatch } from '@itervane/contracts';
+  qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, type QualifiedInspectionReceipt,
+  type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt, type RepairPatch } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
-import { canonicalRepairCommand, scannerProfiles, sha256 } from '@itervane/runner';
+import { canonicalRepairCommand, canonicalRepairObservation, scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { queueName } from '../../src/persistence/database.js';
@@ -22,6 +22,7 @@ import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
 import { GuardedCheckpointer } from '../../src/runtime/checkpointer.js';
 import { FormalRepairExecution, type RepairRunner } from '../../src/runtime/repair-execution.js';
+import { observeFormalRepairTargets, type RepairObservationRunner } from '../../src/runtime/repair-observation.js';
 import { ToolGateway } from '../../src/runtime/tools.js';
 import { DurableWorker } from '../../src/runtime/worker.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
@@ -200,6 +201,47 @@ function repairReceipt(scan: QualifiedInspectionReceipt, request: Parameters<Rep
 }
 
 const idleRepairRunner = () => ({ kind: 'status' as const, version: 1 as const, state: 'idle' as const, workspaceSha256, imageSha256 });
+
+it('observes only published audit targets while the current project grant survives', async () => {
+  const { scope, proposal, scan, original } = await repairReady();
+  let revoke = false;
+  let blockedPulse = false;
+  const observeRepair = vi.fn<RepairObservationRunner['observeRepair']>(async (raw, workspace, targets, authorize) => {
+    await authorize();
+    if (revoke) {
+      const [grant] = (await database.admin.query('DELETE FROM itervane.workspace_members RETURNING workspace_id, principal_id')).rows;
+      try { await authorize(); } catch { blockedPulse = true; }
+      await database.admin.query('INSERT INTO itervane.workspace_members(workspace_id,principal_id) VALUES($1,$2)', [grant.workspace_id, grant.principal_id]);
+    }
+    const command = canonicalRepairObservation({ workspace, targets });
+    const { origin: registered, ...request } = qualifiedRepairObservationRequestSchema.parse({ ...raw, operation: 'observe_repair',
+      commandSha256: sha256(command.bytes), commandBytes: command.bytes.length });
+    const domainId = randomUUID();
+    const response: QualifiedRepairObservationReceipt = {
+      kind: 'repair_observation', scope: request, domainId, imageSha256, originSha256: sha256(registered), commitSha256: scan.commitSha256,
+      cleanupConfirmed: true, sessionVerified: true, snapshot: {
+        runId: domainId, repositoryId: request.repositoryId, commit: request.commit, tree: scan.snapshot.tree, files: scan.snapshot.files,
+        manifestSha256: workspace.baseSnapshotSha256, commandSha256: request.commandSha256, readOnly: true, offline: true,
+        observation: { version: 1, operationId: workspace.operationId, repairInputSha256: workspace.repairInputSha256,
+          baseSnapshotSha256: workspace.baseSnapshotSha256, targets: targets.map(target => ({
+            ...target, status: 'text', file: { bytes: Buffer.byteLength(original), sha256: sha256(original) }, range: null, templates: [],
+          })) },
+      },
+    };
+    return response;
+  });
+  const options = { runner: { observe: async () => idleRepairRunner(), observeRepair }, protectedPaths: [] };
+  await expect(observeFormalRepairTargets(coordinator, scope, [sha256('foreign finding')], options)).rejects.toMatchObject({ code: 'forbidden' });
+  expect(observeRepair).not.toHaveBeenCalled();
+  const observation = await observeFormalRepairTargets(coordinator, scope, proposal.findingIds, options);
+  expect(observation).toMatchObject({ kind: 'repair_observation', scope: { runId: scope.runId, fence: scope.fence },
+    snapshot: { observation: { targets: [{ findingId: proposal.findingIds[0], path: fixtureFindingPath, line: 3, scanner: 'gitleaks' }] } } });
+  expect(await database.storage.db.select().from(formalRepairOperations)).toEqual([]);
+  revoke = true;
+  await expect(observeFormalRepairTargets(coordinator, scope, proposal.findingIds, options)).rejects.toMatchObject({ code: 'not_found' });
+  expect(blockedPulse).toBe(true);
+  expect(observeRepair).toHaveBeenCalledTimes(2);
+});
 
 it('records one immutable repair command and a checked receipt across concurrent duplicate dispatches', async () => {
   const { scope, proposal, scan, original } = await repairReady();
