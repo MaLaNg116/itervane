@@ -84,7 +84,9 @@ class Domain:
     def __init__(self, libvirt, document):
         self.libvirt = libvirt
         self.document = xml.fromstring(document)
-        self.disk = Path(self.document.find("devices/disk/source").get("file"))
+        source = self.document.find("devices/disk/source")
+        self.disk = Path(source.get("file"))
+        source.set("index", "1")
         xml.SubElement(self.document.find("devices/channel"), "source", mode="bind", path="/test/qga.sock")
         self.document.find("os/type").set("machine", "pc-q35-8.2")
         self.libvirt.profile_change(self.document)

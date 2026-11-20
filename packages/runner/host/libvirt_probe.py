@@ -132,12 +132,15 @@ def valid_profile(document, disk):
     volume, channel = volumes[0], channels[0]
     backing = volume.find("backingStore")
     source = volume.find("source")
+    # Libvirt may add an index to the active storage source.
     return (
         volume.get("type") == "file"
         and volume.get("device") == "disk"
         and volume.find("driver[@name='qemu'][@type='raw']") is not None
         and source is not None
-        and source.attrib == {"file": str(disk)}
+        and source.get("file") == str(disk)
+        and set(source.attrib) <= {"file", "index"}
+        and source.get("index", "0").isdecimal()
         and len(source) == 0
         and volume.find("target[@dev='vda'][@bus='virtio']") is not None
         and volume.find("dataStore") is None
