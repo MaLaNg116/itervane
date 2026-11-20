@@ -91,12 +91,13 @@ class LiveConnection:
         self.connection = connection
         self.stopping = stopping
         self.lost = Event()
+        self.done = Event()
         self.thread = Thread(target=self.watch, name="runner-lease", daemon=True)
         self.connection.settimeout(PULSE_SECONDS)
 
     def watch(self):
         try:
-            while True:
+            while not self.done.is_set():
                 pulses = self.connection.recv(64)
                 if not pulses or pulses.count(b"K") != len(pulses):
                     return
@@ -113,10 +114,8 @@ class LiveConnection:
         return self
 
     def __exit__(self, *_exc):
-        try:
-            self.connection.shutdown(socket.SHUT_RD)
-        except OSError:
-            pass
+        # Keep the read half open while the authorized client waits for the receipt.
+        self.done.set()
         self.thread.join()
 
 

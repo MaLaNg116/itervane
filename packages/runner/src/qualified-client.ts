@@ -51,6 +51,12 @@ async function verifySocket(address: QualifiedControllerAddress) {
   const [canonical, directory, file] = await Promise.all([realpath(parent), lstat(parent), lstat(socketPath)]);
   if (parent !== canonical || !directory.isDirectory() || directory.uid !== controllerUid || (directory.mode & 0o022)
       || !file.isSocket() || file.uid !== controllerUid || (file.mode & 0o002)) throw new Error('runner_address');
+  for (let path = parent; dirname(path) !== path;) {
+    path = dirname(path);
+    const ancestor = await lstat(path);
+    if (!ancestor.isDirectory() || (ancestor.uid !== 0 && ancestor.uid !== controllerUid)
+        || (ancestor.mode & 0o022)) throw new Error('runner_address');
+  }
 }
 
 function verifyReceipt(receipt: QualifiedInspectionReceipt, request: QualifiedInspectionRequest, imageSha256: string) {
@@ -129,7 +135,8 @@ export class QualifiedInspectionClient {
       else void pulse();
       const response = qualifiedInspectionResponseSchema.parse(JSON.parse(await lines.read(responseLimit)));
       if (response.kind === 'receipt') verifyReceipt(response, request, this.imageSha256);
-      else if (response.requestId !== request.requestId) throw new Error('runner_response_id');
+      else if (response.requestId !== request.requestId || (response.cleanup === 'confirmed' && !response.domainId)
+          || (response.cleanup === 'not_started' && response.domainId)) throw new Error('runner_response_binding');
       return response;
     } catch {
       return unavailable();
