@@ -2,6 +2,7 @@ import { Alert, Card, Empty, Tag } from 'antd';
 import { preauditDtoSchema } from '@itervane/contracts';
 import { usePortal, useRemote, useText } from '../context.js';
 import { Failure, Loading, PageHeading, formatTime } from '../components.js';
+import { Disclosure } from '../motion.js';
 
 export function PreauditReportPage({ id }: { id: string }) {
   const { locale } = usePortal(); const t = useText();
@@ -25,14 +26,14 @@ export function PreauditReportPage({ id }: { id: string }) {
       <h3>{t('uncovered')}</h3><ul data-testid="preaudit-uncovered">{value.uncovered.map(item => <li key={item.code}>{item.message}</li>)}</ul>
     </Card>
     <Card>
-      <details><summary>{t('reportMetadata')}</summary><dl className="detail-grid section-gap">
+      <Disclosure title={t('reportMetadata')}><dl className="detail-grid">
         <div><dt>{t('createdAt')}</dt><dd>{formatTime(value.createdAt, locale)}</dd></div><div><dt>{t('codeLanguage')}</dt><dd>{value.input.language}</dd></div>
         <div><dt>{t('inputFormat')}</dt><dd>{t(value.input.format === 'snippet' ? 'snippet' : 'unifiedDiff')}</dd></div>
         <div><dt>{t('inputBytes')} / {t('inputLines')} / {t('analyzedLines')}</dt><dd>{value.input.bytes} / {value.input.lines} / {value.input.analyzedLines}</dd></div>
         <div><dt>{t('catalogVersion')} / {t('engineVersion')}</dt><dd>{value.catalogVersion} / {value.engineVersion}</dd></div>
         <div><dt>{t('catalogDigest')}</dt><dd><code>{value.catalogSha256}</code></dd></div>
         <div><dt>{t('inputDigest')}</dt><dd><code>{value.input.sha256}</code></dd></div><div><dt>{t('reportDigest')}</dt><dd><code>{value.reportSha256}</code></dd></div>
-      </dl></details>
+      </dl></Disclosure>
     </Card>
   </>;
 }
