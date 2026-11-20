@@ -29,6 +29,7 @@ WORK = "/var/lib/itervane-probe-source"
 INSPECTION_TOOLS = Path("/usr/local/libexec/itervane-inspection")
 INSPECTION_REQUEST = Path("/var/lib/itervane-inspection-source/scan-request")
 REPAIR_COMMAND = INSPECTION_REQUEST.with_name("repair-command.json")
+REPAIR_OBSERVATION = INSPECTION_REQUEST.with_name("repair-observation.json")
 INSPECTION_RECEIPT = Path("/var/lib/itervane-inspection-output/receipt.json")
 FIXTURE_REPOSITORY_ID = "a955164f-7cf2-45c5-8a53-7cdb556db805"
 GIT_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
@@ -164,9 +165,10 @@ def inspect_source(repository, identity, commit, repository_id, mode, wire, comm
     )
     if result.returncode:
         raise GuestFailure("snapshot-rejected")
-    receipt_limit = {"qualified": MAX_QUALIFIED_RECEIPT, "fixture": MAX_INSPECTION_RECEIPT, "repair": MAX_REPAIR_RECEIPT}[mode]
+    receipt_limit = MAX_REPAIR_RECEIPT if command is not None else MAX_QUALIFIED_RECEIPT if mode == "qualified" else MAX_INSPECTION_RECEIPT
+    command_path = REPAIR_OBSERVATION if mode == "repair-observation" else REPAIR_COMMAND
     if command is not None:
-        with REPAIR_COMMAND.open("xb") as stream:
+        with command_path.open("xb") as stream:
             stream.write(command)
             os.fchmod(stream.fileno(), 0o440)
     INSPECTION_REQUEST.touch(mode=0o600, exist_ok=False)
@@ -186,7 +188,7 @@ def inspect_source(repository, identity, commit, repository_id, mode, wire, comm
     finally:
         INSPECTION_REQUEST.unlink()
         if command is not None:
-            REPAIR_COMMAND.unlink()
+            command_path.unlink()
     try:
         proof = json.loads(receipt) if len(receipt) <= receipt_limit else None
         if not isinstance(proof, dict):
@@ -194,18 +196,19 @@ def inspect_source(repository, identity, commit, repository_id, mode, wire, comm
         if "code" in proof:
             code = proof["code"].encode("ascii")
             scan_failure = code.startswith((b"scan-", b"snapshot-")) and code in GUEST_ERRORS
-            if len(proof) == 1 and (scan_failure or (mode == "repair" and code in GUEST_REPAIR_ERRORS)):
+            if len(proof) == 1 and (scan_failure or (command is not None and code in GUEST_REPAIR_ERRORS)):
                 raise GuestFailure(code.decode("ascii"))
             raise ValueError()
     except (AttributeError, ValueError, RecursionError) as error:
         raise GuestFailure("scan-integrity") from error
-    wire.send(b"H" if mode == "repair" else b"N", receipt)
+    wire.send(b"H" if command is not None else b"N", receipt)
 
 
 def serve_source(wire, work):
     wire.greeting()
-    scenario, start = wire.receive({b"S": START.size, b"A": START.size, b"F": QUALIFIED_START.size, b"R": QUALIFIED_START.size})
-    if scenario in (b"F", b"R") and len(start) == QUALIFIED_START.size:
+    scenario, start = wire.receive({b"S": START.size, b"A": START.size, b"F": QUALIFIED_START.size,
+                                    b"R": QUALIFIED_START.size, b"L": QUALIFIED_START.size})
+    if scenario in (b"F", b"R", b"L") and len(start) == QUALIFIED_START.size:
         identity, commit_bytes, repository = QUALIFIED_START.unpack(start)
         repository_id = str(uuid.UUID(bytes=repository))
     elif scenario in (b"S", b"A") and len(start) == START.size:
@@ -223,11 +226,12 @@ def serve_source(wire, work):
         if wire.receive({b"X": len(CLOSED)})[1] != CLOSED:
             raise GuestFailure("guest-input")
         wire.send(b"M", verify_objects(repository, identity, commit))
-        if scenario == b"R":
+        if scenario in (b"R", b"L"):
             _, command = wire.receive({b"W": MAX_REPAIR_COMMAND})
             if not command:
                 raise GuestFailure("repair-invalid")
-            inspect_source(repository, identity, commit, repository_id, "repair", wire, command)
+            mode = "repair-observation" if scenario == b"L" else "repair"
+            inspect_source(repository, identity, commit, repository_id, mode, wire, command)
         elif scenario != b"S":
             mode = "qualified" if scenario == b"F" else "fixture"
             inspect_source(repository, identity, commit, repository_id, mode, wire)

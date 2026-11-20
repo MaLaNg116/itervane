@@ -103,3 +103,14 @@ class SourceExchangeTest(unittest.TestCase):
         self.assertEqual(guest.receive({b"X": len(CLOSED)})[1], CLOSED)
         self.assertEqual(guest.receive({b"W": len(command)})[1], command)
         self.assertEqual(self.probe.repair, proof)
+
+    def test_repair_observation_starts_a_distinct_read_only_job(self):
+        command = b"{}"
+        self.probe = SourceProbe(self.relay, repository_id=RUN, repair_command=command, repair_observation=True)
+        objects = RECEIPT.pack(self.identity, self.commit, b"t" * 20, b"d" * 32, 2)
+        proof = {"runId": RUN, "repositoryId": RUN, "commit": self.commit.hex(), "tree": (b"t" * 20).hex(), "files": 2,
+                 "commandSha256": hashlib.sha256(command).hexdigest(), "observation": {}}
+        code, guest = self.exchange([*self.acquire_and_close, (b"M", objects), (b"H", json.dumps(proof).encode())])
+        self.assertEqual(code, "repair_passed")
+        self.assertEqual(guest.receive({b"L": QUALIFIED_START.size})[1], QUALIFIED_START.pack(self.identity, self.commit, self.identity))
+        self.assertEqual(self.probe.repair, proof)

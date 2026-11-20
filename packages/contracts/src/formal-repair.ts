@@ -51,6 +51,36 @@ export type RepairPatch = z.infer<typeof repairPatchSchema>;
 export const repairCommandByteLimit = 2 * 1024 * 1024;
 export const repairCommandSchema = z.strictObject({ workspace: repairWorkspaceSchema, patch: repairPatchSchema });
 
+export const repairObservationWorkspaceSchema = repairWorkspaceSchema.omit({ editablePaths: true });
+export const repairTargetSchema = z.strictObject({
+  findingId: sha256Schema, path: pathSchema, scanner: z.enum(['gitleaks', 'trivy']), line: z.int().min(1).max(100000000).nullable(),
+});
+const uniqueTargets = (targets: Array<{ findingId: string; path: string }>) =>
+  new Set(targets.map(target => target.findingId + ':' + target.path.toLowerCase())).size === targets.length;
+export const repairTargetsSchema = z.array(repairTargetSchema).min(1).max(repairPatchLimits.files).refine(uniqueTargets);
+export const repairObservationCommandSchema = z.strictObject({ workspace: repairObservationWorkspaceSchema, targets: repairTargetsSchema });
+export const repairTemplateIdSchema = z.enum(['remove-env-entry-v1']);
+const observedRangeSchema = z.strictObject({ startByte: offset, endByte: offset, sha256: sha256Schema })
+  .refine(range => range.startByte < range.endByte);
+const observedFileSchema = z.strictObject({ sha256: sha256Schema, bytes: offset });
+const repairTargetObservationSchema = repairTargetSchema.extend({
+  status: z.enum(['text', 'binary', 'protected', 'missing']),
+  file: observedFileSchema.nullable(), range: observedRangeSchema.nullable(),
+  templates: z.array(repairTemplateIdSchema).max(1),
+}).refine(target => {
+  if (target.status === 'protected' || target.status === 'missing') return !target.file && !target.range && !target.templates.length;
+  if (!target.file) return false;
+  if (target.range && (target.status !== 'text' || target.line === null || target.range.endByte > target.file.bytes)) return false;
+  return target.templates.length === 0 || (target.range !== null && target.scanner === 'gitleaks');
+});
+export const repairObservationSchema = z.strictObject({
+  version: z.literal(1), operationId: idSchema, repairInputSha256: sha256Schema, baseSnapshotSha256: sha256Schema,
+  targets: z.array(repairTargetObservationSchema).min(1).max(repairPatchLimits.files).refine(uniqueTargets),
+});
+export type RepairTarget = z.infer<typeof repairTargetSchema>;
+export type RepairObservationWorkspace = z.infer<typeof repairObservationWorkspaceSchema>;
+export type RepairObservation = z.infer<typeof repairObservationSchema>;
+
 const candidateManifestFile = z.strictObject({
   path: pathSchema, mode: z.enum(['100644', '100755']), bytes: offset, sha256: sha256Schema,
 });

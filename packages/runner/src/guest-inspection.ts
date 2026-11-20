@@ -107,7 +107,7 @@ function summarize(scan: ScanSummary) {
 /** Runs from the sealed scan service after its kernel boundary checks. */
 export async function inspectGuestSnapshot(ready: string, tools: string) {
   const { runId, mode, manifest } = readGuestSnapshot(ready);
-  if (mode === 'repair') throw new Error('scan-boundary');
+  if (mode !== 'qualified' && mode !== 'fixture') throw new Error('scan-boundary');
   const { inputs, inputsSha256 } = await verifyInputs(tools);
   const output = mkdtempSync(join(tmpdir(), 'itervane-raw-scan-'));
   try {

@@ -4,13 +4,16 @@ import { dirname, isAbsolute } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   qualifiedInspectionRequestSchema, qualifiedInspectionResponseSchema, qualifiedInspectionStatusSchema, qualifiedRunnerRejectionSchema,
+  qualifiedRepairObservationRequestSchema, qualifiedRepairObservationResponseSchema,
   qualifiedRepairRequestSchema, qualifiedRepairResponseSchema, sha256Schema,
   type QualifiedInspectionReceipt, type QualifiedInspectionRequest, type QualifiedInspectionResponse,
   type InspectionPlan, type QualifiedInspectionScope, type QualifiedInspectionStatus,
   type QualifiedRepairReceipt, type QualifiedRepairRequest, type QualifiedRepairResponse, type RepairPatch, type RepairWorkspace,
+  type QualifiedRepairObservationReceipt, type QualifiedRepairObservationRequest, type QualifiedRepairObservationResponse,
+  type RepairObservationWorkspace, type RepairTarget,
 } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from './profiles.js';
-import { canonicalRepairCommand } from './repair-command.js';
+import { canonicalRepairCommand, canonicalRepairObservation, protectedRepairPath } from './repair-command.js';
 import { sourcePath } from './snapshot.js';
 
 const requestLimit = 2048;
@@ -23,6 +26,8 @@ export type QualifiedControllerAddress = {
 };
 type Rejected = Extract<QualifiedInspectionResponse, { kind: 'rejected' }>;
 type RepairCoordinates = Omit<QualifiedRepairRequest, 'operation' | 'commandBytes' | 'commandSha256'>;
+type RepairRequest = QualifiedRepairRequest | QualifiedRepairObservationRequest;
+type RepairReceipt = QualifiedRepairReceipt | QualifiedRepairObservationReceipt;
 
 class Lines {
   private readonly iterator;
@@ -90,17 +95,29 @@ export function verifyQualifiedInspectionReceipt(receipt: QualifiedInspectionRec
   }
 }
 
-export function verifyQualifiedRepairReceipt(receipt: QualifiedRepairReceipt, request: QualifiedRepairRequest,
-  command: ReturnType<typeof canonicalRepairCommand>, imageSha256: string) {
+function requireRepairSource(receipt: RepairReceipt, request: RepairRequest, imageSha256: string) {
   const { origin, ...scope } = request;
   const { snapshot } = receipt;
-  const { candidate } = snapshot;
   if (Object.entries(scope).some(([key, value]) => receipt.scope[key as keyof typeof scope] !== value)
       || receipt.imageSha256 !== imageSha256 || receipt.originSha256 !== sha256(origin)
       || receipt.domainId !== snapshot.runId || snapshot.commit !== scope.commit || snapshot.repositoryId !== scope.repositoryId
-      || snapshot.manifestSha256 !== scope.baseSnapshotSha256 || snapshot.commandSha256 !== scope.commandSha256
-      || candidate.operationId !== scope.operationId || candidate.repairInputSha256 !== scope.repairInputSha256
-      || candidate.baseSnapshotSha256 !== scope.baseSnapshotSha256 || candidate.patchSha256 !== command.patchSha256
+      || snapshot.manifestSha256 !== scope.baseSnapshotSha256 || snapshot.commandSha256 !== scope.commandSha256) {
+    throw new Error('runner_repair_receipt_binding');
+  }
+}
+
+function requireRepairWorkspace(fixed: RepairObservationWorkspace, request: RepairRequest) {
+  if (fixed.operationId !== request.operationId || fixed.repairInputSha256 !== request.repairInputSha256
+      || fixed.source.repositoryId !== request.repositoryId || fixed.source.commit !== request.commit
+      || fixed.baseSnapshotSha256 !== request.baseSnapshotSha256) throw new Error('runner_repair_request_binding');
+}
+
+export function verifyQualifiedRepairReceipt(receipt: QualifiedRepairReceipt, request: QualifiedRepairRequest,
+  command: ReturnType<typeof canonicalRepairCommand>, imageSha256: string) {
+  requireRepairSource(receipt, request, imageSha256);
+  const { candidate } = receipt.snapshot;
+  if (candidate.operationId !== request.operationId || candidate.repairInputSha256 !== request.repairInputSha256
+      || candidate.baseSnapshotSha256 !== request.baseSnapshotSha256 || candidate.patchSha256 !== command.patchSha256
       || candidate.workspaceSha256 !== command.workspaceSha256 || candidate.changes.length !== command.patch.files.length) {
     throw new Error('runner_repair_receipt_binding');
   }
@@ -112,6 +129,19 @@ export function verifyQualifiedRepairReceipt(receipt: QualifiedRepairReceipt, re
       throw new Error('runner_repair_receipt_change');
     }
   }
+}
+
+export function verifyQualifiedRepairObservation(receipt: QualifiedRepairObservationReceipt, request: QualifiedRepairObservationRequest,
+  command: ReturnType<typeof canonicalRepairObservation>, imageSha256: string) {
+  requireRepairSource(receipt, request, imageSha256);
+  const { observation } = receipt.snapshot;
+  if (observation.operationId !== request.operationId || observation.repairInputSha256 !== request.repairInputSha256
+      || observation.baseSnapshotSha256 !== request.baseSnapshotSha256 || observation.targets.length !== command.targets.length
+      || observation.targets.some(({ findingId, path, scanner, line, status }, index) => {
+        const target = command.targets[index]!;
+        return target.findingId !== findingId || target.path !== path || target.scanner !== scanner || target.line !== line
+          || protectedRepairPath(path, command.workspace.protectedPaths) !== (status === 'protected');
+      })) throw new Error('runner_repair_observation_binding');
 }
 
 export class QualifiedInspectionClient {
@@ -162,10 +192,7 @@ export class QualifiedInspectionClient {
     const command = canonicalRepairCommand(workspace, patch);
     const request = qualifiedRepairRequestSchema.parse({ ...rawRequest, operation: 'apply_repair',
       commandSha256: sha256(command.bytes), commandBytes: command.bytes.length });
-    const fixed = command.workspace;
-    if (fixed.operationId !== request.operationId || fixed.repairInputSha256 !== request.repairInputSha256
-        || fixed.source.repositoryId !== request.repositoryId || fixed.source.commit !== request.commit
-        || fixed.baseSnapshotSha256 !== request.baseSnapshotSha256) throw new Error('runner_repair_request_binding');
+    requireRepairWorkspace(command.workspace, request);
     return this.execute(request, authorize, signal, line => {
       const response = qualifiedRepairResponseSchema.parse(JSON.parse(line));
       if (response.kind === 'repair_receipt') verifyQualifiedRepairReceipt(response, request, command, this.imageSha256);
@@ -173,8 +200,21 @@ export class QualifiedInspectionClient {
     }, command.bytes);
   }
 
-  private async execute<Response extends QualifiedInspectionResponse | QualifiedRepairResponse>(
-    request: QualifiedInspectionRequest | QualifiedRepairRequest, authorize: () => Promise<void>, signal: AbortSignal | undefined,
+  async observeRepair(rawRequest: RepairCoordinates, workspace: RepairObservationWorkspace, targets: readonly RepairTarget[],
+    authorize: () => Promise<void>, signal?: AbortSignal): Promise<QualifiedRepairObservationResponse> {
+    const command = canonicalRepairObservation({ workspace, targets });
+    const request = qualifiedRepairObservationRequestSchema.parse({ ...rawRequest, operation: 'observe_repair',
+      commandSha256: sha256(command.bytes), commandBytes: command.bytes.length });
+    requireRepairWorkspace(command.workspace, request);
+    return this.execute(request, authorize, signal, line => {
+      const response = qualifiedRepairObservationResponseSchema.parse(JSON.parse(line));
+      if (response.kind === 'repair_observation') verifyQualifiedRepairObservation(response, request, command, this.imageSha256);
+      return response;
+    }, command.bytes);
+  }
+
+  private async execute<Response extends QualifiedInspectionResponse | QualifiedRepairResponse | QualifiedRepairObservationResponse>(
+    request: QualifiedInspectionRequest | RepairRequest, authorize: () => Promise<void>, signal: AbortSignal | undefined,
     decode: (line: string) => Response, command?: Buffer,
   ): Promise<Response | Rejected> {
     const requestFrame = Buffer.from(JSON.stringify(request) + '\n');

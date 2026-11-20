@@ -130,6 +130,7 @@ class ControllerTest(unittest.TestCase):
         proposal = {"baseSnapshotSha256": data["baseSnapshotSha256"]}
         body = json.dumps({"workspace": workspace, "patch": proposal}).encode()
         original = {**data, "commandSha256": hashlib.sha256(body).hexdigest(), "commandBytes": len(body)}
+        confused = {**original, "operation": controller.OBSERVE_REPAIR}
         stale = json.dumps({"workspace": workspace, "patch": {"baseSnapshotSha256": "f" * 64}}).encode()
         stale_request = {**data, "commandSha256": hashlib.sha256(stale).hexdigest(), "commandBytes": len(stale)}
         launch = Mock(return_value=Result("not_ready"))
@@ -137,6 +138,7 @@ class ControllerTest(unittest.TestCase):
             (False, original, b"", "not_ready"),
             (True, original, b"C", "lease_lost"),
             (True, original, b"K" + b"[" * len(body), "invalid_request"),
+            (True, confused, b"K" + body, "invalid_request"),
             (True, stale_request, b"K" + stale, "invalid_request"),
             (True, original, b"K" + body, "not_ready"),
         ):

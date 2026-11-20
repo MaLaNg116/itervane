@@ -34,6 +34,8 @@ IDS = ("requestId", "taskId", "runId", "projectId", "repositoryId")
 COUNTERS = ("generation", "fence")
 FIELDS = {*IDS, *COUNTERS, "version", "planSha256", "workspaceSha256", "commit", "origin"}
 REPAIR = "apply_repair"
+OBSERVE_REPAIR = "observe_repair"
+REPAIR_OPERATIONS = (REPAIR, OBSERVE_REPAIR)
 REPAIR_DIGESTS = ("repairInputSha256", "baseSnapshotSha256", "commandSha256")
 REPAIR_FIELDS = (FIELDS - {"planSha256"}) | {"operation", "operationId", "commandBytes", *REPAIR_DIGESTS}
 PEER = struct.Struct("3i")
@@ -62,7 +64,7 @@ def parse_request(line):
     data = json.loads(line, object_pairs_hook=unique_fields)
     if not isinstance(data, dict):
         raise ValueError("invalid request fields")
-    repair = data.get("operation") == REPAIR
+    repair = data.get("operation") in REPAIR_OPERATIONS
     if data.keys() != (REPAIR_FIELDS if repair else FIELDS) or type(data["version"]) is not int or data["version"] != 1:
         raise ValueError("invalid request fields")
     if not all(is_v4(data[name]) for name in IDS) or (repair and not is_v4(data["operationId"])):
@@ -115,16 +117,24 @@ def read_command(connection, request):
     if hashlib.sha256(data).hexdigest() != request["commandSha256"]:
         raise ValueError("repair command digest mismatch")
     command = json.loads(data, object_pairs_hook=unique_fields)
-    if not isinstance(command, dict) or command.keys() != {"workspace", "patch"}:
+    field = "patch" if request["operation"] == REPAIR else "targets"
+    if not isinstance(command, dict) or command.keys() != {"workspace", field}:
         raise ValueError("invalid repair command")
-    workspace, patch = command["workspace"], command["patch"]
+    workspace = command["workspace"]
     source = {"repositoryId": request["repositoryId"], "commit": request["commit"]}
     if (
-        not isinstance(workspace, dict) or not isinstance(patch, dict) or workspace.get("source") != source
+        not isinstance(workspace, dict) or workspace.get("source") != source
         or any(workspace.get(field) != request[field] for field in ("operationId", "repairInputSha256", "baseSnapshotSha256"))
-        or patch.get("baseSnapshotSha256") != request["baseSnapshotSha256"]
     ):
         raise ValueError("repair command authority mismatch")
+    if field == "patch":
+        patch = command["patch"]
+        if not isinstance(patch, dict) or patch.get("baseSnapshotSha256") != request["baseSnapshotSha256"]:
+            raise ValueError("repair command authority mismatch")
+    else:
+        targets = command["targets"]
+        if not isinstance(targets, list) or not 0 < len(targets) <= 8:
+            raise ValueError("invalid repair targets")
     return bytes(data)
 
 
@@ -191,21 +201,23 @@ def rejected(code, request_id=None, cleanup="not_started", domain_id=None):
 
 def response_for(request, result):
     request_id = request["requestId"]
-    repair = request.get("operation") == REPAIR
+    repair = request.get("operation") in REPAIR_OPERATIONS
+    observation = request.get("operation") == OBSERVE_REPAIR
     expected_code = "repair_passed" if repair else "inspection_passed"
     snapshot = result.repair if repair else result.inspection
     if (
         result.code == expected_code and result.cleanupConfirmed and result.sessionVerified
         and result.runId and result.imageSha256 and result.source and isinstance(snapshot, dict) and snapshot
     ):
-        candidate = snapshot.get("candidate") if repair else None
+        evidence = snapshot.get("observation" if observation else "candidate") if repair else None
         if not repair or (
-            snapshot.get("commandSha256") == request["commandSha256"] and isinstance(candidate, dict)
-            and snapshot.get("manifestSha256") == candidate.get("baseSnapshotSha256") == request["baseSnapshotSha256"]
-            and candidate.get("repairInputSha256") == request["repairInputSha256"] and candidate.get("operationId") == request["operationId"]
+            snapshot.get("commandSha256") == request["commandSha256"] and isinstance(evidence, dict)
+            and snapshot.get("manifestSha256") == evidence.get("baseSnapshotSha256") == request["baseSnapshotSha256"]
+            and evidence.get("repairInputSha256") == request["repairInputSha256"] and evidence.get("operationId") == request["operationId"]
         ):
+            kind = "repair_observation" if observation else "repair_receipt" if repair else "receipt"
             return {
-                "kind": "repair_receipt" if repair else "receipt",
+                "kind": kind,
                 "scope": {key: value for key, value in request.items() if key != "origin"},
                 "domainId": result.runId, "imageSha256": result.imageSha256, "originSha256": result.source.originSha256,
                 "commitSha256": result.source.commitSha256, "cleanupConfirmed": True, "sessionVerified": True,
@@ -235,7 +247,7 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
         request = parse_request(frame)
     except (OSError, ValueError, RecursionError):
         return rejected("invalid_request")
-    repair = request.get("operation") == REPAIR
+    repair = request.get("operation") in REPAIR_OPERATIONS
     if request["workspaceSha256"] != fingerprint or (repair and not enable_repair):
         return rejected("not_ready", request["requestId"])
     origin = origins.get(request["origin"])
@@ -346,7 +358,8 @@ def main():
         def launch(request, origin, cancelled, command):
             if not workspace_idle(libvirt, root, image, fingerprint):
                 return Result("pending_cleanup")
-            job = SourceProbe(SourceGateway(origin, request["commit"]), repository_id=request["repositoryId"], repair_command=command)
+            job = SourceProbe(SourceGateway(origin, request["commit"]), repository_id=request["repositoryId"],
+                              repair_command=command, repair_observation=request.get("operation") == OBSERVE_REPAIR)
             return probe(libvirt, libvirt_qemu, root, image, digest, cancelled, "inspect", True, source_override=job)
 
         run_server(path, worker_uid, origins, fingerprint, observe, launch, stopped, enable_repair)

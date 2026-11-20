@@ -6,15 +6,14 @@ import {
 } from '@itervane/contracts';
 import { readBoundedFile, readGuestSnapshotData } from './guest-snapshot.js';
 import { sha256, sourceLimits } from './profiles.js';
-import { canonicalRepairCommand } from './repair-command.js';
+import { canonicalRepairCommand, protectedRepairPath } from './repair-command.js';
+import { readRepairSource, repairText } from './guest-repair-source.js';
 
 const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 type RepairCommand = ReturnType<typeof canonicalRepairCommand>;
 
 function editText(content: Buffer, edits: RepairPatch['files'][number]['edits']) {
-  try {
-    if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(decoder.decode(content))) throw new Error('control byte');
-  } catch { throw new Error('repair-text'); }
+  if (repairText(content) === null) throw new Error('repair-text');
 
   const isBoundary = (offset: number) => offset === content.length || (offset < content.length && (content[offset]! & 0xc0) !== 0x80);
   const parts: Buffer[] = [];
@@ -36,14 +35,12 @@ function prepareCandidate({ manifest: base, files }: ReturnType<typeof readGuest
       || workspace.baseSnapshotSha256 !== base.sha256) throw new Error('repair-base');
 
   const editable = new Set(workspace.editablePaths);
-  const protectedPaths = workspace.protectedPaths.map(path => path.toLowerCase());
   const contents = new Map(files.map(file => [file.path, file.content]));
   const metadata = new Map(base.files.map(file => [file.path, file]));
   const changes: { path: string; beforeSha256: string; afterSha256: string; beforeBytes: number; afterBytes: number; edits: number }[] = [];
   let totalBytes = base.totalBytes;
   for (const { path, beforeSha256, edits } of patch.files) {
-    const folded = path.toLowerCase();
-    if (!editable.has(path) || protectedPaths.some(protectedPath => folded === protectedPath || folded.startsWith(protectedPath + '/'))) {
+    if (!editable.has(path) || protectedRepairPath(path, workspace.protectedPaths)) {
       throw new Error('repair-scope');
     }
     const before = metadata.get(path);
@@ -109,13 +106,7 @@ export function repairQualifiedGuestSnapshot(source: string, output: string) {
     throw new Error('repair-invalid');
   }
   if (!bytes.equals(command.bytes)) throw new Error('repair-invalid');
-  const fixed = readGuestSnapshotData(join(source, 'ready'));
-  if (fixed.mode !== 'repair') throw new Error('repair-integrity');
-  const { manifest } = fixed;
+  const { fixed, proof } = readRepairSource(source, bytes, 'repair');
   const candidate = publishCandidate(output, fixed, command);
-  return qualifiedGuestRepairProofSchema.parse({
-    runId: fixed.runId, repositoryId: manifest.source.repositoryId, commit: manifest.source.commit,
-    tree: manifest.tree, manifestSha256: manifest.sha256, files: manifest.files.length,
-    commandSha256: sha256(bytes), readOnly: true, offline: true, candidate,
-  });
+  return qualifiedGuestRepairProofSchema.parse({ ...proof, candidate });
 }

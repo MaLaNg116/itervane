@@ -37,14 +37,17 @@ class SourceEvidence:
 class SourceProbe:
     port = SOURCE_PORT
 
-    def __init__(self, gateway, inspect=False, repository_id=None, repair_command=None):
+    def __init__(self, gateway, inspect=False, repository_id=None, repair_command=None, repair_observation=False):
         if repair_command is not None and (repository_id is None or not 0 < len(repair_command) <= MAX_REPAIR_COMMAND):
             raise ValueError("invalid repair command")
+        if repair_observation and repair_command is None:
+            raise ValueError("missing repair observation command")
         self.gateway = gateway
         self.evidence = None
         self.inspect = inspect or repository_id is not None
         self.repository_id = repository_id
         self.repair_command = repair_command
+        self.repair_observation = repair_observation
         self.inspection = None
         self.repair = None
         self.scan_deadline = None
@@ -68,7 +71,7 @@ class SourceProbe:
         if self.repository_id is None:
             wire.send(b"A" if self.inspect else b"S", START.pack(identity, commit))
         else:
-            start = b"F" if self.repair_command is None else b"R"
+            start = b"L" if self.repair_observation else b"R" if self.repair_command is not None else b"F"
             wire.send(start, QUALIFIED_START.pack(identity, commit, uuid.UUID(self.repository_id).bytes))
         self.phase = "source-fetch"
         while True:
