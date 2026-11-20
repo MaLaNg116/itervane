@@ -28,17 +28,19 @@ type AgentStatus = Stop['status'] | 'paused';
 const graphState = Annotation.Root({ state: Annotation<AgentState>() });
 
 function agentReport<Origin extends AgentOrigin>(origin: Origin, spec: AgentSpec, bindingSha256: string,
-  status: AgentStatus, reason: AgentReason, state?: AgentState) {
+  status: AgentStatus, reason: AgentReason, state?: AgentState, checkpointId?: string) {
   const visible = reason === 'permission_denied' ? undefined : state;
   return {
     runId: spec.runId, status, reason, message: agentText(spec.locale).reason[reason],
     origin, releaseEligible: false as const, bindingSha256,
+    ...(checkpointId ? { checkpointId } : {}),
     role: state?.role ?? 'audit', usage: state?.usage ?? { turns: 0, toolCalls: 0, tokens: 0 },
     trace: visible?.trace.map(({ call, ...item }) => ({ ...item, tool: call.name })) ?? [], evidence: visible?.evidence ?? [],
     audit: visible?.audit ?? null, repairs: visible?.repairs ?? [], verifications: visible?.verifications ?? [],
   };
 }
 export type AgentFixtureReport = ReturnType<typeof agentReport<'trusted_fixture'>>;
+export type FormalAuditReport = ReturnType<typeof agentReport<'formal_audit'>>;
 
 function bounded<T>(signal: AbortSignal, start: () => Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -177,8 +179,8 @@ function createHarness<Profile extends HarnessProfile>({ model, checkpointer, ho
     const { limits } = spec;
     const formal = profile.origin === 'formal_audit';
     const ruleIds = formal ? profile.ruleIds : [];
-    const report = (status: AgentStatus, reason: AgentReason, state?: AgentState) =>
-      agentReport<Profile['origin']>(origin, spec, bindingSha256, status, reason, state);
+    const report = (status: AgentStatus, reason: AgentReason, state?: AgentState, checkpointId?: string) =>
+      agentReport<Profile['origin']>(origin, spec, bindingSha256, status, reason, state, checkpointId);
     const permits = (role: DeliveryRole, call: PlannedTool) => canCall(role, call.name, origin)
       && (!formal || call.name !== 'read_rule' || ruleIds.includes(call.args.ruleId));
     const externalSignal = options.signal;
@@ -306,25 +308,41 @@ function createHarness<Profile extends HarnessProfile>({ model, checkpointer, ho
     };
     try {
       const checkpoint = await graph.getState(config);
-      const existing = checkpoint.config?.configurable?.checkpoint_id !== undefined || checkpoint.values?.state !== undefined;
+      const publishedId = checkpoint.config?.configurable?.checkpoint_id;
+      const checkpointId = formal && typeof publishedId === 'string' ? publishedId : undefined;
+      const existing = publishedId !== undefined || checkpoint.values?.state !== undefined;
       const state = existing ? restoreState(checkpoint.values?.state, spec, bindingSha256, origin) : initialState(spec, bindingSha256);
-      if (!state) return report('requires_human', 'incompatible_checkpoint');
+      if (!state) return report('requires_human', 'incompatible_checkpoint', undefined, checkpointId);
       if (state.stop || state.pending) {
         if (!await authorized(state, signalFor(Date.now() + Math.min(1_000, limits.maxDurationMs)))) {
           return report(externalSignal?.aborted ? 'cancelled' : 'requires_human',
             externalSignal?.aborted ? 'cancelled' : 'permission_denied');
         }
         return state.stop
-          ? report(state.stop.status, state.stop.reason, state)
-          : report('requires_human', 'interrupted_action', state);
+          ? report(state.stop.status, state.stop.reason, state, checkpointId)
+          : report('requires_human', 'interrupted_action', state, checkpointId);
       }
       const expired = lapse(state);
-      if (expired?.stop) return report(expired.stop.status, expired.stop.reason);
+      if (expired?.stop) {
+        if (formal && checkpointId && !await authorized(state, signalFor(Date.now() + 1_000))) {
+          return report('requires_human', 'permission_denied');
+        }
+        return report(expired.stop.status, expired.stop.reason, checkpointId ? state : undefined, checkpointId);
+      }
       if (existing && (checkpoint.next.length !== 1 || checkpoint.next[0] !== 'reserve')) {
-        return report('requires_human', 'incompatible_checkpoint');
+        return report('requires_human', 'incompatible_checkpoint', undefined, checkpointId);
       }
       const interruptAfter = options.pauseAfter ? [options.pauseAfter === 'decision' ? 'decision' : 'reserve'] as const : [];
       const result = (await graph.invoke(existing ? null : { state }, { ...config, interruptAfter: [...interruptAfter] })).state;
+      if (formal && result.stop) {
+        // Bind formal outcomes to the guarded, published snapshot, including only acknowledged writes.
+        const saved = await graph.getState(config);
+        const savedId = saved.config?.configurable?.checkpoint_id;
+        const settled = restoreState(saved.values?.state, spec, bindingSha256, origin);
+        return typeof savedId === 'string' && settled?.stop
+          ? report(settled.stop.status, settled.stop.reason, settled, savedId)
+          : report('requires_human', 'checkpoint_unavailable');
+      }
       return result.stop
         ? report(result.stop.status, result.stop.reason, result)
         : report('paused', 'checkpoint_paused', result);

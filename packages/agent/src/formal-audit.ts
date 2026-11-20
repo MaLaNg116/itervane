@@ -3,9 +3,10 @@ import {
 } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
 import type { BaseCheckpointSaver } from '@langchain/langgraph';
-import { auditFindingsPerScan, auditScannerSchema, sha256, shaSchema, type AgentSpec, type FormalAuditReceipt } from './contracts.js';
+import { auditFindingsPerScan, auditScannerSchema, formalReceiptSchema, sha256, shaSchema, type AgentSpec, type FormalAuditReceipt } from './contracts.js';
 import { createFormalAuditHarness, type AgentHost, type AgentRunOptions } from './harness.js';
 import { agentText } from './messages.js';
+import { finishFormalAudit } from './results.js';
 
 type Scan = QualifiedInspectionReceipt['snapshot']['reports'][number];
 const severityRank = { critical: 0, high: 1, medium: 2, low: 3, unknown: 4 };
@@ -44,7 +45,7 @@ export function createFormalAudit({ input, inspection, checkpointer, model, prov
     || pinned.requestId !== scope.requestId || pinned.planSha256 !== scope.planSha256
     || document.taskId !== scope.taskId || document.runId !== scope.runId || document.projectId !== scope.projectId
     || document.generation !== scope.generation || document.source.repositoryId !== scope.repositoryId || document.source.commit !== scope.commit
-    || receipt.snapshot.runId !== scope.runId || receipt.snapshot.repositoryId !== scope.repositoryId || receipt.snapshot.commit !== scope.commit
+    || receipt.snapshot.runId !== receipt.domainId || receipt.snapshot.repositoryId !== scope.repositoryId || receipt.snapshot.commit !== scope.commit
     || pinned.snapshotSha256 !== receipt.snapshot.manifestSha256) throw new Error('formal_audit_receipt_binding');
 
   const reports = new Map(receipt.snapshot.reports.map(scan => [scan.scanner, scan]));
@@ -53,21 +54,19 @@ export function createFormalAudit({ input, inspection, checkpointer, model, prov
     if (!scan || scan.status !== 'completed' || scan.snapshotSha256 !== pinned.snapshotSha256) throw new Error('formal_audit_scan_incomplete');
     return [scanner, projectScan(scan, pinned.receiptSha256, document.locale)] as const;
   }));
-  const rules = new Map(document.catalog.rules.map(rule => [rule.material.id, rule]));
+  const rules = new Map(document.catalog.rules.map(rule => {
+    const { guidance, limitation } = rule.material.text[document.locale];
+    return [rule.material.id, { kind: 'rule' as const, ruleId: rule.material.id, sha256: rule.sha256,
+      guidance: guidance.slice(0, 480).toWellFormed(), limitation: limitation.slice(0, 480).toWellFormed() }];
+  }));
+  if (rules.size !== document.catalog.rules.length) throw new Error('formal_audit_catalog_duplicate');
   const host: AgentHost = {
     authorize,
     async observe({ scope: current, call, signal }) {
       signal.throwIfAborted();
       const base = { origin: 'formal_audit' as const, bindingSha256: current.bindingSha256, snapshotSha256: pinned.snapshotSha256 };
       if (call.name === 'read_scan') return { ...base, data: scans.get(call.args.scanner) };
-      if (call.name === 'read_rule') {
-        const rule = rules.get(call.args.ruleId);
-        if (rule) {
-          const { guidance, limitation } = rule.material.text[document.locale];
-          return { ...base, data: { kind: 'rule', ruleId: rule.material.id, sha256: rule.sha256,
-            guidance: guidance.slice(0, 480).toWellFormed(), limitation: limitation.slice(0, 480).toWellFormed() } };
-        }
-      }
+      if (call.name === 'read_rule') return { ...base, data: rules.get(call.args.ruleId) };
       throw new Error('formal_audit_tool_denied');
     },
   };
@@ -79,5 +78,24 @@ export function createFormalAudit({ input, inspection, checkpointer, model, prov
   const harness = createFormalAuditHarness({ checkpointer, model, host }, {
     inputSha256: input.sha256, providerSha256: shaSchema.parse(providerSha256), ruleIds: [...rules.keys()],
   });
-  return { run: (options?: AgentRunOptions) => harness.run(spec, options) };
+  return {
+    async run(options?: AgentRunOptions) {
+      const report = await harness.run(spec, options);
+      if (!report.checkpointId) return report;
+      for (const { id, data } of report.evidence) {
+        const expected = data.kind === 'scan' ? scans.get(data.scanner) : data.kind === 'rule' ? rules.get(data.ruleId) : undefined;
+        const canonical = formalReceiptSchema.parse({ origin: 'formal_audit', bindingSha256: report.bindingSha256,
+          snapshotSha256: pinned.snapshotSha256, data: expected });
+        if (sha256(JSON.stringify(canonical)) !== id) throw new Error('formal_audit_checkpoint_evidence');
+      }
+      if (report.audit) {
+        const { summary, evidenceIds, hypotheses, findings } = report.audit;
+        const audit = finishFormalAudit(report.evidence, { summary, evidenceIds, hypotheses,
+          explanations: findings.map(({ id, impact, suggestion }) => ({ findingId: id, impact, suggestion })),
+        }, document.locale);
+        if (JSON.stringify(audit) !== JSON.stringify(report.audit)) throw new Error('formal_audit_checkpoint_conclusion');
+      }
+      return report;
+    },
+  };
 }

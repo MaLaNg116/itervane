@@ -6,10 +6,10 @@ import { eventReasonMessages, sourceInspectionObservationSchema, sourceInspectio
   type SourceInspectionPauseReason, type ToolResult } from '@itervane/contracts';
 import { queueName, type Database } from '../persistence/database.js';
 import { DomainError } from '../service/errors.js';
-import { prepareFormalAuditInput } from '../service/formal-audit.js';
 import { BudgetExhausted, ExecutionLost, type ExecutionScope } from './authority.js';
 import { GuardedCheckpointer } from './checkpointer.js';
 import { ExecutionCoordinator } from './coordinator.js';
+import { runFormalAudit, type AuditModel } from './formal-audit.js';
 import { ToolGateway } from './tools.js';
 import type { InspectionRunner } from './source-inspection.js';
 
@@ -36,14 +36,17 @@ export class DurableWorker {
   readonly coordinator: ExecutionCoordinator;
   readonly gateway: ToolGateway;
   private readonly saver: PostgresSaver;
+  private readonly auditModel: AuditModel | undefined;
   private active: Promise<boolean> | undefined;
   private abort: AbortController | undefined;
   private closing = false;
   private closePromise: Promise<void> | undefined;
 
-  constructor(readonly database: Database, connectionString: string, options: { leaseSeconds?: number; runner?: InspectionRunner } = {}) {
+  constructor(readonly database: Database, connectionString: string,
+    options: { leaseSeconds?: number; runner?: InspectionRunner; auditModel?: AuditModel } = {}) {
     this.coordinator = new ExecutionCoordinator(database, options);
     this.gateway = new ToolGateway(this.coordinator, options.runner);
+    this.auditModel = options.auditModel;
     const pool = new pg.Pool({ connectionString, max: 2, connectionTimeoutMillis: 3_000, statement_timeout: 5_000, idle_in_transaction_session_timeout: 5_000 });
     pool.on('error', () => console.error(JSON.stringify({ level: 'error', code: 'infrastructure_error', component: 'checkpointer' })));
     this.saver = new PostgresSaver(pool, undefined, { schema: 'itervane_checkpoint' });
@@ -75,6 +78,7 @@ export class DurableWorker {
         .finally(() => { heartbeat = undefined; });
     }, this.coordinator.leaseSeconds * 1_000 / 3);
     timer.unref();
+    let auditing = false;
     try {
       const runtime = await this.coordinator.withLease(scope, async (_tx, current) => current.runtime);
       const saver = new GuardedCheckpointer(this.coordinator, scope, this.saver);
@@ -101,21 +105,26 @@ export class DurableWorker {
       const config = { configurable: { thread_id: saver.threadId }, recursionLimit: 12 };
       const snapshot = runtime.checkpointId ? await graph.getState(config) : undefined;
       const interrupted = snapshot?.tasks.some(task => task.interrupts?.length);
-      const input = !runtime.checkpointId ? {} : runtime.resumePending && interrupted ? new Command({ resume: 'retry_preflight' }) : null;
-      await graph.invoke(input, config);
+      let result = snapshot;
+      if (!interrupted || snapshot?.values.inspectionReason !== 'inspection_ready') {
+        const input = !runtime.checkpointId ? {} : runtime.resumePending && interrupted ? new Command({ resume: 'retry_preflight' }) : null;
+        await graph.invoke(input, config);
+        result = await graph.getState(config);
+      }
       controller.signal.throwIfAborted();
-      const result = await graph.getState(config);
-      if (!result.tasks.some(task => task.interrupts?.length)) throw new DomainError('unavailable');
+      if (!result?.tasks.some(task => task.interrupts?.length)) throw new DomainError('unavailable');
       const reason = sourceInspectionPauseReasonSchema.parse(result.values.inspectionReason ?? 'runner_unavailable');
       if (reason === 'inspection_ready') {
-        await this.coordinator.withLease(scope, (tx, { task }) => prepareFormalAuditInput(tx, task, scope));
+        auditing = true;
+        if (await runFormalAudit(this.coordinator, scope, this.saver, this.auditModel, controller.signal)) return;
       }
       await this.coordinator.pause(scope, reason);
     } catch (error) {
       if (!this.closing) {
         const reason = error instanceof BudgetExhausted ? 'budget_exhausted'
           : error instanceof DomainError && ['forbidden', 'not_found'].includes(error.code) ? 'permission_revoked'
-          : error instanceof ExecutionLost ? 'cancelled' : controller.signal.aborted ? 'cancelled_or_interrupted' : 'execution_error';
+          : error instanceof ExecutionLost ? 'cancelled' : controller.signal.aborted ? 'cancelled_or_interrupted'
+          : auditing ? 'audit_failed' : 'execution_error';
         try { await this.coordinator.stop(scope, reason, error instanceof ExecutionLost); }
         catch (stopError) { if (!(stopError instanceof ExecutionLost)) throw stopError; }
       }

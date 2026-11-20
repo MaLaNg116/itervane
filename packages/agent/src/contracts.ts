@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { idSchema, localeSchema, sourceRefSchema } from '@itervane/contracts';
+import { auditFindingsPerScan, auditScannerSchema, idSchema, localeSchema, sourceRefSchema } from '@itervane/contracts';
 import { z } from 'zod';
 
 export const shaSchema = z.string().regex(/^[a-f0-9]{64}$/);
@@ -30,7 +30,7 @@ export function sha256(value: string) { return createHash('sha256').update(value
 export const checkKinds = ['rescan', 'baseline', 'targeted'] as const;
 export const checkKindSchema = z.enum(checkKinds);
 export const contextSectionSchema = z.enum(['overview', 'display', 'pagination']);
-export const auditScannerSchema = z.enum(['gitleaks', 'trivy']);
+export { auditFindingsPerScan, auditScannerSchema };
 const auditFindingId = z.union([keySchema, shaSchema]);
 export const findingIdsSchema = z.array(keySchema).max(16).refine(values => new Set(values).size === values.length);
 export const templateIdsSchema = z.array(keySchema).min(1).max(4).refine(values => new Set(values).size === values.length);
@@ -59,7 +59,6 @@ export type ProtectedCheck = z.infer<typeof checkSchema>;
 const ruleEvidenceSchema = z.object({
   kind: z.literal('rule'), ruleId: keySchema, sha256: shaSchema, guidance: note, limitation: note,
 }).strict();
-export const auditFindingsPerScan = 8;
 const scanEvidenceSchema = z.object({
   kind: z.literal('scan'), scanner: auditScannerSchema, version: z.string().regex(/^\d+\.\d+\.\d+$/),
   inspectionSha256: shaSchema, policySha256: shaSchema, databaseSha256: shaSchema.nullable(),

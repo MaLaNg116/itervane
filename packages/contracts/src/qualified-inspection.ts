@@ -9,7 +9,7 @@ const snapshot = z.strictObject({
   files: z.int().min(1).max(5000), totalBytes: z.int().min(1).max(33554432),
   inputsSha256: sha256Schema, readOnly: z.literal(true), offline: z.literal(true),
 });
-const finding = z.strictObject({
+export const normalizedScannerFindingSchema = z.strictObject({
   id: sha256Schema, ruleId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/),
   path: z.string().min(1).max(240), line: z.int().min(1).max(100000000).nullable(),
   severity: z.enum(['unknown', 'low', 'medium', 'high', 'critical']),
@@ -18,7 +18,7 @@ const report = z.strictObject({
   scanner: z.enum(['gitleaks', 'trivy']), version: z.string().regex(/^\d+\.\d+\.\d+$/),
   policySha256: sha256Schema, snapshotSha256: sha256Schema,
   status: scannerStatusSchema, reason: scannerReasonSchema.nullable(),
-  findings: z.array(finding).max(2000),
+  findings: z.array(normalizedScannerFindingSchema).max(2000),
   database: scannerDatabaseSchema.nullable(),
 }).superRefine((value, ctx) => {
   if (value.status === 'completed'

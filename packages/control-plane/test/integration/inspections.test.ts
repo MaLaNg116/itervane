@@ -5,11 +5,13 @@ import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
-import { formalAuditInputSchema, qualifiedInspectionResponseSchema, type QualifiedInspectionRequest } from '@itervane/contracts';
+import type { AgentEvidence } from '@itervane/agent';
+import { formalAuditInputSchema, formalAuditResultSchema, qualifiedInspectionResponseSchema, type QualifiedInspectionRequest } from '@itervane/contracts';
+import type { ModelAdapter } from '@itervane/model';
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { queueName } from '../../src/persistence/database.js';
-import { formalAuditInputs, inspectionAttempts } from '../../src/persistence/schema.js';
+import { formalAuditInputs, formalAuditResults, inspectionAttempts } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
 import { GuardedCheckpointer } from '../../src/runtime/checkpointer.js';
@@ -91,7 +93,7 @@ it('enforces current project permission for both preparing and reading the plan'
   expect((await database.admin.query('SELECT * FROM itervane.inspection_plans')).rowCount).toBe(0);
 });
 
-function testReceipt(request: QualifiedInspectionRequest, partial = false) {
+function testReceipt(request: QualifiedInspectionRequest, partial = false, findingPath?: string) {
   const { origin, ...scope } = request;
   const domainId = randomUUID();
   const manifestSha256 = 'b'.repeat(64);
@@ -101,7 +103,11 @@ function testReceipt(request: QualifiedInspectionRequest, partial = false) {
     snapshot: { runId: domainId, repositoryId: scope.repositoryId, commit: scope.commit, tree: 'd'.repeat(40),
       manifestSha256, files: 1, totalBytes: 42, inputsSha256: 'e'.repeat(64), readOnly: true, offline: true,
       reports: scannerProfiles.map(({ scanner, version, policySha256 }) => ({
-        scanner, version, policySha256, snapshotSha256: manifestSha256, findings: [],
+        scanner, version, policySha256, snapshotSha256: manifestSha256,
+        findings: scanner === 'gitleaks' && findingPath ? [{
+          id: sha256(JSON.stringify([scanner, manifestSha256, 'fixture-pattern', findingPath, 3])),
+          severity: 'unknown', ruleId: 'fixture-pattern', path: findingPath, line: 3,
+        }] : [],
         status: partial && scanner === 'trivy' ? 'unsupported' : 'completed',
         reason: partial && scanner === 'trivy' ? 'missing_inventory' : null,
         database: scanner === 'trivy' && !partial ? { sha256: 'f'.repeat(64), updatedAt: new Date().toISOString() } : null,
@@ -110,6 +116,31 @@ function testReceipt(request: QualifiedInspectionRequest, partial = false) {
   });
   if (receipt.kind !== 'receipt') throw new Error('Invalid test receipt');
   return receipt;
+}
+
+const fixtureFindingPath = 'sensitive-location-placeholder.txt';
+function auditTurn(name: string, input: unknown) {
+  return { text: '', calls: [{ id: 'fixture-call', name, input }], tokenUsage: 30 };
+}
+
+const concludeAudit: ModelAdapter['complete'] = async ({ conversation }) => {
+  const initial = conversation[0];
+  if (initial?.kind !== 'user') throw new Error('Missing audit context');
+  const { observations } = JSON.parse(initial.text) as { observations: AgentEvidence[] };
+  const scans = observations.flatMap(({ id, data }) => data.kind === 'scan' ? [{ ...data, id }] : []);
+  const missing = (['gitleaks', 'trivy'] as const).find(scanner => !scans.some(scan => scan.scanner === scanner));
+  if (missing) return auditTurn('read_scan', { scanner: missing });
+  return auditTurn('finish_role', { summary: '固定扫描证据已核对。', evidenceIds: scans.map(scan => scan.id),
+    explanations: scans.flatMap(scan => scan.findings.map(finding => ({ findingId: finding.id, impact: '可能含敏感值。', suggestion: '请所有者核对范围。' }))),
+  });
+};
+
+function auditModel(complete = concludeAudit) {
+  return { adapter: { protocol: 'anthropic' as const, complete }, providerSha256: sha256('approved-audit-model') };
+}
+
+function completedRunner(finding?: string, partial = false) {
+  return inspectionRunner(async (request, authorize) => { await authorize(); return testReceipt(request, partial, finding); });
 }
 
 async function attempt(scope: ExecutionScope) {
@@ -179,7 +210,7 @@ it('publishes a receipt and its tool event atomically, and reuses the receipt af
     expect(request).toMatchObject({ origin, workspaceSha256, taskId: task.id, projectId: task.projectId, commit: task.source.commit });
     expect((await database.admin.query('SELECT state, receipt FROM itervane.inspection_attempts')).rows).toEqual([{ state: 'reserved', receipt: null }]);
     dispatched++;
-    return testReceipt(request);
+    return testReceipt(request, false, fixtureFindingPath);
   });
   const scope = await claim();
   const gateway = new ToolGateway(coordinator, runner);
@@ -215,8 +246,131 @@ it('publishes a receipt and its tool event atomically, and reuses the receipt af
   expect((await tasks.events(identity, task.id, 50, 'zh-CN')).at(-1)).toMatchObject({
     reason: 'inspection_ready', reasonMessage: '源码检查证据已入库，等待进入审计阶段。',
   });
-  await expect(tasks.resume(identity, task.id, { expectedVersion: current.version })).rejects.toMatchObject({ code: 'unsupported_state' });
+  const beforeAudit = await database.admin.query("SELECT key_hash, fence FROM itervane.tool_calls WHERE tool='source.inspect' ORDER BY key_hash");
+  const queued = await tasks.resume(identity, task.id, { expectedVersion: current.version });
+  expect(queued).toMatchObject({ runId: scope.runId, state: 'queued' });
+  const complete = vi.fn(concludeAudit);
+  const auditor = new DurableWorker(database.storage, database.runtimeUrl, { auditModel: auditModel(complete) });
+  try { await auditor.tick(); } finally { await auditor.close(); }
+
+  const [row] = await database.storage.db.select().from(formalAuditResults);
+  const audit = formalAuditResultSchema.parse(row?.document);
+  expect(sha256(JSON.stringify(audit))).toBe(row?.sha256);
+  expect(audit).toMatchObject({ runId: scope.runId, status: 'completed', reason: 'audit_complete', locale: 'zh-CN',
+    inspectionSha256: attempt.receipt_sha256, usage: { turns: 3, toolCalls: 2, tokens: 90 },
+    checklist: { coverage: 'complete', findings: [{ scanner: 'gitleaks', path: fixtureFindingPath, line: 3, certainty: 'suspected' }] },
+  });
+  expect(audit.trace.map(item => item.tool)).toEqual(['read_scan', 'read_scan']);
+  expect(complete).toHaveBeenCalledTimes(3);
+  expect(JSON.stringify(complete.mock.calls.map(([request]) => request.conversation))).not.toContain(fixtureFindingPath);
+  const audited = await tasks.get(identity, task.id);
+  expect(audited).toMatchObject({ runId: scope.runId, state: 'waiting_input' });
+  expect((await tasks.events(identity, task.id, 50, 'zh-CN')).at(-1)).toMatchObject({ type: 'task.audit_recorded', reason: 'audit_ready' });
+  const events = await database.admin.query("SELECT detail FROM itervane.task_events WHERE type='task.audit_recorded'");
+  expect(events.rows).toEqual([{ detail: { runId: scope.runId, reason: 'audit_ready', auditResultSha256: row?.sha256 } }]);
+  await expect(tasks.resume(identity, task.id, { expectedVersion: audited.version })).rejects.toMatchObject({ code: 'unsupported_state' });
+  await expect(database.storage.pool.query('UPDATE itervane.formal_audit_results SET sha256=sha256')).rejects
+    .toMatchObject({ code: '23514', message: 'formal_audit_result_is_retained' });
+  await expect(database.storage.pool.query('UPDATE itervane.formal_audit_runtime SET checkpoint_step=checkpoint_step+1')).rejects
+    .toMatchObject({ code: '23514', message: 'formal_audit_checkpoint_already_finalized' });
+  const sourceCalls = await database.admin.query("SELECT key_hash, fence FROM itervane.tool_calls WHERE tool='source.inspect' ORDER BY key_hash");
+  expect(sourceCalls.rows).toEqual(beforeAudit.rows);
   expect(dispatched).toBe(1);
+});
+
+it('publishes provider failure with already recorded scan evidence and measured usage', async () => {
+  const complete = vi.fn<ModelAdapter['complete']>().mockResolvedValueOnce(auditTurn('read_scan', { scanner: 'gitleaks' }))
+    .mockRejectedValue(new Error('Test provider unavailable'));
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(), auditModel: auditModel(complete) });
+  try { await worker.tick(); } finally { await worker.close(); }
+  const [record] = await database.storage.db.select().from(formalAuditResults);
+  expect(formalAuditResultSchema.parse(record?.document)).toMatchObject({ status: 'requires_human', reason: 'provider_error', checklist: null,
+    usage: { turns: 2, toolCalls: 1, tokens: 30 }, evidence: [{ kind: 'scan', scanner: 'gitleaks' }] });
+  expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'needs_human' });
+  expect((await database.admin.query('SELECT task_id FROM itervane.execution_slot')).rows).toEqual([{ task_id: null }]);
+});
+
+it.each(['runner_missing', 'incomplete_scan'])('keeps the model off when source evidence is %s', async condition => {
+  const complete = vi.fn(concludeAudit);
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, {
+    auditModel: auditModel(complete), ...(condition === 'incomplete_scan' ? { runner: completedRunner(undefined, true) } : {}),
+  });
+  try { await worker.tick(); } finally { await worker.close(); }
+  expect(complete).not.toHaveBeenCalled();
+  expect(await database.storage.db.select().from(formalAuditResults)).toEqual([]);
+  expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'waiting_input' });
+});
+
+it('recovers the reserved turn after Worker shutdown without calling the model again', async () => {
+  const started = Promise.withResolvers<void>();
+  const complete = vi.fn<ModelAdapter['complete']>().mockImplementation(async ({ signal }) => {
+    const aborted = once(signal, 'abort');
+    started.resolve();
+    await aborted;
+    return auditTurn('read_scan', { scanner: 'gitleaks' });
+  });
+  const options = { auditModel: auditModel(complete) };
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { ...options, runner: completedRunner() });
+  const processing = worker.tick();
+  try { await Promise.race([started.promise, processing.then(() => { throw new Error('Worker did not start the model'); })]); }
+  finally { await worker.close(); }
+  const checkpoint = (await database.admin.query('SELECT checkpoint_id, published_fence FROM itervane.formal_audit_runtime')).rows[0];
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  const replacement = new DurableWorker(database.storage, database.runtimeUrl, options);
+  try { await replacement.tick(); } finally { await replacement.close(); }
+  const [record] = await database.storage.db.select().from(formalAuditResults);
+  expect(record?.checkpointId).toBe(checkpoint.checkpoint_id);
+  expect(record!.finalizedFence).toBeGreaterThan(checkpoint.published_fence);
+  expect(formalAuditResultSchema.parse(record?.document)).toMatchObject({ status: 'requires_human', reason: 'interrupted_action',
+    usage: { turns: 1, toolCalls: 0 }, evidence: [] });
+  expect(complete).toHaveBeenCalledTimes(1);
+});
+
+it.each(['cancelled', 'revoked'] as const)('blocks audit publication when the in-flight task is %s', async change => {
+  const started = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const complete = vi.fn<ModelAdapter['complete']>().mockImplementation(async () => {
+    started.resolve();
+    await finish.promise;
+    return auditTurn('read_scan', { scanner: 'gitleaks' });
+  });
+  const tasks = new TaskService(database.storage);
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(), auditModel: auditModel(complete) });
+  const processing = worker.tick();
+  let grant: { workspace_id: string; principal_id: string; grant_id: string } | undefined;
+  try {
+    await Promise.race([started.promise, processing.then(() => { throw new Error('Worker did not start the model'); })]);
+    if (change === 'cancelled') {
+      const current = await tasks.get(identity, task.id);
+      await tasks.cancel(identity, task.id, { expectedVersion: current.version });
+    } else {
+      grant = (await database.admin.query('DELETE FROM itervane.workspace_members RETURNING workspace_id, principal_id, grant_id')).rows[0];
+      expect(grant).toBeDefined();
+    }
+    finish.resolve();
+    await processing;
+  } finally {
+    finish.resolve();
+    await worker.close();
+    if (grant) await database.admin.query('INSERT INTO itervane.workspace_members(workspace_id,principal_id,grant_id) VALUES($1,$2,$3)',
+      [grant.workspace_id, grant.principal_id, grant.grant_id]);
+  }
+  expect(await database.storage.db.select().from(formalAuditResults)).toEqual([]);
+  expect(await tasks.get(identity, task.id)).toMatchObject({ state: change === 'cancelled' ? 'cancelled' : 'needs_human' });
+  expect((await tasks.events(identity, task.id, 50)).at(-1)).toMatchObject({ reason: change === 'cancelled' ? 'cancelled' : 'permission_revoked' });
+  expect(complete).toHaveBeenCalledTimes(1);
+});
+
+it('rolls back the outcome and handoff when the audit event cannot be written', async () => {
+  await database.admin.query("ALTER TABLE itervane.task_events ADD CONSTRAINT injected_audit_event_failure CHECK(type <> 'task.audit_recorded') NOT VALID");
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(), auditModel: auditModel() });
+  try { await worker.tick(); } finally {
+    await worker.close();
+    await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_audit_event_failure');
+  }
+  expect(await database.storage.db.select().from(formalAuditResults)).toEqual([]);
+  expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'needs_human' });
+  expect((await new TaskService(database.storage).events(identity, task.id, 50)).at(-1)).toMatchObject({ reason: 'audit_failed' });
 });
 
 it('freezes the audit input under the current lease and rejects a substituted snapshot or planned-only source', async () => {

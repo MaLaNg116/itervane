@@ -46,3 +46,15 @@ it('fixes the public MCP URL in configuration instead of deriving it from untrus
     expect(() => canonicalPublicUrl(value)).toThrow();
   }
 });
+
+it.each(['anthropic', 'openai'] as const)('configures the %s audit adapter only after explicit selection', protocol => {
+  const prefix = protocol.toUpperCase();
+  const endpoint = 'http://localhost:4312';
+  const credentials = { ...configured, MODEL_PROVIDER: protocol, [`${prefix}_API_KEY`]: 'test-credential',
+    [`${prefix}_MODEL`]: 'test-model', [`${prefix}_BASE_URL`]: endpoint };
+  expect(workerConfig(credentials).auditModel).toBeUndefined();
+  const enabled = { ...credentials, ITERVANE_AUDIT_MODEL_PROVIDER: protocol };
+  expect(workerConfig(enabled).auditModel).toMatchObject({ protocol, baseURL: endpoint, model: 'test-model' });
+  expect(() => workerConfig({ ...enabled, [`${prefix}_BASE_URL`]: 'http://example.invalid' })).toThrow();
+  expect(() => workerConfig({ ...enabled, [`${prefix}_MODEL`]: undefined })).toThrow();
+});

@@ -7,7 +7,9 @@
   "exports": "./src/index.ts",
   "scripts": { "db:generate": "drizzle-kit generate --config drizzle.config.ts" },
   "dependencies": {
+    "@itervane/agent": "workspace:*",
     "@itervane/contracts": "workspace:*",
+    "@itervane/model": "workspace:*",
     "@itervane/runner": "workspace:*",
     "@itervane/rules": "workspace:*",
     "@langchain/core": "1.4.1",

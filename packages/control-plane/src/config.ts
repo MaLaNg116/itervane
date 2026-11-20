@@ -1,6 +1,7 @@
 import { posix } from 'node:path';
 import { z } from 'zod';
-import { sha256Schema } from '@itervane/contracts';
+import { auditModelProtocolSchema, sha256Schema } from '@itervane/contracts';
+import { safeEndpoint } from '@itervane/model';
 import { validateIdentityConfig } from './auth/identity.js';
 
 const databaseUrl = z.string().min(1).refine(value => {
@@ -36,7 +37,15 @@ export function workerConfig(env: NodeJS.ProcessEnv = process.env) {
     controllerUid: z.coerce.number().int().min(1).max(2147483647),
     imageSha256: sha256Schema,
   }).parse(address) : undefined;
-  return { ...worker, runner };
+  const selected = env.ITERVANE_AUDIT_MODEL_PROVIDER;
+  if (selected === undefined) return { ...worker, runner, auditModel: undefined };
+  const protocol = auditModelProtocolSchema.parse(selected);
+  const prefix = protocol === 'anthropic' ? 'ANTHROPIC' : 'OPENAI';
+  const modelConfig = z.strictObject({ apiKey: z.string().min(1).max(4096), model: z.string().trim().min(1).max(240),
+    baseURL: z.string().min(1).max(2048).transform(safeEndpoint) }).parse({
+    apiKey: env[`${prefix}_API_KEY`], model: env[`${prefix}_MODEL`], baseURL: env[`${prefix}_BASE_URL`],
+  });
+  return { ...worker, runner, auditModel: { protocol, ...modelConfig } };
 }
 
 export function migrationConfig(env: NodeJS.ProcessEnv = process.env) {

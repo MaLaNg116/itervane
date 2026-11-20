@@ -17,6 +17,7 @@ function auditFixture(locale: Locale, secretMatches: number, dependencyMatch = t
     fence: 1, planSha256: policySha256, workspaceSha256: sha256('workspace'),
   };
   const snapshotSha256 = sha256('source-manifest');
+  const domainId = randomUUID();
   const scans: QualifiedInspectionReceipt['snapshot']['reports'] = [
     { scanner: 'gitleaks', version: '8.30.1', policySha256, snapshotSha256, status: 'completed', reason: null, database: null,
       findings: Array.from({ length: secretMatches }, (_, index) => ({
@@ -27,9 +28,9 @@ function auditFixture(locale: Locale, secretMatches: number, dependencyMatch = t
       findings: dependencyMatch ? [{ id: sha256('dependency'), ruleId: 'TEST-Advisory.1', path: omittedPath, line: null, severity: 'high' }] : [] },
   ];
   const inspection = qualifiedInspectionResponseSchema.parse({
-    kind: 'receipt', scope, domainId: randomUUID(), imageSha256: sha256('guest'),
+    kind: 'receipt', scope, domainId, imageSha256: sha256('guest'),
     originSha256: sha256('origin'), commitSha256: sha256(scope.commit), cleanupConfirmed: true, sessionVerified: true,
-    snapshot: { runId: scope.runId, repositoryId: scope.repositoryId, commit: scope.commit, tree: '1'.repeat(40),
+    snapshot: { runId: domainId, repositoryId: scope.repositoryId, commit: scope.commit, tree: '1'.repeat(40),
       manifestSha256: snapshotSha256, files: 4, totalBytes: 2_000, inputsSha256: sha256('guest-inputs'),
       readOnly: true, offline: true, reports: scans },
   });

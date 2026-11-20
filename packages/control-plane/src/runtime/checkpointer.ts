@@ -15,10 +15,12 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
   readonly threadId: string;
   private readonly graph: 'preflight' | 'audit';
   private readonly auditInputSha256: string | undefined;
+  private readonly signal: AbortSignal | undefined;
   constructor(readonly coordinator: ExecutionCoordinator, readonly scope: ExecutionScope, readonly storage: PostgresSaver,
-    options?: { auditInputSha256: string }) {
+    options?: { auditInputSha256: string; signal?: AbortSignal }) {
     super(storage.serde);
     this.auditInputSha256 = options ? sha256Schema.parse(options.auditInputSha256) : undefined;
+    this.signal = options?.signal;
     this.graph = options ? 'audit' : 'preflight';
     this.threadId = options ? `audit:${scope.runId}` : scope.runId;
   }
@@ -32,12 +34,14 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
   }
 
   private bind(config: RunnableConfig): RunnableConfig {
+    this.signal?.throwIfAborted();
     if (config.configurable?.thread_id !== this.threadId || config.configurable?.checkpoint_ns) throw new ExecutionLost();
     return { configurable: { thread_id: this.threadId, checkpoint_ns: '',
       ...(config.configurable?.checkpoint_id ? { checkpoint_id: config.configurable.checkpoint_id } : {}) } };
   }
 
   private async publication(tx: Transaction, runtime: typeof runRuntime.$inferSelect) {
+    this.signal?.throwIfAborted();
     if (!this.auditInputSha256) return runtime;
     const [input] = await tx.select({ sha256: formalAuditInputs.sha256 }).from(formalAuditInputs)
       .where(eq(formalAuditInputs.runId, this.scope.runId));
@@ -69,6 +73,8 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
       // 用图的持久化 step 排序；跨进程的系统时钟回拨不能使 UUID 时间排序阻塞进展。
       if (!Number.isSafeInteger(metadata.step)) throw new Error('Invalid checkpoint step');
       const next = await this.storage.put(bound, checkpoint, metadata, newVersions);
+      // A retiring Worker may still hold its lease. Prevent its abort from becoming user cancellation on recovery.
+      this.signal?.throwIfAborted();
       if (!published.checkpointId || metadata.step > published.checkpointStep) {
         const pointer = { checkpointId: checkpoint.id, checkpointStep: metadata.step };
         if (this.auditInputSha256) {
@@ -89,6 +95,7 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
       if (typeof bound.configurable?.checkpoint_id !== 'string') throw new ExecutionLost();
       if (this.auditInputSha256) await this.publication(tx, runtime);
       await this.storage.putWrites(bound, writes, taskId, taskPath);
+      this.signal?.throwIfAborted();
       if (writes.length) await tx.insert(checkpointWrites).values(await Promise.all(writes.map(async ([channel, value]) => ({
         runId: this.scope.runId, graph: this.graph, checkpointId: bound.configurable!.checkpoint_id as string, writeHash: await this.hashWrite([taskId, channel, value]),
       })))).onConflictDoNothing();
