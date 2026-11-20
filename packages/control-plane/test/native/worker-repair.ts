@@ -6,6 +6,7 @@ import { workerConfig } from '../../src/config.js';
 import { openDatabase, queueName } from '../../src/persistence/database.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { FormalRepairExecution } from '../../src/runtime/repair-execution.js';
+import { observeFormalRepairTargets } from '../../src/runtime/repair-observation.js';
 
 const fixturePath = 'fixtures/runner/inspection-input/original/config.txt';
 const originalSha256 = '3812bc54c3579d8c67275c573f0ff1bf7dde70bfb4a9150621459ae510a87afc';
@@ -29,12 +30,10 @@ async function repair() {
     const scope = await coordinator.claim(job, workerId);
     ok(scope);
     equal(scope.taskId, target.taskId); equal(scope.runId, target.runId);
-    const execution = new FormalRepairExecution(coordinator, {
+    const options = {
       runner: new QualifiedInspectionClient(config.runner), protectedPaths: ['fixtures/runner/inspection-input/updated'],
-    });
-    const patch: RepairPatch = { version: 1, baseSnapshotSha256, files: [{ path: fixturePath, beforeSha256: originalSha256,
-      edits: [{ startByte: 0, endByte: 158, replacement: updated }] }] };
-    const proposal = { callKeySha256: sha256('native repair sample'), findingIds: [findingId], patch };
+    };
+    const execution = new FormalRepairExecution(coordinator, options);
     const controller = new AbortController();
     let heartbeat: Promise<void> | undefined;
     const timer = setInterval(() => {
@@ -43,10 +42,18 @@ async function repair() {
         .finally(() => { heartbeat = undefined; });
     }, config.leaseSeconds * 1_000 / 3);
     try {
+      const observation = await observeFormalRepairTargets(coordinator, scope, [findingId], options, controller.signal);
+      if (observation.kind !== 'repair_observation') throw new Error('repair_fixture_no_observation');
+      const [target] = observation.snapshot.observation.targets;
+      ok(target?.file && target.range);
+      equal(target.path, fixturePath); equal(target.file.sha256, originalSha256); equal(target.file.bytes, 158);
+      const patch: RepairPatch = { version: 1, baseSnapshotSha256, files: [{ path: target.path, beforeSha256: target.file.sha256,
+        edits: [{ startByte: 0, endByte: target.file.bytes, replacement: updated }] }] };
+      const proposal = { callKeySha256: sha256('native repair sample'), findingIds: [findingId], patch };
       const receipt = await execution.apply(scope, proposal, controller.signal);
       if (receipt.kind !== 'repair_receipt') throw new Error('repair_fixture_no_receipt');
       deepStrictEqual(await execution.apply(scope, proposal, controller.signal), receipt);
-      return receipt;
+      return { observation, receipt };
     } finally { clearInterval(timer); await heartbeat; }
   } finally { await database.close(); }
 }

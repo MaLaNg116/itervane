@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   admissionDtoSchema, auditFindingsPerScan, formalAuditDtoSchema, projectDtoSchema, repositoryDtoSchema, sourceInspectionDtoSchema,
-  qualifiedRepairResponseSchema, taskDtoSchema, taskEventDtoSchema, translate,
+  qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, taskDtoSchema, taskEventDtoSchema, translate,
 } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
@@ -112,10 +112,12 @@ async function runRepairWorker(bundle: string, socket: string, controllerUid: st
     if (size > 32768) child.kill();
     else output.push(chunk);
   });
-  equal(await boundedExit(child, exit, 193_000), 0);
-  const receipt = qualifiedRepairResponseSchema.parse(JSON.parse(Buffer.concat(output).toString('utf8')));
-  if (receipt.kind !== 'repair_receipt') throw new Error('worker_repair_missing_receipt');
-  return receipt;
+  equal(await boundedExit(child, exit, 385_000), 0);
+  const response = JSON.parse(Buffer.concat(output).toString('utf8'));
+  const receipt = qualifiedRepairResponseSchema.parse(response.receipt);
+  const observation = qualifiedRepairObservationResponseSchema.parse(response.observation);
+  if (receipt.kind !== 'repair_receipt' || observation.kind !== 'repair_observation') throw new Error('worker_repair_missing_receipt');
+  return { receipt, observation };
 }
 
 async function hostsDomains(controllerUid: string, filter: '--all' | '--state-running') {
@@ -330,11 +332,25 @@ async function probe() {
     // The dedicated test database holds the audit. Requeue it for this repair execution check.
     await db.admin.query("UPDATE itervane.tasks SET state='queued' WHERE id=$1", [first.id]);
     await db.admin.query("UPDATE itervane.task_runs SET state='queued' WHERE id=$1", [first.runId]);
-    const receipt = await runRepairWorker(repairBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+    const { receipt, observation } = await runRepairWorker(repairBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
       [first.id, first.runId, scan.result.snapshotSha256, fixture.id]);
     equal(receipt.scope.taskId, first.id); equal(receipt.scope.runId, first.runId);
     equal(receipt.snapshot.manifestSha256, scan.result.snapshotSha256);
     ok(!domains.includes(receipt.domainId));
+    equal(observation.scope.taskId, first.id);
+    equal(observation.scope.runId, first.runId);
+    equal(observation.scope.fence, receipt.scope.fence);
+    equal(observation.snapshot.manifestSha256, scan.result.snapshotSha256);
+    ok(!domains.includes(observation.domainId) && observation.domainId !== receipt.domainId);
+    const [target] = observation.snapshot.observation.targets;
+    ok(target?.range && target.file);
+    equal(target.findingId, fixture.id); equal(target.path, fixture.path); equal(target.line, fixture.line);
+    const expectedRanges = [
+      { startByte: 0, endByte: 64, sha256: '9e731d16ffa25e5ab728cbf80aa67ba3deb9f130f9e30e243dc02b317944360d' },
+      { startByte: 64, endByte: 158, sha256: '50541d94c77cbc185ee497cfcba79834161ad445f55c99466a4c7ece414e5659' },
+    ];
+    ok(fixture.line !== null);
+    deepStrictEqual(target.range, expectedRanges[fixture.line - 1]);
     const [change] = receipt.snapshot.candidate.changes;
     deepStrictEqual(change, { path: fixture.path, beforeBytes: 158, afterBytes: 38, edits: 1,
       beforeSha256: '3812bc54c3579d8c67275c573f0ff1bf7dde70bfb4a9150621459ae510a87afc',
@@ -358,7 +374,8 @@ async function probe() {
         httpMcpAgreement: true, reusedRecordedScans: true },
       repair: { operationId: receipt.scope.operationId, requestId: receipt.scope.requestId, fence: receipt.scope.fence,
         domainId: receipt.domainId, receiptSha256, baseSnapshotSha256: receipt.scope.baseSnapshotSha256,
-        candidateManifestSha256: receipt.snapshot.candidate.candidateManifestSha256, change, reusedReceipt: true, cleanupConfirmed: true },
+        candidateManifestSha256: receipt.snapshot.candidate.candidateManifestSha256, change, reusedReceipt: true, cleanupConfirmed: true,
+        observation: { domainId: observation.domainId, status: target.status, file: target.file, range: target.range, cleanupConfirmed: true } },
     };
   } finally {
     try { await worker?.stop('TERM'); }
