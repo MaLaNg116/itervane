@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Check } from '@itervane/contracts';
 import { report } from '../report.js';
-import { createAnthropic, createOpenAI } from './adapters.js';
+import { createAnthropic, createOpenAI } from '@itervane/model';
 import { runProbeLoop, type ProbeTool } from './loop.js';
 
 export async function probeModel(env: NodeJS.ProcessEnv = process.env) {

@@ -1,0 +1,12 @@
+{
+  "name": "@itervane/model",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.8.0",
+    "openai": "7.57.0"
+  }
+}

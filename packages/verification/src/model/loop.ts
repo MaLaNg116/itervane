@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { ConversationEntry, ModelAdapter, ToolDefinition, ToolObservation } from './types.js';
+import type { ConversationEntry, ModelAdapter, ToolDefinition, ToolObservation } from '@itervane/model';
 
 export type ProbeTool = {
   definition: ToolDefinition;

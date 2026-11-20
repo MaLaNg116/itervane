@@ -1,8 +1,7 @@
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { describe, expect, it } from 'vitest';
-import { anthropicMessages, createAnthropic, createOpenAI, openaiMessages } from '../../src/model/adapters.js';
-import { privateFetch, safeEndpoint, type ConversationEntry } from '../../src/model/types.js';
+import { anthropicMessages, createAnthropic, createOpenAI, openaiMessages, privateFetch, safeEndpoint, type ConversationEntry } from '@itervane/model';
 
 describe('model protocol compatibility', () => {
   const entries: ConversationEntry[] = [
@@ -15,13 +14,14 @@ describe('model protocol compatibility', () => {
     expect(openaiMessages('system', entries)[3]).toMatchObject({ role: 'tool', tool_call_id: 't1', content: '{"healthy":true}' });
   });
   it.each(['anthropic', 'openai'] as const)('uses the official %s SDK against a local protocol fixture', async protocol => {
-    let receivedPath = ''; let toolDefined = false;
+    let receivedPath = ''; let toolDefined = false; let outputLimit: unknown;
     const server = createServer(async (req, res) => {
       receivedPath = req.url ?? '';
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
-      const request = JSON.parse(Buffer.concat(chunks).toString()) as { tools?: unknown[] };
+      const request = JSON.parse(Buffer.concat(chunks).toString()) as { tools?: unknown[]; max_tokens?: unknown; max_completion_tokens?: unknown };
       toolDefined = request.tools?.length === 1;
+      outputLimit = protocol === 'anthropic' ? request.max_tokens : request.max_completion_tokens;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify(protocol === 'anthropic' ? {
         id: 'msg_test', type: 'message', role: 'assistant', model: 'test',
@@ -38,9 +38,9 @@ describe('model protocol compatibility', () => {
     try {
       const baseURL = `http://127.0.0.1:${address.port}${protocol === 'openai' ? '/v1' : ''}`;
       const adapter = (protocol === 'anthropic' ? createAnthropic : createOpenAI)({ apiKey: 'fixture-key-not-a-credential', model: 'test', baseURL });
-      const result = await adapter.complete({ system: 'test', conversation: [{ kind: 'user', text: 'inspect' }], tools: [{ name: 'inspect', description: 'test', inputSchema: { type: 'object', properties: {} } }], signal: AbortSignal.timeout(5_000) });
+      const result = await adapter.complete({ system: 'test', conversation: [{ kind: 'user', text: 'inspect' }], tools: [{ name: 'inspect', description: 'test', inputSchema: { type: 'object', properties: {} } }], signal: AbortSignal.timeout(5_000), maxOutputTokens: 500 });
       expect(result.calls).toEqual([{ id: 't1', name: 'inspect', input: {} }]);
-      expect(result.tokenUsage).toBe(3); expect(toolDefined).toBe(true);
+      expect(result.tokenUsage).toBe(3); expect(toolDefined).toBe(true); expect(outputLimit).toBe(500);
       expect(receivedPath).toBe(protocol === 'anthropic' ? '/v1/messages' : '/v1/chat/completions');
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   });

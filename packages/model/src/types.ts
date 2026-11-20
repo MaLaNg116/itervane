@@ -18,6 +18,7 @@ export interface ModelAdapter {
     conversation: ConversationEntry[];
     tools: ToolDefinition[];
     signal: AbortSignal;
+    maxOutputTokens?: number;
   }): Promise<ModelTurn>;
 }
 
