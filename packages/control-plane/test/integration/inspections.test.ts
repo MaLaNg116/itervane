@@ -7,13 +7,14 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
-import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, qualifiedInspectionResponseSchema, type QualifiedInspectionRequest } from '@itervane/contracts';
+import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairInputSchema,
+  qualifiedInspectionResponseSchema, type QualifiedInspectionRequest } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { queueName } from '../../src/persistence/database.js';
-import { formalAuditInputs, formalAuditResults, inspectionAttempts } from '../../src/persistence/schema.js';
+import { formalAuditInputs, formalAuditResults, formalRepairInputs, inspectionAttempts } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
@@ -24,6 +25,7 @@ import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
 import { InspectionService, prepareInspection } from '../../src/service/inspections.js';
 import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
+import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { TaskService } from '../../src/service/tasks.js';
 import { databaseFixture } from '../helpers/database.js';
 import { identityFixture } from '../helpers/identity.js';
@@ -264,6 +266,13 @@ it('publishes a receipt and its tool event atomically, and reuses the receipt af
     inspectionSha256: attempt.receipt_sha256, usage: { turns: 3, toolCalls: 2, tokens: 90 },
     checklist: { coverage: 'complete', findings: [{ scanner: 'gitleaks', path: fixtureFindingPath, line: 3, certainty: 'suspected' }] },
   });
+  const [sealed] = await database.storage.db.select().from(formalRepairInputs);
+  const repair = formalRepairInputSchema.parse(sealed?.document);
+  expect(repair).toMatchObject({ source: task.source, inspection: handoff.inspection, catalogSha256: handoff.catalog.sha256,
+    audit: { resultSha256: row?.sha256, inputSha256: auditInput?.sha256, checkpointId: audit.checkpointId },
+    findingIds: audit.checklist?.findings.map(finding => finding.id),
+  });
+  expect(sealed?.sha256).toBe(sha256(JSON.stringify(repair)));
   expect(audit.trace.map(item => item.tool)).toEqual(['read_scan', 'read_scan']);
   expect(complete).toHaveBeenCalledTimes(3);
   expect(JSON.stringify(complete.mock.calls.map(([request]) => request.conversation))).not.toContain(fixtureFindingPath);
@@ -302,6 +311,7 @@ it('shares one recorded audit across authorized HTTP and external MCP with indep
     runner: completedRunner(fixtureFindingPath), auditModel: configuredAuditModel({ protocol: 'anthropic', baseURL: provider.baseURL,
       apiKey: auditFixtureKey, model: auditFixtureModel }),
   });
+  expect(await database.storage.db.select().from(formalRepairInputs)).toEqual([]);
   try { await worker.tick(); } finally { try { await worker.close(); } finally { await provider.close(); } }
   expect(provider.calls).toEqual(['read_scan', 'read_rule', 'read_scan', 'finish_role']);
   const publicUrl = 'https://itervane.example';
@@ -335,10 +345,15 @@ it.each(['runner_missing', 'incomplete_scan'])('keeps the model off when source 
   const worker = new DurableWorker(database.storage, database.runtimeUrl, {
     auditModel: auditModel(complete), ...(condition === 'incomplete_scan' ? { runner: completedRunner(undefined, true) } : {}),
   });
-  try { await worker.tick(); } finally { await worker.close(); }
+  const tasks = new TaskService(database.storage);
+  try {
+    await vi.waitFor(async () => {
+      await worker.tick();
+      expect(await tasks.get(identity, task.id)).toMatchObject({ state: 'waiting_input' });
+    }, { timeout: 5_000, interval: 50 });
+  } finally { await worker.close(); }
   expect(complete).not.toHaveBeenCalled();
   expect(await database.storage.db.select().from(formalAuditResults)).toEqual([]);
-  expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'waiting_input' });
 });
 
 it('recovers the reserved turn after Worker shutdown without calling the model again', async () => {
@@ -409,8 +424,43 @@ it('rolls back the outcome and handoff when the audit event cannot be written', 
     await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_audit_event_failure');
   }
   expect(await database.storage.db.select().from(formalAuditResults)).toEqual([]);
+  expect(await database.storage.db.select().from(formalRepairInputs)).toEqual([]);
   expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'needs_human' });
   expect((await new TaskService(database.storage).events(identity, task.id, 50)).at(-1)).toMatchObject({ reason: 'audit_failed' });
+});
+
+it('revalidates the same repair input after a new lease and seals existing completed audits on demand', async () => {
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(fixtureFindingPath), auditModel: auditModel() });
+  const tasks = new TaskService(database.storage);
+  try {
+    await vi.waitFor(async () => {
+      await worker.tick();
+      expect(await tasks.get(identity, task.id)).toMatchObject({ state: 'waiting_input' });
+    }, { timeout: 5_000, interval: 50 });
+  } finally { await worker.close(); }
+  const [sealed] = await database.storage.db.select().from(formalRepairInputs);
+  expect(sealed).toBeDefined();
+  // Requeue the completed audit within this database fixture to exercise a new phase lease.
+  await database.admin.query("UPDATE itervane.tasks SET state='queued' WHERE id=$1", [task.id]);
+  await database.admin.query("UPDATE itervane.task_runs SET state='queued' WHERE task_id=$1", [task.id]);
+  await coordinator.reconcile(randomUUID());
+  const scope = await claim();
+  const prepare = (execution = scope) => coordinator.withLease(execution, (tx, current) => prepareFormalRepairInput(tx, current.task, execution));
+  const prepared = await prepare();
+  expect(prepared).toEqual({ sha256: sealed!.sha256, document: formalRepairInputSchema.parse(sealed!.document) });
+  expect(await prepare()).toEqual(prepared);
+  expect((await database.storage.db.select().from(formalRepairInputs))[0]?.preparedFence).toBe(sealed!.preparedFence);
+  await expect(prepare({ ...scope, fence: sealed!.preparedFence })).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(prepare({ ...scope, runId: randomUUID() })).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(database.storage.db.insert(formalRepairInputs).values({ ...sealed!, preparedFence: scope.fence, workerId: scope.workerId,
+    document: { ...prepared.document, inspection: { ...prepared.document.inspection, snapshotSha256: '0'.repeat(64) } },
+  })).rejects.toMatchObject({ cause: { code: '23514', message: 'formal_repair_input_authority_or_audit_mismatch' } });
+  await expect(database.storage.pool.query('UPDATE itervane.formal_repair_inputs SET sha256=sha256')).rejects
+    .toMatchObject({ code: '23514', message: 'formal_repair_input_is_retained' });
+  // The isolated test database now resembles a completed audit from before this migration.
+  await database.admin.query('TRUNCATE itervane.formal_repair_inputs');
+  expect(await prepare()).toEqual(prepared);
+  expect((await database.storage.db.select().from(formalRepairInputs))[0]?.preparedFence).toBe(scope.fence);
 });
 
 it('freezes the audit input under the current lease and rejects a substituted snapshot or planned-only source', async () => {

@@ -4,6 +4,7 @@ import { localeSchema } from './i18n.js';
 
 export * from './control-plane.js';
 export * from './formal-audit.js';
+export * from './formal-repair.js';
 export * from './i18n.js';
 export * from './inspection.js';
 export * from './qualified-inspection.js';
