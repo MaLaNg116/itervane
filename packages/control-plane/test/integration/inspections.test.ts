@@ -15,7 +15,7 @@ import { canonicalRepairCommand, canonicalRepairObservation, scannerProfiles, sh
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { queueName } from '../../src/persistence/database.js';
-import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairRuntime,
+import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRuntime,
   inspectionAttempts } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
@@ -31,6 +31,7 @@ import { bootstrapOwner, ResourceService } from '../../src/service/resources.js'
 import { InspectionService, prepareInspection } from '../../src/service/inspections.js';
 import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
 import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
+import { publishFormalRepair } from '../../src/service/repair-result.js';
 import { TaskService } from '../../src/service/tasks.js';
 import { databaseFixture } from '../helpers/database.js';
 import { identityFixture } from '../helpers/identity.js';
@@ -315,6 +316,31 @@ it('uses the recorded mutation after a new worker claims a reserved repair whose
     expect(observeRepair).toHaveBeenCalledTimes(1);
     expect(repair).toHaveBeenCalledTimes(1);
     expect(complete).toHaveBeenCalledTimes(3);
+
+    const publish = (outcome = report, lease = replacementScope) => coordinator.withLease(lease, (tx, { task: current }) =>
+      publishFormalRepair(tx, current, lease, outcome, 'anthropic', new AbortController().signal));
+    await expect(publish(report, scope)).rejects.toBeInstanceOf(ExecutionLost);
+    await expect(publish({ ...report, checkpointId: randomUUID() })).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(publish({ ...report, formalRepair: { ...report.formalRepair!, receiptSha256: sha256('different receipt') } }))
+      .rejects.toThrow('formal_repair_candidate_evidence');
+    await database.admin.query("ALTER TABLE itervane.task_events ADD CONSTRAINT injected_repair_event_failure CHECK(type <> 'task.repair_recorded') NOT VALID");
+    try {
+      await expect(publish()).rejects.toMatchObject({ cause: { constraint: 'injected_repair_event_failure' } });
+      expect(await database.storage.db.select().from(formalRepairResults)).toEqual([]);
+      expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'running' });
+    } finally { await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_repair_event_failure'); }
+    const result = await publish();
+    expect(result.document).toMatchObject({ status: 'candidate_ready', releaseEligible: false, candidate: {
+      operationId: before!.operationId, receiptSha256: before!.receiptSha256, manifestSha256: report.formalRepair!.candidateManifestSha256,
+    } });
+    expect((await database.storage.db.select().from(formalRepairResults))[0]).toMatchObject({
+      requestId: before!.requestId, checkpointId: report.checkpointId, sha256: result.sha256, finalizedFence: replacementScope.fence,
+    });
+    expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'waiting_input' });
+    const detail = (await database.admin.query("SELECT detail FROM itervane.task_events WHERE type='task.repair_recorded'")).rows;
+    expect(detail).toEqual([{ detail: { reason: 'repair_ready', runId: scope.runId, repairResultSha256: result.sha256 } }]);
+    await expect(database.storage.db.delete(formalRepairResults)).rejects
+      .toMatchObject({ cause: { code: '23514', message: 'formal_repair_result_is_retained' } });
   } finally { intercept.mockRestore(); await storage.end(); }
 });
 
@@ -747,7 +773,7 @@ it('revalidates the same repair input after a new lease and seals existing compl
   await expect(database.storage.pool.query('UPDATE itervane.formal_repair_inputs SET sha256=sha256')).rejects
     .toMatchObject({ code: '23514', message: 'formal_repair_input_is_retained' });
   // The isolated test database now resembles a completed audit from before this migration.
-  await database.admin.query('TRUNCATE itervane.formal_repair_attempts, itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs');
+  await database.admin.query('TRUNCATE itervane.formal_repair_results, itervane.formal_repair_attempts, itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs');
   expect(await prepare()).toEqual(prepared);
   expect((await database.storage.db.select().from(formalRepairInputs))[0]?.preparedFence).toBe(scope.fence);
 });

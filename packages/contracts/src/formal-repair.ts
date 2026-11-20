@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { auditFindingsPerScan, formalAuditInputSchema } from './formal-audit.js';
+import { auditFindingsPerScan, auditModelProtocolSchema, formalAuditInputSchema } from './formal-audit.js';
+import { localeSchema } from './i18n.js';
 import { sha256Schema, sourceContentLimits } from './inspection.js';
 import { idSchema, sourceRefSchema } from './primitives.js';
 
@@ -102,3 +103,29 @@ export const repairCandidateReceiptSchema = z.strictObject({
   changes: z.array(candidateChange).min(1).max(repairPatchLimits.files),
 }).refine(receipt => receipt.baseSnapshotSha256 !== receipt.candidateManifestSha256 && uniquePaths(receipt.changes.map(change => change.path)));
 export type RepairCandidateReceipt = z.infer<typeof repairCandidateReceiptSchema>;
+
+const formalRepairResultFields = {
+  version: z.literal(1), taskId: idSchema, runId: idSchema, projectId: idSchema, generation: z.int().positive(), locale: localeSchema,
+  inputSha256: sha256Schema, checkpointId: idSchema, auditResultSha256: sha256Schema, baseSnapshotSha256: sha256Schema,
+  provider: auditModelProtocolSchema, releaseEligible: z.literal(false),
+  usage: z.strictObject({ turns: z.int().min(0).max(12), toolCalls: z.int().min(0).max(8), tokens: z.int().nonnegative() }),
+};
+export const formalRepairResultSchema = z.discriminatedUnion('status', [
+  z.strictObject({
+    ...formalRepairResultFields, status: z.literal('candidate_ready'), reason: z.literal('repair_complete'),
+    candidate: z.strictObject({
+      summary: z.string().trim().min(1).max(480), evidenceId: sha256Schema, operationId: idSchema, receiptSha256: sha256Schema,
+      patchSha256: sha256Schema, manifestSha256: sha256Schema,
+      changes: z.array(candidateChange).min(1).max(repairPatchLimits.files).refine(changes => uniquePaths(changes.map(change => change.path))),
+    }),
+  }),
+  z.strictObject({
+    ...formalRepairResultFields, status: z.literal('requires_human'),
+    reason: z.enum([
+      'repair_reconciling', 'repair_unavailable', 'manual_review', 'deadline', 'turn_budget', 'tool_budget', 'token_budget',
+      'context_budget', 'no_progress', 'provider_error', 'invalid_receipt', 'interrupted_action', 'incompatible_checkpoint',
+    ]),
+    candidate: z.null(),
+  }),
+]);
+export type FormalRepairResult = z.infer<typeof formalRepairResultSchema>;

@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
   agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
-  type FormalRepairInput, type InspectionPlan,
+  type FormalRepairInput, type FormalRepairResult, type InspectionPlan,
   type PreauditRecord, type QualifiedInspectionReceipt, type QualifiedRepairReceipt, type ReleaseDecision, type ReleaseOperationState,
 } from '@itervane/contracts';
 
@@ -273,6 +273,20 @@ export const formalRepairAttempts = domain.table('formal_repair_attempts', {
       AND ${t.receipt}#>'{snapshot,offline}' = 'true'::jsonb AND ${t.receipt}#>'{snapshot,readOnly}' = 'true'::jsonb)
   ) IS TRUE`),
 ]);
+
+export const formalRepairResults = domain.table('formal_repair_results', {
+  runId: uuid('run_id').primaryKey().references(() => formalRepairRuntime.runId),
+  inputSha256: text('input_sha256').notNull(), checkpointId: text('checkpoint_id').notNull(),
+  requestId: uuid('request_id').references(() => formalRepairAttempts.requestId),
+  finalizedFence: integer('finalized_fence').notNull(), workerId: uuid('worker_id').notNull(),
+  sha256: text('sha256').notNull(), document: jsonb('document').$type<FormalRepairResult>().notNull(), createdAt: createdAt(),
+}, t => [check('formal_repair_result_binding', sql`(${t.finalizedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+  AND ${t.inputSha256} ~ '^[a-f0-9]{64}$' AND ${t.document}->>'version' = '1' AND ${t.document}->>'runId' = ${t.runId}::text
+  AND ${t.document}->>'inputSha256' = ${t.inputSha256} AND ${t.document}->>'checkpointId' = ${t.checkpointId}
+  AND ${t.document}->'releaseEligible' = 'false'::jsonb AND octet_length(${t.document}::text) <= 16384
+  AND ((${t.requestId} IS NOT NULL AND ${t.document}->>'status' = 'candidate_ready' AND ${t.document}->>'reason' = 'repair_complete'
+      AND jsonb_typeof(${t.document}->'candidate') = 'object')
+    OR (${t.requestId} IS NULL AND ${t.document}->>'status' = 'requires_human' AND ${t.document}->'candidate' = 'null'::jsonb))) IS TRUE`)]);
 
 export const preaudits = domain.table('preaudits', {
   id: uuid('id').primaryKey(), projectId: uuid('project_id').notNull().references(() => projects.id),

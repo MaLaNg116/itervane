@@ -34,6 +34,7 @@ export const en = {
   'task.recovered': 'An interrupted execution was queued for recovery.', 'task.paused': 'Task is waiting for a verified Runner.',
   'task.inspection_paused': 'Task paused after the source inspection step.',
   'task.audit_recorded': 'The audit outcome was recorded.', 'task.audit_resumed': 'Task queued from verified source evidence.',
+  'task.repair_recorded': 'The repair outcome was recorded.',
   'task.resumed': 'Task queued to retry its preflight.', 'task.cancel_requested': 'Cancellation requested; the execution is stopping.',
   'task.needs_human': 'Task stopped and requires human attention.', 'task.waiting_child': 'Task is waiting for a linked task.',
   'task.tool_observed': 'A controlled tool observation was recorded.', 'task.updated': 'Task updated.',
@@ -47,6 +48,9 @@ export const en = {
   'reason.audit_ready': 'The audit checklist is ready for the repair stage.',
   'reason.audit_needs_human': 'The audit stopped and requires human review.',
   'reason.audit_failed': 'The audit could not safely publish its outcome.',
+  'reason.repair_ready': 'The repair candidate is ready for independent verification.',
+  'reason.repair_needs_human': 'The repair stopped and requires human review.',
+  'reason.repair_reconciling': 'Runner cleanup requires reconciliation before repair can continue.',
   'audit.pending': 'The checklist will appear when the audit result is recorded.',
   'reason.lease_expired': 'The previous execution lease expired.', 'reason.expired_cancel': 'Cancellation was acknowledged after the previous lease expired.',
   'reason.permission_revoked': 'The requesting principal no longer has the required project permission.',
@@ -100,6 +104,7 @@ export const zhCN: Record<MessageKey, string> = {
   'task.recovered': '中断的执行已重新排队等待恢复。', 'task.paused': '任务正在等待经过验证的 Runner。',
   'task.inspection_paused': '任务已在源码检查步骤暂停。',
   'task.audit_recorded': '审计结果已记录。', 'task.audit_resumed': '任务已使用核验过的源码证据重新入队。',
+  'task.repair_recorded': '修复结果已记录。',
   'task.resumed': '任务已排队重试前置检查。', 'task.cancel_requested': '已申请取消，执行正在停止。',
   'task.needs_human': '任务已停止，需要人工处理。', 'task.waiting_child': '任务正在等待关联子任务。',
   'task.tool_observed': '已记录一次受控工具观察。', 'task.updated': '任务已更新。',
@@ -113,6 +118,9 @@ export const zhCN: Record<MessageKey, string> = {
   'reason.audit_ready': '审计清单已就绪，等待进入修复阶段。',
   'reason.audit_needs_human': '审计已停止，需要人工核对。',
   'reason.audit_failed': '审计结果未能安全入库。',
+  'reason.repair_ready': '修复候选已就绪，等待独立复验。',
+  'reason.repair_needs_human': '修复已停止，需要人工核对。',
+  'reason.repair_reconciling': '需核对 Runner 清理结果后才能继续修复。',
   'audit.pending': '审计结果入库后，可在此查看清单。',
   'reason.lease_expired': '上一次执行的租约已过期。', 'reason.expired_cancel': '上一次租约过期后已确认取消。',
   'reason.permission_revoked': '任务提交者已失去所需的项目权限。', 'reason.budget_exhausted': '持久化工具预算已耗尽。',
@@ -136,7 +144,8 @@ export const zhCN: Record<MessageKey, string> = {
 };
 export const messageKeySchema = z.enum(Object.keys(en) as [MessageKey, ...MessageKey[]]);
 export const taskEventTypes = ['task.accepted', 'task.cancelled', 'task.started', 'task.recovered', 'task.paused', 'task.inspection_paused', 'task.resumed',
-  'task.cancel_requested', 'task.needs_human', 'task.waiting_child', 'task.tool_observed', 'task.audit_resumed', 'task.audit_recorded'] as const;
+  'task.cancel_requested', 'task.needs_human', 'task.waiting_child', 'task.tool_observed', 'task.audit_resumed', 'task.audit_recorded',
+  'task.repair_recorded'] as const;
 
 export const eventReasonMessages = {
   runner_unavailable: 'tool.runner_unavailable', lease_expired: 'reason.lease_expired', expired_cancel: 'reason.expired_cancel',
@@ -144,6 +153,7 @@ export const eventReasonMessages = {
   inspection_unsupported: 'tool.inspection_unsupported', inspection_ready: 'tool.inspection_ready',
   inspection_incomplete: 'tool.inspection_incomplete',
   audit_ready: 'reason.audit_ready', audit_needs_human: 'reason.audit_needs_human', audit_failed: 'reason.audit_failed',
+  repair_ready: 'reason.repair_ready', repair_needs_human: 'reason.repair_needs_human', repair_reconciling: 'reason.repair_reconciling',
   permission_revoked: 'reason.permission_revoked', budget_exhausted: 'reason.budget_exhausted', cancelled: 'reason.cancelled',
   cancelled_or_interrupted: 'reason.cancelled_or_interrupted', execution_error: 'reason.execution_error', child_task: 'reason.child_task',
   'project.describe': 'tool.project_describe', 'source.inspect': 'tool.source_inspect', unsupported: 'reason.tool_denied',
