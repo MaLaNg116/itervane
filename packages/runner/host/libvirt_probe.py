@@ -38,6 +38,7 @@ class Result:
     code: str
     runId: str | None = None
     imageSha256: str | None = None
+    profileIssue: str | None = None
 
 
 def check_kvm():
@@ -106,53 +107,81 @@ def domain_xml(name, run_id, disk):
     return xml.tostring(root, encoding="unicode")
 
 
-def valid_profile(document, disk):
+def unexpected_tag(prefix, tags):
+    first = sorted(tags)[0]
+    return prefix + first if re.fullmatch(r"[a-z][a-z0-9-]{0,30}", first) else prefix + "unknown"
+
+
+def profile_issue(document, disk):
     root = xml.fromstring(document)
     guest = root.find("os/type")
     vcpu = root.find("vcpu")
     if root.tag != "domain" or root.get("type") != "kvm" or guest is None or vcpu is None:
-        return False
+        return "domain-type"
     machine = guest.get("machine", "")
     if guest.text != "hvm" or guest.get("arch") != ARCH or not (machine == MACHINE or machine.startswith("pc-q35-")):
-        return False
+        return "platform"
     if vcpu.text != str(VCPU) or vcpu.get("current", str(VCPU)) != str(VCPU):
-        return False
+        return "vcpu"
+    if any(root.findtext(event) != "destroy" for event in ("on_poweroff", "on_reboot", "on_crash")):
+        return "lifecycle-policy"
     for tag in ("memory", "currentMemory"):
         element = root.find(tag)
         if element is None or element.get("unit", "KiB") != "KiB" or element.text != str(RAM_KIB):
-            return False
+            return "memory"
     devices = root.find("devices")
-    if devices is None or any(child.tag not in {
-        "emulator", "disk", "controller", "channel", "input", "audio", "memballoon",
-    } for child in devices):
-        return False
+    if devices is None:
+        return "no-devices"
+    unexpected = {child.tag for child in devices} - {
+        "emulator", "disk", "controller", "channel", "input", "audio", "memballoon", "watchdog",
+    }
+    if unexpected:
+        return unexpected_tag("device-", unexpected)
     volumes, channels = devices.findall("disk"), devices.findall("channel")
-    if len(volumes) != 1 or len(channels) != 1 or root.find("maxMemory") is not None:
-        return False
+    if root.find("maxMemory") is not None:
+        return "maximum-memory"
+    if len(volumes) != 1 or len(channels) != 1:
+        return "device-count"
     volume, channel = volumes[0], channels[0]
     backing = volume.find("backingStore")
     source = volume.find("source")
     # Libvirt may add an index to the active storage source.
-    return (
-        volume.get("type") == "file"
-        and volume.get("device") == "disk"
-        and volume.find("driver[@name='qemu'][@type='raw']") is not None
-        and source is not None
-        and source.get("file") == str(disk)
-        and set(source.attrib) <= {"file", "index"}
-        and source.get("index", "0").isdecimal()
-        and len(source) == 0
-        and volume.find("target[@dev='vda'][@bus='virtio']") is not None
-        and volume.find("dataStore") is None
-        and (backing is None or (not backing.attrib and len(backing) == 0))
-        and channel.get("type") == "unix"
-        and channel.find("source[@mode='bind']") is not None
-        and channel.find(f"target[@type='virtio'][@name='{GUEST_AGENT}']") is not None
-        and all(device.get("model") == "none" for device in devices.findall("controller[@type='usb']"))
-        and all(device.get("model") == "none" for device in devices.findall("memballoon"))
-        and all(device.get("type") == "none" for device in devices.findall("audio"))
-        and all(device.find("source") is None for device in devices.findall("input"))
-    )
+    if volume.get("type") != "file" or volume.get("device") != "disk" or volume.find("driver[@name='qemu'][@type='raw']") is None:
+        return "disk-driver"
+    if source is None or source.get("file") != str(disk):
+        return "disk-source"
+    if set(source.attrib) - {"file", "index"}:
+        return unexpected_tag("disk-attribute-", set(source.attrib) - {"file", "index"})
+    if not source.get("index", "0").isdecimal():
+        return "disk-index"
+    if len(source):
+        return unexpected_tag("disk-child-", {child.tag for child in source})
+    if volume.find("target[@dev='vda'][@bus='virtio']") is None:
+        return "disk-target"
+    if volume.find("dataStore") is not None or (backing is not None and (backing.attrib or len(backing))):
+        return "disk-backing"
+    if channel.get("type") != "unix" or channel.find("source[@mode='bind']") is None:
+        return "channel-transport"
+    if channel.find(f"target[@type='virtio'][@name='{GUEST_AGENT}']") is None:
+        return "channel-target"
+    if any(device.get("model") != "none" for device in devices.findall("controller[@type='usb']")):
+        return "usb"
+    if any(device.get("model") != "none" for device in devices.findall("memballoon")):
+        return "balloon"
+    if any(device.get("type") != "none" for device in devices.findall("audio")):
+        return "audio"
+    if any(device.find("source") is not None for device in devices.findall("input")):
+        return "input"
+    # q35 includes an iTCO watchdog in the chipset. A watchdog reset must
+    # retain the domain's destroy-on-reboot policy above.
+    watchdogs = devices.findall("watchdog")
+    if len(watchdogs) > 1 or any(
+        device.attrib != {"model": "itco", "action": "reset"}
+        or any(child.tag != "alias" for child in device)
+        for device in watchdogs
+    ):
+        return "watchdog"
+    return None
 
 
 def absent(libvirt, conn, name, run_id):
@@ -226,6 +255,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline):
     attempted_create = False
     owns_domain = False
     code = "host_error"
+    issue = None
     try:
         check_deadline()
         conn = connect(libvirt)
@@ -253,8 +283,13 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline):
             and domain.isPersistent() == 0
         )
         if not owns_domain:
+            issue = "domain-identity"
             raise Rejected("profile_rejected")
-        if domain.state(0)[0] != libvirt.VIR_DOMAIN_PAUSED or not valid_profile(domain.XMLDesc(0), disk):
+        if domain.state(0)[0] != libvirt.VIR_DOMAIN_PAUSED:
+            issue = "domain-state"
+            raise Rejected("profile_rejected")
+        issue = profile_issue(domain.XMLDesc(0), disk)
+        if issue:
             raise Rejected("profile_rejected")
         check_deadline()
         domain.resume()
@@ -294,7 +329,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline):
             check_deadline()
         except Rejected as error:
             code = str(error)
-    return Result(code, run_id, digest if verified_image else None)
+    return Result(code, run_id, digest if verified_image else None, issue)
 
 
 def probe(libvirt, qemu, root, image, digest, cancelled):

@@ -26,6 +26,7 @@ const resultSchema = z.strictObject({
   code: z.enum(Object.keys(outcomes) as (keyof typeof outcomes)[]),
   runId: z.uuidv4().nullable(),
   imageSha256: sha256Schema.nullable(),
+  profileIssue: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).nullable().optional(),
 });
 
 type DriverResult = z.infer<typeof resultSchema>;
@@ -36,6 +37,7 @@ export function parseRunnerProbeOutput(stdout: string, expectedDigest: string): 
     const result = resultSchema.parse(JSON.parse(stdout));
     if (result.imageSha256 !== null && result.imageSha256 !== expectedDigest) return lost;
     if (result.code === 'passed' && (!result.runId || !result.imageSha256)) return lost;
+    if (result.profileIssue && result.code !== 'profile_rejected' && result.code !== 'cleanup_unproven') return lost;
     if (result.code === 'cleanup_unproven' && !result.runId) return lost;
     return result;
   } catch {
@@ -74,13 +76,14 @@ export async function probeRunnerVm(env: NodeJS.ProcessEnv = process.env) {
   const locale = localeSchema.catch('en').parse(env.ITERVANE_RUNNER_PROBE_LOCALE);
   const { ITERVANE_RUNNER_PROBE_ROOT = '', ITERVANE_RUNNER_PROBE_IMAGE = '',
     ITERVANE_RUNNER_PROBE_IMAGE_SHA256 = '' } = env;
-  const result = process.platform === 'linux' && process.arch === 'x64'
+  const result: DriverResult = process.platform === 'linux' && process.arch === 'x64'
     ? await launch(ITERVANE_RUNNER_PROBE_ROOT, ITERVANE_RUNNER_PROBE_IMAGE, ITERVANE_RUNNER_PROBE_IMAGE_SHA256)
-    : { code: 'kvm_unavailable', runId: null, imageSha256: null } as const;
+    : { code: 'kvm_unavailable', runId: null, imageSha256: null };
 
   const [status, en, zh] = outcomes[result.code];
   const check: Check = { id: 'runner-' + result.code.replaceAll('_', '-'), status, detail: locale === 'zh-CN' ? zh : en };
   if (result.runId) check.detail += (locale === 'zh-CN' ? ' 运行标识 ' : ' Run ID ') + result.runId + '.';
   if (result.imageSha256) check.detail += ' SHA-256 ' + result.imageSha256 + '.';
+  if (result.profileIssue) check.detail += (locale === 'zh-CN' ? ' 配置差异 ' : ' Profile issue ') + result.profileIssue + '.';
   return report('runner-vm', [check]);
 }
