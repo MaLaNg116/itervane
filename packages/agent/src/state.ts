@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import {
   auditReportSchema, deliveryRoleSchema, evidenceSchema, repairReportSchema,
-  sha256, shaSchema, verificationReportSchema, type AgentSpec,
+  sha256, shaSchema, verificationReportSchema, type AgentOrigin, type AgentSpec,
 } from './contracts.js';
 import { agentText, type AgentReason, type Feedback } from './messages.js';
 import { plannedToolSchema } from './tools.js';
@@ -41,7 +41,7 @@ export function initialState(spec: AgentSpec, bindingSha256: string): AgentState
   };
 }
 
-export function restoreState(raw: unknown, spec: AgentSpec, binding: string) {
+export function restoreState(raw: unknown, spec: AgentSpec, binding: string, origin: AgentOrigin) {
   const parsed = stateSchema.safeParse(raw);
   if (!parsed.success) return;
   const state = parsed.data;
@@ -54,9 +54,12 @@ export function restoreState(raw: unknown, spec: AgentSpec, binding: string) {
     || (state.role !== 'audit' && state.audit === null)
     || (state.role === 'verify' && !state.stop && state.repairs.length !== state.verifications.length + 1)
     || (state.pending === 'observation' && !state.nextTool) || (state.pending === 'decision' && state.nextTool)) return;
+  if (origin === 'formal_audit' && (state.role !== 'audit' || state.repairs.length || state.verifications.length
+    || state.evidence.length !== state.currentEvidence.length
+    || state.evidence.some(item => item.snapshotSha256 !== spec.snapshotSha256))) return;
   const ids = new Set(state.evidence.map(item => item.id));
   if (ids.size !== state.evidence.length || state.evidence.some(({ id, ...receipt }) =>
-    receipt.bindingSha256 !== binding || sha256(JSON.stringify(receipt)) !== id)
+    receipt.origin !== origin || receipt.bindingSha256 !== binding || sha256(JSON.stringify(receipt)) !== id)
     || state.currentEvidence.some(id => !ids.has(id)) || state.trace.some(item => !ids.has(item.evidenceId))) return;
   return state;
 }

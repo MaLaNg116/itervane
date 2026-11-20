@@ -30,6 +30,8 @@ export function sha256(value: string) { return createHash('sha256').update(value
 export const checkKinds = ['rescan', 'baseline', 'targeted'] as const;
 export const checkKindSchema = z.enum(checkKinds);
 export const contextSectionSchema = z.enum(['overview', 'display', 'pagination']);
+export const auditScannerSchema = z.enum(['gitleaks', 'trivy']);
+const auditFindingId = z.union([keySchema, shaSchema]);
 export const findingIdsSchema = z.array(keySchema).max(16).refine(values => new Set(values).size === values.length);
 export const templateIdsSchema = z.array(keySchema).min(1).max(4).refine(values => new Set(values).size === values.length);
 export const evidenceIdsSchema = z.array(shaSchema).min(1).max(28).refine(values => new Set(values).size === values.length);
@@ -38,6 +40,10 @@ export const findingSchema = z.object({
   id: keySchema, ruleId: keySchema, severity: z.enum(['low', 'medium', 'high', 'critical']),
   certainty: z.enum(['confirmed', 'suspected']), title: note, location: note,
 }).strict();
+const scannedFindingSchema = findingSchema.extend({
+  id: shaSchema, ruleId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/),
+  severity: z.enum(['unknown', 'low', 'medium', 'high', 'critical']),
+});
 
 export const candidateSchema = z.object({
   baseSha256: shaSchema, snapshotSha256: shaSchema, diffSha256: shaSchema, diff: z.string().min(1).max(4_096),
@@ -50,11 +56,24 @@ export const checkSchema = z.object({
 }).strict().refine(result => result.status === 'failed' || result.findingIds.length === 0);
 export type ProtectedCheck = z.infer<typeof checkSchema>;
 
+const ruleEvidenceSchema = z.object({
+  kind: z.literal('rule'), ruleId: keySchema, sha256: shaSchema, guidance: note, limitation: note,
+}).strict();
+export const auditFindingsPerScan = 8;
+const scanEvidenceSchema = z.object({
+  kind: z.literal('scan'), scanner: auditScannerSchema, version: z.string().regex(/^\d+\.\d+\.\d+$/),
+  inspectionSha256: shaSchema, policySha256: shaSchema, databaseSha256: shaSchema.nullable(),
+  totalFindings: z.int().min(0).max(2_000), findings: z.array(scannedFindingSchema).max(auditFindingsPerScan),
+}).strict().refine(scan => (scan.scanner === 'trivy') === (scan.databaseSha256 !== null)
+  && scan.findings.length === Math.min(scan.totalFindings, auditFindingsPerScan)
+  && new Set(scan.findings.map(finding => finding.id)).size === scan.findings.length
+  && scan.findings.every(finding => finding.certainty === (scan.scanner === 'trivy' ? 'confirmed' : 'suspected')));
+
 const evidenceDataSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('context'), section: contextSectionSchema, text: z.string().min(1).max(1_200),
     suggestedSection: contextSectionSchema.optional(),
   }).strict(),
-  z.object({ kind: z.literal('rule'), ruleId: keySchema, sha256: shaSchema, guidance: note, limitation: note }).strict(),
+  ruleEvidenceSchema,
   z.object({ kind: z.literal('findings'), coverage: z.enum(['complete', 'partial']), limits: z.array(note).max(6),
     findings: z.array(findingSchema).max(16).refine(items => new Set(items.map(item => item.id)).size === items.length),
   }).strict(),
@@ -62,19 +81,25 @@ const evidenceDataSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('check'), result: checkSchema }).strict(),
 ]);
 
-export const receiptSchema = z.object({
-  origin: z.literal('trusted_fixture'),
-  bindingSha256: shaSchema, snapshotSha256: shaSchema, data: evidenceDataSchema,
-}).strict();
+const receiptBinding = { bindingSha256: shaSchema, snapshotSha256: shaSchema };
+export const receiptSchema = z.strictObject({ origin: z.literal('trusted_fixture'), ...receiptBinding, data: evidenceDataSchema });
 export type AgentReceipt = z.infer<typeof receiptSchema>;
 export type EvidenceData = AgentReceipt['data'];
+export const formalReceiptSchema = z.strictObject({
+  origin: z.literal('formal_audit'), ...receiptBinding, data: z.discriminatedUnion('kind', [ruleEvidenceSchema, scanEvidenceSchema]),
+});
+export type FormalAuditReceipt = z.infer<typeof formalReceiptSchema>;
 
-export const evidenceSchema = receiptSchema.extend({ id: shaSchema });
+export const evidenceSchema = z.discriminatedUnion('origin', [
+  receiptSchema.extend({ id: shaSchema }), formalReceiptSchema.extend({ id: shaSchema }),
+]);
 export type AgentEvidence = z.infer<typeof evidenceSchema>;
+export type AgentOrigin = AgentEvidence['origin'];
 
 const completionFields = { summary: note, evidenceIds: evidenceIdsSchema };
 const hypothesisSchema = z.object({ description: note, evidenceIds: evidenceIdsSchema }).strict();
-const findingExplanation = z.object({ findingId: keySchema, impact: note, suggestion: note }).strict();
+const explanationFields = { impact: note, suggestion: note };
+const findingExplanation = z.object({ findingId: auditFindingId, ...explanationFields }).strict();
 export const completionSchemas = {
   audit: z.object({ ...completionFields, explanations: z.array(findingExplanation).max(16),
     hypotheses: z.array(hypothesisSchema).max(6).default([]) }).strict(),
@@ -85,7 +110,7 @@ export const completionSchemas = {
 export const auditReportSchema = z.object({
   ...completionFields, hypotheses: z.array(hypothesisSchema).max(6),
   coverage: z.enum(['complete', 'partial']), limits: z.array(note).max(6),
-  findings: z.array(findingSchema.extend({ impact: note, suggestion: note })).max(16),
+  findings: z.array(z.union([findingSchema.extend(explanationFields), scannedFindingSchema.extend(explanationFields)])).max(16),
 }).strict();
 export const repairReportSchema = z.object({ ...completionFields, candidate: candidateSchema }).strict();
 export const verificationReportSchema = z.object({
