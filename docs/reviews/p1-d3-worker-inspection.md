@@ -20,9 +20,16 @@ HTTP `GET /v1/tasks/:taskId/source-inspection` 和 MCP `get_source_inspection` �
 
 ## 4. 验收记录
 
-Windows 本机通过 107 项单元测试和 91 项真实 PostgreSQL 17 集成测试。Linux 通过 108 项 TypeScript、39 项 Runner、91 项 PostgreSQL、21 项真实浏览器及离线扫描测试。回归覆盖事务回滚、同一工作区重领、取消、撤权、旧 fence、两种语言和存量检查点。 [分支常规 CI](https://github.com/MaLaNg116/itervane/actions/runs/44767507032) · [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44767520432)
+Windows 本机通过 107 项单元测试和 91 项真实 PostgreSQL 17 集成测试。Linux 通过 108 项 TypeScript、39 项 Runner、91 项 PostgreSQL、21 项真实浏览器及离线扫描测试。回归覆盖事务回滚、同一工作区重领、取消、撤权、旧 fence、两种语言和存量检查点。 [分支常规 CI](https://github.com/MaLaNg116/itervane/actions/runs/44771578808) · [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44771587898)
 
-首次原生测试发现，图在撤权后可先于本机 Runner 返回，导致 Worker 提前释放当前执行槽位。修正后在真实 PostgreSQL 上保持当前执行权至收尾结算，并验证撤权原因与回执状态。待原生复跑核对 PostgreSQL、Worker、KVM 和下游查询。 [首次原生运行](https://github.com/MaLaNg116/itervane/actions/runs/44763798641) · [当前原生复跑](https://github.com/MaLaNg116/itervane/actions/runs/44766984818)
+首次原生测试发现，图在撤权后可先于本机 Runner 返回，导致 Worker 提前释放当前执行槽位。修正后用 PostgreSQL 回归验证租约有效期间的收尾结算。本次原生验证使用 `7895719`、临时 PostgreSQL 17.12、正式 Worker 进程和 30 秒数据库租约。独立 watcher 观察 QEMU 的 pidfd，确认实际客体停止。 [首次原生运行](https://github.com/MaLaNg116/itervane/actions/runs/44763798641) · [正式原生验收](https://github.com/MaLaNg116/itervane/actions/runs/44771579026)
+
+| 原生用例 | 实测结果 |
+| --- | --- |
+| MCP 启动固定版本检查 | Git 提交 `9167604` 有 305 个源文件，Gitleaks 报告 1 项，Trivy 报告 6 项。HTTP 与 MCP 返回相同的回执及快照摘要。 |
+| 取消与撤回项目授权 | 两个正在运行的实际客体均退出，工作区清空，数据库结算两次尝试并保留停机状态。 |
+| Worker 进程崩溃 | 原 QEMU 退出。新 Worker 在同一工作区把 fence 4 的尝试结算，并在 fence 5 复扫固定快照。新旧扫描的快照摘要一致，新尝试产生独立回执。 |
+| 独立回归 | 五个正式 Worker 域与十四个既有隔离用例的实际域互不重复。下载的 `kvm-host-evidence` 核对了源码指纹、镜像、扫描覆盖、回收及授权状态。 |
 
 ## 5. 复跑与运行范围
 
