@@ -64,6 +64,11 @@ def verify_inputs():
         marker.write(b"itervane-disposable-workload\n")
         marker.flush()
         os.fsync(marker.fileno())
+    directory = os.open(WORK, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def verify_resources():
