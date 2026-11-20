@@ -20,7 +20,9 @@ P1-C adds a minimal English/Simplified Chinese React portal with real OIDC Autho
 
 P1-D1 adds immutable source-inspection plans, Git object/manifest verification, redacted scanner adapters, and real Gitleaks/Trivy checks on maintainer-generated fixtures. The portal and MCP read the same preparation record. Submitted repositories are not fetched or scanned while the verified disposable-VM gate is closed. See [P1-D setup](docs/control-plane-p1-d.md) and the [D1/D2/D3 implementation and acceptance plan](docs/plans/p1-d-isolated-source-inspection.md).
 
-P1-E adds a versioned, read-only bilingual rule/Skill catalogue and bounded text preaudit through the same API, external MCP and portal. Synthetic or public snippets/single-file diffs produce persistent, source-free reports with explicit coverage; no model or supplied code runs, and no release approval is granted. See [P1-E setup and limits](docs/control-plane-p1-e.md), the [implementation plan](docs/plans/p1-e-rules-and-preaudit.md), and the [review guide](docs/reviews/p1-e-rules-preaudit.md). Autonomous Agents, rule uploads/lifecycle and qualified Runner execution remain later work.
+P1-E adds a versioned, read-only bilingual rule/Skill catalogue and bounded text preaudit through the same API, external MCP and portal. Deterministic text checks on synthetic or public snippets and single-file diffs produce persistent, source-free reports with explicit coverage. See [P1-E setup and limits](docs/control-plane-p1-e.md), the [implementation plan](docs/plans/p1-e-rules-and-preaudit.md), and the [review guide](docs/reviews/p1-e-rules-preaudit.md).
+
+P2-A adds a bilingual, bounded ReAct harness and a complete audit, template repair, and independent verification loop for trusted fixtures. The fixture results carry no release eligibility. Delivery tasks in the API and external MCP still wait for a qualified disposable-VM Runner. See [P2-A fixture verification](docs/agent-harness-p2-a.md), the [implementation plan](docs/plans/p2-a-agent-harness.md), and the [review guide](docs/reviews/p2-a-agent-harness.md).
 
 P1-UX refines that portal with a coherent bilingual workspace design and scoped GSAP feedback for actual state changes, new activity and metadata disclosure. Reduced-motion preferences apply live, with immediate permission/error handling. It adds no domain API, migration or execution capability. See [design and motion setup](docs/portal-design-motion.md), the [plan](docs/plans/p1-ux-portal-design-motion.md), and [third-party UI notices](docs/third-party-ui.md).
 
@@ -33,6 +35,7 @@ pnpm test:integration
 pnpm test:portal
 pnpm probe:mcp
 pnpm probe:evaluation
+pnpm probe:agent
 pnpm probe:scanners
 ```
 
@@ -55,6 +58,7 @@ The complete design documents are maintained in Chinese:
 - [P1-C portal and login](docs/control-plane-p1-c.md): trusted same-origin build, public OIDC client, memory-only tokens, bilingual workflows, and real browser verification.
 - [P1-D1 source-inspection foundations](docs/control-plane-p1-d.md): immutable preparation, content verification, real trusted scanner checks, and the remaining KVM acceptance gates.
 - [P1-E rules and text preaudit](docs/control-plane-p1-e.md): advisory rules/Skill, finite non-executing text checks, immutable redacted reports, current project authorization, and the P2-A/P4 boundaries.
+- [P2-A Agent harness](docs/agent-harness-p2-a.md) covers fixture runs, bilingual tool decisions, and checkpoint recovery boundaries.
 - [P1-UX portal design and motion](docs/portal-design-motion.md): shared design tokens, bounded GSAP feedback, live reduced-motion support, stable session boundaries, and build notices.
 - [Portal component migration](docs/portal-shadcn.md): shadcn/ui source ownership, bilingual page and form review, and self-hosted upgrade instructions.
 
