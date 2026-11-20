@@ -18,7 +18,7 @@ export function Status({ state, locale }: { state: TaskState; locale: Locale }) 
   return <Tag color={color}>{stateLabel(locale, state)}</Tag>;
 }
 export function PageHeading({ title, description, actions }: { title: string; description?: string; actions?: React.ReactNode }) {
-  return <div className="page-heading"><div><Typography.Title level={1}>{title}</Typography.Title>{description && <p className="muted">{description}</p>}</div><div className="actions">{actions}</div></div>;
+  return <div className="page-heading"><div className="heading-copy"><Typography.Title level={1}>{title}</Typography.Title>{description && <p className="muted">{description}</p>}</div><div className="actions">{actions}</div></div>;
 }
 export const formatTime = (value: string, locale: Locale) => new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
 export function useTranslatedValidation(form: FormInstance, locale: Locale) {

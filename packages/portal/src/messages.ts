@@ -1,6 +1,8 @@
 import { localeSchema, negotiateLocale, translate, type Locale, type TaskState } from '@itervane/contracts';
 
 const en = {
+  workspaceGuide: 'Every action has a trail.', workspaceGuideDetail: 'Inspect the current state before taking the next step.',
+  projectContents: 'Repositories, task records and text preaudits', taskRecord: 'Task record', activityHint: 'Recorded steps and the reasons behind them.',
   rulesPreaudit: 'Rules and text preaudit', rulesHint: 'Read bundled guidance and inspect a limited client-supplied text fragment.',
   rules: 'Bundled rules and Skill', advisory: 'Advisory', ruleCheck: 'Text check', ruleGuidance: 'Guidance', ruleSkill: 'Skill',
   preauditBoundary: 'Limited text preaudit only. No model, code execution or formal scanner runs. This does not verify a repository or grant release approval.',
@@ -56,6 +58,8 @@ const en = {
 } as const;
 export type UiKey = keyof typeof en;
 const zh: Record<UiKey, string> = {
+  workspaceGuide: '每一步都有据可查。', workspaceGuideDetail: '看清当前状态，再开始下一步。',
+  projectContents: '仓库、任务记录与文本预审', taskRecord: '任务记录', activityHint: '查看已经发生的步骤和原因。',
   rulesPreaudit: '规则与文本预审', rulesHint: '查询内置指导，对客户端提供的有限文本给出预审线索。',
   rules: '内置规则与 Skill', advisory: '建议', ruleCheck: '文本检查', ruleGuidance: '文字指导', ruleSkill: 'Skill',
   preauditBoundary: '仅进行有限文本预审，不调用模型、不执行代码、不运行正式扫描器；不代表已核验仓库，也不授予发布许可。',

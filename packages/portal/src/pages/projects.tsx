@@ -18,11 +18,11 @@ export function ProjectsPage() {
     </>} />
     {projects.isPending ? <Loading locale={locale} /> : projects.error ? <Failure error={projects.error} locale={locale} retry={() => { void projects.refetch(); }} />
       : projects.data.items.length === 0 ? <Card><Empty description={<><strong>{t('emptyProjects')}</strong><p>{t(me.isWorkspaceOwner ? 'emptyProjectsHelp' : 'readOnly')}</p></>} /></Card>
-      : <div className="project-grid">{projects.data.items.map(project => <Card key={project.id}>
-        <div className="project-card-top"><span className="project-monogram" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</span><Tag>{project.slug}</Tag></div>
-        <h2><a href={`#/projects/${project.id}`}>{project.name}</a></h2>
-        <p className="muted">{t('repositories')} · {t('tasks')}</p>
-      </Card>)}</div>}
+      : <div className="project-index">{projects.data.items.map(project => <article className="project-entry" key={project.id}>
+        <span className="project-monogram" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</span>
+        <div className="project-entry-copy"><h2><a href={`#/projects/${project.id}`}>{project.name}</a></h2><p className="muted">{t('projectContents')}</p></div>
+        <Tag>{project.slug}</Tag>
+      </article>)}</div>}
     {projects.data?.items.length === 100 && <p className="muted">{t('shownLimit')}</p>}
     <Modal open={creating} onCancel={() => setCreating(false)} footer={null} title={t('createProject')} destroyOnHidden>
       <CreateProject onComplete={id => { setCreating(false); navigate(`#/projects/${id}`); }} />
