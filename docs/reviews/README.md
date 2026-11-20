@@ -11,6 +11,7 @@
 | 005 | P1-D1：源码检查准备、Git 内容校验、扫描适配与可信样例 | [#5](https://github.com/MaLaNg116/itervane/pull/5)，基于 #4 | [P1-D1 导读](p1-d-source-inspection.md) | 草稿；60 单元/58 PG/9 浏览器/5 真实 CLI 及三组 Linux CI 通过；VM/完整 P1 待验 |
 | 006 | P1-E：规则/Skill 查询、有限文本预审、脱敏报告、双语 API/MCP/门户 | [#6](https://github.com/MaLaNg116/itervane/pull/6)，基于 #5 | [P1-E 导读](p1-e-rules-preaudit.md) | 草稿；73 单元/66 PG/15 浏览器/5 真实 CLI 及三组 Linux CI 通过；Runner 继续关闭 |
 | 007 | P1-UX：门户设计、双语 GSAP 反馈、减少动效与会话/CSP 回归 | [#7](https://github.com/MaLaNg116/itervane/pull/7)，基于 #6 | [P1-UX 导读](p1-ux-portal-design-motion.md) | 草稿；73 单元/66 PG/20 浏览器/5 CLI 及三组 Linux CI 全通过；执行闸门保持 |
+| 008 | P1-UX 后续：真实任务页验证、shadcn/ui 逐页迁移 | [分支对照](https://github.com/MaLaNg116/itervane/compare/feat/portal-design-motion...feat/portal-shadcn)，基于 #7 | [组件迁移导读](p1-ux-shadcn-migration.md) | 73 单元/66 PG/21 浏览器在本地通过，CSP 违规为零 |
 
 P1-B 已验证的远端交付版本为 `74706f95881c6435b98f26983654b725463483d3`，[PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44255791193) 与 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44255784496) 均通过。代码快照与证据见导读；后续仅补充文档，不把前置 PR 自动合并。
 
