@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { test as base, expect, type Page } from '@playwright/test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { admissionDtoSchema, catalogDtoSchema, preauditDtoSchema, sourceInspectionDtoSchema, taskDtoSchema } from '@itervane/contracts';
+import { admissionDtoSchema, catalogDtoSchema, formalAuditDtoSchema, preauditDtoSchema, sourceInspectionDtoSchema, taskDtoSchema } from '@itervane/contracts';
 import { browserStack } from './stack.js';
 
 type Stack = Awaited<ReturnType<typeof browserStack>>;
@@ -60,6 +60,46 @@ async function openPreaudit(page: Page, stack: Stack, project: Awaited<ReturnTyp
   await page.getByRole('link', { name: locale === 'en' ? 'Rules and text preaudit' : '规则与文本预审', exact: true }).click();
   await expect(page.getByTestId('rule-bounded-review-context')).toBeVisible();
 }
+
+test('renders the audit checklist with locale-independent evidence and escaped notes', async ({ page, stack }) => {
+  const project = await seedProject(stack);
+  const authorization = authorizationFrom(page);
+  await login(page, stack);
+  await expect(page.getByRole('link', { name: project.title, exact: true })).toBeVisible();
+  const task = await admit(stack, authorization(), project);
+  const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+  const finding = { id: hash('finding'), ruleId: 'fixture-pattern', path: 'settings/example.txt', line: 3,
+    severity: 'unknown', certainty: 'suspected', scanner: 'gitleaks', impact: 'Review fixture <audit-fixture> verbatim.', suggestion: 'Ask the owner to verify the match.' };
+  const evidenceIds = [hash('gitleaks'), hash('trivy')];
+  const result = { version: 1, taskId: task.id, runId: task.runId, projectId: project.id, generation: 1, locale: 'en',
+    inputSha256: hash('input'), checkpointId: randomUUID(), inspectionSha256: hash('inspection'), snapshotSha256: hash('snapshot'),
+    catalogSha256: hash('catalog'), status: 'completed', reason: 'audit_complete', provider: 'anthropic', usage: { turns: 3, toolCalls: 2, tokens: 90 },
+    evidence: [{ kind: 'scan', id: evidenceIds[0], scanner: 'gitleaks', version: '8.30.1', policySha256: hash('secret-policy'), databaseSha256: null,
+      totalFindings: 1, findingIds: [finding.id] }, { kind: 'scan', id: evidenceIds[1], scanner: 'trivy', version: '0.70.0', policySha256: hash('dependency-policy'),
+      databaseSha256: hash('vulnerability-db'), totalFindings: 0, findingIds: [] }],
+    trace: evidenceIds.map(evidenceId => ({ operationId: hash(evidenceId), tool: 'read_scan', evidenceId })),
+    checklist: { summary: 'Two protected scans reviewed.', coverage: 'complete', findings: [finding], hypotheses: [], evidenceIds, limits: ['Scope covers secret and dependency checks.'] },
+  };
+  // The Worker and persisted response are verified separately against PostgreSQL; this fixture drives the browser rendering branch.
+  await page.route(`${stack.origin}/v1/tasks/${task.id}/audit`, async route => {
+    const locale = route.request().headers()['accept-language'] === 'zh-CN' ? 'zh-CN' : 'en';
+    await route.fulfill({ json: formalAuditDtoSchema.parse({ taskId: task.id, runId: task.runId, locale, status: 'recorded',
+      sha256: hash('record'), recordedAt: task.createdAt, result, message: locale === 'zh-CN' ? '已形成审计清单。' : 'Audit checklist recorded.',
+    }) });
+  });
+  await page.goto(`${stack.origin}/#/tasks/${task.id}`);
+  const panel = page.getByTestId('formal-audit');
+  await expect(panel.getByText('Potential impact')).toBeVisible();
+  await expect(panel.getByText(finding.impact, { exact: true })).toHaveAttribute('lang', 'en');
+  await expect(panel.locator('audit-fixture')).toHaveCount(0);
+  await expect(panel.getByText(`${finding.path}:${finding.line}`, { exact: true })).toBeVisible();
+  await panel.getByText('Evidence references', { exact: true }).click();
+  await expect(panel.getByText(evidenceIds[0]!, { exact: true })).toBeVisible();
+  await language(page, 'zh-CN');
+  await expect(panel.getByText('潜在影响')).toBeVisible();
+  await expect(panel.getByText('已形成审计清单。')).toBeVisible();
+  await expect(panel.getByText(finding.impact, { exact: true })).toHaveAttribute('lang', 'en');
+});
 
 type MotionProbe = { state: number; events: number; headings: number; disclosures: number; csp: string[]; privateWithError: boolean };
 async function observeMotion(page: Page, origin: string) {
@@ -147,6 +187,9 @@ for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycl
     await expect(page.getByTestId('source-inspection')).toContainText(zh ? '计划已准备，执行仍被阻断' : 'Plan prepared; execution is blocked');
     await expect(page.getByTestId('source-inspection')).toContainText(inspection.plan!.sha256);
     await expect(page.getByTestId('source-inspection').getByText(zh ? '请求的版本' : 'Requested commit', { exact: true })).toBeVisible();
+    const audit = formalAuditDtoSchema.parse((await client.callTool({ name: 'get_audit', arguments: { taskId } })).structuredContent);
+    expect(audit).toMatchObject({ taskId, status: 'pending', result: null });
+    await expect(page.getByTestId('formal-audit')).toContainText(zh ? '审计结果入库后，可在此查看清单。' : 'The checklist will appear when the audit result is recorded.');
   } finally { await client.close(); }
   const storageSafe = await page.evaluate(() => {
     const entries = [...Object.keys(localStorage).map(key => localStorage.getItem(key) ?? ''), ...Object.keys(sessionStorage).map(key => sessionStorage.getItem(key) ?? '')];

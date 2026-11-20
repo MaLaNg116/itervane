@@ -11,6 +11,7 @@ import { Alert, AlertTitle } from '../ui/alert.js';
 import { Badge } from '../ui/badge.js';
 import { Button } from '../ui/button.js';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '../ui/dialog.js';
+import { TaskAudit } from './task-audit.js';
 
 export function TaskPage({ id }: { id: string }) {
   const { locale } = usePortal();
@@ -25,23 +26,28 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
   const access = useRemote(`/v1/projects/${task.projectId}/access`, projectAccessDtoSchema, { poll: true });
   const events = useRemote(`/v1/tasks/${task.id}/events?limit=100`, z.object({ items: taskEventDtoSchema.array() }).strict(), { poll: true, localized: true });
   const inspection = useRemote(`/v1/tasks/${task.id}/source-inspection`, sourceInspectionDtoSchema, { poll: true });
-  const [confirmation, setConfirmation] = useState<{ action: 'cancel' | 'resume'; expectedVersion: number } | null>(null);
+  const [confirmation, setConfirmation] = useState<{ action: 'cancel' | 'retry' | 'audit'; expectedVersion: number } | null>(null);
   const returnButton = useRef<HTMLButtonElement>(null);
   const inFlight = useRef(false);
   const canWrite = access.data?.canWrite === true && !access.error;
   useEffect(() => { if (!canWrite) setConfirmation(null); }, [canWrite]);
   const control = useMutation({ retry: false,
-    mutationFn: (input: NonNullable<typeof confirmation>) => api.request(`/v1/tasks/${task.id}/${input.action}`, taskDtoSchema, locale, { method: 'POST', body: { expectedVersion: input.expectedVersion } }),
+    mutationFn: (input: NonNullable<typeof confirmation>) => api.request(`/v1/tasks/${task.id}/${input.action === 'cancel' ? 'cancel' : 'resume'}`,
+      taskDtoSchema, locale, { method: 'POST', body: { expectedVersion: input.expectedVersion } }),
     onSettled: () => { inFlight.current = false; setConfirmation(null); void cache.invalidateQueries(); },
   });
   const canCancel = ['queued', 'running', 'waiting_input', 'waiting_approval'].includes(task.state);
-  const canResume = task.state === 'waiting_input' && retrySourceInspectionReasonSchema.safeParse(events.data?.items.at(-1)?.reason).success;
+  const waitReason = events.error ? undefined : events.data?.items.at(-1)?.reason;
+  const canResume = task.state === 'waiting_input' && retrySourceInspectionReasonSchema.safeParse(waitReason).success;
+  const canStartAudit = task.state === 'waiting_input' && waitReason === 'inspection_ready';
   if (access.error) return <Failure error={access.error} locale={locale} />;
   const cancelling = confirmation?.action === 'cancel';
+  const auditing = confirmation?.action === 'audit';
   return <>
     <a href={`#/projects/${task.projectId}`} className="back-link">← {t('tasks')}</a>
     <PageHeading title={t('taskDetails')} actions={<>
-      {canWrite && canResume && <Button variant="outline" disabled={control.isPending} onClick={() => setConfirmation({ action: 'resume', expectedVersion: task.version })}>{t('resumeTask')}</Button>}
+      {canWrite && canResume && <Button variant="outline" disabled={control.isPending} onClick={() => setConfirmation({ action: 'retry', expectedVersion: task.version })}>{t('resumeTask')}</Button>}
+      {canWrite && canStartAudit && <Button variant="outline" disabled={control.isPending} onClick={() => setConfirmation({ action: 'audit', expectedVersion: task.version })}>{t('continueAudit')}</Button>}
       {canWrite && canCancel && <Button variant="destructive" disabled={control.isPending} onClick={() => setConfirmation({ action: 'cancel', expectedVersion: task.version })}>{t('cancelTask')}</Button>}
     </>} />
     {control.error && <div className="section-gap">{control.error instanceof ApiFailure && control.error.code === 'version_conflict'
@@ -73,14 +79,15 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
         : <InspectionDetails inspection={inspection.data} />}
     </Panel>
     </div>
+    <TaskAudit taskId={task.id} />
     {canWrite && <Dialog open={confirmation !== null} disablePointerDismissal onOpenChange={(open, event) => {
       if (open) return;
       if (inFlight.current) event.cancel();
       else setConfirmation(null);
     }}>
       <DialogContent initialFocus={returnButton} aria-busy={control.isPending}>
-        <DialogTitle>{t(cancelling ? 'cancelTitle' : 'resumeTitle')}</DialogTitle>
-        <DialogDescription>{t(cancelling ? 'cancelHelp' : 'resumeHelp')}</DialogDescription>
+        <DialogTitle>{t(cancelling ? 'cancelTitle' : auditing ? 'continueAuditTitle' : 'resumeTitle')}</DialogTitle>
+        <DialogDescription>{t(cancelling ? 'cancelHelp' : auditing ? 'continueAuditHelp' : 'resumeHelp')}</DialogDescription>
         <DialogFooter>
           <DialogClose disabled={control.isPending} render={<Button ref={returnButton} variant="outline" />}>{t('cancel')}</DialogClose>
           <Button variant={cancelling ? 'destructive' : 'default'} disabled={control.isPending} onClick={() => {
@@ -88,7 +95,7 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
             inFlight.current = true;
             // The version is the one shown when the user opened the confirmation.
             control.mutate(confirmation);
-          }}>{t(cancelling ? 'confirmCancel' : 'confirmResume')}</Button>
+          }}>{t(cancelling ? 'confirmCancel' : auditing ? 'continueAudit' : 'confirmResume')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>}

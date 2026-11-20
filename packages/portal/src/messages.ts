@@ -49,6 +49,8 @@ const en = {
   cancelTitle: 'Cancel this task?', cancelHelp: 'A running task first stops new work, then acknowledges cancellation. This does not undo external operations.',
   resumeTitle: 'Retry this preflight?', resumeHelp: 'This retries the Runner check with the remaining budget. It does not grant approval or enable deployment.',
   confirmCancel: 'Confirm cancellation', confirmResume: 'Confirm retry', controlConflict: 'The task changed. Review its latest state before confirming again.',
+  continueAudit: 'Continue to audit', continueAuditTitle: 'Continue from verified source evidence?',
+  continueAuditHelp: 'Queue the task with its saved scan evidence. The Worker uses the configured audit model when it is available.',
   principal: 'Authenticated principal', worker: 'Worker', eventStep: 'Step', taskLanguageHint: 'Changing the display language does not change an existing task’s language.',
   shownLimit: 'Showing the latest 100 items.', viewingProject: 'Project', latestState: 'Latest state', safeData: 'Synthetic / public data',
   inspection: 'Source inspection', inspectionPending: 'Waiting for an inspection plan',
@@ -60,6 +62,12 @@ const en = {
   scanNoInventory: 'No supported npm lockfile was found.', scanNoDatabase: 'The vulnerability database was unavailable.', scanEmptySource: 'The input contained no scannable files.',
   planDigest: 'Inspection plan SHA-256', requestedCommit: 'Requested commit', scannerProfiles: 'Protected scanner profiles',
   requiredIsolation: 'Required isolation', disposableVm: 'Disposable QEMU/KVM virtual machine', scannerCoverage: 'Secret patterns and npm lockfile vulnerabilities; other risks remain outside this coverage.',
+  formalAudit: 'Formal audit', auditRecorded: 'Checklist recorded', auditHumanReview: 'Human review required',
+  auditScopedCoverage: 'Both scanner observations reviewed', auditPartialCoverage: 'Some findings remain outside this checklist',
+  auditNoFindings: 'The two scanner observations contain zero findings.', auditHypotheses: 'Questions for review',
+  auditEvidence: 'Evidence references', auditSuspected: 'Suspected', auditConfirmed: 'Confirmed scanner match',
+  auditImpact: 'Potential impact', auditSuggestion: 'Recommended action',
+  auditSeverityUnknown: 'Severity unknown', auditSeverityLow: 'Low', auditSeverityMedium: 'Medium', auditSeverityHigh: 'High', auditSeverityCritical: 'Critical',
 } as const;
 export type UiKey = keyof typeof en;
 const zh: Record<UiKey, string> = {
@@ -111,6 +119,8 @@ const zh: Record<UiKey, string> = {
   cancelTitle: '确认取消此任务？', cancelHelp: '运行中的任务会先停止新增工作，再确认取消。这不会撤销已经发生的外部操作。',
   resumeTitle: '确认重试前置检查？', resumeHelp: '使用剩余预算重新检查 Runner，不代表批准，也不会开启部署能力。',
   confirmCancel: '确认取消', confirmResume: '确认重试', controlConflict: '任务已发生变化，请查看最新状态后重新确认。',
+  continueAudit: '继续审计', continueAuditTitle: '从已核验的源码证据继续？',
+  continueAuditHelp: '使用已保存的扫描证据重新入队。Worker 会在审计模型就绪后生成清单。',
   principal: '已认证主体', worker: '执行者', eventStep: '步骤', taskLanguageHint: '切换显示语言不会改变已有任务的语言。',
   shownLimit: '最多显示最近 100 条。', viewingProject: '所属项目', latestState: '最新状态', safeData: '模拟或公开数据',
   inspection: '源码检查', inspectionPending: '等待检查计划', inspectionBlocked: '计划已准备，执行仍被阻断',
@@ -121,6 +131,12 @@ const zh: Record<UiKey, string> = {
   scanNoInventory: '未找到受支持的 npm 锁文件。', scanNoDatabase: '漏洞库不可用。', scanEmptySource: '输入中没有可扫描的文件。',
   planDigest: '检查计划 SHA-256', requestedCommit: '请求的版本', scannerProfiles: '受保护的扫描配置',
   requiredIsolation: '要求的隔离环境', disposableVm: '一次性 QEMU/KVM 虚拟机', scannerCoverage: '覆盖密钥模式与 npm 锁文件已知漏洞，其他风险不属于这两类检查的覆盖范围。',
+  formalAudit: '正式审计', auditRecorded: '审计清单已记录', auditHumanReview: '需要人工核对',
+  auditScopedCoverage: '已审阅两种扫描结果', auditPartialCoverage: '部分发现超出此清单范围',
+  auditNoFindings: '两种扫描的结果均为零项发现。', auditHypotheses: '待核对的问题',
+  auditEvidence: '证据引用', auditSuspected: '疑似', auditConfirmed: '已确认的扫描命中',
+  auditImpact: '潜在影响', auditSuggestion: '处理建议',
+  auditSeverityUnknown: '严重度未知', auditSeverityLow: '低', auditSeverityMedium: '中', auditSeverityHigh: '高', auditSeverityCritical: '严重',
 };
 export const ui = (locale: Locale, key: UiKey) => (locale === 'zh-CN' ? zh : en)[key];
 export const stateLabel = (locale: Locale, state: TaskState) => translate(locale, `state.${state}`);
