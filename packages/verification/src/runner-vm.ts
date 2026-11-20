@@ -76,9 +76,9 @@ export async function probeRunnerVm(env: NodeJS.ProcessEnv = process.env) {
   const locale = localeSchema.catch('en').parse(env.ITERVANE_RUNNER_PROBE_LOCALE);
   const { ITERVANE_RUNNER_PROBE_ROOT = '', ITERVANE_RUNNER_PROBE_IMAGE = '',
     ITERVANE_RUNNER_PROBE_IMAGE_SHA256 = '' } = env;
-  const result = process.platform === 'linux' && process.arch === 'x64'
+  const result: DriverResult = process.platform === 'linux' && process.arch === 'x64'
     ? await launch(ITERVANE_RUNNER_PROBE_ROOT, ITERVANE_RUNNER_PROBE_IMAGE, ITERVANE_RUNNER_PROBE_IMAGE_SHA256)
-    : { code: 'kvm_unavailable', runId: null, imageSha256: null } as const;
+    : { code: 'kvm_unavailable', runId: null, imageSha256: null };
 
   const [status, en, zh] = outcomes[result.code];
   const check: Check = { id: 'runner-' + result.code.replaceAll('_', '-'), status, detail: locale === 'zh-CN' ? zh : en };
