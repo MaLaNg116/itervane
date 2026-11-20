@@ -157,7 +157,7 @@ function assertPaths(root: string, expected: Entry[]) {
 }
 
 /** Recheck the published bytes in the scanner namespace, where the mount is read-only. */
-export function readGuestSnapshot(ready: string) {
+export function readGuestSnapshotData(ready: string) {
   const publication = publicationSchema.parse(JSON.parse(readBoundedFile(join(ready, 'snapshot.json'), publicationBytes).toString('utf8')));
   const tree = join(ready, 'worktree');
   const npm = join(ready, 'npm');
@@ -179,5 +179,10 @@ export function readGuestSnapshot(ready: string) {
   const commitObject = readBoundedFile(join(ready, 'commit.object'), sourceLimits.maxCommitBytes);
   const manifest = verifySourceSnapshot({ source: publication.source, commitObject, files });
   if (manifest.sha256 !== publication.manifestSha256) throw new Error('snapshot-manifest');
-  return { runId: publication.runId, mode: publication.mode, manifest };
+  return { runId: publication.runId, mode: publication.mode, manifest, files };
+}
+
+export function readGuestSnapshot(ready: string) {
+  const { runId, mode, manifest } = readGuestSnapshotData(ready);
+  return { runId, mode, manifest };
 }

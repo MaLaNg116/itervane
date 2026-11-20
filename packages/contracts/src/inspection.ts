@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { idSchema, sourceRefSchema } from './primitives.js';
 
 export const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
+export const sourceContentLimits = Object.freeze({ maxFiles: 5000, maxFileBytes: 2097152, maxSourceBytes: 33554432 });
 export const retrySourceInspectionReasonSchema = z.enum(['runner_unavailable', 'inspection_reconciling', 'inspection_failed']);
 export const sourceInspectionPauseReasonSchema = z.enum([
   ...retrySourceInspectionReasonSchema.options, 'inspection_unsupported', 'inspection_ready', 'inspection_incomplete',
@@ -23,7 +24,8 @@ export const inspectionPlanSchema = z.object({
   isolation: z.object({ kind: z.literal('disposable_vm'), driver: z.literal('qemu-kvm-libvirt'), verification: z.literal('required') }).strict(),
   network: z.object({ fetch: z.literal('registered_https_only'), scan: z.literal('deny') }).strict(),
   limits: z.object({ cpu: z.literal(2), memoryMiB: z.literal(2048), diskMiB: z.literal(8192), timeoutSeconds: z.literal(180),
-    maxFiles: z.literal(5000), maxFileBytes: z.literal(2097152), maxSourceBytes: z.literal(33554432), maxReportBytes: z.literal(4194304) }).strict(),
+    maxFiles: z.literal(sourceContentLimits.maxFiles), maxFileBytes: z.literal(sourceContentLimits.maxFileBytes),
+    maxSourceBytes: z.literal(sourceContentLimits.maxSourceBytes), maxReportBytes: z.literal(4194304) }).strict(),
   scanners: z.tuple([scannerProfileSchema, scannerProfileSchema]),
 }).strict();
 const inspectionCoordinates = {
