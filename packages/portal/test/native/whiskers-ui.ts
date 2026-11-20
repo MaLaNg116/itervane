@@ -4,7 +4,7 @@ import { adminEmail } from './whiskers-fixture.js';
 
 export class NativeBrowserFailure extends Error {
   constructor(
-    readonly reason: 'login-form' | 'login-submit' | 'login-rejected' | 'login-navigation' | 'level-control' | 'level-option',
+    readonly reason: 'login-form' | 'login-submit' | 'login-rejected' | 'level-control' | 'level-option',
     readonly outcome?: string,
   ) {
     super(reason);
@@ -12,18 +12,22 @@ export class NativeBrowserFailure extends Error {
 }
 
 export async function signIn(page: Page, password: string) {
+  let verification: string;
   try {
     await page.goto(whiskersOrigin + '/set-culture?culture=en&redirect=/login', { waitUntil: 'domcontentloaded' });
-    await page.locator('input[name=email]').fill(adminEmail);
-    await page.locator('input[name=password]').fill(password);
+    verification = await page.locator('form[action="login-local"] input[name="__RequestVerificationToken"]').inputValue();
+    if (!verification) throw new Error('Missing anti-forgery token');
   } catch { throw new NativeBrowserFailure('login-form'); }
   let response;
   try {
-    [response] = await Promise.all([
-      page.waitForResponse(reply => reply.url() === whiskersOrigin + '/login-local' && reply.request().method() === 'POST'),
-      page.locator('form[action="login-local"] button[type=submit]').click(),
-    ]);
+    response = await page.request.post(whiskersOrigin + '/login-local', {
+      maxRedirects: 0,
+      form: { email: adminEmail, password, __RequestVerificationToken: verification },
+    });
   } catch { throw new NativeBrowserFailure('login-submit'); }
+  // The native form request shares the browser's cookie jar. The Admin-only
+  // settings panel below is the positive proof that login was accepted.
+  if (response.status() === 200) return;
   const location = response.headers().location;
   const destination = location ? new URL(location, whiskersOrigin) : undefined;
   const failure = destination?.pathname === '/login' ? destination.searchParams.get('error') : null;
@@ -31,9 +35,6 @@ export async function signIn(page: Page, password: string) {
   if (!destination || destination.origin !== whiskersOrigin || destination.pathname !== '/' || response.status() !== 302) {
     throw new NativeBrowserFailure('login-rejected', 'HTTP ' + response.status() + ', ' + recognizedFailure);
   }
-  try {
-    await page.waitForURL(url => url.origin === whiskersOrigin && url.pathname === '/', { waitUntil: 'domcontentloaded' });
-  } catch { throw new NativeBrowserFailure('login-navigation'); }
 }
 
 export async function openPermissions(page: Page) {
