@@ -3,7 +3,7 @@
 - 日期：2026-11-18；计划先行，D1 独立切片已实现并通过本地及三组 Linux CI；[交付与 review guide](../reviews/p1-d-source-inspection.md)。D2/D3 尚未验收。
 - 前置：P1-C / PR #4，代码 `f274c914d54fdcfc9785aa0836ff59f41a200bd4`；新草稿 PR 比较基线为 `feat/p1-portal-login`，不合并前置 PR。
 - 依据：v6 §9/§15—18、TS + PostgreSQL 实施计划 P1.4/P1.5、ADR 0001/0002/0004。
-- 当前条件：没有已验证 KVM 宿主，用户未安排补充。这个条件阻断不可信项目执行验收，不阻断独立模块开发；不再次索要主机，不使用普通容器替代 VM。
+- D1 开发时没有已验证的 KVM 宿主。后续原生验收使用 GitHub 托管工作机，完整隔离条件仍以 D2 验收为准。
 
 ## 1. P1 的剩余范围
 
@@ -18,6 +18,7 @@ P1-A/B/C 已提供身份与资源、原子任务、租约/fence、真实 checkpo
 
 D2 首个交付切片的范围与本机复跑方式见 [D2-A 生命周期探针](p1-d2-libvirt-lifecycle.md)。
 托管机上的 KVM 客体启动、重建与清理证据见 [原生复跑计划](p1-d2-runner-native.md) 和 [导读](../reviews/p1-d2-runner-native.md)。
+D2-B 的固定客体作业、取消和超时实测见 [作业通道计划](p1-d2-guest-job.md) 和 [实测导读](../reviews/p1-d2-guest-job.md)。
 
 P2 自主 Agent 审计/修复/独立复验、候选/批准/发布，P3 运维 MCP，P4 规则沉淀保持原路线。本批不增加第二套业务工作流，也不调整单维护者/单工作区/全局一个执行中工作流。
 
