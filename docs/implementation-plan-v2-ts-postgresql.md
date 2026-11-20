@@ -14,6 +14,8 @@ P1-UX 追加[门户视觉与 GSAP 动效切片](plans/p1-ux-portal-design-motion
 
 P2-A 按 [Agent Harness 与三角色循环](plans/p2-a-agent-harness.md) 完成 P2.1、P2.2 及部分 P2.3、P2.6 的可信样例验证。正式交付接入仍依赖 P1 已核验的执行隔离、当前授权、领域检查点发布及实际回执，完整 P2 的阶段出口继续适用。
 
+P2-B 按 [候选冻结与人工确认](plans/p2-b-release-candidate.md) 完成 P2.4 的 PostgreSQL 可信样例切片。接入正式 P2.4 需要 P2.3 的完整发布证据；批准、操作和队列仍按正式发布事务一起验收。
+
 本计划完整保留已确认的 TypeScript + PostgreSQL 分阶段实施方案。完整愿景、Agent 架构、MVP 闭环和安全边界沿用 v6；更新控制面技术栈、数据访问、任务调度与并发方案。本文定义实施顺序，不提前宣称接口兼容、恢复正确或阶段验收已经通过。
 
 2026-11-18 按用户继续分批开发的要求，采用 [ADR 0001](decisions/0001-development-and-runtime-gates.md)：独立模块可先开发与可信测试，完整阶段及真实执行资格仍受原验收闸门约束。

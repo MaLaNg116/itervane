@@ -24,6 +24,8 @@ P1-E adds a versioned, read-only bilingual rule/Skill catalogue and bounded text
 
 P2-A adds a bilingual, bounded ReAct harness and a complete audit, template repair, and independent verification loop for trusted fixtures. The fixture results carry no release eligibility. Delivery tasks in the API and external MCP still wait for a qualified disposable-VM Runner. See [P2-A fixture verification](docs/agent-harness-p2-a.md), the [implementation plan](docs/plans/p2-a-agent-harness.md), and the [review guide](docs/reviews/p2-a-agent-harness.md).
 
+P2-B adds PostgreSQL-backed fixture candidate freezing and bilingual human decision records. Rehearsals cover the exact candidate fingerprint, concurrent decisions, expiration, revocation, and owner reassignment. Fixture confirmations carry no release eligibility. See the [P2-B plan](docs/plans/p2-b-release-candidate.md) and [review guide](docs/reviews/p2-b-release-candidate.md).
+
 P1-UX refines that portal with a coherent bilingual workspace design and scoped GSAP feedback for actual state changes, new activity and metadata disclosure. Reduced-motion preferences apply live, with immediate permission/error handling. It adds no domain API, migration or execution capability. See [design and motion setup](docs/portal-design-motion.md), the [plan](docs/plans/p1-ux-portal-design-motion.md), and [third-party UI notices](docs/third-party-ui.md).
 
 For P0 setup, observed versions, and outstanding gates, see [P0 verification](docs/p0-verification.md). The repository does not yet deploy applications, execute submitted code, or operate infrastructure through an Agent.

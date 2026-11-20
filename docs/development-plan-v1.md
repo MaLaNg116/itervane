@@ -22,6 +22,8 @@ P1-UX 后续按[组件验证与迁移计划](plans/p1-ux-shadcn-migration.md)先
 
 P2-A 按 [内置 Agent Harness 计划](plans/p2-a-agent-harness.md) 交付双语 ReAct、审计、模板修复、独立复验及 PostgreSQL 检查点恢复。接入正式 Worker 依赖 D2/D3 确认可用 Runner，及领域层绑定授权、租约和已发布检查点。运行范围与验收入口见 [P2-A 运行说明](agent-harness-p2-a.md)。
 
+P2-B 按 [候选冻结与人工确认计划](plans/p2-b-release-candidate.md) 完成可信样例的候选指纹、确认记录、撤权和失效验证。正式批准依赖 D2/D3、实际复验、镜像扫描与目标映射，批准、唯一操作记录和入队须同事务完成。代码和验收见 [P2-B 导读](reviews/p2-b-release-candidate.md)。
+
 ## 1. 开发约束
 
 - 单维护者、单工作区、全局一个执行中的业务工作流；人工暂停后释放槽位。
