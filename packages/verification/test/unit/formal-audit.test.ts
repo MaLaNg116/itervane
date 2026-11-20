@@ -1,49 +1,7 @@
-import { randomUUID } from 'node:crypto';
-import { createFormalAudit, sha256, type AgentEvidence } from '@itervane/agent';
-import { formalAuditInputSchema, qualifiedInspectionResponseSchema, type Locale, type QualifiedInspectionReceipt } from '@itervane/contracts';
+import { completionSchemas, createFormalAudit, sha256, type AgentEvidence } from '@itervane/agent';
 import type { ModelAdapter } from '@itervane/model';
-import { catalogSnapshot } from '@itervane/rules';
-import { MemorySaver } from '@langchain/langgraph';
 import { expect, it, vi } from 'vitest';
-
-const omittedPath = 'fixture-source-path-excluded-from-model.json';
-const policySha256 = sha256('approved-policy');
-const providerSha256 = sha256('approved-provider');
-
-function auditFixture(locale: Locale, secretMatches: number, dependencyMatch = true) {
-  const scope = {
-    version: 1, requestId: randomUUID(), taskId: randomUUID(), runId: randomUUID(),
-    projectId: randomUUID(), repositoryId: randomUUID(), commit: '0'.repeat(40), generation: 1,
-    fence: 1, planSha256: policySha256, workspaceSha256: sha256('workspace'),
-  };
-  const snapshotSha256 = sha256('source-manifest');
-  const domainId = randomUUID();
-  const scans: QualifiedInspectionReceipt['snapshot']['reports'] = [
-    { scanner: 'gitleaks', version: '8.30.1', policySha256, snapshotSha256, status: 'completed', reason: null, database: null,
-      findings: Array.from({ length: secretMatches }, (_, index) => ({
-        id: sha256(`pattern-${index}`), ruleId: 'fixture-pattern', path: omittedPath, line: index + 1, severity: 'unknown',
-      })) },
-    { scanner: 'trivy', version: '0.70.0', policySha256, snapshotSha256, status: 'completed', reason: null,
-      database: { sha256: sha256('advisory-db'), updatedAt: '2026-11-20T04:00:00Z' },
-      findings: dependencyMatch ? [{ id: sha256('dependency'), ruleId: 'TEST-Advisory.1', path: omittedPath, line: null, severity: 'high' }] : [] },
-  ];
-  const inspection = qualifiedInspectionResponseSchema.parse({
-    kind: 'receipt', scope, domainId, imageSha256: sha256('guest'),
-    originSha256: sha256('origin'), commitSha256: sha256(scope.commit), cleanupConfirmed: true, sessionVerified: true,
-    snapshot: { runId: domainId, repositoryId: scope.repositoryId, commit: scope.commit, tree: '1'.repeat(40),
-      manifestSha256: snapshotSha256, files: 4, totalBytes: 2_000, inputsSha256: sha256('guest-inputs'),
-      readOnly: true, offline: true, reports: scans },
-  });
-  if (inspection.kind !== 'receipt') throw new Error('Expected receipt fixture');
-  const document = formalAuditInputSchema.parse({
-    version: 1, taskId: scope.taskId, runId: scope.runId, projectId: scope.projectId, generation: scope.generation,
-    dataClass: 'synthetic', source: { repositoryId: scope.repositoryId, commit: scope.commit },
-    purposeSha256: sha256('fixture purpose'), locale, catalog: catalogSnapshot(),
-    inspection: { requestId: scope.requestId, receiptSha256: sha256(JSON.stringify(inspection)), snapshotSha256, planSha256: scope.planSha256 },
-  });
-  return { inspection, input: { document, sha256: sha256(JSON.stringify(document)) }, providerSha256,
-    checkpointer: new MemorySaver(), authorize: async () => true };
-}
+import { auditFixture, omittedPath } from '../../src/agent/formal-fixture.js';
 
 function decision(name: string, input: unknown) {
   return { text: '', calls: [{ id: 'call', name, input }], tokenUsage: 20 };
@@ -83,11 +41,19 @@ it.each([
   expect(result.message).toMatch(locale === 'zh-CN' ? /审计清单/ : /audit checklist/);
   expect(result.repairs).toEqual([]);
   for (const [request] of complete.mock.calls) {
+    expect(request.conversation).toHaveLength(1);
     expect(JSON.stringify(request.conversation)).not.toContain(omittedPath);
     expect(JSON.stringify(request.conversation)).not.toContain(fixture.input.document.source.repositoryId);
     expect(request.tools.map(tool => tool.name)).not.toContain('draft_repair');
     expect(request.tools.map(tool => tool.name)).not.toContain('read_context');
   }
+  expect(complete.mock.calls[0]?.[0].tools.some(tool => tool.name === 'finish_role')).toBe(false);
+  const finish = complete.mock.calls.at(-1)?.[0].tools.find(tool => tool.name === 'finish_role');
+  const findingIds = result.audit?.findings.map(finding => finding.id) ?? [];
+  expect(finish?.inputSchema).toMatchObject({ properties: {
+    evidenceIds: { minItems: 2, maxItems: result.evidence.length, items: { enum: expect.arrayContaining(result.evidence.map(item => item.id)) } },
+    explanations: { minItems: findingIds.length, maxItems: findingIds.length, items: { properties: { findingId: { enum: expect.arrayContaining(findingIds) } } } },
+  } });
   expect(await fixture.checkpointer.getTuple({ configurable: { thread_id: `audit:${result.runId}` } })).toBeDefined();
   expect(await fixture.checkpointer.getTuple({ configurable: { thread_id: `fixture-agent:${result.runId}` } })).toBeUndefined();
 });
@@ -116,6 +82,45 @@ it('requires both scans and their real references before finishing', async () =>
     .mockResolvedValue(decision('finish_role', { summary: 'Clean', evidenceIds: [sha256('invented')], explanations: [] }));
   const result = await createFormalAudit({ ...fixture, model: { protocol: 'anthropic', complete } }).run();
   expect(result).toMatchObject({ status: 'requires_human', reason: 'no_progress', audit: null, usage: { toolCalls: 1 } });
+});
+
+it('requires exactly one explanation per observed finding even if the model ignores its tool schema', async () => {
+  const fixture = auditFixture('en', 0, true);
+  let attemptedExtra = false;
+  const complete = vi.fn<ModelAdapter['complete']>(async request => {
+    const suggested = await investigate(request);
+    if (suggested.calls[0]?.name !== 'finish_role' || attemptedExtra) return suggested;
+    attemptedExtra = true;
+    const input = completionSchemas.audit.parse(suggested.calls[0].input);
+    return decision('finish_role', { ...input, explanations: [...input.explanations,
+      { findingId: sha256('out-of-scope'), impact: 'Unsupported item', suggestion: 'Example' },
+    ] });
+  });
+  const result = await createFormalAudit({ ...fixture, model: { protocol: 'anthropic', complete } }).run();
+  expect(result).toMatchObject({ reason: 'audit_complete', usage: { turns: 4, toolCalls: 2 } });
+  expect(result.audit?.findings.map(item => item.id)).toEqual([sha256('dependency')]);
+});
+
+it('gives a zero-finding audit an empty explanation contract after both scanners', async () => {
+  const fixture = auditFixture('en', 0, false);
+  const complete = vi.fn(investigate);
+  const result = await createFormalAudit({ ...fixture, model: { protocol: 'anthropic', complete } }).run();
+  const finish = complete.mock.calls.at(-1)?.[0].tools.find(tool => tool.name === 'finish_role');
+  expect(finish?.inputSchema).toMatchObject({ properties: { explanations: { minItems: 0, maxItems: 0 } } });
+  expect(result).toMatchObject({ reason: 'audit_complete', audit: { findings: [] } });
+});
+
+it('preserves a cited unresolved issue for human review', async () => {
+  const fixture = auditFixture('en', 1, false);
+  const complete: ModelAdapter['complete'] = async request => {
+    const suggested = await investigate(request);
+    if (suggested.calls[0]?.name !== 'finish_role') return suggested;
+    const input = completionSchemas.audit.parse(suggested.calls[0].input);
+    return decision('finish_role', { ...input, hypotheses: [{ description: 'The observation does not settle which owner can verify this match.',
+      evidenceIds: input.evidenceIds.slice(0, 1) }] });
+  };
+  const result = await createFormalAudit({ ...fixture, model: { protocol: 'anthropic', complete } }).run();
+  expect(result).toMatchObject({ status: 'requires_human', reason: 'audit_incomplete', audit: { hypotheses: [{ evidenceIds: [expect.any(String)] }] } });
 });
 
 it('preserves the scanner count and requests review when the bounded projection omits findings', async () => {

@@ -86,10 +86,10 @@ function conversation(spec: AgentSpec, state: AgentState, entries: AgentEvidence
     })),
     observations,
   };
-  // Replay the latest admitted exchange with synthetic correlation IDs and no provider prose.
+  // The formal model uses the admitted evidence payload for each turn. Trusted fixtures also exercise protocol replay.
   let exchange: ConversationEntry[] = [];
   const last = state.trace.at(-1);
-  if (last?.role === state.role && state.currentEvidence.includes(last.evidenceId)) {
+  if (origin === 'trusted_fixture' && last?.role === state.role && state.currentEvidence.includes(last.evidenceId)) {
     const id = `call_${last.operationId.slice(0, 24)}`;
     exchange = [
       { kind: 'assistant', turn: { text: '', calls: [{ id, name: last.call.name, input: last.call.args }], tokenUsage: 0 } },
@@ -104,11 +104,18 @@ function conversation(spec: AgentSpec, state: AgentState, entries: AgentEvidence
     messages = build();
     if (!fits(messages)) return;
   }
-  for (const entry of [...entries].reverse()) {
+  const latest = [...entries].reverse();
+  const ordered = origin === 'formal_audit'
+    ? [...latest.filter(item => item.data.kind === 'scan'), ...latest.filter(item => item.data.kind !== 'scan')]
+    : latest;
+  for (const entry of ordered) {
     observations.push(entry);
     const withEntry = build();
     if (fits(withEntry)) messages = withEntry;
-    else observations.pop();
+    else {
+      if (origin === 'formal_audit' && entry.data.kind === 'scan') return;
+      observations.pop();
+    }
   }
   return messages;
 }

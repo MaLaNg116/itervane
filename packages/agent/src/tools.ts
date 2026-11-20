@@ -52,9 +52,22 @@ export function hasObservation(evidence: readonly AgentEvidence[], call: Planned
   });
 }
 
+function formalCompletionSchema(evidence: readonly AgentEvidence[], hypothesisGuidance: string) {
+  const findingIds = evidence.flatMap(({ data }) => data.kind === 'scan' ? data.findings.map(item => item.id) : []);
+  const audit = completionSchemas.audit;
+  const explanation = audit.shape.explanations.element;
+  return audit.extend({
+    evidenceIds: z.array(z.enum(evidence.map(item => item.id))).min(auditScannerSchema.options.length).max(evidence.length),
+    explanations: z.array(findingIds.length ? explanation.extend({ findingId: z.enum(findingIds) }) : explanation).length(findingIds.length),
+    hypotheses: audit.shape.hypotheses.describe(hypothesisGuidance),
+  });
+}
+
 export function toolDefinitions(locale: Locale, role: DeliveryRole, evidence: readonly AgentEvidence[],
   origin: AgentOrigin, ruleIds: readonly string[] = []): ToolDefinition[] {
-  const text = agentText(locale).tool;
+  const messages = agentText(locale);
+  const text = messages.tool;
+  const formal = origin === 'formal_audit';
   const sections = contextSectionSchema.options.filter(section => !hasObservation(evidence, { name: 'read_context', args: { section } }));
   const checks = checkKindSchema.options.filter(check => !hasObservation(evidence, { name: 'check_candidate', args: { check } }));
   const scanners = auditScannerSchema.options.filter(scanner => !hasObservation(evidence, { name: 'read_scan', args: { scanner } }));
@@ -72,9 +85,13 @@ export function toolDefinitions(locale: Locale, role: DeliveryRole, evidence: re
     const schema = availableInputs[name];
     return canCall(role, name, origin) && schema ? [{ name, description: text[name], inputSchema: z.toJSONSchema(schema, { io: 'input' }) }] : [];
   });
+  const finish = formal
+    ? (role === 'audit' && scanners.length === 0 ? formalCompletionSchema(evidence, messages.formal.hypotheses) : null)
+    : completionSchemas[role];
   return [
     ...available,
-    { name: 'finish_role', description: text.finish_role, inputSchema: z.toJSONSchema(completionSchemas[role], { io: 'input' }) },
+    ...(finish ? [{ name: 'finish_role', description: formal ? messages.formal.finish : text.finish_role,
+      inputSchema: z.toJSONSchema(finish, { io: 'input' }) }] : []),
     { name: 'request_human', description: text.request_human, inputSchema: z.toJSONSchema(emptyArguments, { io: 'input' }) },
   ];
 }
