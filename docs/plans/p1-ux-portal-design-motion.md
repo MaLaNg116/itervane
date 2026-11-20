@@ -55,7 +55,7 @@ Skill 是本次开发的方法参考，不是平台内上传的规则包或已�
 | 时间线新增记录 | 只反馈新增序号标记，限制单批数量 | 已有记录不随轮询/显示语言重播；不自动滚动或抢焦点 |
 | 元数据展开 | 原生 details 立即展开，内容轻量 transform | 键盘/展开语义保留；关闭立即生效，不延迟删除/撤权 |
 
-系统 `prefers-reduced-motion` 初始与运行中变化都受尊重，关闭 GSAP 非必要动画及 AntD/CSS 过渡。JS/CSS 动效目标是装饰元素或非关键内容；没有默认 opacity:0 的私有页面，没有克隆 DOM、退出保留层、计时器驱动假状态或动效触发的 API 写命令。Effect、媒体监听和 tween 在卸载/目标变化时清理。
+系统 `prefers-reduced-motion` 初始与运行中变化都受尊重，关闭 GSAP 非必要动画及 CSS 过渡。AntD motion token 固定关闭，由局部 GSAP/CSS 负责选定反馈；不动态切换主题 motion，因为已锁定 AntD 6.7.1 会在首次 true→false 时插入 provider 并重挂载会话/表单。JS/CSS 动效目标是装饰元素或非关键内容；没有默认 opacity:0 的私有页面，没有克隆 DOM、退出保留层、计时器驱动假状态或动效触发的 API 写命令。Effect、媒体监听和 tween 在卸载/目标变化时清理。
 
 GSAP 与 @gsap/react 保留自身 Standard No Charge License，不称作 Apache-2.0 代码；在第三方说明登记精确版本与官方许可链接。Itervane 自有代码继续 Apache-2.0。本次用途是门户展示，不增加可视化动画编辑功能。
 

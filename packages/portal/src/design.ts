@@ -12,7 +12,10 @@ export const designVariables = Object.fromEntries(Object.entries(colors).map(([k
 export const portalTheme: ThemeConfig = {
   token: { colorPrimary: colors.brand, colorText: colors.ink, colorTextSecondary: colors.muted, colorBgLayout: colors.canvas,
     colorBgContainer: colors.surface, colorBorder: colors.border, colorSuccess: colors.success, colorWarning: colors.warning,
-    colorError: colors.error, colorInfo: colors.info, fontFamily, borderRadius: 8, controlHeight: 40, fontSize: 14 },
+    colorError: colors.error, colorInfo: colors.info, fontFamily, borderRadius: 8, controlHeight: 40, fontSize: 14,
+    // AntD 6.7.1 inserts a provider when motion changes from true to false, remounting session/form state.
+    // Keep that boundary static; scoped GSAP/CSS own the explicitly selected, preference-aware feedback.
+    motion: false },
   components: {
     Card: { paddingLG: 24, headerFontSize: 16 },
     Table: { headerBg: '#EDF2F6', headerColor: colors.muted, rowHoverBg: '#F1F6F8', cellPaddingBlock: 16 },

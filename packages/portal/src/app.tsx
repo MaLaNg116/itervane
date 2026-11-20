@@ -12,7 +12,6 @@ import { Failure, Loading } from './components.js';
 import { readRoute } from './router.js';
 import { BrandMark } from './brand.js';
 import { designVariables, portalTheme } from './design.js';
-import { useReducedMotion } from './motion.js';
 
 const ProjectsPage = lazy(async () => ({ default: (await import('./pages/projects.js')).ProjectsPage }));
 const ProjectPage = lazy(async () => ({ default: (await import('./pages/project.js')).ProjectPage }));
@@ -25,8 +24,6 @@ const subscribeRoute = (listener: () => void) => { window.addEventListener('hash
 const routeSnapshot = () => location.hash;
 
 export function PortalApp() {
-  const reduced = useReducedMotion();
-  const theme = useMemo(() => ({ ...portalTheme, token: { ...portalTheme.token, motion: !reduced } }), [reduced]);
   const [locale, setLocale] = useState<Locale>(initialLocale);
   const [config, setConfig] = useState<PortalConfig | null>(null); const [configError, setConfigError] = useState(false);
   const [retry, setRetry] = useState(0);
@@ -43,7 +40,7 @@ export function PortalApp() {
   }, [retry]);
   const t = (key: Parameters<typeof ui>[1]) => ui(locale, key);
   const nonce = document.querySelector<HTMLMetaElement>('meta[name="itervane-csp-nonce"]')?.content ?? '';
-  return <ConfigProvider locale={locale === 'zh-CN' ? zhCN : enUS} csp={{ nonce }} theme={theme}>
+  return <ConfigProvider locale={locale === 'zh-CN' ? zhCN : enUS} csp={{ nonce }} theme={portalTheme}>
     <QueryClientProvider client={queries}>
       <div className="portal-root" style={designVariables}>
       <a className="skip-link" href="#main" onClick={event => { event.preventDefault(); const main = document.getElementById('main'); if (main) { main.tabIndex = -1; main.focus(); } }}>{t('skip')}</a>
