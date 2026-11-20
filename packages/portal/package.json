@@ -4,12 +4,16 @@
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
-  "scripts": { "build": "vite build" },
+  "scripts": {
+    "build": "vite build"
+  },
   "dependencies": {
-    "@itervane/contracts": "workspace:*",
     "@ant-design/cssinjs": "2.1.2",
+    "@gsap/react": "2.1.2",
+    "@itervane/contracts": "workspace:*",
     "@tanstack/react-query": "5.107.0",
     "antd": "6.7.1",
+    "gsap": "3.15.1",
     "oidc-client-ts": "3.5.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
