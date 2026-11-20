@@ -3,20 +3,26 @@ import { createConnection, type Socket } from 'node:net';
 import { dirname, isAbsolute } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
-  qualifiedInspectionRequestSchema, qualifiedInspectionResponseSchema, qualifiedInspectionStatusSchema, sha256Schema,
+  qualifiedInspectionRequestSchema, qualifiedInspectionResponseSchema, qualifiedInspectionStatusSchema, qualifiedRunnerRejectionSchema,
+  qualifiedRepairRequestSchema, qualifiedRepairResponseSchema, sha256Schema,
   type QualifiedInspectionReceipt, type QualifiedInspectionRequest, type QualifiedInspectionResponse,
   type InspectionPlan, type QualifiedInspectionScope, type QualifiedInspectionStatus,
+  type QualifiedRepairReceipt, type QualifiedRepairRequest, type QualifiedRepairResponse, type RepairPatch, type RepairWorkspace,
 } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from './profiles.js';
+import { canonicalRepairCommand } from './repair-command.js';
 import { sourcePath } from './snapshot.js';
 
 const requestLimit = 2048;
 const responseLimit = 4 * 1024 * 1024 + 8192;
+const repairResponseLimit = 32 * 1024;
 const heartbeatMs = 450;
 
 export type QualifiedControllerAddress = {
   socketPath: string; controllerUid: number; imageSha256: string;
 };
+type Rejected = Extract<QualifiedInspectionResponse, { kind: 'rejected' }>;
+type RepairCoordinates = Omit<QualifiedRepairRequest, 'operation' | 'commandBytes' | 'commandSha256'>;
 
 class Lines {
   private readonly iterator;
@@ -84,6 +90,30 @@ export function verifyQualifiedInspectionReceipt(receipt: QualifiedInspectionRec
   }
 }
 
+export function verifyQualifiedRepairReceipt(receipt: QualifiedRepairReceipt, request: QualifiedRepairRequest,
+  command: ReturnType<typeof canonicalRepairCommand>, imageSha256: string) {
+  const { origin, ...scope } = request;
+  const { snapshot } = receipt;
+  const { candidate } = snapshot;
+  if (Object.entries(scope).some(([key, value]) => receipt.scope[key as keyof typeof scope] !== value)
+      || receipt.imageSha256 !== imageSha256 || receipt.originSha256 !== sha256(origin)
+      || receipt.domainId !== snapshot.runId || snapshot.commit !== scope.commit || snapshot.repositoryId !== scope.repositoryId
+      || snapshot.manifestSha256 !== scope.baseSnapshotSha256 || snapshot.commandSha256 !== scope.commandSha256
+      || candidate.operationId !== scope.operationId || candidate.repairInputSha256 !== scope.repairInputSha256
+      || candidate.baseSnapshotSha256 !== scope.baseSnapshotSha256 || candidate.patchSha256 !== command.patchSha256
+      || candidate.workspaceSha256 !== command.workspaceSha256 || candidate.changes.length !== command.patch.files.length) {
+    throw new Error('runner_repair_receipt_binding');
+  }
+  for (const [index, change] of candidate.changes.entries()) {
+    const file = command.patch.files[index]!;
+    const difference = file.edits.reduce((total, edit) => total + Buffer.byteLength(edit.replacement) - (edit.endByte - edit.startByte), 0);
+    if (change.path !== file.path || change.beforeSha256 !== file.beforeSha256 || change.edits !== file.edits.length
+        || file.edits.some(edit => edit.endByte > change.beforeBytes) || change.afterBytes !== change.beforeBytes + difference) {
+      throw new Error('runner_repair_receipt_change');
+    }
+  }
+}
+
 export class QualifiedInspectionClient {
   private readonly imageSha256: string;
   constructor(private readonly address: QualifiedControllerAddress) {
@@ -117,9 +147,39 @@ export class QualifiedInspectionClient {
     rawRequest: QualifiedInspectionRequest, authorize: () => Promise<void>, signal?: AbortSignal,
   ): Promise<QualifiedInspectionResponse> {
     const request = qualifiedInspectionRequestSchema.parse(rawRequest);
+    return this.execute(request, authorize, signal, line => {
+      const response = qualifiedInspectionResponseSchema.parse(JSON.parse(line));
+      if (response.kind === 'receipt') {
+        const { origin, ...scope } = request;
+        verifyQualifiedInspectionReceipt(response, scope, { imageSha256: this.imageSha256, originSha256: sha256(origin) });
+      }
+      return response;
+    });
+  }
+
+  async repair(rawRequest: RepairCoordinates, workspace: RepairWorkspace, patch: RepairPatch,
+    authorize: () => Promise<void>, signal?: AbortSignal): Promise<QualifiedRepairResponse> {
+    const command = canonicalRepairCommand(workspace, patch);
+    const request = qualifiedRepairRequestSchema.parse({ ...rawRequest, operation: 'apply_repair',
+      commandSha256: sha256(command.bytes), commandBytes: command.bytes.length });
+    const fixed = command.workspace;
+    if (fixed.operationId !== request.operationId || fixed.repairInputSha256 !== request.repairInputSha256
+        || fixed.source.repositoryId !== request.repositoryId || fixed.source.commit !== request.commit
+        || fixed.baseSnapshotSha256 !== request.baseSnapshotSha256) throw new Error('runner_repair_request_binding');
+    return this.execute(request, authorize, signal, line => {
+      const response = qualifiedRepairResponseSchema.parse(JSON.parse(line));
+      if (response.kind === 'repair_receipt') verifyQualifiedRepairReceipt(response, request, command, this.imageSha256);
+      return response;
+    }, command.bytes);
+  }
+
+  private async execute<Response extends QualifiedInspectionResponse | QualifiedRepairResponse>(
+    request: QualifiedInspectionRequest | QualifiedRepairRequest, authorize: () => Promise<void>, signal: AbortSignal | undefined,
+    decode: (line: string) => Response, command?: Buffer,
+  ): Promise<Response | Rejected> {
     const requestFrame = Buffer.from(JSON.stringify(request) + '\n');
     let admitted = false;
-    const unavailable = (): QualifiedInspectionResponse => ({
+    const unavailable = (): Rejected => ({
       kind: 'rejected', requestId: request.requestId, domainId: null,
       code: admitted ? 'cleanup_unproven' : 'not_ready', cleanup: admitted ? 'unknown' : 'not_started',
     });
@@ -142,8 +202,10 @@ export class QualifiedInspectionClient {
         try { await authorize(); }
         catch { cancel(); return; }
         if (done.signal.aborted || signal?.aborted) { cancel(); return; }
+        const initial = !admitted;
         admitted = true;
         socket.write('K');
+        if (initial && command) socket.write(command);
         await delay(heartbeatMs, undefined, { signal: done.signal }).catch(() => undefined);
       }
     };
@@ -152,20 +214,16 @@ export class QualifiedInspectionClient {
       const first = await lines.read(requestLimit);
       clearTimeout(handshake);
       if (first !== 'READY 1') {
-        const rejected = qualifiedInspectionResponseSchema.parse(JSON.parse(first));
-        if (rejected.kind !== 'rejected' || rejected.requestId !== request.requestId || rejected.cleanup !== 'not_started') throw new Error('runner_handshake');
+        const rejected = qualifiedRunnerRejectionSchema.parse(JSON.parse(first));
+        if (rejected.requestId !== request.requestId || rejected.cleanup !== 'not_started' || rejected.domainId) throw new Error('runner_handshake');
         return rejected;
       }
       signal?.addEventListener('abort', cancel, { once: true });
       if (signal?.aborted) cancel();
       else pulses = pulse();
-      const response = qualifiedInspectionResponseSchema.parse(JSON.parse(await lines.read(responseLimit)));
-      if (response.kind === 'receipt') {
-        const { origin, ...scope } = request;
-        verifyQualifiedInspectionReceipt(response, scope, { imageSha256: this.imageSha256, originSha256: sha256(origin) });
-      }
-      else if (response.requestId !== request.requestId || (response.cleanup === 'confirmed' && !response.domainId)
-          || (response.cleanup === 'not_started' && response.domainId)) throw new Error('runner_response_binding');
+      const response = decode(await lines.read(command ? repairResponseLimit : responseLimit));
+      if (response.kind === 'rejected' && (response.requestId !== request.requestId || (response.cleanup === 'confirmed' && !response.domainId)
+          || (response.cleanup === 'not_started' && response.domainId))) throw new Error('runner_response_binding');
       return response;
     } catch {
       return unavailable();

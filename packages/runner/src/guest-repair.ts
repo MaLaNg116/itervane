@@ -1,15 +1,15 @@
 import { lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
-  repairCandidateManifestSchema, repairCandidateReceiptSchema, repairPatchSchema, repairWorkspaceSchema,
+  qualifiedGuestRepairProofSchema, repairCandidateManifestSchema, repairCandidateReceiptSchema, repairCommandByteLimit, repairCommandSchema,
   type RepairPatch,
 } from '@itervane/contracts';
 import { readBoundedFile, readGuestSnapshotData } from './guest-snapshot.js';
 import { sha256, sourceLimits } from './profiles.js';
-import { sourcePath } from './snapshot.js';
+import { canonicalRepairCommand } from './repair-command.js';
 
 const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
-const comparePaths = (left: string, right: string) => Buffer.compare(Buffer.from(left), Buffer.from(right));
+type RepairCommand = ReturnType<typeof canonicalRepairCommand>;
 
 function editText(content: Buffer, edits: RepairPatch['files'][number]['edits']) {
   try {
@@ -30,16 +30,10 @@ function editText(content: Buffer, edits: RepairPatch['files'][number]['edits'])
   return result;
 }
 
-function prepareCandidate(ready: string, rawWorkspace: unknown, rawPatch: unknown) {
-  const request = repairWorkspaceSchema.parse(rawWorkspace);
-  const workspace = { ...request, editablePaths: request.editablePaths.map(sourcePath).sort(comparePaths),
-    protectedPaths: request.protectedPaths.map(sourcePath).sort(comparePaths) };
-  const proposal = repairPatchSchema.parse(rawPatch);
-  const patch = { ...proposal, files: proposal.files.map(file => ({ ...file, path: sourcePath(file.path) }))
-    .sort((left, right) => comparePaths(left.path, right.path)) };
-  const { manifest: base, files } = readGuestSnapshotData(ready);
+function prepareCandidate({ manifest: base, files }: ReturnType<typeof readGuestSnapshotData>, command: RepairCommand) {
+  const { workspace, patch, workspaceSha256, patchSha256 } = command;
   if (workspace.source.repositoryId !== base.source.repositoryId || workspace.source.commit !== base.source.commit
-      || workspace.baseSnapshotSha256 !== base.sha256 || patch.baseSnapshotSha256 !== base.sha256) throw new Error('repair-base');
+      || workspace.baseSnapshotSha256 !== base.sha256) throw new Error('repair-base');
 
   const editable = new Set(workspace.editablePaths);
   const protectedPaths = workspace.protectedPaths.map(path => path.toLowerCase());
@@ -68,17 +62,16 @@ function prepareCandidate(ready: string, rawWorkspace: unknown, rawPatch: unknow
   });
   const receipt = repairCandidateReceiptSchema.parse({
     version: 1, operationId: workspace.operationId, repairInputSha256: workspace.repairInputSha256,
-    workspaceSha256: sha256(JSON.stringify(workspace)), baseSnapshotSha256: base.sha256, patchSha256: sha256(JSON.stringify(patch)),
+    workspaceSha256, baseSnapshotSha256: base.sha256, patchSha256,
     candidateManifestSha256: sha256(JSON.stringify(manifest)), changes,
   });
   return { contents, manifest, patch, receipt };
 }
 
-/** The sealed guest supplies a read-only publication and a private writable output directory. */
-export function publishGuestRepair(ready: string, output: string, rawWorkspace: unknown, rawPatch: unknown) {
+function publishCandidate(output: string, snapshot: ReturnType<typeof readGuestSnapshotData>, command: RepairCommand) {
   const target = join(output, 'candidate');
   if (lstatSync(target, { throwIfNoEntry: false })) throw new Error('repair-publication-exists');
-  const { contents, manifest, patch, receipt } = prepareCandidate(ready, rawWorkspace, rawPatch);
+  const { contents, manifest, patch, receipt } = prepareCandidate(snapshot, command);
   const staging = mkdtempSync(join(output, '.candidate-'));
   try {
     for (const file of manifest.files) {
@@ -97,4 +90,32 @@ export function publishGuestRepair(ready: string, output: string, rawWorkspace: 
     rmSync(staging, { recursive: true, force: true });
     throw error;
   }
+}
+
+/** The sealed guest supplies a read-only publication and a private writable output directory. */
+export function publishGuestRepair(ready: string, output: string, rawWorkspace: unknown, rawPatch: unknown) {
+  const command = canonicalRepairCommand(rawWorkspace, rawPatch);
+  return publishCandidate(output, readGuestSnapshotData(ready), command);
+}
+
+export function repairQualifiedGuestSnapshot(source: string, output: string) {
+  const bytes = readBoundedFile(join(source, 'repair-command.json'), repairCommandByteLimit);
+  let command: RepairCommand;
+  try {
+    const raw = repairCommandSchema.parse(JSON.parse(decoder.decode(bytes)));
+    command = canonicalRepairCommand(raw.workspace, raw.patch);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'repair-base') throw error;
+    throw new Error('repair-invalid');
+  }
+  if (!bytes.equals(command.bytes)) throw new Error('repair-invalid');
+  const fixed = readGuestSnapshotData(join(source, 'ready'));
+  if (fixed.mode !== 'repair') throw new Error('repair-integrity');
+  const { manifest } = fixed;
+  const candidate = publishCandidate(output, fixed, command);
+  return qualifiedGuestRepairProofSchema.parse({
+    runId: fixed.runId, repositoryId: manifest.source.repositoryId, commit: manifest.source.commit,
+    tree: manifest.tree, manifestSha256: manifest.sha256, files: manifest.files.length,
+    commandSha256: sha256(bytes), readOnly: true, offline: true, candidate,
+  });
 }

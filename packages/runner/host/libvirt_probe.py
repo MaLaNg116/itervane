@@ -55,6 +55,7 @@ class Result:
     sessionVerified: bool = False
     source: SourceEvidence | None = None
     inspection: dict | None = None
+    repair: dict | None = None
 
 
 def check_kvm():
@@ -413,7 +414,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
                     code = "cleanup_unproven"
             else:
                 code = "cleanup_unproven"
-    if code in ("passed", "job_passed", "source_passed", "inspection_passed"):
+    if code in ("passed", "job_passed", "source_passed", "inspection_passed", "repair_passed"):
         try:
             check_deadline()
         except Rejected as error:
@@ -427,8 +428,9 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
         job=job.evidence if isinstance(job, ProbeJob) else None,
         jobIssue=job_issue,
         sessionVerified=cleanup_confirmed and process_exit_confirmed,
-        source=job.evidence if isinstance(job, SourceProbe) and code in ("source_passed", "inspection_passed") else None,
+        source=job.evidence if isinstance(job, SourceProbe) and code in ("source_passed", "inspection_passed", "repair_passed") else None,
         inspection=job.inspection if isinstance(job, SourceProbe) and code == "inspection_passed" else None,
+        repair=job.repair if isinstance(job, SourceProbe) and code == "repair_passed" else None,
     )
 
 
@@ -515,7 +517,9 @@ def main():
         result = probe(libvirt, libvirt_qemu, Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], lambda: cancelled, scenario, session=mode == "session")
     except Rejected as error:
         result = Result(str(error))
-    print(json.dumps(asdict(result)))
+    payload = asdict(result)
+    del payload["repair"]
+    print(json.dumps(payload))
 
 
 if __name__ == "__main__":

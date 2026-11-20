@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { repairCandidateManifestSchema, repairPatchLimits, repairPatchSchema } from '@itervane/contracts';
+import { qualifiedRepairRequestSchema, repairCandidateManifestSchema, repairPatchLimits, repairPatchSchema,
+  type QualifiedRepairReceipt } from '@itervane/contracts';
 import { describe, expect, it } from 'vitest';
-import { publishGuestRepair } from '../../src/guest-repair.js';
+import { publishGuestRepair, repairQualifiedGuestSnapshot } from '../../src/guest-repair.js';
 import { publishGuestSnapshot, readGuestSnapshot } from '../../src/guest-snapshot.js';
 import { sha256 } from '../../src/profiles.js';
+import { verifyQualifiedRepairReceipt } from '../../src/qualified-client.js';
+import { canonicalRepairCommand } from '../../src/repair-command.js';
 import { trustedGitFixture } from '../helpers/trusted-git.js';
 
 it('bounds real byte ranges, file aliases and aggregate replacement size in the patch contract', () => {
@@ -23,6 +26,52 @@ it('bounds real byte ranges, file aliases and aggregate replacement size in the 
 });
 
 describe.runIf(process.platform === 'linux')('repair publication from verified guest bytes', () => {
+  it('requires a canonical private command and a repair snapshot before producing a scoped receipt', async () => {
+    const path = 'src/text';
+    const original = Buffer.from('Original\n');
+    const sample = await trustedGitFixture('sha1', { [path]: original });
+    try {
+      const source = join(sample.root, 'source'); const scanner = join(sample.root, 'scanner');
+      const output = join(sample.root, 'output');
+      await Promise.all([mkdir(source), mkdir(scanner), mkdir(output)]);
+      const domain = randomUUID();
+      publishGuestSnapshot(source, sample.root, domain, sample.source, 'repair');
+      publishGuestSnapshot(scanner, sample.root, domain, sample.source, 'qualified');
+      const workspace = { version: 1, operationId: randomUUID(), source: sample.source, repairInputSha256: sha256('input'),
+        baseSnapshotSha256: sample.manifest.sha256, editablePaths: [path], protectedPaths: [] };
+      const patch = { version: 1, baseSnapshotSha256: sample.manifest.sha256, files: [{ path, beforeSha256: sha256(original),
+        edits: [{ startByte: 0, endByte: 8, replacement: 'Updated' }] }] };
+      const command = canonicalRepairCommand(workspace, patch);
+      await writeFile(join(source, 'repair-command.json'), Buffer.concat([command.bytes, Buffer.from('\n')]));
+      await writeFile(join(scanner, 'repair-command.json'), command.bytes);
+      expect(() => repairQualifiedGuestSnapshot(source, output)).toThrow('repair-invalid');
+      expect(() => repairQualifiedGuestSnapshot(scanner, output)).toThrow('repair-integrity');
+      expect(await readdir(output)).toEqual([]);
+      await writeFile(join(source, 'repair-command.json'), command.bytes);
+      const proof = repairQualifiedGuestSnapshot(source, output);
+      expect(proof).toMatchObject({ runId: domain, ...sample.source, manifestSha256: sample.manifest.sha256,
+        commandSha256: sha256(command.bytes), offline: true, readOnly: true,
+        candidate: { operationId: workspace.operationId, patchSha256: command.patchSha256, workspaceSha256: command.workspaceSha256 } });
+      expect(JSON.stringify(proof)).not.toContain('Updated');
+      const request = qualifiedRepairRequestSchema.parse({ version: 1, operation: 'apply_repair', operationId: workspace.operationId,
+        requestId: randomUUID(), taskId: randomUUID(), runId: randomUUID(), projectId: randomUUID(), ...sample.source,
+        generation: 1, fence: 3, workspaceSha256: sha256('controller workspace'), repairInputSha256: workspace.repairInputSha256,
+        baseSnapshotSha256: proof.manifestSha256, commandSha256: proof.commandSha256, commandBytes: command.bytes.length,
+        origin: 'https://example.invalid/source.git' });
+      const { origin, ...scope } = request;
+      const imageSha256 = sha256('trusted image');
+      const receipt: QualifiedRepairReceipt = { kind: 'repair_receipt', scope, domainId: domain, imageSha256,
+        originSha256: sha256(origin), commitSha256: sha256(sample.commitObject), cleanupConfirmed: true,
+        sessionVerified: true, snapshot: proof };
+      expect(() => verifyQualifiedRepairReceipt(receipt, request, command, imageSha256)).not.toThrow();
+      expect(() => verifyQualifiedRepairReceipt({ ...receipt, scope: { ...scope, fence: 2 } }, request, command, imageSha256))
+        .toThrow('runner_repair_receipt_binding');
+      const wrongByteCount = { ...proof.candidate, changes: proof.candidate.changes.map(change => ({ ...change, afterBytes: 20 })) };
+      expect(() => verifyQualifiedRepairReceipt({ ...receipt, snapshot: { ...proof, candidate: wrongByteCount } }, request, command, imageSha256))
+        .toThrow('runner_repair_receipt_change');
+    } finally { await sample.close(); }
+  });
+
   it('replays the same patch into an independent candidate with exact bytes and stable digests', async () => {
     const text = Buffer.from('first\r\n示例\r\nlast\r\n');
     const script = Buffer.from('#!/bin/sh\nprintf old\n');

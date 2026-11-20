@@ -1,12 +1,13 @@
+import hashlib
 import json
 import unittest
 from io import BytesIO
 from uuid import UUID
 
 from guest_job import ProtocolError
-from native_source import maintainer_source
+from native_source import SourceProbe, maintainer_source
 from source_gateway import SourceRejected
-from source_wire import CLOSED, RECEIPT, SOURCE_READY, START, SourceWire
+from source_wire import CLOSED, QUALIFIED_START, RECEIPT, START, SourceWire
 
 
 RUN = "06d5d64c-664b-4c02-9bcc-48cec79e7696"
@@ -87,3 +88,18 @@ class SourceExchangeTest(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "invalid inspection identity"):
             self.exchange([*self.acquire_and_close, (b"M", proof), (b"N", inconsistent)])
         self.assertIsNone(self.probe.inspection)
+
+    def test_repair_payload_follows_egress_denial_and_fixed_object_proof(self):
+        command = b"{}"
+        self.probe = SourceProbe(self.relay, repository_id=RUN, repair_command=command)
+        objects = RECEIPT.pack(self.identity, self.commit, b"t" * 20, b"d" * 32, 2)
+        proof = {"runId": RUN, "repositoryId": RUN, "commit": self.commit.hex(), "tree": (b"t" * 20).hex(), "files": 2,
+                 "commandSha256": hashlib.sha256(command).hexdigest()}
+        code, guest = self.exchange([*self.acquire_and_close, (b"M", objects), (b"H", json.dumps(proof).encode())])
+        self.assertEqual(code, "repair_passed")
+        self.assertEqual(guest.receive({b"R": QUALIFIED_START.size})[1], QUALIFIED_START.pack(self.identity, self.commit, self.identity))
+        for expected in (b"o", b"o", b""):
+            self.assertEqual(guest.receive({b"O": 1})[1], expected)
+        self.assertEqual(guest.receive({b"X": len(CLOSED)})[1], CLOSED)
+        self.assertEqual(guest.receive({b"W": len(command)})[1], command)
+        self.assertEqual(self.probe.repair, proof)

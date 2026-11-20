@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import socket
@@ -24,6 +25,14 @@ def request():
         "version": 1, "generation": 3, "fence": 8, "planSha256": "a" * 64,
         "commit": "b" * 40, "origin": ORIGIN, "workspaceSha256": WORKSPACE,
     }
+
+
+def repair_request(command):
+    data = request()
+    del data["planSha256"]
+    return {**data, "operation": controller.REPAIR, "operationId": str(uuid.uuid4()), "repairInputSha256": "d" * 64,
+            "baseSnapshotSha256": "e" * 64, "commandSha256": hashlib.sha256(command).hexdigest(),
+            "commandBytes": len(command)}
 
 
 class ControllerTest(unittest.TestCase):
@@ -88,10 +97,11 @@ class ControllerTest(unittest.TestCase):
         with server, client, ThreadPoolExecutor(max_workers=1) as pool:
             client.settimeout(1)
             with patch.object(controller, "PULSE_SECONDS", 0.1):
-                def run(request_data, origin, cancelled):
+                def run(request_data, origin, cancelled, command):
                     self.assertFalse(cancelled())
                     self.assertEqual(request_data, data)
                     self.assertEqual(origin, ORIGIN)
+                    self.assertIsNone(command)
                     idle = Event()
                     for _ in range(50):
                         if cancelled():
@@ -113,3 +123,29 @@ class ControllerTest(unittest.TestCase):
         result = Result("cleanup_unproven", runId=str(uuid.uuid4()))
         reply = controller.response_for(data, result)
         self.assertEqual(reply, controller.rejected("cleanup_unproven", data["requestId"], "unknown", result.runId))
+
+    def test_repair_requires_enablement_current_pulse_and_exact_command_before_launch(self):
+        body = b"{}"
+        data = repair_request(body)
+        launch = Mock(return_value=Result("not_ready"))
+        for enabled, authorization, outcome in (
+            (False, b"", "not_ready"),
+            (True, b"C", "lease_lost"),
+            (True, b"K" + b"[]", "invalid_request"),
+            (True, b"K" + body, "not_ready"),
+        ):
+            server, client = socket.socketpair()
+            with self.subTest(enabled=enabled, outcome=outcome), server, client, ThreadPoolExecutor(max_workers=1) as pool:
+                client.settimeout(1)
+                with patch.object(controller, "PULSE_SECONDS", 0.05):
+                    result = pool.submit(controller.serve_connection, server, os.getuid(), {ORIGIN: ORIGIN}, WORKSPACE,
+                                         Mock(), launch, lambda: False, enabled)
+                    client.sendall(json.dumps(data).encode() + b"\n")
+                    if enabled:
+                        with client.makefile("rb", buffering=0) as reader:
+                            self.assertEqual(reader.readline(len(controller.READY)), controller.READY)
+                        client.sendall(authorization)
+                    self.assertEqual(result.result(timeout=2), controller.rejected(outcome, data["requestId"]))
+        launch.assert_called_once()
+        self.assertEqual(launch.call_args.args[:2], (data, ORIGIN))
+        self.assertEqual(launch.call_args.args[3], body)

@@ -48,6 +48,9 @@ export const repairPatchSchema = z.strictObject({
   && bytes(JSON.stringify(patch)) <= repairPatchLimits.documentBytes);
 export type RepairPatch = z.infer<typeof repairPatchSchema>;
 
+export const repairCommandByteLimit = 2 * 1024 * 1024;
+export const repairCommandSchema = z.strictObject({ workspace: repairWorkspaceSchema, patch: repairPatchSchema });
+
 const candidateManifestFile = z.strictObject({
   path: pathSchema, mode: z.enum(['100644', '100755']), bytes: offset, sha256: sha256Schema,
 });
