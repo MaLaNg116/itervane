@@ -32,9 +32,10 @@ class TestLibvirt:
         self.lookup_uncertain = False
         self.destroy_uncertain = False
         self.profile_change = lambda _document: None
+        self.uri = runner.URI
 
     def open(self, uri):
-        if uri != "qemu:///system":
+        if uri != self.uri:
             raise AssertionError("Unexpected libvirt connection")
         self.open_count += 1
         self.events.append("open")
@@ -45,6 +46,9 @@ class Connection:
     def __init__(self, libvirt, number):
         self.libvirt = libvirt
         self.number = number
+
+    def getURI(self):
+        return self.libvirt.uri
 
     def getDomainCapabilities(self, emulator, arch, machine, kind, flags):
         if (emulator, arch, machine, kind, flags) != (None, "x86_64", "q35", "kvm", 0):
@@ -139,8 +143,8 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(domain.disk.read_bytes(), self.image.read_bytes())
         return '{"return":{}}'
 
-    def launch(self, scenario="heartbeat"):
-        return runner.probe(self.libvirt, self, self.root, self.image, self.digest, lambda: self.cancelled, scenario)
+    def launch(self, scenario="heartbeat", session=False):
+        return runner.probe(self.libvirt, self, self.root, self.image, self.digest, lambda: self.cancelled, scenario, session)
 
     def test_success_checks_and_destroys_before_removing_owned_disk(self):
         result = self.launch()
@@ -274,6 +278,35 @@ class LifecycleTest(unittest.TestCase):
                 self.assertEqual(result.code, "cleanup_unproven")
                 disk = self.root / (runner.PREFIX + result.runId) / "disk.raw"
                 self.assertTrue(disk.exists())
+
+    def test_session_requires_qemu_exit_even_when_libvirt_confirms_domain_absence(self):
+        self.libvirt.uri = runner.SESSION_URI
+        fd = os.open(self.image, os.O_RDONLY)
+        with (
+            patch.object(runner, "prepare_session", return_value=self.root),
+            patch.object(runner, "verify_qemu_process", return_value=fd),
+            patch.object(runner, "process_exited", return_value=False),
+        ):
+            result = self.launch(session=True)
+        self.assertIsNone(self.libvirt.domain)
+        self.assertEqual(self.libvirt.open_count, 2)
+        self.assertFalse(result.sessionVerified)
+        self.assertEqual(result.code, "cleanup_unproven")
+        self.assertTrue((self.root / (runner.PREFIX + result.runId) / "run.json").exists())
+        self.assertEqual(self.launch(session=True).code, "pending_cleanup")
+
+    def test_session_does_not_resume_a_domain_with_unproven_process_identity(self):
+        self.libvirt.uri = runner.SESSION_URI
+        with (
+            patch.object(runner, "prepare_session", return_value=self.root),
+            patch.object(runner, "verify_qemu_process", side_effect=runner.SessionRejected("qemu-process")),
+        ):
+            result = self.launch(session=True)
+        self.assertEqual(result.code, "session_rejected")
+        self.assertEqual(result.profileIssue, "qemu-process")
+        self.assertNotIn("resume", self.libvirt.events)
+        self.assertFalse(result.sessionVerified)
+        self.assertEqual(list(self.root.iterdir()), [])
 
     def test_workspace_lock_and_permissions_fail_closed(self):
         fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)

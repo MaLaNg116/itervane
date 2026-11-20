@@ -31,6 +31,15 @@ describe('sanitized native VM probe result', () => {
     expect(parseRunnerProbeOutput('invalid stdout', imageSha256).code).toBe('driver_lost');
   });
 
+  it('requires positive host identity and exit evidence for a dedicated session success', () => {
+    const verified = { code: 'passed', runId, imageSha256, cleanupConfirmed: true, sessionVerified: true };
+    expect(parseRunnerProbeOutput(JSON.stringify(verified), imageSha256, 'session')).toEqual(verified);
+    expect(parseRunnerProbeOutput(JSON.stringify(verified), imageSha256).code).toBe('driver_lost');
+    for (const invalid of [{ ...verified, cleanupConfirmed: false }, { ...verified, sessionVerified: false }]) {
+      expect(parseRunnerProbeOutput(JSON.stringify(invalid), imageSha256, 'session').code).toBe('driver_lost');
+    }
+  });
+
   it('retains a bounded profile diagnostic without accepting a path', () => {
     const rejected = { code: 'profile_rejected', runId, imageSha256, profileIssue: 'disk-child-seclabel' };
     expect(parseRunnerProbeOutput(JSON.stringify(rejected), imageSha256)).toEqual(rejected);

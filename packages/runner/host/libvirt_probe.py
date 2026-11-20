@@ -21,6 +21,7 @@ if __name__ == "__main__":
 
 from guest_job import PORT as JOB_PORT
 from native_job import SCENARIOS, JobEvidence, JobRejected, ProbeJob, start_channel_events
+from session_boundary import SESSION_URI, SessionRejected, prepare_session, process_exited, verify_qemu_process
 
 
 URI = "qemu:///system"
@@ -49,6 +50,7 @@ class Result:
     cleanupConfirmed: bool = False
     job: JobEvidence | None = None
     jobIssue: str | None = None
+    sessionVerified: bool = False
 
 
 def check_kvm():
@@ -222,13 +224,21 @@ def absent(libvirt, conn, name, run_id):
     return True
 
 
-def connect(libvirt):
+def connect(libvirt, uri=URI):
     try:
-        conn = libvirt.open(URI)
+        conn = libvirt.open(uri)
     except libvirt.libvirtError as error:
         raise Rejected("libvirt_unavailable") from error
     if conn is None:
         raise Rejected("libvirt_unavailable")
+    if uri == SESSION_URI:
+        try:
+            matches = conn.getURI() == SESSION_URI
+        except libvirt.libvirtError:
+            matches = False
+        if not matches:
+            closed(libvirt, conn)
+            raise SessionRejected("session-uri")
     return conn
 
 
@@ -239,14 +249,14 @@ def closed(libvirt, conn):
         return False
 
 
-def verify_absence(libvirt, name, run_id):
+def verify_absence(libvirt, name, run_id, uri=URI):
     try:
-        conn = connect(libvirt)
+        conn = connect(libvirt, uri)
         try:
             return absent(libvirt, conn, name, run_id)
         finally:
             closed(libvirt, conn)
-    except (libvirt.libvirtError, Rejected):
+    except (libvirt.libvirtError, Rejected, SessionRejected):
         return False
 
 
@@ -267,7 +277,7 @@ def ping_guest(libvirt, qemu, domain, check_deadline):
         raise Rejected("heartbeat_rejected")
 
 
-def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None):
+def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, session_runtime=None):
     run_id = str(uuid.uuid4())
     name = PREFIX + run_id
     directory = root / name
@@ -275,24 +285,28 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None):
     journal = directory / "run.json"
     domain = None
     conn = None
+    process_fd = None
     created_directory = False
     verified_image = False
     attempted_create = False
     owns_domain = False
     cleanup_confirmed = False
+    process_exit_confirmed = False
     code = "host_error"
     issue = None
     job_issue = None
+    uri = SESSION_URI if session_runtime is not None else URI
     try:
         check_deadline()
-        conn = connect(libvirt)
+        conn = connect(libvirt, uri)
         capabilities = xml.fromstring(conn.getDomainCapabilities(None, ARCH, MACHINE, "kvm", 0))
         if capabilities.findtext("domain") != "kvm" or capabilities.findtext("arch") != ARCH:
             raise Rejected("libvirt_unavailable")
         directory.mkdir(mode=0o700)
         created_directory = True
-        # System libvirt may run QEMU as a separate user and relabel the disk.
-        directory.chmod(0o711)
+        if session_runtime is None:
+            # System libvirt may run QEMU as a separate user and relabel the disk.
+            directory.chmod(0o711)
         with journal.open("x", encoding="utf-8") as record:
             json.dump({"schema": 1, "runId": run_id, "domainName": name}, record)
         copy_image(image, disk, digest, check_deadline)
@@ -318,6 +332,8 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None):
         issue = profile_issue(domain.XMLDesc(0), disk, with_job=job is not None)
         if issue:
             raise Rejected("profile_rejected")
+        if session_runtime is not None:
+            process_fd = verify_qemu_process(session_runtime, name, run_id)
         check_deadline()
         domain.resume()
         ping_guest(libvirt, qemu, domain, check_deadline)
@@ -325,6 +341,9 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None):
     except JobRejected as error:
         code = str(error)
         job_issue = job.phase
+    except SessionRejected as error:
+        code = "session_rejected"
+        issue = str(error)
     except Rejected as error:
         code = str(error)
     except (libvirt.libvirtError, OSError, xml.ParseError):
@@ -339,9 +358,15 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None):
                 pass
         domain = None
         disconnected = conn is None or closed(libvirt, conn)
+        if process_fd is not None:
+            try:
+                process_exit_confirmed = process_exited(process_fd)
+            finally:
+                os.close(process_fd)
         if created_directory:
             safe_to_remove = not attempted_create or (
-                owns_domain and disconnected and verify_absence(libvirt, name, run_id)
+                owns_domain and disconnected and verify_absence(libvirt, name, run_id, uri)
+                and (process_fd is None or process_exit_confirmed)
             )
             if safe_to_remove:
                 try:
@@ -360,10 +385,13 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None):
             check_deadline()
         except Rejected as error:
             code = str(error)
-    return Result(code, run_id, digest if verified_image else None, issue, cleanup_confirmed, job.evidence if job else None, job_issue)
+    return Result(
+        code, run_id, digest if verified_image else None, issue, cleanup_confirmed,
+        job.evidence if job else None, job_issue, cleanup_confirmed and process_exit_confirmed,
+    )
 
 
-def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat"):
+def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat", session=False):
     deadline = time.monotonic() + DEADLINE_SECONDS
 
     def check_deadline():
@@ -386,12 +414,15 @@ def probe(libvirt, qemu, root, image, digest, cancelled, scenario="heartbeat"):
                 raise Rejected("workspace_busy") from error
             if any(path.name.startswith(PREFIX) for path in root.iterdir()):
                 raise Rejected("pending_cleanup")
+            session_runtime = prepare_session(root, image) if session else None
             job = None if scenario == "heartbeat" else ProbeJob(scenario)
-            return run_guest(libvirt, qemu, root, image, digest, check_deadline, job)
+            return run_guest(libvirt, qemu, root, image, digest, check_deadline, job, session_runtime)
         finally:
             os.close(fd)
     except Rejected as error:
         return Result(str(error))
+    except SessionRejected as error:
+        return Result("session_rejected", profileIssue=str(error))
     except OSError:
         return Result("config_required")
 
@@ -408,10 +439,11 @@ def main():
     os.umask(0o077)
     try:
         check_kvm()
-        if len(sys.argv) not in (4, 5) or not IMAGE_DIGEST.fullmatch(sys.argv[3]) or not all(sys.argv[1:3]):
+        if len(sys.argv) not in (4, 5, 6) or not IMAGE_DIGEST.fullmatch(sys.argv[3]) or not all(sys.argv[1:3]):
             raise Rejected("config_required")
-        scenario = sys.argv[4] if len(sys.argv) == 5 else "heartbeat"
-        if scenario not in SCENARIOS:
+        scenario = sys.argv[4] if len(sys.argv) >= 5 else "heartbeat"
+        mode = sys.argv[5] if len(sys.argv) == 6 else "system"
+        if scenario not in SCENARIOS or mode not in ("system", "session"):
             raise Rejected("config_required")
         try:
             import libvirt
@@ -424,7 +456,7 @@ def main():
                 start_channel_events(libvirt)
             except libvirt.libvirtError as error:
                 raise Rejected("libvirt_unavailable") from error
-        result = probe(libvirt, libvirt_qemu, Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], lambda: cancelled, scenario)
+        result = probe(libvirt, libvirt_qemu, Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], lambda: cancelled, scenario, session=mode == "session")
     except Rejected as error:
         result = Result(str(error))
     print(json.dumps(asdict(result)))
