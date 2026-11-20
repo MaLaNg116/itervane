@@ -1,4 +1,3 @@
-import type { CSSProperties } from 'react';
 import type { ThemeConfig } from 'antd';
 
 const colors = {
@@ -7,8 +6,8 @@ const colors = {
 } as const;
 const fontFamily = '"Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
 
-// One palette feeds the AntD theme and scoped CSS variables; no external font or asset requests.
-export const designVariables = Object.fromEntries(Object.entries(colors).map(([key, value]) => [`--iv-${key}`, value])) as CSSProperties;
+// Fixed public palette, also available to AntD portals mounted under body. The style receives the server nonce.
+export const designCss = `:root{${Object.entries(colors).map(([key, value]) => `--iv-${key}:${value}`).join(';')}}`;
 export const portalTheme: ThemeConfig = {
   token: { colorPrimary: colors.brand, colorText: colors.ink, colorTextSecondary: colors.muted, colorBgLayout: colors.canvas,
     colorBgContainer: colors.surface, colorBorder: colors.border, colorSuccess: colors.success, colorWarning: colors.warning,
