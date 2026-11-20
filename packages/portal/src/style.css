@@ -68,6 +68,12 @@ fieldset.form-stack { border: 0; margin: 0; padding: 0; }
 .form-error { color: var(--iv-error); font-size: 13px; }
 .empty-state { padding: 28px 16px; text-align: center; }
 .empty-state p { margin: 6px 0 0; }
+.table-scroll { max-width: 100%; overflow-x: auto; border-radius: 8px; }
+[data-slot='table'] { text-align: left; }
+[data-slot='table'] th, [data-slot='table'] td { padding: 14px 12px; overflow-wrap: anywhere; vertical-align: top; }
+[data-slot='table'] th { background: var(--iv-soft); color: var(--iv-muted); font-weight: 600; }
+[data-slot='table'] td { border-bottom: 1px solid var(--iv-border); }
+[data-slot='table'] tbody tr:hover { background: var(--iv-canvas); }
 .ant-form .ant-alert { margin-bottom: 16px; }
 .ant-alert p { max-width: 80ch; }.ant-card .ant-card-head-title { white-space: normal; overflow-wrap: anywhere; }
 .ant-tag { white-space: normal; }.ant-table-cell { overflow-wrap: anywhere; }

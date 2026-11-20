@@ -3,7 +3,7 @@ import { Button as ButtonPrimitive } from '@base-ui/react/button';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from './cn.js';
 
-const buttonVariants = cva(
+export const buttonVariants = cva(
   'inline-flex min-h-11 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-lg border border-solid px-4 py-2 text-center text-sm font-semibold leading-snug transition-colors disabled:cursor-not-allowed disabled:opacity-60',
   {
     variants: {
