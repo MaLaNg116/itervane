@@ -3,6 +3,15 @@ import { z } from 'zod';
 export const localeSchema = z.enum(['en', 'zh-CN']);
 export type Locale = z.infer<typeof localeSchema>;
 export const en = {
+  'release.pending': 'This fixture candidate awaits a decision.',
+  'release.confirmed': 'The owner confirmed this fixture candidate.',
+  'release.rejected': 'The owner rejected this fixture candidate.',
+  'release.revoked': 'The confirmation was revoked.',
+  'release.expired': 'The candidate evidence has expired.',
+  'release.superseded': 'A newer candidate has been frozen.',
+  'release.evidence_changed': 'The current evidence no longer matches this candidate.',
+  'release.task_changed': 'The task is no longer awaiting a decision for this run.',
+  'release.approver_revoked': 'The confirming owner assignment is no longer active.',
   'preaudit.uncovered.repository_context': 'The complete repository and source provenance were not verified.',
   'preaudit.uncovered.formal_scanners': 'No formal secret, dependency or image scanner was run.',
   'preaudit.uncovered.runtime_behavior': 'Runtime behavior, authorization and business correctness were not verified.',
@@ -44,6 +53,15 @@ export const en = {
 } as const;
 export type MessageKey = keyof typeof en;
 export const zhCN: Record<MessageKey, string> = {
+  'release.pending': '此样例候选等待人工决定。',
+  'release.confirmed': '所有者已确认此样例候选。',
+  'release.rejected': '所有者已拒绝此样例候选。',
+  'release.revoked': '确认已撤销。',
+  'release.expired': '候选证据已过期。',
+  'release.superseded': '已冻结更新的候选。',
+  'release.evidence_changed': '当前证据与此候选不再一致。',
+  'release.task_changed': '任务已不再等待当前运行的决定。',
+  'release.approver_revoked': '确认时的所有者授权已失效。',
   'preaudit.uncovered.repository_context': '未核验完整仓库及源码来源。',
   'preaudit.uncovered.formal_scanners': '未运行正式密钥、依赖或镜像扫描器。',
   'preaudit.uncovered.runtime_behavior': '未验证运行行为、授权或业务正确性。',
