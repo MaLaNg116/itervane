@@ -66,10 +66,12 @@ jobs:
         id: inspection
         if: steps.capability.outputs.available == 'true'
         run: |
+          set -euo pipefail
           pnpm install --frozen-lockfile --ignore-scripts
           scratch=$(mktemp -d "$RUNNER_TEMP/itervane-scan.XXXXXXXX")
           payload="$scratch/itervane-inspection"
           pnpm exec tsx scripts/prepare-runner-inspection.ts "$payload" | tee "$scratch/preparation.log"
+          test -s "$payload/inputs.json"
           tail -n 1 "$scratch/preparation.log" > .reports/p0/kvm-inspection-inputs.json
           printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
       - name: Prepare and seal the trusted offline guest

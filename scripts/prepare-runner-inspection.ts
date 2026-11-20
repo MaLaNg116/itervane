@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { chmod, copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { build } from 'esbuild';
@@ -11,9 +11,11 @@ import { scannerTools } from './scanner-tools.js';
 const execute = promisify(execFile);
 const limit = 180 * 1024 * 1024;
 const databaseRepository = 'ghcr.io/aquasecurity/trivy-db:2';
+let preparationPhase = 'target';
 
 async function prepare(root: string) {
   if (process.platform !== 'linux' || process.arch !== 'x64' || basename(root) !== 'itervane-inspection') throw new Error('invalid-target');
+  preparationPhase = 'assets';
   const tools = await scannerTools();
   await mkdir(root, { mode: 0o755 });
   const path = (name: string) => resolve(root, name);
@@ -25,6 +27,7 @@ async function prepare(root: string) {
   await copyFile(tools.gitleaks, gitleaks, constants.COPYFILE_EXCL);
   await copyFile(tools.trivy, trivy, constants.COPYFILE_EXCL);
   await Promise.all([runtime, gitleaks, trivy].map(file => chmod(file, 0o755)));
+  preparationPhase = 'bundle';
   await build({
     entryPoints: ['packages/runner/src/entries/guest-inspection.ts'],
     outfile: worker, bundle: true, platform: 'node', format: 'esm', target: 'node24',
@@ -35,16 +38,20 @@ async function prepare(root: string) {
   await writeFile(path('policy/empty.ignore'), '');
 
   const preparation = path('download');
+  preparationPhase = 'database-download';
   await execute(trivy, ['image', '--download-db-only', '--db-repository', databaseRepository,
     '--cache-dir', preparation, '--no-progress'], {
     env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: preparation },
     timeout: 145_000, killSignal: 'SIGKILL', maxBuffer: 512 * 1024,
   });
+  preparationPhase = 'database-layout';
   await mkdir(path('cache'));
   await rename(path('download/db'), path('cache/db'));
   // An empty directory carries no staged inputs.
   const metadata = await readFile(path('cache/db/metadata.json'));
   if (metadata.length > 4096) throw new Error('invalid-database-metadata');
+  console.log('Offline database bytes ' + (await stat(path('cache/db/trivy.db'))).size);
+  preparationPhase = 'asset-verification';
   const inputs: InspectionInputs = {
     nodeSha256: await fileDigest(runtime, limit),
     workerSha256: await fileDigest(worker, 4 * 1024 * 1024),
@@ -54,6 +61,7 @@ async function prepare(root: string) {
     databaseMetadataSha256: sha256(metadata),
     databaseUpdatedAt: databaseUpdatedAt(metadata),
   };
+  preparationPhase = 'database-age';
   if (Date.now() - Date.parse(inputs.databaseUpdatedAt) > 72 * 3600_000
       || Date.parse(inputs.databaseUpdatedAt) > Date.now() + 300_000) throw new Error('stale-database');
   const serialized = JSON.stringify(inputs, null, 2) + '\n';
@@ -65,7 +73,15 @@ try {
   const [root, ...extra] = process.argv.slice(2);
   if (!root || extra.length) throw new Error('invalid-target');
   await prepare(resolve(root));
-} catch {
-  console.error('Trusted scanner input preparation failed.');
+} catch (error) {
+  const stderr = error instanceof Error && 'stderr' in error ? String(error.stderr) : '';
+  const diagnostic = /no space left/i.test(stderr) ? 'storage'
+    : /TOOMANYREQUESTS|429/i.test(stderr) ? 'registry-rate-limit'
+    : /unauthorized|denied|401|403/i.test(stderr) ? 'registry-access'
+    : /x509|certificate/i.test(stderr) ? 'tls'
+    : /timeout|no such host|connection/i.test(stderr) ? 'registry-network'
+    : error instanceof Error && 'code' in error && typeof error.code === 'string' && /^[A-Z0-9_]{1,24}$/.test(error.code)
+      ? error.code : 'verification';
+  console.error(`Trusted scanner input preparation failed at ${preparationPhase} (${diagnostic}).`);
   process.exitCode = 1;
 }
