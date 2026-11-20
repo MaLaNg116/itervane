@@ -16,6 +16,8 @@ P1-D 按 [隔离源码检查计划](plans/p1-d-isolated-source-inspection.md) �
 
 P1-E 按 [规则查询与有限预审计划](plans/p1-e-rules-and-preaudit.md) 交付版本化内置规则/Skill、脱敏不可变报告、同一 API/MCP/双语门户。短请求只做固定文本匹配，不占业务执行 slot；不替代 P2-A 的自主 Agent、P4 的规则生命周期或 D2/D3 的隔离扫描。对应验收与代码导读见 [P1-E guide](reviews/p1-e-rules-preaudit.md)。
 
+P1-UX 按[门户设计与动效计划](plans/p1-ux-portal-design-motion.md) 独立完善现有中英文界面，参考固定版本 UI UX Pro Max/frontend-design，使用受控 GSAP 微反馈与系统减少动效。它保持原 API/领域记录、认证授权及 Runner 闸门；不是新一轮 Agent、规则上传或发布能力。
+
 ## 1. 开发约束
 
 - 单维护者、单工作区、全局一个执行中的业务工作流；人工暂停后释放槽位。

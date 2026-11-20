@@ -6,6 +6,7 @@ import { projectAccessDtoSchema, sourceInspectionDtoSchema, taskDtoSchema, taskE
 import { usePortal, useRemote, useText } from '../context.js';
 import { Failure, Loading, PageHeading, Status, formatTime } from '../components.js';
 import { ApiFailure } from '../api.js';
+import { StateMarker, useNewEventMotion } from '../motion.js';
 
 export function TaskPage({ id }: { id: string }) {
   const { locale } = usePortal();
@@ -31,14 +32,18 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
   return <>
     <a href={`#/projects/${task.projectId}`} className="back-link">← {t('tasks')}</a>
     <PageHeading title={t('taskDetails')} actions={<>
-      <Status state={task.state} locale={locale} />
       {access.data?.canWrite && canResume && <Button disabled={control.isPending} onClick={() => setConfirmation({ action: 'resume', expectedVersion: task.version })}>{t('resumeTask')}</Button>}
       {access.data?.canWrite && canCancel && <Button danger disabled={control.isPending} onClick={() => setConfirmation({ action: 'cancel', expectedVersion: task.version })}>{t('cancelTask')}</Button>}
     </>} />
     {control.error && <div className="section-gap">{control.error instanceof ApiFailure && control.error.code === 'version_conflict'
       ? <Alert type="warning" showIcon title={t('controlConflict')} /> : <Failure error={control.error} locale={locale} />}</div>}
     {canResume && <Alert className="section-gap" type="warning" showIcon title={t('preflightOnly')} description={t('runnerNotice')} />}
-    <Card className="section-gap">
+    <section className="task-state-panel section-gap" aria-label={t('latestState')}>
+      <div className="task-current-state" role="status" aria-atomic="true"><StateMarker value={task.state} /><div><p className="muted">{t('latestState')}</p><Status state={task.state} locale={locale} /></div></div>
+      <div><p className="muted">{t('dataClass')}</p><strong>{t(task.dataClass === 'public' ? 'publicData' : 'synthetic')}</strong></div>
+      <div><p className="muted">{t('taskLanguage')}</p><strong>{t(task.locale === 'en' ? 'english' : 'chinese')}</strong></div>
+    </section>
+    <Card title={t('taskRecord')} className="section-gap">
       <h2 className="task-purpose">{task.purpose}</h2>
       <dl className="detail-grid">
         <div><dt>{t('taskId')}</dt><dd><code>{task.id}</code></dd></div>
@@ -63,13 +68,9 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
       </>}
     </Card>
     <Card title={t('events')}>
+      <p className="muted activity-hint">{t('activityHint')}</p>
       {events.isPending ? <Loading locale={locale} /> : events.error ? <Failure error={events.error} locale={locale} retry={() => { void events.refetch(); }} />
-        : <ol className="event-list">{events.data.items.map(event => <li key={event.sequence}>
-          <span className="event-index" aria-hidden="true">{event.sequence}</span>
-          <div><p className="event-title">{event.message}</p>{event.reasonMessage && <p className="muted">{event.reasonMessage}</p>}
-            <div className="event-meta"><time dateTime={event.createdAt}>{formatTime(event.createdAt, locale)}</time><Tag>{t(event.actorKind === 'worker' ? 'worker' : 'principal')}</Tag></div>
-          </div>
-        </li>)}</ol>}
+        : <ActivityTimeline items={events.data.items} />}
     </Card>
     <Modal open={confirmation !== null} title={t(confirmation?.action === 'cancel' ? 'cancelTitle' : 'resumeTitle')}
       okText={t(confirmation?.action === 'cancel' ? 'confirmCancel' : 'confirmResume')} cancelText={t('cancel')}
@@ -79,4 +80,14 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
       <p>{t(confirmation?.action === 'cancel' ? 'cancelHelp' : 'resumeHelp')}</p>
     </Modal>
   </>;
+}
+
+function ActivityTimeline({ items }: { items: z.infer<typeof taskEventDtoSchema>[] }) {
+  const { locale } = usePortal(); const t = useText(); const scope = useNewEventMotion(items.map(event => event.sequence));
+  return <ol className="event-list" ref={scope}>{items.map(event => <li key={event.sequence}>
+    <span className="event-index" data-event-sequence={event.sequence} aria-hidden="true">{event.sequence}</span>
+    <div><p className="event-title">{event.message}</p>{event.reasonMessage && <p className="muted">{event.reasonMessage}</p>}
+      <div className="event-meta"><time dateTime={event.createdAt}>{formatTime(event.createdAt, locale)}</time><Tag>{t(event.actorKind === 'worker' ? 'worker' : 'principal')}</Tag></div>
+    </div>
+  </li>)}</ol>;
 }

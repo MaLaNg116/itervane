@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { Alert, Button, ConfigProvider, Result, Select } from 'antd';
+import { Alert, Button, ConfigProvider, Result } from 'antd';
 import enUS from 'antd/locale/en_US.js';
 import zhCN from 'antd/locale/zh_CN.js';
 import { meDtoSchema, portalConfigSchema, type Locale, type PortalConfig } from '@itervane/contracts';
@@ -10,6 +10,8 @@ import { initialLocale, saveLocale, ui } from './messages.js';
 import { PortalContext } from './context.js';
 import { Failure, Loading } from './components.js';
 import { readRoute } from './router.js';
+import { BrandMark } from './brand.js';
+import { designCss, portalTheme } from './design.js';
 
 const ProjectsPage = lazy(async () => ({ default: (await import('./pages/projects.js')).ProjectsPage }));
 const ProjectPage = lazy(async () => ({ default: (await import('./pages/project.js')).ProjectPage }));
@@ -38,15 +40,20 @@ export function PortalApp() {
   }, [retry]);
   const t = (key: Parameters<typeof ui>[1]) => ui(locale, key);
   const nonce = document.querySelector<HTMLMetaElement>('meta[name="itervane-csp-nonce"]')?.content ?? '';
-  return <ConfigProvider locale={locale === 'zh-CN' ? zhCN : enUS} csp={{ nonce }} theme={{ token: { colorPrimary: '#16665a', borderRadius: 10, fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif' } }}>
+  return <ConfigProvider locale={locale === 'zh-CN' ? zhCN : enUS} csp={{ nonce }} theme={portalTheme}>
     <QueryClientProvider client={queries}>
+      <style nonce={nonce}>{designCss}</style>
+      <div className="portal-root">
       <a className="skip-link" href="#main" onClick={event => { event.preventDefault(); const main = document.getElementById('main'); if (main) { main.tabIndex = -1; main.focus(); } }}>{t('skip')}</a>
-      <header className="topbar"><a href="#/projects" className="brand" aria-label="Itervane"><span className="brand-mark" aria-hidden="true">i</span>Itervane</a>
-        <div className="topbar-end"><span className="workspace-label">{t('workspace')}</span><Select aria-label={t('language')} virtual={false} value={locale} onChange={setLocale} options={[{ value: 'en', label: 'English' }, { value: 'zh-CN', label: '简体中文' }]} /></div>
+      <header className="topbar"><a href="#/projects" className="brand" aria-label="Itervane"><BrandMark />Itervane</a>
+        <div className="topbar-end"><span className="workspace-label">{t('workspace')}</span><select className="language-picker" aria-label={t('language')} value={locale} onChange={event => setLocale(event.currentTarget.value === 'zh-CN' ? 'zh-CN' : 'en')}>
+          <option value="en">English</option><option value="zh-CN">简体中文</option>
+        </select></div>
       </header>
       {!config ? <main id="main" className="login-main">{configError ? <Failure error={new ApiFailure('networkError')} locale={locale} retry={() => setRetry(retry + 1)} /> : <Loading locale={locale} />}</main>
         : !config.enabled ? <main id="main" className="login-main"><Result status="info" title={t('loginDisabled')} subTitle={t('loginDisabledHelp')} /></main>
         : <SessionGate config={config} locale={locale} />}
+      </div>
     </QueryClientProvider>
   </ConfigProvider>;
 }
@@ -78,9 +85,11 @@ function AuthorizedWorkspace({ api, session, epoch, name, locale }: { api: Porta
     <Button onClick={() => { void session.logout(); }}>{t('signOut')}</Button>
   </main>;
   return <PortalContext value={{ api, session, epoch, locale, me: me.data }}>
-    <div className="workspace-layout"><aside className="sidebar"><p className="eyebrow">{t('appTitle')}</p><nav aria-label={t('projects')}><a href="#/projects" aria-current={route.page === 'projects' ? 'page' : undefined}>{t('projects')} <span aria-hidden="true">↗</span></a></nav>
+    <div className="workspace-layout"><aside className="sidebar"><p className="eyebrow">{t('appTitle')}</p><nav aria-label={t('projects')}><a href="#/projects" aria-current={route.page === 'projects' ? 'page' : undefined}>
+      <svg viewBox="0 0 20 20" className="nav-icon" aria-hidden="true" focusable="false"><path d="M3 4h5l2 2h7v10H3Z" /></svg>{t('projects')}</a></nav>
+      <div className="workspace-note"><strong>{t('workspaceGuide')}</strong><p>{t('workspaceGuideDetail')}</p></div>
       <div className="account"><span className="account-avatar" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span><div><strong>{name}</strong><span className="muted">{t(me.data.isWorkspaceOwner ? 'owner' : 'account')}</span></div></div>
-      <Button block onClick={() => { void session.logout(); }}>{t('signOut')}</Button>
+      <Button block className="signout" onClick={() => { void session.logout(); }}>{t('signOut')}</Button>
     </aside><main id="main" className="workspace-main">
       <Suspense fallback={<Loading locale={locale} />}>{route.page === 'projects' ? <ProjectsPage /> : route.page === 'project' ? <ProjectPage key={route.id} id={route.id} />
         : route.page === 'task' ? <TaskPage key={route.id} id={route.id} /> : route.page === 'preaudit' ? <PreauditPage key={route.id} id={route.id} />

@@ -11,6 +11,8 @@ const test = base.extend<{}, { stack: Stack }>({ stack: [async ({}, use) => {
 
 test.afterEach(async ({ page, stack }, info) => {
   if (info.status === info.expectedStatus || page.isClosed()) return;
+  const origin = new URL(page.url()).origin;
+  info.annotations.push({ type: 'failure-surface', description: origin === stack.origin ? 'application' : origin === new URL(stack.issuer).origin ? 'identity' : 'other' });
   if (new URL(page.url()).origin === stack.origin) {
     await page.screenshot({ path: `.reports/p1-c/failed-${info.title.replace(/[^a-zA-Z0-9-]/g, '-')}.png`, fullPage: true });
     console.log(`Application view at failure: ${new URL(page.url()).pathname}`);
@@ -18,13 +20,19 @@ test.afterEach(async ({ page, stack }, info) => {
 });
 
 async function language(page: Page, locale: 'en' | 'zh-CN') {
-  await page.getByRole('combobox').first().click();
-  await page.getByRole('option', { name: locale === 'en' ? 'English' : '简体中文', exact: true }).click();
+  await page.getByRole('combobox').first().selectOption(locale);
+}
+function flowPhase(description: string) {
+  const annotations = test.info().annotations; const current = annotations.find(value => value.type === 'flow-phase');
+  if (current) current.description = description; else annotations.push({ type: 'flow-phase', description });
 }
 async function login(page: Page, stack: Stack, username = 'owner', locale: 'en' | 'zh-CN' = 'en') {
+  flowPhase('portal');
   await page.goto(stack.origin); if (locale === 'zh-CN') await language(page, locale);
+  flowPhase('login');
   await page.getByRole('button', { name: locale === 'en' ? 'Sign in' : '登录平台', exact: true }).click();
   await page.locator('#username').fill(username); await page.locator('#password').fill(stack.password); await page.locator('#kc-login').click();
+  flowPhase('callback');
 }
 
 function authorizationFrom(page: Page) {
@@ -53,6 +61,46 @@ async function openPreaudit(page: Page, stack: Stack, project: Awaited<ReturnTyp
   await expect(page.getByTestId('rule-bounded-review-context')).toBeVisible();
 }
 
+type MotionProbe = { state: number; events: number; headings: number; disclosures: number; violations: number; csp: string[]; blockedProbes: number; privateWithError: boolean };
+async function observeMotion(page: Page, origin: string) {
+  await page.addInitScript(origin => {
+    if (location.origin !== origin) return;
+    const probe = { state: 0, events: 0, headings: 0, disclosures: 0, violations: 0, csp: [] as string[], blockedProbes: 0, privateWithError: false };
+    (window as unknown as { itervaneMotionProbe: typeof probe }).itervaneMotionProbe = probe;
+    document.addEventListener('securitypolicyviolation', event => { probe.violations++; probe.csp.push(`${event.effectiveDirective}:${event.blockedURI === 'inline' ? 'inline' : 'other'}:${new URL(event.sourceFile || location.href).pathname}:${event.lineNumber}`); });
+    new MutationObserver(records => {
+      for (const record of records) {
+        // Existing rc-util scrollbar/scroll-lock and cssinjs feature styles are blocked by the unchanged CSP.
+        // Only their generated, non-private style shapes are classified; other violations still fail.
+        for (const node of record.addedNodes) if (node instanceof HTMLStyleElement && !node.nonce) {
+          const text = node.textContent ?? '';
+          if (/^\s*#rc-scrollbar-measure-[a-z0-9]+::-webkit-scrollbar\s*\{\s*(?:width:\s*[^;{}]+;\s*)?(?:height:\s*[^;{}]+;\s*)?\}\s*$/.test(text)
+            || (text.includes('_bAmBoO_') && text.includes('random-'))
+            || (/^\s*html body\s*\{\s*overflow-y:\s*hidden;\s*(?:width:\s*calc\(100% - \d+(?:\.\d+)?px\);\s*)?\}\s*$/.test(text)
+              && [...node.attributes].some(attribute => /^rc-util-locker-\d+_\d+$/.test(attribute.value)))) probe.blockedProbes++;
+        }
+        const element = record.target;
+        if (record.type !== 'attributes' || !(element instanceof HTMLElement) || !element.style.transform) continue;
+        if (element.matches('.state-marker')) probe.state++;
+        if (element.matches('.event-index')) probe.events++;
+        if (element.matches('.heading-accent')) probe.headings++;
+        if (element.matches('.disclosure-content')) probe.disclosures++;
+      }
+      if (document.querySelector('main .ant-alert-error') && document.querySelector('[data-testid="rule-bounded-review-context"]')) probe.privateWithError = true;
+    }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['style'] });
+  }, origin);
+}
+const motionProbe = (page: Page) => page.evaluate(() => (window as unknown as { itervaneMotionProbe: MotionProbe }).itervaneMotionProbe);
+async function captureWorkspace(page: Page, path: string) {
+  await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); window.scrollTo(0, 0); });
+  await page.screenshot({ path, fullPage: true });
+}
+async function expectMotionCsp(page: Page) {
+  const probe = await motionProbe(page);
+  expect(probe.csp.filter(value => !value.startsWith('style-src-elem:inline:'))).toEqual([]);
+  expect(probe.violations).toBe(probe.blockedProbes);
+}
+
 for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycle in ${locale}`, async ({ page, stack }) => {
   const zh = locale === 'zh-CN';
   let challenge = false;
@@ -75,25 +123,30 @@ for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycl
   await expect(page.getByRole('heading', { name: zh ? '项目' : 'Projects', exact: true })).toBeVisible(); expect(challenge).toBe(true); expect(identityMatches).toBe(true);
   expect(new URL(page.url()).search).toBe('');
   const title = `Browser ${locale} ${randomUUID().slice(0, 6)}`;
+  flowPhase('project');
   await page.getByRole('button', { name: zh ? '创建项目' : 'Create project', exact: true }).click();
   await page.getByLabel(zh ? '项目名称' : 'Project name', { exact: true }).fill(title);
   await page.getByLabel(zh ? '项目标识' : 'Project slug', { exact: true }).fill(`browser-${randomUUID().slice(0, 8)}`);
   await page.getByRole('dialog').getByRole('button', { name: zh ? '创建项目' : 'Create project', exact: true }).click();
   await expect(page.getByRole('heading', { name: title })).toBeVisible();
+  flowPhase('repository');
   await page.getByRole('button', { name: zh ? '登记仓库' : 'Register repository', exact: true }).click();
   await page.getByLabel(zh ? '仓库名称' : 'Repository name', { exact: true }).fill('Reference source');
   await page.getByLabel(zh ? 'HTTPS 仓库地址' : 'HTTPS repository URL', { exact: true }).fill('https://example.invalid/browser.git');
   await page.getByRole('button', { name: zh ? '保存仓库' : 'Save repository', exact: true }).click();
   await expect(page.getByText('https://example.invalid/browser.git', { exact: true })).toBeVisible();
+  flowPhase('task');
   await page.getByRole('button', { name: zh ? '发起前置检查' : 'Start preflight', exact: true }).click();
   await page.getByLabel(zh ? '完整 Git 版本' : 'Full Git commit', { exact: true }).fill('a'.repeat(40));
   const purpose = `Inspect ${locale} <img src=x onerror=alert(1)>`;
   await page.getByLabel(zh ? '任务目标' : 'Task goal', { exact: true }).fill(purpose);
   await page.getByRole('button', { name: zh ? '提交任务' : 'Queue task', exact: true }).click();
   await expect(page.getByRole('heading', { name: zh ? '任务详情' : 'Task details', exact: true })).toBeVisible();
+  flowPhase('inspection');
   await expect(page.getByText(zh ? '任务正在等待经过验证的 Runner。' : 'Task is waiting for a verified Runner.', { exact: true })).toBeVisible();
   expect(await page.locator('img[src="x"]').count()).toBe(0);
   const taskId = page.url().split('/').at(-1)!;
+  flowPhase('mcp');
   const client = new Client({ name: 'itervane-browser-cross-check', version: '0.0.0' });
   try {
     await client.connect(new StreamableHTTPClientTransport(new URL(`${stack.origin}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${await stack.mcpToken()}` } } }));
@@ -109,18 +162,22 @@ for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycl
     return entries.every(value => !/access_token|refresh_token|id_token|eyJ[A-Za-z0-9_-]+\./.test(value));
   });
   expect(storageSafe).toBe(true);
+  flowPhase('capture');
   await page.screenshot({ path: `.reports/p1-c/portal-${locale}.png`, fullPage: true });
+  flowPhase('resume');
   await page.getByRole('button', { name: zh ? '重试前置检查' : 'Retry preflight', exact: true }).click();
   await page.getByRole('button', { name: zh ? '确认重试' : 'Confirm retry', exact: true }).click();
   await expect.poll(async () => (await stack.database.admin.query('SELECT resume_count FROM itervane.run_runtime WHERE task_id=$1', [taskId])).rows[0]?.resume_count).toBe(1);
   await expect(page.getByText(zh ? '任务正在等待经过验证的 Runner。' : 'Task is waiting for a verified Runner.', { exact: true })).toHaveCount(2);
   await expect(page.getByRole('button', { name: zh ? '重试前置检查' : 'Retry preflight', exact: true })).toBeVisible();
   expect((await stack.database.admin.query('SELECT count(*)::int AS count FROM itervane.inspection_plans WHERE task_id=$1', [taskId])).rows[0]?.count).toBe(1);
-  await language(page, zh ? 'en' : 'zh-CN');
+  flowPhase('localization'); await language(page, zh ? 'en' : 'zh-CN');
   await expect(page.getByTestId('task-locale')).toHaveText(zh ? '简体中文' : 'English');
+  flowPhase('cancel');
   await page.getByRole('button', { name: zh ? 'Cancel task' : '取消任务', exact: true }).click();
   await page.getByRole('button', { name: zh ? 'Confirm cancellation' : '确认取消', exact: true }).click();
   await expect.poll(async () => (await stack.database.admin.query('SELECT state FROM itervane.tasks WHERE id=$1', [taskId])).rows[0]?.state).toBe('cancelled');
+  flowPhase('logout');
   await page.getByRole('button', { name: zh ? 'Sign out' : '退出登录', exact: true }).click();
   const logoutConfirmation = page.locator('#kc-logout');
   const signedOut = page.getByText(zh ? 'You have signed out.' : '你已退出登录。', { exact: true });
@@ -329,4 +386,87 @@ test('the narrow Chinese preaudit form enforces UTF-8 limits without submitting 
   await page.getByRole('button', { name: '记录预审', exact: true }).click();
   await expect(page.getByText('请填写非空纯文本，限制为 16 KiB、1000 行，不接受不支持的控制字符。', { exact: true })).toBeVisible();
   expect(posts).toBe(0); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+});
+
+test('normal motion follows real task changes and remains quiet through polling and localization', async ({ page, stack }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' }); await observeMotion(page, stack.origin);
+  const project = await seedProject(stack); const authorization = authorizationFrom(page); await login(page, stack);
+  await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
+  const task = await admit(stack, authorization(), project); await paused(stack, task.id);
+  await page.goto(`${stack.origin}/#/tasks/${task.id}`);
+  await expect(page.locator('.state-marker')).toHaveAttribute('data-state', 'waiting_input');
+  await expect(page.locator('.event-list li').first()).toBeVisible();
+  await expect.poll(() => page.locator('.heading-accent').evaluate(element => (element as HTMLElement).style.transform)).toBe('');
+  expect((await motionProbe(page)).headings).toBeGreaterThan(0);
+  expect((await motionProbe(page)).events).toBe(0);
+  await page.getByRole('button', { name: 'Cancel task', exact: true }).click();
+  await page.getByRole('button', { name: 'Confirm cancellation', exact: true }).click();
+  await expect(page.locator('.state-marker')).toHaveAttribute('data-state', 'cancelled');
+  await expect.poll(async () => (await motionProbe(page)).state).toBeGreaterThan(0);
+  await expect.poll(async () => (await motionProbe(page)).events).toBeGreaterThan(0);
+  await expect.poll(() => page.locator('.state-marker, .event-index').evaluateAll(elements => elements.every(element => !(element as HTMLElement).style.transform))).toBe(true);
+  const afterChange = await motionProbe(page);
+  for (let poll = 0; poll < 2; poll++) await page.waitForResponse(response => new URL(response.url()).pathname === `/v1/tasks/${task.id}` && response.ok());
+  expect(await motionProbe(page)).toEqual(afterChange);
+  await language(page, 'zh-CN'); await expect(page.getByRole('heading', { name: '任务详情', exact: true })).toBeVisible();
+  await expect(page.locator('.event-list li').first()).toBeVisible();
+  expect(await motionProbe(page)).toEqual(afterChange);
+  await captureWorkspace(page, '.reports/p1-ux/task-zh.png');
+  await page.screenshot({ path: '.reports/p1-ux/workspace-preview.png' });
+  await language(page, 'en'); await captureWorkspace(page, '.reports/p1-ux/task-en.png');
+  const capability = await (await fetch(`${stack.origin}/v1/capabilities`, { headers: { Authorization: authorization() } })).json();
+  expect(capability).toMatchObject({ stage: 'p1-e', sourceScanning: false, taskExecution: false, deployment: false, operations: false });
+});
+
+test('keyboard disclosure honors a live reduced-motion change without retaining the previous report view', async ({ page, stack }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' }); await observeMotion(page, stack.origin);
+  const project = await seedProject(stack); await openPreaudit(page, stack, project, 'zh-CN');
+  await page.getByLabel('提供的文本', { exact: true }).fill('eval(value);'); await page.getByRole('button', { name: '记录预审', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '文本预审报告', exact: true })).toBeVisible();
+  const reportId = page.url().split('/').at(-1)!; const summary = page.locator('summary');
+  await summary.focus(); await summary.press('Enter'); await expect(page.locator('details')).toHaveAttribute('open', '');
+  await expect.poll(async () => (await motionProbe(page)).disclosures).toBeGreaterThan(0);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect.poll(() => page.locator('.disclosure-content').evaluate(element => (element as HTMLElement).style.transform)).toBe('');
+  const reduced = await motionProbe(page);
+  await summary.press('Enter'); await expect(page.locator('.disclosure-content')).toBeHidden();
+  await summary.press('Enter'); await expect(page.locator('.disclosure-content')).toBeVisible(); await expect(summary).toBeFocused();
+  expect((await motionProbe(page)).disclosures).toBe(reduced.disclosures); await expectMotionCsp(page);
+  await captureWorkspace(page, '.reports/p1-ux/report-zh.png');
+  await page.getByRole('link', { name: /返回规则与预审$/ }).click();
+  await expect(page.getByRole('heading', { name: '规则与文本预审', exact: true })).toBeVisible();
+  await expect(page.locator('details')).toHaveCount(0); await expect(page.getByText(reportId, { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel('提供的文本', { exact: true })).toBeEmpty();
+});
+
+test('normal-motion permission failure removes private rules without an exit layer or CSP relaxation', async ({ page, stack }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' }); await observeMotion(page, stack.origin);
+  const project = await seedProject(stack, true); await openPreaudit(page, stack, project, 'en', 'viewer');
+  await expect(page.getByText('Read-only access', { exact: true })).toBeVisible();
+  await stack.database.admin.query('DELETE FROM itervane.project_members WHERE project_id=$1', [project.id]);
+  await page.getByRole('button', { name: 'Refresh rules and history', exact: true }).click();
+  await expect(page.getByRole('alert')).toBeVisible(); await expect(page.getByTestId('rule-bounded-review-context')).toHaveCount(0);
+  await expect(page.getByLabel('Supplied text', { exact: true })).toHaveCount(0);
+  expect((await motionProbe(page)).privateWithError).toBe(false); await expectMotionCsp(page);
+});
+
+for (const locale of ['en', 'zh-CN'] as const) test(`the refreshed workspace supports narrow layouts and keyboard navigation in ${locale}`, async ({ page, stack }) => {
+  const zh = locale === 'zh-CN'; await page.emulateMedia({ reducedMotion: zh ? 'reduce' : 'no-preference' }); await observeMotion(page, stack.origin);
+  const project = await seedProject(stack); await page.setViewportSize({ width: 375, height: 812 }); await login(page, stack, 'owner', locale);
+  await page.getByRole('link', { name: project.title, exact: true }).click();
+  await page.getByRole('button', { name: zh ? '发起前置检查' : 'Start preflight', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible(); await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByRole('link', { name: zh ? '规则与文本预审' : 'Rules and text preaudit', exact: true }).click();
+  await expect(page.getByTestId('rule-bounded-review-context')).toBeVisible();
+  const skip = page.getByRole('link', { name: zh ? '跳到主要内容' : 'Skip to content', exact: true }); await skip.focus(); await skip.press('Enter');
+  expect(await page.evaluate(() => document.activeElement?.id)).toBe('main');
+  await page.keyboard.press('Tab');
+  for (const width of [375, 768, 1365]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  }
+  await captureWorkspace(page, `.reports/p1-ux/preaudit-${locale}.png`);
+  await page.setViewportSize({ width: 375, height: 812 }); await captureWorkspace(page, `.reports/p1-ux/mobile-${locale}.png`);
+  await expectMotionCsp(page);
+  if (zh) expect(await motionProbe(page)).toMatchObject({ headings: 0, state: 0, events: 0, disclosures: 0 });
 });

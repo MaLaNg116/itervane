@@ -54,11 +54,28 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Record preinstalled Chrome version
         run: google-chrome --version
+      - name: Verify pinned Chinese font for browser evidence
+        run: |
+          font_dir="$HOME/.local/share/fonts/itervane-ci"
+          mkdir -p "$font_dir"
+          curl --fail --location --retry 2 --output "$font_dir/NotoSansCJKsc-Regular.otf" https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
+          printf '%s  %s\n' '2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b' "$font_dir/NotoSansCJKsc-Regular.otf" | sha256sum --check --status
+          curl --fail --location --retry 2 --output "$font_dir/OFL.txt" https://raw.githubusercontent.com/notofonts/noto-cjk/f8d157532fbfaeda587e826d4cd5b21a49186f7c/Sans/LICENSE
+          fc-cache -f "$font_dir"
+          fc-match -f '%{family}\n' ':lang=zh-cn'
       - name: Real browser, Keycloak, PostgreSQL and Worker
         run: pnpm test:portal
       - name: Sanitized browser verification evidence
         if: always()
         run: test ! -f .reports/p1-c/browser.json || cat .reports/p1-c/browser.json
+      - name: Application-only failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: portal-application-failures
+          path: .reports/p1-c/failed-*.png
+          if-no-files-found: ignore
+          retention-days: 3
 
   scanners:
     runs-on: ubuntu-24.04

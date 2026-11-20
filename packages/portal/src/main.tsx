@@ -1,8 +1,5 @@
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-import { PortalApp } from './app.js';
+import './browser-policy.js';
 import './style.css';
 
-const root = document.getElementById('root');
-if (!root) throw new Error('Portal root unavailable');
-createRoot(root).render(<StrictMode><PortalApp /></StrictMode>);
+// The async boundary keeps shared-schema construction after CSP-safe Zod configuration, even after bundling.
+void import('./bootstrap.js');
