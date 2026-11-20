@@ -20,7 +20,7 @@ test.afterEach(async ({ page, stack }, info) => {
 });
 
 async function language(page: Page, locale: 'en' | 'zh-CN') {
-  await page.getByRole('combobox').first().selectOption(locale);
+  await page.getByRole('combobox', { name: /^(Language|显示语言)$/ }).selectOption(locale);
 }
 function flowPhase(description: string) {
   const annotations = test.info().annotations; const current = annotations.find(value => value.type === 'flow-phase');
@@ -61,24 +61,15 @@ async function openPreaudit(page: Page, stack: Stack, project: Awaited<ReturnTyp
   await expect(page.getByTestId('rule-bounded-review-context')).toBeVisible();
 }
 
-type MotionProbe = { state: number; events: number; headings: number; disclosures: number; violations: number; csp: string[]; blockedProbes: number; privateWithError: boolean };
+type MotionProbe = { state: number; events: number; headings: number; disclosures: number; csp: string[]; privateWithError: boolean };
 async function observeMotion(page: Page, origin: string) {
   await page.addInitScript(origin => {
     if (location.origin !== origin) return;
-    const probe = { state: 0, events: 0, headings: 0, disclosures: 0, violations: 0, csp: [] as string[], blockedProbes: 0, privateWithError: false };
+    const probe = { state: 0, events: 0, headings: 0, disclosures: 0, csp: [] as string[], privateWithError: false };
     (window as unknown as { itervaneMotionProbe: typeof probe }).itervaneMotionProbe = probe;
-    document.addEventListener('securitypolicyviolation', event => { probe.violations++; probe.csp.push(`${event.effectiveDirective}:${event.blockedURI === 'inline' ? 'inline' : 'other'}:${new URL(event.sourceFile || location.href).pathname}:${event.lineNumber}`); });
+    document.addEventListener('securitypolicyviolation', event => { probe.csp.push(event.effectiveDirective); });
     new MutationObserver(records => {
       for (const record of records) {
-        // Existing rc-util scrollbar/scroll-lock and cssinjs feature styles are blocked by the unchanged CSP.
-        // Only their generated, non-private style shapes are classified; other violations still fail.
-        for (const node of record.addedNodes) if (node instanceof HTMLStyleElement && !node.nonce) {
-          const text = node.textContent ?? '';
-          if (/^\s*#rc-scrollbar-measure-[a-z0-9]+::-webkit-scrollbar\s*\{\s*(?:width:\s*[^;{}]+;\s*)?(?:height:\s*[^;{}]+;\s*)?\}\s*$/.test(text)
-            || (text.includes('_bAmBoO_') && text.includes('random-'))
-            || (/^\s*html body\s*\{\s*overflow-y:\s*hidden;\s*(?:width:\s*calc\(100% - \d+(?:\.\d+)?px\);\s*)?\}\s*$/.test(text)
-              && [...node.attributes].some(attribute => /^rc-util-locker-\d+_\d+$/.test(attribute.value)))) probe.blockedProbes++;
-        }
         const element = record.target;
         if (record.type !== 'attributes' || !(element instanceof HTMLElement) || !element.style.transform) continue;
         if (element.matches('.state-marker')) probe.state++;
@@ -86,7 +77,7 @@ async function observeMotion(page: Page, origin: string) {
         if (element.matches('.heading-accent')) probe.headings++;
         if (element.matches('.disclosure-content')) probe.disclosures++;
       }
-      if (document.querySelector('main .ant-alert-error') && document.querySelector('[data-testid="rule-bounded-review-context"]')) probe.privateWithError = true;
+      if (document.querySelector('main [data-slot="alert"][role="alert"]') && document.querySelector('[data-testid="rule-bounded-review-context"]')) probe.privateWithError = true;
     }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['style'] });
   }, origin);
 }
@@ -96,13 +87,12 @@ async function captureWorkspace(page: Page, path: string) {
   await page.screenshot({ path, fullPage: true });
 }
 async function expectMotionCsp(page: Page) {
-  const probe = await motionProbe(page);
-  expect(probe.csp.filter(value => !value.startsWith('style-src-elem:inline:'))).toEqual([]);
-  expect(probe.violations).toBe(probe.blockedProbes);
+  expect((await motionProbe(page)).csp).toEqual([]);
 }
 
 for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycle in ${locale}`, async ({ page, stack }) => {
   const zh = locale === 'zh-CN';
+  await observeMotion(page, stack.origin);
   let challenge = false;
   let identityMatches = false;
   page.on('request', request => {
@@ -165,8 +155,27 @@ for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycl
   flowPhase('capture');
   await page.screenshot({ path: `.reports/p1-c/portal-${locale}.png`, fullPage: true });
   flowPhase('resume');
-  await page.getByRole('button', { name: zh ? '重试前置检查' : 'Retry preflight', exact: true }).click();
-  await page.getByRole('button', { name: zh ? '确认重试' : 'Confirm retry', exact: true }).click();
+  const retry = page.getByRole('button', { name: zh ? '重试前置检查' : 'Retry preflight', exact: true });
+  const confirm = page.getByRole('button', { name: zh ? '确认重试' : 'Confirm retry', exact: true });
+  const back = page.getByRole('button', { name: zh ? '暂不操作' : 'Go back', exact: true });
+  const dialog = page.getByRole('dialog', { name: zh ? '确认重试前置检查？' : 'Retry this preflight?', exact: true });
+  for (const width of [375, 768, 1365]) {
+    await page.setViewportSize({ width, height: 900 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  }
+  await page.setViewportSize({ width: 375, height: 812 });
+  await captureWorkspace(page, `.reports/p1-shadcn/task-mobile-${locale}.png`);
+  await retry.focus(); await retry.press('Enter');
+  await expect(dialog).toBeVisible(); await expect(back).toBeFocused();
+  const bounds = (await dialog.boundingBox())!;
+  expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.x + bounds.width).toBeLessThanOrEqual(375);
+  await page.keyboard.press('Shift+Tab'); await expect(confirm).toBeFocused();
+  await page.keyboard.press('Tab'); await expect(back).toBeFocused();
+  await page.keyboard.press('Escape'); await expect(dialog).toHaveCount(0); await expect(retry).toBeFocused();
+  expect((await stack.database.admin.query('SELECT resume_count FROM itervane.run_runtime WHERE task_id=$1', [taskId])).rows[0]?.resume_count).toBe(0);
+  await page.setViewportSize({ width: 1365, height: 960 });
+  await retry.press('Enter');
+  await confirm.click();
   await expect.poll(async () => (await stack.database.admin.query('SELECT resume_count FROM itervane.run_runtime WHERE task_id=$1', [taskId])).rows[0]?.resume_count).toBe(1);
   await expect(page.getByText(zh ? '任务正在等待经过验证的 Runner。' : 'Task is waiting for a verified Runner.', { exact: true })).toHaveCount(2);
   await expect(page.getByRole('button', { name: zh ? '重试前置检查' : 'Retry preflight', exact: true })).toBeVisible();
@@ -177,6 +186,8 @@ for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycl
   await page.getByRole('button', { name: zh ? 'Cancel task' : '取消任务', exact: true }).click();
   await page.getByRole('button', { name: zh ? 'Confirm cancellation' : '确认取消', exact: true }).click();
   await expect.poll(async () => (await stack.database.admin.query('SELECT state FROM itervane.tasks WHERE id=$1', [taskId])).rows[0]?.state).toBe('cancelled');
+  await expectMotionCsp(page);
+  expect(await motionProbe(page)).toMatchObject({ headings: 0, state: 0, events: 0 });
   flowPhase('logout');
   await page.getByRole('button', { name: zh ? 'Sign out' : '退出登录', exact: true }).click();
   const logoutConfirmation = page.locator('#kc-logout');
@@ -263,9 +274,45 @@ test('a stale confirmation receives a real conflict and requires another explici
   await expect(page.getByText('The task changed. Review its latest state before confirming again.', { exact: true })).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   expect((await stack.database.admin.query('SELECT state FROM itervane.tasks WHERE id=$1', [task.id])).rows[0]?.state).toBe('waiting_input');
+  const release = Promise.withResolvers<void>();
+  let posts = 0;
+  await page.route(`${stack.origin}/v1/tasks/${task.id}/cancel`, async route => {
+    posts++; await release.promise; await route.continue();
+  });
   await page.getByRole('button', { name: 'Cancel task', exact: true }).click();
-  await page.getByRole('button', { name: 'Confirm cancellation', exact: true }).click();
+  const confirm = page.getByRole('button', { name: 'Confirm cancellation', exact: true });
+  try {
+    await confirm.click();
+    await expect.poll(() => posts).toBe(1);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(confirm).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Go back', exact: true })).toBeDisabled();
+  } finally { release.resolve(); }
   await expect.poll(async () => (await stack.database.admin.query('SELECT state FROM itervane.tasks WHERE id=$1', [task.id])).rows[0]?.state).toBe('cancelled');
+  expect(posts).toBe(1);
+});
+
+test('task confirmation closes when the current project role becomes read only', async ({ page, stack }) => {
+  const project = await seedProject(stack, true); const authorization = authorizationFrom(page);
+  await stack.database.admin.query("UPDATE itervane.project_members SET role='maintainer' WHERE project_id=$1", [project.id]);
+  await login(page, stack, 'viewer');
+  await expect(page.getByRole('link', { name: project.title, exact: true })).toBeVisible();
+  const task = await admit(stack, authorization(), project); await paused(stack, task.id);
+  await page.goto(`${stack.origin}/#/tasks/${task.id}`);
+  await page.getByRole('button', { name: 'Cancel task', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Cancel this task?' });
+  await expect(dialog).toBeVisible();
+  await stack.database.admin.query("UPDATE itervane.project_members SET role='viewer' WHERE project_id=$1", [project.id]);
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Cancel task', exact: true })).toHaveCount(0);
+  await expect(page.getByText(task.purpose, { exact: true })).toBeVisible();
+  const denied = await fetch(`${stack.origin}/v1/tasks/${task.id}/cancel`, { method: 'POST',
+    headers: { Authorization: authorization(), 'Content-Type': 'application/json' }, body: JSON.stringify({ expectedVersion: task.version }) });
+  expect(denied.status).toBe(403);
+  await stack.database.admin.query('DELETE FROM itervane.project_members WHERE project_id=$1', [project.id]);
+  await expect(page.getByText(task.purpose, { exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('source-inspection')).toHaveCount(0);
 });
 
 test('real refresh is serialized and a revoked IdP session clears private views', async ({ page, stack }) => {
@@ -306,11 +353,13 @@ test('the bilingual portal remains usable on a narrow viewport without page over
   await expect(page.getByRole('dialog')).toBeVisible();
   await page.getByRole('dialog').getByRole('button', { name: '创建项目', exact: true }).click();
   await expect(page.getByText('请填写此项。', { exact: true }).first()).toBeVisible();
+  await expect(page.getByLabel('项目名称', { exact: true })).toBeFocused();
   await page.screenshot({ path: '.reports/p1-c/portal-mobile-zh.png', fullPage: true });
 });
 
 for (const locale of ['en', 'zh-CN'] as const) test(`real rules and preaudit lifecycle in ${locale}`, async ({ page, stack }) => {
   const zh = locale === 'zh-CN'; const project = await seedProject(stack);
+  await observeMotion(page, stack.origin);
   await openPreaudit(page, stack, project, locale);
   const canary = `source-private-${randomUUID()}`;
   const source = `eval(value); // ${canary}\nnode.innerHTML = value;\n// gitleaks:allow\n<img src=x onerror=alert(1)>`;
@@ -334,6 +383,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`real rules and preaudit lif
   await page.getByRole('link', { name: zh ? /Back to rules and preaudit$/ : /返回规则与预审$/ }).click();
   await expect(page.getByRole('link', { name: id.slice(0, 8), exact: true })).toBeVisible();
   await expect(page.getByLabel(zh ? 'Supplied text' : '提供的文本', { exact: true })).toBeEmpty();
+  await expectMotionCsp(page);
 });
 
 test('preaudit retries an accepted request after response loss with the original key and no second record', async ({ page, stack }) => {
@@ -348,8 +398,11 @@ test('preaudit retries an accepted request after response loss with the original
   await page.getByLabel('Supplied text', { exact: true }).fill('eval(value);'); await page.getByRole('button', { name: 'Record preaudit', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Retry same request', exact: true })).toBeVisible();
   await expect(page.getByLabel('Supplied text', { exact: true })).toBeDisabled();
-  await page.getByRole('button', { name: 'Retry same request', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Text preaudit report', exact: true })).toBeVisible();
+  await language(page, 'zh-CN');
+  await expect(page.getByLabel('提供的文本', { exact: true })).toBeDisabled();
+  await expect(page.getByLabel('提供的文本', { exact: true })).toHaveValue('eval(value);');
+  await page.getByRole('button', { name: '重试同一请求', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '文本预审报告', exact: true })).toBeVisible();
   expect(attempts).toHaveLength(2); expect(attempts[1]).toEqual(attempts[0]);
   expect((await stack.database.admin.query('SELECT count(*)::int AS count FROM itervane.preaudits WHERE project_id=$1', [project.id])).rows[0]?.count).toBe(1);
 });
@@ -370,7 +423,7 @@ test('preaudit readers cannot create reports and revoked membership hides the ru
 
 test('a real added-line diff preaudit does not report removed text as analyzed code', async ({ page, stack }) => {
   const project = await seedProject(stack); await openPreaudit(page, stack, project);
-  await page.getByLabel('Input format', { exact: true }).click(); await page.getByRole('option', { name: 'Single-file unified diff', exact: true }).click();
+  await page.getByLabel('Input format', { exact: true }).selectOption('unified_diff');
   await page.getByLabel('Supplied text', { exact: true }).fill('--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-eval(old);\n+const value = 1;\n');
   await page.getByRole('button', { name: 'Record preaudit', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Text preaudit report', exact: true })).toBeVisible();
@@ -385,6 +438,9 @@ test('the narrow Chinese preaudit form enforces UTF-8 limits without submitting 
   await page.getByLabel('提供的文本', { exact: true }).fill('界'.repeat(6000));
   await page.getByRole('button', { name: '记录预审', exact: true }).click();
   await expect(page.getByText('请填写非空纯文本，限制为 16 KiB、1000 行，不接受不支持的控制字符。', { exact: true })).toBeVisible();
+  await language(page, 'en');
+  await expect(page.getByLabel('Supplied text', { exact: true })).toHaveValue('界'.repeat(6000));
+  await expect(page.getByText('Enter nonempty plain text within 16 KiB and 1000 lines; unsupported control characters are refused.', { exact: true })).toBeVisible();
   expect(posts).toBe(0); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
 });
 
@@ -414,6 +470,7 @@ test('normal motion follows real task changes and remains quiet through polling 
   await captureWorkspace(page, '.reports/p1-ux/task-zh.png');
   await page.screenshot({ path: '.reports/p1-ux/workspace-preview.png' });
   await language(page, 'en'); await captureWorkspace(page, '.reports/p1-ux/task-en.png');
+  await expectMotionCsp(page);
   const capability = await (await fetch(`${stack.origin}/v1/capabilities`, { headers: { Authorization: authorization() } })).json();
   expect(capability).toMatchObject({ stage: 'p1-e', sourceScanning: false, taskExecution: false, deployment: false, operations: false });
 });

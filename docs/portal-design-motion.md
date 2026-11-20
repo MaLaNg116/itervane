@@ -1,5 +1,7 @@
 # P1-UX：门户设计与动效运行说明
 
+本文记录 PR #7 的交付快照。后续前端组件与升级说明见[门户组件迁移与运行](portal-shadcn.md)。
+
 - 日期：2026-11-20；[本批计划](plans/p1-ux-portal-design-motion.md)、[第三方参考与许可](third-party-ui.md)、[review 索引](reviews/README.md)。
 - 这是 P1-E 上的独立体验切片，复用原有 React/AntD、OIDC、领域 API、MCP 和数据库。没有迁移、模型调用、Runner 接入或发布动作；capability stage 仍为 p1-e。
 

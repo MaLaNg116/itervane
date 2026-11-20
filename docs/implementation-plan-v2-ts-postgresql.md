@@ -64,7 +64,7 @@ P1-UX 追加[门户视觉与 GSAP 动效切片](plans/p1-ux-portal-design-motion
 | 仓库管理 | pnpm workspace、模块化单体 | 同仓库维护，按进程和权限部署 |
 | HTTP API | Fastify | 认证接入、领域接口、任务查询、人工操作 |
 | 接口契约 | Zod＋JSON Schema＋OpenAPI | 共享公开契约；入站、出站数据均校验 |
-| 门户 | React 19、Vite、Ant Design 6 | 延续原方案，采用项目自身的通用设计规范 |
+| 门户 | React 19、Vite、shadcn/ui（Base UI）、Tailwind CSS、GSAP | 采用项目自身的双语语义组件与设计规范，取舍见 [ADR 0006](decisions/0006-portal-components.md) |
 | Agent 运行基础 | LangGraph TS 开源库 | 复用图执行、检查点和人工中断 |
 | Agent Harness | 自研领域执行框架 | 目标、上下文、工具、预算、停止、交接和恢复 |
 | 模型接入 | Anthropic/OpenAI 协议适配，首轮 Anthropic | 用户实施补充：每任务明确一种协议与模型，不静默切换；实际模型能力须验证 |
