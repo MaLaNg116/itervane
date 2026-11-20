@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { eq } from 'drizzle-orm';
-import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { qualifiedInspectionResponseSchema, type QualifiedInspectionRequest } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
@@ -35,7 +35,11 @@ beforeEach(async () => {
 });
 afterAll(async () => { await issuer?.close(); await database?.close(); });
 async function claim() {
-  const [job] = await database.storage.boss.fetch(queueName); if (!job) throw new Error('Missing job');
+  const job = await vi.waitFor(async () => {
+    const [ready] = await database.storage.boss.fetch(queueName);
+    if (!ready) throw new Error('Waiting for inspection job');
+    return ready;
+  }, { timeout: 5_000, interval: 50 });
   const scope = await coordinator.claim(job, randomUUID()); if (!scope) throw new Error('Missing scope'); return scope;
 }
 
