@@ -123,6 +123,8 @@ def profile_issue(document, disk):
         return "platform"
     if vcpu.text != str(VCPU) or vcpu.get("current", str(VCPU)) != str(VCPU):
         return "vcpu"
+    if any(root.findtext(event) != "destroy" for event in ("on_poweroff", "on_reboot", "on_crash")):
+        return "lifecycle-policy"
     for tag in ("memory", "currentMemory"):
         element = root.find(tag)
         if element is None or element.get("unit", "KiB") != "KiB" or element.text != str(RAM_KIB):
@@ -131,7 +133,7 @@ def profile_issue(document, disk):
     if devices is None:
         return "no-devices"
     unexpected = {child.tag for child in devices} - {
-        "emulator", "disk", "controller", "channel", "input", "audio", "memballoon",
+        "emulator", "disk", "controller", "channel", "input", "audio", "memballoon", "watchdog",
     }
     if unexpected:
         return unexpected_tag("device-", unexpected)
@@ -170,6 +172,15 @@ def profile_issue(document, disk):
         return "audio"
     if any(device.find("source") is not None for device in devices.findall("input")):
         return "input"
+    # q35 includes an iTCO watchdog in the chipset. A watchdog reset must
+    # retain the domain's destroy-on-reboot policy above.
+    watchdogs = devices.findall("watchdog")
+    if len(watchdogs) > 1 or any(
+        device.attrib != {"model": "itco", "action": "reset"}
+        or any(child.tag != "alias" for child in device)
+        for device in watchdogs
+    ):
+        return "watchdog"
     return None
 
 

@@ -186,6 +186,25 @@ class LifecycleTest(unittest.TestCase):
         self.assertIn("destroy", self.libvirt.events)
         self.assertEqual(list(self.root.iterdir()), [])
 
+    def test_q35_implicit_watchdog_requires_destroy_on_reboot(self):
+        def with_watchdog(doc):
+            xml.SubElement(doc.find("devices"), "watchdog", model="itco", action="reset")
+
+        self.libvirt.profile_change = with_watchdog
+        self.assertEqual(self.launch().code, "passed")
+
+        def without_destroy(doc):
+            with_watchdog(doc)
+            doc.find("on_reboot").text = "restart"
+
+        self.libvirt.profile_change = without_destroy
+        self.assertEqual(self.launch().profileIssue, "lifecycle-policy")
+
+        self.libvirt.profile_change = lambda doc: xml.SubElement(
+            doc.find("devices"), "watchdog", model="itco", action="dump"
+        )
+        self.assertEqual(self.launch().profileIssue, "watchdog")
+
     def test_cancellation_after_guest_ping_still_cleans_up(self):
         normal_ping = self.qemuAgentCommand
 
