@@ -1,0 +1,39 @@
+name: Native Runner
+
+on:
+  push:
+    branches: [main, 'feat/**']
+    paths:
+      - '.github/workflows/native-runner.yml'
+      - 'packages/runner/host/**'
+      - 'packages/verification/src/runner-vm.ts'
+      - 'fixtures/runner/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-runner-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kvm-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Observe KVM API and an empty VM descriptor
+        run: |
+          mkdir -p .reports/p0
+          sudo -n /usr/bin/python3 -I -B packages/runner/host/kvm_preflight.py | tee .reports/p0/kvm-host.json
+      - name: Retain independent KVM evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: kvm-host-evidence
+          path: .reports/p0/kvm-host.json
+          if-no-files-found: error
+          retention-days: 14
