@@ -349,14 +349,14 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
         if not owns_domain:
             issue = "domain-identity"
             raise Rejected("profile_rejected")
+        if session_runtime is not None:
+            process_fd = verify_qemu_process(session_runtime, name, run_id)
         if domain.state(0)[0] != libvirt.VIR_DOMAIN_PAUSED:
             issue = "domain-state"
             raise Rejected("profile_rejected")
         issue = profile_issue(domain.XMLDesc(0), disk, port)
         if issue:
             raise Rejected("profile_rejected")
-        if session_runtime is not None:
-            process_fd = verify_qemu_process(session_runtime, name, run_id)
         check_deadline()
         phase = "domain-resume"
         domain.resume()
@@ -396,9 +396,10 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
             finally:
                 os.close(process_fd)
         if created_directory:
+            # Keep the journal if a session domain may still have a process after libvirt loses it.
             safe_to_remove = not attempted_create or (
                 owns_domain and disconnected and verify_absence(libvirt, name, run_id, uri)
-                and (process_fd is None or process_exit_confirmed)
+                and (session_runtime is None or process_exit_confirmed)
             )
             if safe_to_remove:
                 try:
