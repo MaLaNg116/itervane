@@ -98,7 +98,7 @@ export class DurableWorker {
         .addEdge(START, 'describe').addEdge('describe', 'inspect').addEdge('inspect', 'wait').addEdge('wait', 'inspect')
         .compile({ checkpointer: saver });
       // Each work node observes cancellation. Racing graph.invoke against the signal would release the slot before Runner teardown settles.
-      const config = { configurable: { thread_id: scope.runId }, recursionLimit: 12 };
+      const config = { configurable: { thread_id: saver.threadId }, recursionLimit: 12 };
       const snapshot = runtime.checkpointId ? await graph.getState(config) : undefined;
       const interrupted = snapshot?.tasks.some(task => task.interrupts?.length);
       const input = !runtime.checkpointId ? {} : runtime.resumePending && interrupted ? new Command({ resume: 'retry_preflight' }) : null;

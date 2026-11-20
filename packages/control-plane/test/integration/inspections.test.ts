@@ -3,6 +3,8 @@ import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
+import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { formalAuditInputSchema, qualifiedInspectionResponseSchema, type QualifiedInspectionRequest } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
@@ -10,6 +12,7 @@ import { queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, inspectionAttempts } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
+import { GuardedCheckpointer } from '../../src/runtime/checkpointer.js';
 import { ToolGateway } from '../../src/runtime/tools.js';
 import { DurableWorker } from '../../src/runtime/worker.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
@@ -236,6 +239,47 @@ it('freezes the audit input under the current lease and rejects a substituted sn
     .toMatchObject({ cause: { code: '23514', message: 'formal_audit_input_is_retained' } });
   await expect(database.storage.db.delete(formalAuditInputs)).rejects
     .toMatchObject({ cause: { code: '23514', message: 'formal_audit_input_is_retained' } });
+});
+
+it('isolates the audit checkpoint, its acknowledged writes and its input from preflight and stale workers', async () => {
+  const scope = await claim();
+  const runner = inspectionRunner(async (request, authorize) => { await authorize(); return testReceipt(request); });
+  await new ToolGateway(coordinator, runner).call(scope, 'source.inspect', {}, 'verified-for-audit');
+  const { sha256: auditInputSha256 } = await coordinator.withLease(scope, (tx, current) => prepareFormalAuditInput(tx, current.task, scope));
+  const storage = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+  try {
+    const preflight = new GuardedCheckpointer(coordinator, scope, storage);
+    const audit = new GuardedCheckpointer(coordinator, scope, storage, { auditInputSha256 });
+    const preflightConfig = { configurable: { thread_id: preflight.threadId } };
+    const auditConfig = { configurable: { thread_id: audit.threadId } };
+    const sharedId = emptyCheckpoint();
+    const preflightBound = await preflight.put(preflightConfig, sharedId, { source: 'input', step: -1, parents: {} }, {});
+    await expect(audit.getTuple(preflightConfig)).rejects.toBeInstanceOf(ExecutionLost);
+    expect(await audit.getTuple(auditConfig)).toBeUndefined();
+    const auditBound = await audit.put(auditConfig, sharedId, { source: 'input', step: -1, parents: {} }, {});
+
+    await preflight.putWrites(preflightBound, [['registered', true]], 'shared-node');
+    await storage.putWrites(auditBound, [['registered', true]], 'shared-node');
+    expect((await audit.getTuple(auditConfig))?.pendingWrites).toEqual([]);
+    await audit.putWrites(auditBound, [['audit_summary', 'verified']], 'audit-node');
+    expect((await audit.getTuple(auditConfig))?.pendingWrites).toEqual([['audit-node', 'audit_summary', 'verified']]);
+    expect((await preflight.getTuple(preflightConfig))?.pendingWrites).toEqual([['shared-node', 'registered', true]]);
+
+    const orphan = emptyCheckpoint();
+    await database.admin.query(`ALTER TABLE itervane.formal_audit_runtime ADD CONSTRAINT injected_audit_pointer_failure CHECK(checkpoint_id <> '${orphan.id}') NOT VALID`);
+    try { await expect(audit.put(auditBound, orphan, { source: 'loop', step: 0, parents: {} }, {})).rejects.toThrow(); }
+    finally { await database.admin.query('ALTER TABLE itervane.formal_audit_runtime DROP CONSTRAINT injected_audit_pointer_failure'); }
+    expect((await storage.getTuple(auditConfig))?.checkpoint.id).toBe(orphan.id);
+    expect((await audit.getTuple(auditConfig))?.checkpoint.id).toBe(sharedId.id);
+    const wrongInput = new GuardedCheckpointer(coordinator, scope, storage, { auditInputSha256: '0'.repeat(64) });
+    await expect(wrongInput.getTuple(auditConfig)).rejects.toBeInstanceOf(ExecutionLost);
+
+    await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+    await expect(audit.put(auditBound, emptyCheckpoint(), { source: 'loop', step: 1, parents: {} }, {})).rejects.toBeInstanceOf(ExecutionLost);
+    await coordinator.reconcile(randomUUID());
+    const replacement = new GuardedCheckpointer(coordinator, await claim(), storage, { auditInputSha256 });
+    expect((await replacement.getTuple(auditConfig))?.checkpoint.id).toBe(sharedId.id);
+  } finally { await storage.end(); }
 });
 
 it('drops a late receipt when a real cancellation races the scan', async () => {

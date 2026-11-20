@@ -92,6 +92,13 @@
       "when": 1795192895984,
       "tag": "0012_formal_audit_inputs",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1795193303451,
+      "tag": "0013_formal_audit_checkpoints",
+      "breakpoints": true
     }
   ]
 }
