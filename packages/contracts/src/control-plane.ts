@@ -61,7 +61,8 @@ export const portalConfigSchema = z.discriminatedUnion('enabled', [
     redirectUri: z.url(), postLogoutRedirectUri: z.url() }).strict(),
 ]);
 export const capabilitiesSchema = z.object({
-  stage: z.literal('p1-c'), taskAdmission: z.literal(true), taskExecution: z.literal(false), durableScheduling: z.literal(true),
+  stage: z.literal('p1-d1'), taskAdmission: z.literal(true), taskExecution: z.literal(false), durableScheduling: z.literal(true),
+  sourceInspectionPlanning: z.literal(true), sourceSnapshots: z.literal(false), sourceScanning: z.literal(false),
   portal: z.boolean(), browserLogin: z.boolean(),
   externalMcp: z.boolean(), sandbox: z.literal(false), deployment: z.literal(false), operations: z.literal(false),
 }).strict();

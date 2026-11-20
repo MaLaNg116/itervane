@@ -6,6 +6,8 @@
 - 实现状态：P0 基础设施仍待验；独立 P1-A 身份/资源/任务、P1-B 持久化 preflight/外部 MCP/双语及 P1-C 最小门户/OIDC 登录切片已实现，完整 P1—P5 未验收；实际证据见 [P0 记录](p0-verification.md)、[P1-A](control-plane-p1-a.md)、[P1-B](control-plane-p1-b.md) 与 [P1-C 说明](control-plane-p1-c.md)。
 - 阅读入口：[开发基线与一致性约束](baseline.md)。
 
+P1-D1 追加源码检查计划、Git 内容校验与可信样例扫描适配；[D2/D3 的真实 VM 与任务扫描验收](plans/p1-d-isolated-source-inspection.md) 继续受基础设施闸门约束，不代表本节完整 P1 已完成。
+
 本计划完整保留已确认的 TypeScript + PostgreSQL 分阶段实施方案。完整愿景、Agent 架构、MVP 闭环和安全边界沿用 v6；更新控制面技术栈、数据访问、任务调度与并发方案。本文定义实施顺序，不提前宣称接口兼容、恢复正确或阶段验收已经通过。
 
 2026-11-18 按用户继续分批开发的要求，采用 [ADR 0001](decisions/0001-development-and-runtime-gates.md)：独立模块可先开发与可信测试，完整阶段及真实执行资格仍受原验收闸门约束。

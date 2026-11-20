@@ -4,6 +4,8 @@
 - 安装与数据库权限沿用 [P1-A](control-plane-p1-a.md)、[P1-B](control-plane-p1-b.md)；本批没有新业务迁移。
 - 固定代码、验证和阅读路径见 [本批 review guide](reviews/p1-c-portal-login.md)。完整 P1 与 MVP 仍未验收。
 
+本文保留 P1-C 的历史交付范围；后续新增迁移 0005 和源码检查准备卡片见 [P1-D1](control-plane-p1-d.md)。下文“没有新业务迁移”仅指 P1-C。
+
 ## 1. 能完成什么
 
 `打开工作台 → 选择中英文 → 真实 IdP 登录 → 当前领域权限校验 → 创建项目 → 登记 HTTPS 仓库 → 提交固定 Git 版本 → 查看持久化任务/事件 → 重试前置检查或取消 → 注销`

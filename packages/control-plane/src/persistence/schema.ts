@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { boolean, check, foreignKey, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
-import { agentRoles, taskStates } from '@itervane/contracts';
+import { agentRoles, taskStates, type InspectionPlan } from '@itervane/contracts';
 
 export const domain = pgSchema('itervane');
 const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
@@ -72,7 +72,7 @@ export const taskRuns = domain.table('task_runs', {
   id: uuid('id').primaryKey(), taskId: uuid('task_id').notNull().references(() => tasks.id),
   generation: integer('generation').notNull(), role: agentRole('role').notNull(),
   state: taskState('state').notNull().default('queued'), wakeupJobId: uuid('wakeup_job_id'), createdAt: createdAt(),
-}, t => [unique('task_run_generation_unique').on(t.taskId, t.generation), check('run_generation_positive', sql`${t.generation} > 0`)]);
+}, t => [unique('task_run_generation_unique').on(t.taskId, t.generation), unique('task_run_task_pair').on(t.id, t.taskId), check('run_generation_positive', sql`${t.generation} > 0`)]);
 
 export const taskEvents = domain.table('task_events', {
   taskId: uuid('task_id').notNull().references(() => tasks.id), sequence: integer('sequence').notNull(),
@@ -112,3 +112,12 @@ export const checkpointWrites = domain.table('checkpoint_write_receipts', {
   runId: uuid('run_id').notNull().references(() => taskRuns.id), checkpointId: text('checkpoint_id').notNull(),
   writeHash: text('write_hash').notNull(),
 }, t => [primaryKey({ columns: [t.runId, t.checkpointId, t.writeHash] })]);
+
+// A prepared intent is not a fetched snapshot or a completed scan. One immutable policy per logical run.
+export const inspectionPlans = domain.table('inspection_plans', {
+  runId: uuid('run_id').primaryKey(), taskId: uuid('task_id').notNull().references(() => tasks.id),
+  preparedFence: integer('prepared_fence').notNull(), sha256: text('sha256').notNull(),
+  document: jsonb('document').$type<InspectionPlan>().notNull(), createdAt: createdAt(),
+}, t => [foreignKey({ name: 'inspection_run_task_fk', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
+  check('inspection_plan_binding', sql`(${t.preparedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+  AND ${t.document}->>'taskId' = ${t.taskId}::text AND ${t.document}->>'runId' = ${t.runId}::text AND ${t.document}->>'version' = '1') IS TRUE`)]);

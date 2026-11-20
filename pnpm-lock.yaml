@@ -11,6 +11,9 @@ importers:
       '@itervane/contracts':
         specifier: workspace:*
         version: link:packages/contracts
+      '@itervane/runner':
+        specifier: workspace:*
+        version: link:packages/runner
       '@itervane/verification':
         specifier: workspace:*
         version: link:packages/verification
@@ -57,6 +60,9 @@ importers:
       '@itervane/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@itervane/runner':
+        specifier: workspace:*
+        version: link:../runner
       '@langchain/core':
         specifier: 1.4.1
         version: 1.4.1(@opentelemetry/api@1.10.0)(openai@7.57.0(zod@4.6.7))
@@ -143,6 +149,15 @@ importers:
       vite:
         specifier: 8.3.8
         version: 8.3.8(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15)
+
+  packages/runner:
+    dependencies:
+      '@itervane/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
 
   packages/verification:
     dependencies:

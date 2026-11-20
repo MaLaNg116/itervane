@@ -60,5 +60,22 @@ jobs:
         if: always()
         run: test ! -f .reports/p1-c/browser.json || cat .reports/p1-c/browser.json
 
+  scanners:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.14.0
+      - name: Install pinned package manager
+        run: npm install --global pnpm@11.9.0 --ignore-scripts
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Real scanners on maintainer-generated fixtures only
+        run: pnpm probe:scanners
+
 # Live models, cloud/VM isolation, and native operations require separate
 # maintainer-controlled evidence. A green CI run is not P0 completion.
