@@ -2,16 +2,33 @@ import { expect, type Page } from '@playwright/test';
 import { restartTool, whiskersOrigin } from '../../../verification/src/native/whiskers.js';
 import { adminEmail } from './whiskers-fixture.js';
 
+export class NativeBrowserFailure extends Error {
+  constructor(readonly reason: 'login-form' | 'login-submit' | 'login-rejected' | 'login-navigation' | 'level-control' | 'level-option') {
+    super(reason);
+  }
+}
+
 export async function signIn(page: Page, password: string) {
-  await page.goto(whiskersOrigin + '/set-culture?culture=en&redirect=/login');
-  await page.locator('input[name=email]').fill(adminEmail);
-  await page.locator('input[name=password]').fill(password);
-  await page.locator('form[action="login-local"] button[type=submit]').click();
-  await page.waitForURL(url => url.origin === whiskersOrigin && url.pathname === '/');
+  try {
+    await page.goto(whiskersOrigin + '/set-culture?culture=en&redirect=/login', { waitUntil: 'domcontentloaded' });
+    await page.locator('input[name=email]').fill(adminEmail);
+    await page.locator('input[name=password]').fill(password);
+  } catch { throw new NativeBrowserFailure('login-form'); }
+  let response;
+  try {
+    [response] = await Promise.all([
+      page.waitForResponse(reply => reply.url() === whiskersOrigin + '/login-local' && reply.request().method() === 'POST'),
+      page.locator('form[action="login-local"] button[type=submit]').click(),
+    ]);
+  } catch { throw new NativeBrowserFailure('login-submit'); }
+  if (response.status() !== 302 || response.headers().location !== '/') throw new NativeBrowserFailure('login-rejected');
+  try {
+    await page.waitForURL(url => url.origin === whiskersOrigin && url.pathname === '/', { waitUntil: 'domcontentloaded' });
+  } catch { throw new NativeBrowserFailure('login-navigation'); }
 }
 
 export async function openPermissions(page: Page) {
-  await page.goto(whiskersOrigin + '/settings');
+  await page.goto(whiskersOrigin + '/settings', { waitUntil: 'domcontentloaded' });
   const field = page.getByPlaceholder('e.g. Claude Code', { exact: true });
   await expect(async () => {
     if (!await field.isVisible()) await page.getByText('MCP permissions', { exact: true }).click({ timeout: 3000 });
@@ -23,8 +40,10 @@ export async function selectWriteLevel(page: Page) {
   const level = page.locator('.mud-input-control.mud-select').filter({
     has: page.locator('label').filter({ hasText: /^Level$/ }),
   });
-  await level.click();
-  await page.locator('.mud-popover-open').getByText('Write', { exact: true }).click();
+  try { await level.click(); }
+  catch { throw new NativeBrowserFailure('level-control'); }
+  try { await page.locator('.mud-popover-open').getByText('Write', { exact: true }).click(); }
+  catch { throw new NativeBrowserFailure('level-option'); }
 }
 
 export async function createWriteKey(page: Page, name: string) {
@@ -40,7 +59,7 @@ export async function createWriteKey(page: Page, name: string) {
 }
 
 export async function approveRestart(page: Page, containerId: string) {
-  await page.goto(whiskersOrigin + '/approvals');
+  await page.goto(whiskersOrigin + '/approvals', { waitUntil: 'domcontentloaded' });
   const card = page.locator('.mud-paper.pa-4').filter({ hasText: 'local / ' + containerId }).filter({
     has: page.getByRole('button', { name: 'Approve', exact: true }),
   });
@@ -60,7 +79,7 @@ export async function approveRestart(page: Page, containerId: string) {
 }
 
 export async function observeRestartAudit(page: Page, target: string, actor: string) {
-  await page.goto(whiskersOrigin + '/audit-log');
+  await page.goto(whiskersOrigin + '/audit-log', { waitUntil: 'domcontentloaded' });
   const restarts = page.getByRole('row').filter({
     has: page.getByText('Container restarted', { exact: true }),
   });

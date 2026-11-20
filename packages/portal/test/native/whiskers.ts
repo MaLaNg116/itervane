@@ -1,9 +1,9 @@
 import { chromium, type Browser } from '@playwright/test';
 import { localeSchema, type Check } from '@itervane/contracts';
-import { confirmationId, toolText, WhiskersProbeClient, whiskersVersion } from '../../../verification/src/native/whiskers.js';
+import { confirmationId, toolText, WhiskersProbeClient, whiskersOrigin, whiskersVersion } from '../../../verification/src/native/whiskers.js';
 import { executeProbe, report } from '../../../verification/src/report.js';
 import { eligibleHost, WhiskersFixture } from './whiskers-fixture.js';
-import { approveRestart, createWriteKey, observeRestartAudit, openPermissions, selectWriteLevel, signIn } from './whiskers-ui.js';
+import { approveRestart, createWriteKey, NativeBrowserFailure, observeRestartAudit, openPermissions, selectWriteLevel, signIn } from './whiskers-ui.js';
 
 const messages = {
   host: ['Use an isolated GitHub-hosted Linux test machine.', '需要独立的 GitHub 托管 Linux 测试机。'],
@@ -59,10 +59,12 @@ async function run() {
       return currentA.id === a.id && currentB.id === b.id && currentA.started === beforeA && currentB.started === b.started;
     }
 
-    step = 'browser-login';
+    step = 'browser-launch';
     browser = await chromium.launch({ channel: 'chrome' });
     const page = await browser.newPage({ locale: 'en-US' });
     page.setDefaultTimeout(14_000);
+    await page.route('**/*', route => new URL(route.request().url()).origin === whiskersOrigin ? route.continue() : route.abort());
+    step = 'browser-login';
     await signIn(page, fixture.adminPassword);
 
     step = 'native-key-settings';
@@ -125,12 +127,13 @@ async function run() {
     step = 'native-restart-audit';
     await observeRestartAudit(page, fixture.primary, primaryKey);
     record('audit');
-  } catch {
+  } catch (error) {
     if (step === 'approved-dispatch') {
       const actual = await fixture.snapshot(fixture.primary).catch(() => undefined);
       console.log('Whiskers recovery observation: ' + (actual ? 'fixture_observed' : 'unavailable'));
     }
-    checks.push({ id: 'native-verification', status: 'failed', detail: messages.stopped[language] + ' ' + step + '.' });
+    const location = error instanceof NativeBrowserFailure ? step + ' (' + error.reason + ')' : step;
+    checks.push({ id: 'native-verification', status: 'failed', detail: messages.stopped[language] + ' ' + location + '.' });
   } finally {
     await Promise.allSettled([...clients].map(client => client.close()));
     await browser?.close().catch(() => undefined);
