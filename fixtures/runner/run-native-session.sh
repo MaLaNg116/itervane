@@ -27,7 +27,9 @@ sudo -n install -m 0600 /dev/null "$marker_dir/control-plane.marker"
 printf '%s\n' 'synthetic host-only marker' | sudo -n tee "$marker_dir/control-plane.marker" >/dev/null
 
 as_runner() {
-  sudo -n -H -u "$runner_user" -- /usr/bin/env "PATH=$node_dir:/usr/bin:/bin" \
+  sudo -n -u "$runner_user" -- /usr/bin/env -i "PATH=$node_dir:/usr/bin:/bin" LANG=C.UTF-8 CI=true \
+    "XDG_CONFIG_HOME=$directory/account/.config" "XDG_CACHE_HOME=$directory/account/.cache" \
+    "XDG_DATA_HOME=$directory/account/.local/share" \
     /usr/bin/setpriv --no-new-privs /bin/sh -c '
       cd -- "$1" || exit 1
       shift
