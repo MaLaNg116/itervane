@@ -13,6 +13,7 @@
 | 007 | P1-UX：门户设计、双语 GSAP 反馈、减少动效与会话/CSP 回归 | [#7](https://github.com/MaLaNg116/itervane/pull/7)，依赖 #6 | [P1-UX 导读](p1-ux-portal-design-motion.md) | 73 单元/66 PG/20 浏览器/5 CLI 及三组 Linux CI 通过 |
 | 008 | P1-UX 后续：真实任务页验证、shadcn/ui 逐页迁移 | [#8](https://github.com/MaLaNg116/itervane/pull/8)，依赖 #7 | [组件迁移导读](p1-ux-shadcn-migration.md) | 73 单元/66 PG/21 浏览器通过，受测路径零 CSP 违规，[Linux CI](https://github.com/MaLaNg116/itervane/pull/8/checks) |
 | 009 | P2-A 内置 ReAct、审计/修复/复验与检查点恢复 | [#9](https://github.com/MaLaNg116/itervane/pull/9)，基于已合入 #1–#8 的 main | [P2-A 导读](p2-a-agent-harness.md) | 92 单元、69 PG、21 浏览器和双语确定性样例通过；真实模型全路径与正式 Runner 待验 |
+| 010 | P2-B 候选冻结、人工决定、失效与事务回归 | [#10](https://github.com/MaLaNg116/itervane/pull/10)，基于已合入 #9 的 main | [P2-B 导读](p2-b-release-candidate.md) | 92 单元、78 PG、21 浏览器通过；正式批准与发布资格待验 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 

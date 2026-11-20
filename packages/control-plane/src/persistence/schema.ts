@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
-import { agentRoles, taskStates, type InspectionPlan, type PreauditRecord } from '@itervane/contracts';
+import { agentRoles, taskStates, type FixtureReleaseManifest, type InspectionPlan, type PreauditRecord, type ReleaseDecision } from '@itervane/contracts';
 
 export const domain = pgSchema('itervane');
 const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
@@ -20,7 +20,9 @@ export const workspaces = domain.table('workspaces', {
 export const workspaceMembers = domain.table('workspace_members', {
   workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id),
   principalId: uuid('principal_id').notNull().references(() => principals.id),
-}, t => [primaryKey({ columns: [t.workspaceId, t.principalId] }), unique('one_workspace_owner').on(t.workspaceId)]);
+  grantId: uuid('grant_id').notNull().defaultRandom(),
+}, t => [primaryKey({ columns: [t.workspaceId, t.principalId] }), unique('one_workspace_owner').on(t.workspaceId),
+  unique('workspace_owner_grant').on(t.grantId)]);
 
 export const projects = domain.table('projects', {
   id: uuid('id').primaryKey().defaultRandom(), workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id),
@@ -48,6 +50,7 @@ export const environments = domain.table('environments', {
   access: text('access').notNull().default('protected'), createdAt: createdAt(),
 }, t => [
   foreignKey({ name: 'environment_application_project_fk', columns: [t.applicationId, t.projectId], foreignColumns: [applications.id, applications.projectId] }),
+  unique('environment_project_application').on(t.id, t.projectId, t.applicationId),
   unique('environment_name_unique').on(t.applicationId, t.name), check('environment_protected', sql`${t.access} = 'protected'`),
 ]);
 
@@ -61,6 +64,7 @@ export const tasks = domain.table('tasks', {
   locale: text('locale').notNull().default('en'),
 }, t => [
   foreignKey({ name: 'task_repository_project_fk', columns: [t.repositoryId, t.projectId], foreignColumns: [repositories.id, repositories.projectId] }),
+  unique('task_project_pair').on(t.id, t.projectId),
   unique('task_request_unique').on(t.projectId, t.requestedBy, t.requestKey),
   check('task_version_positive', sql`${t.version} > 0 AND ${t.generation} > 0`),
   check('task_data_class', sql`${t.dataClass} IN ('synthetic', 'public')`),
@@ -132,3 +136,50 @@ export const preaudits = domain.table('preaudits', {
   AND ${t.document}->>'id' = ${t.id}::text AND ${t.document}->>'projectId' = ${t.projectId}::text AND ${t.document}->>'requestedBy' = ${t.requestedBy}::text
   AND ${t.document}#>>'{evaluation,formalScan}' = 'false' AND ${t.document}#>>'{evaluation,releaseEligible}' = 'false'
   AND octet_length(${t.document}::text) <= 65536) IS TRUE`)]);
+
+export const releaseCandidates = domain.table('release_candidates', {
+  id: uuid('id').primaryKey(),
+  projectId: uuid('project_id').notNull(),
+  taskId: uuid('task_id').notNull(),
+  runId: uuid('run_id').notNull(),
+  applicationId: uuid('application_id').notNull(),
+  environmentId: uuid('environment_id').notNull(),
+  requestedBy: uuid('requested_by').notNull().references(() => principals.id),
+  evidenceVersion: integer('evidence_version').notNull(),
+  fingerprint: text('fingerprint').notNull(),
+  document: jsonb('document').$type<FixtureReleaseManifest>().notNull(),
+  createdAt: createdAt(),
+}, t => [
+  foreignKey({ name: 'release_candidate_task_project_fk', columns: [t.taskId, t.projectId], foreignColumns: [tasks.id, tasks.projectId] }),
+  foreignKey({ name: 'release_candidate_run_task_fk', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
+  foreignKey({ name: 'release_candidate_environment_scope_fk', columns: [t.environmentId, t.projectId, t.applicationId],
+    foreignColumns: [environments.id, environments.projectId, environments.applicationId] }),
+  unique('release_candidate_evidence_version').on(t.taskId, t.evidenceVersion),
+  check('release_candidate_binding', sql`(${t.evidenceVersion} > 0 AND ${t.fingerprint} ~ '^[a-f0-9]{64}$'
+    AND ${t.document}->>'version' = '1' AND ${t.document}->>'origin' = 'trusted_fixture'
+    AND ${t.document}->'releaseEligible' = 'false'::jsonb
+    AND ${t.document}->>'evidenceVersion' = ${t.evidenceVersion}::text
+    AND ${t.document}->>'projectId' = ${t.projectId}::text AND ${t.document}->>'taskId' = ${t.taskId}::text
+    AND ${t.document}->>'runId' = ${t.runId}::text
+    AND ${t.document}#>>'{target,applicationId}' = ${t.applicationId}::text
+    AND ${t.document}#>>'{target,environmentId}' = ${t.environmentId}::text
+    AND octet_length(${t.document}::text) <= 8192) IS TRUE`),
+]);
+
+export const releaseDecisions = domain.table('release_decisions', {
+  candidateId: uuid('candidate_id').notNull().references(() => releaseCandidates.id),
+  version: integer('version').notNull(),
+  actorId: uuid('actor_id').notNull().references(() => principals.id),
+  // Retained after the workspace membership is deleted.
+  grantId: uuid('grant_id').notNull(),
+  idempotencyKey: uuid('idempotency_key').notNull(),
+  action: text('action').$type<ReleaseDecision>().notNull(),
+  selfConfirmed: boolean('self_confirmed').notNull(),
+  decidedAt: timestamp('decided_at', { withTimezone: true }).notNull(),
+}, t => [
+  primaryKey({ columns: [t.candidateId, t.version] }),
+  unique('release_decision_request').on(t.candidateId, t.actorId, t.idempotencyKey),
+  check('release_decision_action_version', sql`(${t.version} = 1 AND ${t.action} IN ('confirm', 'reject'))
+    OR (${t.version} = 2 AND ${t.action} = 'revoke')`),
+  check('release_decision_self_confirmed', sql`NOT ${t.selfConfirmed} OR ${t.action} = 'confirm'`),
+]);
