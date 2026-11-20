@@ -146,6 +146,7 @@ for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycl
     expect(inspection).toMatchObject({ taskId, status: 'blocked', sourceFetched: false, snapshotVerified: false, scanCompleted: false });
     await expect(page.getByTestId('source-inspection')).toContainText(zh ? '计划已准备，执行仍被阻断' : 'Plan prepared; execution is blocked');
     await expect(page.getByTestId('source-inspection')).toContainText(inspection.plan!.sha256);
+    await expect(page.getByTestId('source-inspection').getByText(zh ? '请求的版本' : 'Requested commit', { exact: true })).toBeVisible();
   } finally { await client.close(); }
   const storageSafe = await page.evaluate(() => {
     const entries = [...Object.keys(localStorage).map(key => localStorage.getItem(key) ?? ''), ...Object.keys(sessionStorage).map(key => sessionStorage.getItem(key) ?? '')];

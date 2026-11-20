@@ -58,7 +58,7 @@ const en = {
   scanCompleted: 'Completed', scanFailed: 'Failed', scanUnavailable: 'Unavailable', scanUnsupported: 'Unsupported',
   scanTimeout: 'The scan exceeded its time limit.', scanError: 'The scanner could not finish.', scanInvalid: 'The scanner report could not be verified.',
   scanNoInventory: 'No supported npm lockfile was found.', scanNoDatabase: 'The vulnerability database was unavailable.', scanEmptySource: 'The input contained no scannable files.',
-  planDigest: 'Inspection plan SHA-256', requestedCommit: 'Requested commit (not fetched)', scannerProfiles: 'Protected scanner profiles',
+  planDigest: 'Inspection plan SHA-256', requestedCommit: 'Requested commit', scannerProfiles: 'Protected scanner profiles',
   requiredIsolation: 'Required isolation', disposableVm: 'Disposable QEMU/KVM virtual machine', scannerCoverage: 'Secret patterns and npm lockfile vulnerabilities; other risks remain outside this coverage.',
 } as const;
 export type UiKey = keyof typeof en;
@@ -119,7 +119,7 @@ const zh: Record<UiKey, string> = {
   scanCompleted: '已完成', scanFailed: '失败', scanUnavailable: '不可用', scanUnsupported: '不支持',
   scanTimeout: '扫描超过时间限制。', scanError: '扫描器未能完成检查。', scanInvalid: '扫描报告未能通过核对。',
   scanNoInventory: '未找到受支持的 npm 锁文件。', scanNoDatabase: '漏洞库不可用。', scanEmptySource: '输入中没有可扫描的文件。',
-  planDigest: '检查计划 SHA-256', requestedCommit: '请求的版本（尚未获取）', scannerProfiles: '受保护的扫描配置',
+  planDigest: '检查计划 SHA-256', requestedCommit: '请求的版本', scannerProfiles: '受保护的扫描配置',
   requiredIsolation: '要求的隔离环境', disposableVm: '一次性 QEMU/KVM 虚拟机', scannerCoverage: '覆盖密钥模式与 npm 锁文件已知漏洞，其他风险不属于这两类检查的覆盖范围。',
 };
 export const ui = (locale: Locale, key: UiKey) => (locale === 'zh-CN' ? zh : en)[key];
