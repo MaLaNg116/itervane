@@ -26,7 +26,7 @@
 | 020 | P1-D3-C1 独立本机控制器、检查回执与断连回收 | [#20](https://github.com/MaLaNg116/itervane/pull/20)，基于已合入 #19 的 main | [独立检查控制器导读](p1-d3-qualified-controller.md) | [真实扫描、三类准入拒绝及两个已启动域的停止通过](https://github.com/MaLaNg116/itervane/actions/runs/44753059024)，Worker 数据库准入与持久化进入 C2 |
 | 021 | P1-D3-C2 正式 Worker 源码检查、回执发布和恢复 | [#21](https://github.com/MaLaNg116/itervane/pull/21)，基于已合入 #20 的 main | [正式源码检查导读](p1-d3-worker-inspection.md) | [正式 Worker 扫描、取消、撤权和崩溃重领通过](https://github.com/MaLaNg116/itervane/actions/runs/44771579026)，[108 单元、39 Runner、91 PG 和 21 浏览器通过](https://github.com/MaLaNg116/itervane/actions/runs/44771587898) |
 | 022 | P2-D1 正式证据驱动的审计 Agent | [#22](https://github.com/MaLaNg116/itervane/pull/22)，已合入 main | [正式审计导读](p2-d1-formal-audit.md) | 最新提交[通过托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44788702741)，本机真实模型验证两条双语审计路径 |
-| 023 | P2-D2 受控修复与候选制品 | [#23](https://github.com/MaLaNg116/itervane/pull/23)，基于已合入 #22 的 main | [受控修复导读](p2-d2-controlled-repair.md) | 草稿。[托管 KVM 补丁重放](https://github.com/MaLaNg116/itervane/actions/runs/44793982376)、128 项 Linux 单元与 41 项宿主测试通过。合格通道的扩展验收和正式 Worker 接入待完成 |
+| 023 | P2-D2 受控修复与候选制品 | [#23](https://github.com/MaLaNg116/itervane/pull/23)，基于已合入 #22 的 main | [受控修复导读](p2-d2-controlled-repair.md) | 草稿。[合格通道 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44796998891)、128 项 Linux 单元、41 项宿主和 107 项 PostgreSQL 测试通过。正式 Worker 联合原生验收及修复 Agent 待完成 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
