@@ -46,9 +46,11 @@ jobs:
           /usr/bin/python3 -c 'import json; d=json.load(open(".reports/p0/kvm-host.json")); print("available=" + ("true" if d["result"] == "vm_descriptor_created" else "false"))' >> "$GITHUB_OUTPUT"
       - name: Install native lifecycle tools on the disposable host
         if: steps.capability.outputs.available == 'true'
+        timeout-minutes: 8
         run: |
-          sudo -n apt-get update -qq
-          sudo -n apt-get install -y --no-install-recommends gdisk guestfish guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils
+          apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          sudo -n apt-get "${apt_options[@]}" update -qq
+          sudo -n apt-get "${apt_options[@]}" install -y --no-install-recommends gdisk guestfish guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils
           dpkg-query -W gdisk guestfish guestfs-tools libvirt-daemon-system python3-libvirt qemu-system-x86 > .reports/p0/kvm-packages.txt
           cat .reports/p0/kvm-packages.txt
       - name: Prepare the dedicated KVM session
