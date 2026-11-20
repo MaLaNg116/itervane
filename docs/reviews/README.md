@@ -15,6 +15,7 @@
 | 009 | P2-A 内置 ReAct、审计/修复/复验与检查点恢复 | [#9](https://github.com/MaLaNg116/itervane/pull/9)，基于已合入 #1–#8 的 main | [P2-A 导读](p2-a-agent-harness.md) | 92 单元、69 PG、21 浏览器和双语确定性样例通过；真实模型全路径与正式 Runner 待验 |
 | 010 | P2-B 候选冻结、人工决定、失效与事务回归 | [#10](https://github.com/MaLaNg116/itervane/pull/10)，基于已合入 #9 的 main | [P2-B 导读](p2-b-release-candidate.md) | 92 单元、78 PG、21 浏览器通过；正式批准与发布资格待验 |
 | 011 | P2-C 原子确认入队、环境占用和运行结果核对 | [#11](https://github.com/MaLaNg116/itervane/pull/11)，基于已合入 #10 的 main | [P2-C 导读](p2-c-release-reconciliation.md) | 92 单元、83 PG、21 浏览器通过；正式 Runner 和 Komodo 目标待验 |
+| 012 | P1-D2-A 一次性 VM 生命周期探针 | [#12](https://github.com/MaLaNg116/itervane/pull/12)，基于已合入 #11 的 main | [D2-A 导读和复跑](p1-d2-libvirt-lifecycle.md) | 94 单元、83 PG、9 宿主流程测试通过；真实 KVM 与完整隔离待验 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
