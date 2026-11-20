@@ -3,7 +3,7 @@ import { localeSchema, type Check } from '@itervane/contracts';
 import { confirmationId, toolText, WhiskersProbeClient, whiskersVersion } from '../../../verification/src/native/whiskers.js';
 import { executeProbe, report } from '../../../verification/src/report.js';
 import { eligibleHost, WhiskersFixture } from './whiskers-fixture.js';
-import { approveRestart, createWriteKey, openPermissions, selectWriteLevel, signIn } from './whiskers-ui.js';
+import { approveRestart, createWriteKey, observeRestartAudit, openPermissions, selectWriteLevel, signIn } from './whiskers-ui.js';
 
 const messages = {
   host: ['Use an isolated GitHub-hosted Linux test machine.', '需要独立的 GitHub 托管 Linux 测试机。'],
@@ -13,6 +13,7 @@ const messages = {
   binding: ['Changing either the caller or the target required a separate native approval.', '更换调用身份或目标均要求新的原生审批。'],
   applied: ['The identical request after reconnect restarted only the approved container, and its HTTP health responded.', '重连后同参请求只重启了已批准容器，其 HTTP 健康检查通过。'],
   consumed: ['A further call required a fresh approval. The previous grant was used once.', '再次调用需要新审批，之前的授权仅执行了一次。'],
+  audit: ['The native audit view recorded a single restart for the expected actor and target.', '原生审计视图仅记录一次重启，调用身份与目标匹配。'],
   stopped: ['Verification stopped at', '验证中止于'],
   clean: ['Temporary containers and password file were removed.', '已清理临时容器和口令文件。'],
 } as const;
@@ -69,7 +70,8 @@ async function run() {
     step = 'native-key-level';
     await selectWriteLevel(page);
     step = 'primary-key';
-    const key = await createWriteKey(page, 'itervane-probe-primary');
+    const primaryKey = 'itervane-probe-primary';
+    const key = await createWriteKey(page, primaryKey);
     step = 'alternate-key';
     const alternateKey = await createWriteKey(page, 'itervane-probe-alternate');
     requireProof(key !== alternateKey);
@@ -119,6 +121,10 @@ async function run() {
     const replay = confirmationId(await resumed.restart(a.id));
     requireProof(replay && ![id, differentCaller, differentTarget].includes(replay) && await unchanged(restarted.started));
     record('consumed', ' Approval=' + replay + '.');
+
+    step = 'native-restart-audit';
+    await observeRestartAudit(page, fixture.primary, primaryKey);
+    record('audit');
   } catch {
     if (step === 'approved-dispatch') {
       const actual = await fixture.snapshot(fixture.primary).catch(() => undefined);

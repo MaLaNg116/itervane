@@ -20,7 +20,9 @@ export async function openPermissions(page: Page) {
 }
 
 export async function selectWriteLevel(page: Page) {
-  const level = page.locator('.mud-select').filter({ has: page.locator('label').filter({ hasText: /^Level$/ }) });
+  const level = page.locator('.mud-input-control.mud-select').filter({
+    has: page.locator('label').filter({ hasText: /^Level$/ }),
+  });
   await level.click();
   await page.locator('.mud-popover-open').getByText('Write', { exact: true }).click();
 }
@@ -55,4 +57,14 @@ export async function approveRestart(page: Page, containerId: string) {
   await card.getByRole('button', { name: 'Approve', exact: true }).click();
   const decided = page.getByRole('row').filter({ hasText: restartTool }).filter({ hasText: adminEmail });
   await expect(decided.getByText('Approved', { exact: true })).toBeVisible();
+}
+
+export async function observeRestartAudit(page: Page, target: string, actor: string) {
+  await page.goto(whiskersOrigin + '/audit-log');
+  const restarts = page.getByRole('row').filter({
+    has: page.getByText('Container restarted', { exact: true }),
+  });
+  await expect(restarts).toHaveCount(1);
+  await expect(restarts).toContainText(target);
+  await expect(restarts.getByText(actor, { exact: true })).toBeVisible();
 }
