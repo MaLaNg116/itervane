@@ -39,15 +39,23 @@ jobs:
           sudo -n apt-get install -y --no-install-recommends guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils
           dpkg-query -W guestfs-tools libvirt-daemon-system python3-libvirt qemu-system-x86 > .reports/p0/kvm-packages.txt
           cat .reports/p0/kvm-packages.txt
-      - name: Prepare and seal the trusted offline guest
-        id: image
+      - name: Prepare the dedicated KVM session
+        id: session
         if: steps.capability.outputs.available == 'true'
+        env:
+          PROBE_HOST_ENVIRONMENT: ${{ runner.environment }}
         run: |
           directory=$(sudo -n mktemp -d /var/lib/libvirt/images/itervane-native.XXXXXXXX)
           sudo -n chmod 0711 "$directory"
-          sudo -n bash fixtures/runner/prepare-probe-image.sh "$directory"
-          sudo -n cat "$directory/image.json" > .reports/p0/kvm-image.json
+          bash fixtures/runner/prepare-native-session.sh "$directory"
           printf 'directory=%s\n' "$directory" >> "$GITHUB_OUTPUT"
+      - name: Prepare and seal the trusted offline guest
+        if: steps.capability.outputs.available == 'true'
+        env:
+          PROBE_DIRECTORY: ${{ steps.session.outputs.directory }}
+        run: |
+          sudo -n bash fixtures/runner/prepare-probe-image.sh "$PROBE_DIRECTORY"
+          sudo -n cat "$PROBE_DIRECTORY/image.json" > .reports/p0/kvm-image.json
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         if: steps.capability.outputs.available == 'true'
         with:
@@ -59,7 +67,7 @@ jobs:
       - name: Verify the dedicated session and guest workloads on KVM
         if: steps.capability.outputs.available == 'true'
         env:
-          PROBE_DIRECTORY: ${{ steps.image.outputs.directory }}
+          PROBE_DIRECTORY: ${{ steps.session.outputs.directory }}
           PROBE_HOST_ENVIRONMENT: ${{ runner.environment }}
         run: bash fixtures/runner/run-native-session.sh "$PROBE_DIRECTORY"
       - name: Retain independent KVM evidence

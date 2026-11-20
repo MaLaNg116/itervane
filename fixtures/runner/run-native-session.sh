@@ -13,20 +13,8 @@ reports="$PWD/.reports/p0"
 stage="$directory/staging"
 code="$directory/code"
 sealed_image="$directory/probe.raw"
-marker_dir=/run/itervane-probe-private
-
-sudo -n useradd --system --user-group --groups kvm --create-home \
-  --home-dir "$runner_home" --shell /usr/sbin/nologin "$runner_user"
-sudo -n chmod 0700 "$runner_home"
-runner_uid=$(id -u "$runner_user")
-sudo -n install -d -m 0700 -o "$runner_user" -g "$runner_user" -- "$stage" "$code" "/run/user/$runner_uid"
 sudo -n chgrp "$runner_user" "$sealed_image"
 sudo -n chmod 0440 "$sealed_image"
-sudo -n chgrp kvm /dev/kvm
-sudo -n chmod 0660 /dev/kvm
-sudo -n mkdir -m 0711 "$marker_dir"
-sudo -n install -m 0600 /dev/null "$marker_dir/control-plane.marker"
-printf '%s\n' 'synthetic host-only marker' | sudo -n tee "$marker_dir/control-plane.marker" >/dev/null
 
 as_runner() {
   sudo -n -u "$runner_user" -- /usr/bin/env -i "PATH=$node_dir:/usr/bin:/bin" LANG=C.UTF-8 CI=true \
