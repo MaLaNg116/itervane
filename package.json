@@ -16,6 +16,7 @@
     "probe:cloud": "tsx --env-file-if-exists=.env packages/verification/src/entries/cloud.ts",
     "probe:runner-vm": "tsx packages/verification/src/entries/runner-vm.ts",
     "probe:komodo": "tsx packages/verification/src/entries/komodo-native.ts",
+    "probe:whiskers": "tsx packages/portal/test/native/whiskers.ts",
     "probe:mcp": "tsx packages/verification/src/entries/mcp.ts",
     "probe:evaluation": "tsx packages/verification/src/entries/evaluation.ts",
     "probe:agent": "tsx --env-file-if-exists=.env packages/verification/src/entries/agent.ts",
