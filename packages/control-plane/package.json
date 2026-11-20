@@ -9,6 +9,7 @@
   "dependencies": {
     "@itervane/contracts": "workspace:*",
     "@itervane/runner": "workspace:*",
+    "@itervane/rules": "workspace:*",
     "@langchain/core": "1.4.1",
     "@langchain/langgraph": "1.7.4",
     "@langchain/langgraph-checkpoint": "1.2.2",

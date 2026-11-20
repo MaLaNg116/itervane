@@ -22,7 +22,7 @@ export function ProjectPage({ id }: { id: string }) {
   return <>
     <a href="#/projects" className="back-link">← {t('backProjects')}</a>
     <PageHeading title={project.data.name} description={t('taskHint')} actions={<>
-      <Tag>{t(access.data.role)}</Tag><Button onClick={() => { void tasks.refetch(); }}>{t('refresh')}</Button>
+      <Tag>{t(access.data.role)}</Tag><Button href={`#/projects/${id}/preaudit`}>{t('rulesPreaudit')}</Button><Button onClick={() => { void tasks.refetch(); }}>{t('refresh')}</Button>
       {access.data.canWrite && <Button type="primary" disabled={!repositories.data.items.length} onClick={() => setDialog('task')}>{t('startTask')}</Button>}
     </>} />
     <Alert className="section-gap" type="info" showIcon title={t('preflightOnly')} description={t('runnerNotice')} />

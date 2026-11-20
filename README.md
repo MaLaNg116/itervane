@@ -10,7 +10,7 @@ Itervane connects three evidence-based loops:
 
 ## Status
 
-P0 verification foundations and the independent P1-A/P1-B/P1-C/P1-D1 control-plane slices are implemented in part. [Blueprint v6](docs/blueprint-v6.md) and the [TypeScript + PostgreSQL implementation plan v2](docs/implementation-plan-v2-ts-postgresql.md) remain the design baseline. Full P0, P1, and the platform MVP have not been accepted as complete.
+P0 verification foundations and the independent P1-A/P1-B/P1-C/P1-D1/P1-E control-plane slices are implemented in part. [Blueprint v6](docs/blueprint-v6.md) and the [TypeScript + PostgreSQL implementation plan v2](docs/implementation-plan-v2-ts-postgresql.md) remain the design baseline. Full P0, P1, and the platform MVP have not been accepted as complete.
 
 Available now: strict shared contracts, Anthropic/OpenAI protocol adapters, a bounded tool-loop probe, authenticated local MCP checks, real PostgreSQL transaction/recovery tests, evaluation inputs, and a trusted reference application. The platform capabilities described below remain planned.
 
@@ -19,6 +19,8 @@ The P1-A API adds verified identity, resource registration and durable tasks. P1
 P1-C adds a minimal English/Simplified Chinese React portal with real OIDC Authorization Code + PKCE login, current project permissions, project/repository registration, task history, and versioned retry/cancellation. It uses the same API, database and Worker as MCP. See [portal setup and session boundaries](docs/control-plane-p1-c.md), the [remaining P1 work and P1-C plan](docs/plans/p1-c-portal-and-login.md), and the [review guide](docs/reviews/p1-c-portal-login.md).
 
 P1-D1 adds immutable source-inspection plans, Git object/manifest verification, redacted scanner adapters, and real Gitleaks/Trivy checks on maintainer-generated fixtures. The portal and MCP read the same preparation record. Submitted repositories are not fetched or scanned while the verified disposable-VM gate is closed. See [P1-D setup](docs/control-plane-p1-d.md) and the [D1/D2/D3 implementation and acceptance plan](docs/plans/p1-d-isolated-source-inspection.md).
+
+P1-E adds a versioned, read-only bilingual rule/Skill catalogue and bounded text preaudit through the same API, external MCP and portal. Synthetic or public snippets/single-file diffs produce persistent, source-free reports with explicit coverage; no model or supplied code runs, and no release approval is granted. See [P1-E setup and limits](docs/control-plane-p1-e.md), the [implementation plan](docs/plans/p1-e-rules-and-preaudit.md), and the [review guide](docs/reviews/p1-e-rules-preaudit.md). Autonomous Agents, rule uploads/lifecycle and qualified Runner execution remain later work.
 
 For P0 setup, observed versions, and outstanding gates, see [P0 verification](docs/p0-verification.md). The repository does not yet deploy applications, execute submitted code, or operate infrastructure through an Agent.
 
@@ -50,6 +52,7 @@ The complete design documents are maintained in Chinese:
 - [P1-B durable runtime and MCP](docs/control-plane-p1-b.md): worker startup, checkpoint publication, cancellation/resume, MCP auth, and localization.
 - [P1-C portal and login](docs/control-plane-p1-c.md): trusted same-origin build, public OIDC client, memory-only tokens, bilingual workflows, and real browser verification.
 - [P1-D1 source-inspection foundations](docs/control-plane-p1-d.md): immutable preparation, content verification, real trusted scanner checks, and the remaining KVM acceptance gates.
+- [P1-E rules and text preaudit](docs/control-plane-p1-e.md): advisory rules/Skill, finite non-executing text checks, immutable redacted reports, current project authorization, and the P2-A/P4 boundaries.
 
 Blueprint v6 remains the product and architecture baseline. The implementation plan records the agreed TypeScript stack and execution approach. No implementation phase has been accepted as complete. Commits are separated by requirement for review.
 

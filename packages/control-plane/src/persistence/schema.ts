@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
-import { boolean, check, foreignKey, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
-import { agentRoles, taskStates, type InspectionPlan } from '@itervane/contracts';
+import { boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { agentRoles, taskStates, type InspectionPlan, type PreauditRecord } from '@itervane/contracts';
 
 export const domain = pgSchema('itervane');
 const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow();
@@ -121,3 +121,14 @@ export const inspectionPlans = domain.table('inspection_plans', {
 }, t => [foreignKey({ name: 'inspection_run_task_fk', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
   check('inspection_plan_binding', sql`(${t.preparedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
   AND ${t.document}->>'taskId' = ${t.taskId}::text AND ${t.document}->>'runId' = ${t.runId}::text AND ${t.document}->>'version' = '1') IS TRUE`)]);
+
+export const preaudits = domain.table('preaudits', {
+  id: uuid('id').primaryKey(), projectId: uuid('project_id').notNull().references(() => projects.id),
+  requestedBy: uuid('requested_by').notNull().references(() => principals.id), requestKey: uuid('request_key').notNull(),
+  requestHash: text('request_hash').notNull(), reportSha256: text('report_sha256').notNull(),
+  document: jsonb('document').$type<PreauditRecord>().notNull(), createdAt: createdAt(),
+}, t => [unique('preaudit_request_unique').on(t.projectId, t.requestedBy, t.requestKey), index('preaudit_project_history').on(t.projectId, t.createdAt, t.id),
+  check('preaudit_document_binding', sql`(${t.requestHash} ~ '^[a-f0-9]{64}$' AND ${t.reportSha256} ~ '^[a-f0-9]{64}$'
+  AND ${t.document}->>'id' = ${t.id}::text AND ${t.document}->>'projectId' = ${t.projectId}::text AND ${t.document}->>'requestedBy' = ${t.requestedBy}::text
+  AND ${t.document}#>>'{evaluation,formalScan}' = 'false' AND ${t.document}#>>'{evaluation,releaseEligible}' = 'false'
+  AND octet_length(${t.document}::text) <= 65536) IS TRUE`)]);

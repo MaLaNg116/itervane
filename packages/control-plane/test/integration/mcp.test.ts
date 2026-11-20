@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { admissionDtoSchema, apiErrorSchema, sourceInspectionDtoSchema, taskDtoSchema, translate } from '@itervane/contracts';
+import { admissionDtoSchema, apiErrorSchema, catalogDtoSchema, preauditAdmissionSchema, preauditDtoSchema, ruleDtoSchema, sourceInspectionDtoSchema, taskDtoSchema, translate } from '@itervane/contracts';
 import { createApi } from '../../src/api.js';
 import { openDatabase } from '../../src/persistence/database.js';
 import { bootstrapOwner } from '../../src/service/resources.js';
@@ -62,7 +62,7 @@ it('advertises a fixed canonical MCP resource and rejects wrong audience, missin
 it('serves localized SDK tool discovery and real task start/query/events/cancel across reconnects', async () => {
   const bearer = await token(); const first = await connect(bearer, 'zh-CN');
   const catalog = await first.listTools();
-  expect(catalog.tools.map(tool => tool.name).sort()).toEqual(['cancel_task', 'get_source_inspection', 'get_task', 'get_task_events', 'resume_task', 'start_audit']);
+  expect(catalog.tools.map(tool => tool.name).sort()).toEqual(['cancel_task', 'get_preaudit', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'list_preaudits', 'list_rules', 'preaudit_text', 'resume_task', 'start_audit']);
   expect(catalog.tools.find(tool => tool.name === 'start_audit')?.description).toBe(translate('zh-CN', 'mcp.start'));
   const accepted = admissionDtoSchema.parse((await first.callTool({ name: 'start_audit', arguments: input })).structuredContent);
   expect(accepted.task).toMatchObject({ locale: 'zh-CN', state: 'queued' });
@@ -82,9 +82,42 @@ it('serves localized SDK tool discovery and real task start/query/events/cancel 
   expect(cancelled.state).toBe('cancelled');
 });
 
+it('shares versioned rules and a source-free preaudit record across real MCP and HTTP with locale-independent retries', async () => {
+  const client = await connect(await token(), 'zh-CN');
+  const catalog = catalogDtoSchema.parse((await client.callTool({ name: 'list_rules', arguments: { projectId: input.projectId, language: 'typescript' } })).structuredContent);
+  expect(catalog.locale).toBe('zh-CN'); expect(catalog.items.some(rule => rule.kind === 'skill')).toBe(true);
+  const rule = ruleDtoSchema.parse((await client.callTool({ name: 'get_rule', arguments: { projectId: input.projectId, ruleId: 'text-dynamic-eval', catalogSha256: catalog.sha256 } })).structuredContent);
+  expect(rule.title).toBe(catalog.items[0]?.title);
+  const request = { projectId: input.projectId, idempotencyKey: randomUUID(), catalogSha256: catalog.sha256, language: 'typescript', format: 'snippet', dataClass: 'synthetic', text: 'eval(value); // private-input-canary' };
+  const created = preauditAdmissionSchema.parse((await client.callTool({ name: 'preaudit_text', arguments: request })).structuredContent);
+  expect(created).toMatchObject({ replayed: false, report: { locale: 'zh-CN', submittedVia: 'mcp', formalScan: false, releaseEligible: false } });
+  expect(JSON.stringify(created)).not.toContain('private-input-canary');
+  const response = await api.inject({ method: 'POST', url: '/v1/preaudits', headers, payload: request }); expect(response.statusCode).toBe(200);
+  const replay = preauditAdmissionSchema.parse(response.json()); expect(replay.replayed).toBe(true); expect(replay.report.id).toBe(created.report.id);
+  expect(replay.report.reportSha256).toBe(created.report.reportSha256); expect(replay.report.locale).toBe('en');
+  const reader = await connect(await token('itervane:read'));
+  expect(preauditDtoSchema.parse((await reader.callTool({ name: 'get_preaudit', arguments: { preauditId: created.report.id } })).structuredContent)).toEqual(replay.report);
+  expect((await api.inject(`/v1/preaudits/${created.report.id}`)).statusCode).toBe(401);
+  const denied = await fetch(`${address}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${await token('itervane:read')}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify(rpc('preaudit_text', request)) });
+  expect(denied.status).toBe(403);
+  await database.admin.query('DELETE FROM itervane.workspace_members');
+  expect(apiErrorSchema.parse((await reader.callTool({ name: 'get_preaudit', arguments: { preauditId: created.report.id } })).structuredContent).error.code).toBe('not_found');
+});
+
+it('does not persist stale or executable preaudit requests and does not echo invalid text', async () => {
+  const client = await connect(await token());
+  const catalog = catalogDtoSchema.parse((await api.inject({ url: `/v1/projects/${input.projectId}/rules`, headers })).json());
+  const base = { projectId: input.projectId, idempotencyKey: randomUUID(), catalogSha256: catalog.sha256, language: 'typescript', format: 'snippet', dataClass: 'synthetic', text: 'private-invalid-canary' };
+  for (const [request, code] of [[{ ...base, catalogSha256: '0'.repeat(64) }, 'conflict'], [{ ...base, regex: '.*' }, 'invalid_input'], [{ ...base, format: 'unified_diff' }, 'invalid_input']] as const) {
+    const result = await client.callTool({ name: 'preaudit_text', arguments: request });
+    expect(apiErrorSchema.parse(result.structuredContent).error.code).toBe(code); expect(JSON.stringify(result)).not.toContain('private-invalid-canary');
+  }
+  expect((await database.admin.query('SELECT * FROM itervane.preaudits')).rowCount).toBe(0);
+});
+
 it('enforces read-only scopes even for direct unadvertised write calls and localizes validation errors', async () => {
   const readToken = await token('itervane:read'); const reader = await connect(readToken, 'zh-CN');
-  expect((await reader.listTools()).tools.map(tool => tool.name).sort()).toEqual(['get_source_inspection', 'get_task', 'get_task_events']);
+  expect((await reader.listTools()).tools.map(tool => tool.name).sort()).toEqual(['get_preaudit', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'list_preaudits', 'list_rules']);
   const write = await fetch(`${address}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${readToken}`,
     'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify(rpc('start_audit', input)) });
   expect(write.status).toBe(403); expect(write.headers.get('www-authenticate')).toContain('scope="itervane:write"');

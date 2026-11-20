@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { test as base, expect, type Page } from '@playwright/test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { admissionDtoSchema, sourceInspectionDtoSchema, taskDtoSchema } from '@itervane/contracts';
+import { admissionDtoSchema, catalogDtoSchema, preauditDtoSchema, sourceInspectionDtoSchema, taskDtoSchema } from '@itervane/contracts';
 import { browserStack } from './stack.js';
 
 type Stack = Awaited<ReturnType<typeof browserStack>>;
@@ -46,6 +46,11 @@ async function admit(stack: Stack, authorization: string, project: Awaited<Retur
 }
 async function paused(stack: Stack, taskId: string) {
   await expect.poll(async () => (await stack.database.admin.query('SELECT state FROM itervane.tasks WHERE id=$1', [taskId])).rows[0]?.state).toBe('waiting_input');
+}
+async function openPreaudit(page: Page, stack: Stack, project: Awaited<ReturnType<typeof seedProject>>, locale: 'en' | 'zh-CN' = 'en', username = 'owner') {
+  await login(page, stack, username, locale); await page.getByRole('link', { name: project.title, exact: true }).click();
+  await page.getByRole('link', { name: locale === 'en' ? 'Rules and text preaudit' : '规则与文本预审', exact: true }).click();
+  await expect(page.getByTestId('rule-bounded-review-context')).toBeVisible();
 }
 
 for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycle in ${locale}`, async ({ page, stack }) => {
@@ -245,4 +250,83 @@ test('the bilingual portal remains usable on a narrow viewport without page over
   await page.getByRole('dialog').getByRole('button', { name: '创建项目', exact: true }).click();
   await expect(page.getByText('请填写此项。', { exact: true }).first()).toBeVisible();
   await page.screenshot({ path: '.reports/p1-c/portal-mobile-zh.png', fullPage: true });
+});
+
+for (const locale of ['en', 'zh-CN'] as const) test(`real rules and preaudit lifecycle in ${locale}`, async ({ page, stack }) => {
+  const zh = locale === 'zh-CN'; const project = await seedProject(stack);
+  await openPreaudit(page, stack, project, locale);
+  const canary = `source-private-${randomUUID()}`;
+  const source = `eval(value); // ${canary}\nnode.innerHTML = value;\n// gitleaks:allow\n<img src=x onerror=alert(1)>`;
+  await page.getByLabel(zh ? '提供的文本' : 'Supplied text', { exact: true }).fill(source);
+  await page.getByRole('button', { name: zh ? '记录预审' : 'Record preaudit', exact: true }).click();
+  await expect(page.getByRole('heading', { name: zh ? '文本预审报告' : 'Text preaudit report', exact: true })).toBeVisible();
+  const id = page.url().split('/').at(-1)!;
+  const client = new Client({ name: 'itervane-preaudit-browser', version: '0.0.0' });
+  try {
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${stack.origin}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${await stack.mcpToken()}`, 'Accept-Language': locale } } }));
+    const report = preauditDtoSchema.parse((await client.callTool({ name: 'get_preaudit', arguments: { preauditId: id } })).structuredContent);
+    expect(report).toMatchObject({ id, projectId: project.id, formalScan: false, releaseEligible: false, input: { sha256: createHash('sha256').update(source).digest('hex') } });
+    expect(report.observations).toHaveLength(3); expect(JSON.stringify(report)).not.toContain(canary);
+  } finally { await client.close(); }
+  expect(JSON.stringify((await stack.database.admin.query('SELECT document FROM itervane.preaudits WHERE id=$1', [id])).rows)).not.toContain(canary);
+  await expect(page.locator('img[src="x"]')).toHaveCount(0);
+  expect(await page.evaluate(value => JSON.stringify([localStorage, sessionStorage]).includes(value), canary)).toBe(false);
+  await page.screenshot({ path: `.reports/p1-e/preaudit-${locale}.png`, fullPage: true });
+  await language(page, zh ? 'en' : 'zh-CN');
+  await expect(page.getByRole('heading', { name: zh ? 'Text preaudit report' : '文本预审报告', exact: true })).toBeVisible();
+  await page.getByRole('link', { name: zh ? /Back to rules and preaudit$/ : /返回规则与预审$/ }).click();
+  await expect(page.getByRole('link', { name: id.slice(0, 8), exact: true })).toBeVisible();
+  await expect(page.getByLabel(zh ? 'Supplied text' : '提供的文本', { exact: true })).toBeEmpty();
+});
+
+test('preaudit retries an accepted request after response loss with the original key and no second record', async ({ page, stack }) => {
+  const project = await seedProject(stack); let lost = false; const attempts: unknown[] = [];
+  await page.route(`${stack.origin}/v1/preaudits`, async route => {
+    if (route.request().method() !== 'POST') { await route.continue(); return; }
+    attempts.push(route.request().postDataJSON());
+    if (!lost) { lost = true; const response = await route.fetch(); expect(response.status()).toBe(201); await route.abort('connectionfailed'); }
+    else await route.continue();
+  });
+  await openPreaudit(page, stack, project);
+  await page.getByLabel('Supplied text', { exact: true }).fill('eval(value);'); await page.getByRole('button', { name: 'Record preaudit', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Retry same request', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Supplied text', { exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Retry same request', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Text preaudit report', exact: true })).toBeVisible();
+  expect(attempts).toHaveLength(2); expect(attempts[1]).toEqual(attempts[0]);
+  expect((await stack.database.admin.query('SELECT count(*)::int AS count FROM itervane.preaudits WHERE project_id=$1', [project.id])).rows[0]?.count).toBe(1);
+});
+
+test('preaudit readers cannot create reports and revoked membership hides the rule page', async ({ page, stack }) => {
+  const project = await seedProject(stack, true); const authorization = authorizationFrom(page);
+  await openPreaudit(page, stack, project, 'en', 'viewer');
+  await expect(page.getByText('Read-only access', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Record preaudit', exact: true })).toHaveCount(0);
+  const catalog = catalogDtoSchema.parse(await (await fetch(`${stack.origin}/v1/projects/${project.id}/rules`, { headers: { Authorization: authorization() } })).json());
+  const denied = await fetch(`${stack.origin}/v1/preaudits`, { method: 'POST', headers: { Authorization: authorization(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectId: project.id, idempotencyKey: randomUUID(), catalogSha256: catalog.sha256, language: 'typescript', format: 'snippet', dataClass: 'synthetic', text: 'eval(value);' }) });
+  expect(denied.status).toBe(403);
+  await stack.database.admin.query('DELETE FROM itervane.project_members WHERE project_id=$1', [project.id]);
+  await expect(page.getByTestId('rule-bounded-review-context')).toHaveCount(0);
+  expect((await stack.database.admin.query('SELECT * FROM itervane.preaudits WHERE project_id=$1', [project.id])).rowCount).toBe(0);
+});
+
+test('a real added-line diff preaudit does not report removed text as analyzed code', async ({ page, stack }) => {
+  const project = await seedProject(stack); await openPreaudit(page, stack, project);
+  await page.getByLabel('Input format', { exact: true }).click(); await page.getByRole('option', { name: 'Single-file unified diff', exact: true }).click();
+  await page.getByLabel('Supplied text', { exact: true }).fill('--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-eval(old);\n+const value = 1;\n');
+  await page.getByRole('button', { name: 'Record preaudit', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Text preaudit report', exact: true })).toBeVisible();
+  await expect(page.getByTestId('preaudit-observations')).toContainText('No text-pattern observations');
+  await expect(page.getByTestId('preaudit-uncovered')).toContainText('Only added diff lines were checked.');
+});
+
+test('the narrow Chinese preaudit form enforces UTF-8 limits without submitting oversized text', async ({ page, stack }) => {
+  const project = await seedProject(stack); await page.setViewportSize({ width: 390, height: 844 });
+  let posts = 0; page.on('request', request => { if (new URL(request.url()).pathname === '/v1/preaudits' && request.method() === 'POST') posts++; });
+  await openPreaudit(page, stack, project, 'zh-CN');
+  await page.getByLabel('提供的文本', { exact: true }).fill('界'.repeat(6000));
+  await page.getByRole('button', { name: '记录预审', exact: true }).click();
+  await expect(page.getByText('请填写非空纯文本，限制为 16 KiB、1000 行，不接受不支持的控制字符。', { exact: true })).toBeVisible();
+  expect(posts).toBe(0); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
 });

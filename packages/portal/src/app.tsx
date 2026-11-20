@@ -14,6 +14,8 @@ import { readRoute } from './router.js';
 const ProjectsPage = lazy(async () => ({ default: (await import('./pages/projects.js')).ProjectsPage }));
 const ProjectPage = lazy(async () => ({ default: (await import('./pages/project.js')).ProjectPage }));
 const TaskPage = lazy(async () => ({ default: (await import('./pages/task.js')).TaskPage }));
+const PreauditPage = lazy(async () => ({ default: (await import('./pages/preaudit.js')).PreauditPage }));
+const PreauditReportPage = lazy(async () => ({ default: (await import('./pages/preaudit-report.js')).PreauditReportPage }));
 
 const queries = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 120_000 }, mutations: { retry: false } } });
 const subscribeRoute = (listener: () => void) => { window.addEventListener('hashchange', listener); window.addEventListener('popstate', listener); return () => { window.removeEventListener('hashchange', listener); window.removeEventListener('popstate', listener); }; };
@@ -81,7 +83,8 @@ function AuthorizedWorkspace({ api, session, epoch, name, locale }: { api: Porta
       <Button block onClick={() => { void session.logout(); }}>{t('signOut')}</Button>
     </aside><main id="main" className="workspace-main">
       <Suspense fallback={<Loading locale={locale} />}>{route.page === 'projects' ? <ProjectsPage /> : route.page === 'project' ? <ProjectPage key={route.id} id={route.id} />
-        : route.page === 'task' ? <TaskPage key={route.id} id={route.id} /> : <Result status="404" title={t('notFound')} extra={<a href="#/projects">{t('backProjects')}</a>} />}</Suspense>
+        : route.page === 'task' ? <TaskPage key={route.id} id={route.id} /> : route.page === 'preaudit' ? <PreauditPage key={route.id} id={route.id} />
+          : route.page === 'preaudit-report' ? <PreauditReportPage key={route.id} id={route.id} /> : <Result status="404" title={t('notFound')} extra={<a href="#/projects">{t('backProjects')}</a>} />}</Suspense>
     </main></div>
   </PortalContext>;
 }

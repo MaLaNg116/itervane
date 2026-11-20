@@ -2,7 +2,7 @@
 
 - 日期：2026-11-16。
 - 依据：[蓝图 v6](blueprint-v6.md)、[TS + PostgreSQL 实施计划 v2](implementation-plan-v2-ts-postgresql.md)。
-- 当前：P0 基础设施闸门仍待验证，独立 P1-A/P1-B/P1-C 已有局部实现，完整 P1 未验收。
+- 当前：P0 基础设施闸门仍待验证，独立 P1-A/P1-B/P1-C/P1-D1/P1-E 已有局部实现，完整 P1 未验收。
 
 2026-11-18 补充：用户要求继续分阶段完成项目。按 [ADR 0001](decisions/0001-development-and-runtime-gates.md) 分开开发依赖与运行资格，允许独立的 [P1-A 身份/资源/任务底座](plans/p1-a-project-task-foundation.md) 开发；本文件原始阶段出口继续约束完整验收，VM/发布/运维待验不放行。
 
@@ -13,6 +13,8 @@ P1-B 追加 [持久化调度/受控执行/外部 MCP](plans/p1-b-durable-executi
 P1-C 追加 [最小门户与真实 OIDC 登录](plans/p1-c-portal-and-login.md)，保留中英文并复用同一任务服务。剩余 P1 的 Runner/扫描、规则查询/预审及资源映射见该计划矩阵，未因本批门户交付而移除。
 
 P1-D 按 [隔离源码检查计划](plans/p1-d-isolated-source-inspection.md) 拆为 D1/D2/D3；D1 提前实现独立底座和真实可信样例，D2/D3 必须补足 KVM/一次性 VM、固定源获取、实际任务扫描、清理与恢复证据。没有普通容器降级或声明式开关放行。
+
+P1-E 按 [规则查询与有限预审计划](plans/p1-e-rules-and-preaudit.md) 交付版本化内置规则/Skill、脱敏不可变报告、同一 API/MCP/双语门户。短请求只做固定文本匹配，不占业务执行 slot；不替代 P2-A 的自主 Agent、P4 的规则生命周期或 D2/D3 的隔离扫描。对应验收与代码导读见 [P1-E guide](reviews/p1-e-rules-preaudit.md)。
 
 ## 1. 开发约束
 

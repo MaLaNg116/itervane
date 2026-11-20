@@ -4,7 +4,7 @@ import { z } from 'zod';
 import {
   admissionDtoSchema, applicationDtoSchema, capabilitiesSchema, environmentDtoSchema,
   idSchema, listQuerySchema, meDtoSchema, projectAccessDtoSchema, portalConfigSchema, projectDtoSchema, repositoryDtoSchema, taskDtoSchema, taskEventDtoSchema,
-  negotiateLocale, sourceInspectionDtoSchema, type Locale,
+  negotiateLocale, sourceInspectionDtoSchema, ruleIdSchema, ruleQuerySchema, preauditAdmissionSchema, preauditDtoSchema, type Locale,
 } from '@itervane/contracts';
 import { AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
 import type { Database } from './persistence/database.js';
@@ -16,6 +16,7 @@ import { createMcpEndpoint } from './mcp.js';
 import { canonicalPublicUrl } from './config.js';
 import { registerPortal } from './portal.js';
 import { InspectionService } from './service/inspections.js';
+import { PreauditService, RuleService } from './service/preaudits.js';
 
 declare module 'fastify' {
   interface FastifyRequest { verifiedIdentity: VerifiedIdentity | null; locale: Locale }
@@ -35,6 +36,7 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
   const verify = createIdentityVerifier(config);
   const resources = new ResourceService(database); const tasks = new TaskService(database);
   const inspections = new InspectionService(database);
+  const rules = new RuleService(database); const preaudits = new PreauditService(database);
   const app = Fastify({
     logger: options.logger === false ? false : { level: 'info' },
     logController: new LogController({ disableRequestLogging: true }), requestIdHeader: false, genReqId: () => randomUUID(),
@@ -87,7 +89,8 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
   app.get('/v1/me', async request => meDtoSchema.parse(await resources.me(identity(request))));
   app.get('/v1/capabilities', async request => {
     await resources.me(identity(request));
-    return capabilitiesSchema.parse({ stage: 'p1-d1', taskAdmission: true, taskExecution: false, durableScheduling: true, externalMcp: true,
+    return capabilitiesSchema.parse({ stage: 'p1-e', taskAdmission: true, taskExecution: false, durableScheduling: true, externalMcp: true,
+      ruleQuery: true, limitedTextPreaudit: true, autonomousAgents: false,
       sourceInspectionPlanning: true, sourceSnapshots: false, sourceScanning: false,
       portal: portalAvailable, browserLogin: portalAvailable && Boolean(config.portalClientId), sandbox: false, deployment: false, operations: false });
   });
@@ -100,6 +103,26 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
   app.get('/v1/projects/:projectId/access', async request => {
     const { projectId } = parseInput(projectParam, request.params);
     return projectAccessDtoSchema.parse(await resources.projectAccess(identity(request), projectId));
+  });
+  app.get('/v1/projects/:projectId/rules', async request => {
+    const { projectId } = parseInput(projectParam, request.params);
+    return rules.list(identity(request), projectId, request.query, request.locale);
+  });
+  app.get('/v1/projects/:projectId/rules/:ruleId', async request => {
+    const { projectId, ruleId } = parseInput(projectParam.extend({ ruleId: ruleIdSchema }), request.params);
+    return rules.get(identity(request), projectId, ruleId, parseInput(ruleQuerySchema, request.query), request.locale);
+  });
+  app.post('/v1/preaudits', async (request, reply) => {
+    const result = preauditAdmissionSchema.parse(await preaudits.create(identity(request), request.body, 'http', request.locale));
+    return reply.code(result.replayed ? 200 : 201).send(result);
+  });
+  app.get('/v1/preaudits/:preauditId', async request => {
+    const { preauditId } = parseInput(z.object({ preauditId: idSchema }).strict(), request.params);
+    return preauditDtoSchema.parse(await preaudits.get(identity(request), preauditId, request.locale));
+  });
+  app.get('/v1/projects/:projectId/preaudits', async request => {
+    const { projectId } = parseInput(projectParam, request.params);
+    return { items: await preaudits.list(identity(request), projectId, limit(request)) };
   });
   app.post('/v1/projects/:projectId/repositories', async (request, reply) => {
     const { projectId } = parseInput(projectParam, request.params);
