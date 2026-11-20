@@ -9,7 +9,7 @@
 
 检查计划关联 task/run、请求的完整 commit、两种扫描 profile 及配置指纹、所需 VM、资源和网络约束。它是待执行工作，不是已下载源码、已验证快照或已完成的扫描。`sourceFetched/snapshotVerified/scanCompleted` 当前均固定 false；没有生产报告上传或“已验证 Runner”登记接口。
 
-`packages/runner` 另提供纯快照校验与扫描报告归一化库，当前不被 Worker 用来处理提交的仓库。真实 CLI 只用于维护者生成的合成样例探针，结果不会写入业务任务。
+`packages/runner` 提供快照校验与扫描报告归一化库。D3-B 已在临时 KVM 客体用维护者样例提交实测固定快照和离线扫描，证据保存在原生验证报告。正式 Worker 仍等待领域授权、执行权和产物发布验收。 [D3-B 导读](reviews/p1-d3-offline-inspection.md)
 
 ## 升级与运行
 
