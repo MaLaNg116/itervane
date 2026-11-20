@@ -41,8 +41,8 @@ jobs:
         if: steps.capability.outputs.available == 'true'
         run: |
           sudo -n apt-get update -qq
-          sudo -n apt-get install -y --no-install-recommends gdisk guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils
-          dpkg-query -W guestfs-tools libvirt-daemon-system python3-libvirt qemu-system-x86 > .reports/p0/kvm-packages.txt
+          sudo -n apt-get install -y --no-install-recommends gdisk guestfish guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils
+          dpkg-query -W gdisk guestfish guestfs-tools libvirt-daemon-system python3-libvirt qemu-system-x86 > .reports/p0/kvm-packages.txt
           cat .reports/p0/kvm-packages.txt
       - name: Prepare the dedicated KVM session
         id: session
