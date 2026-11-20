@@ -20,7 +20,7 @@ test.afterEach(async ({ page, stack }, info) => {
 });
 
 async function language(page: Page, locale: 'en' | 'zh-CN') {
-  await page.getByRole('combobox').first().selectOption(locale);
+  await page.getByRole('combobox', { name: /^(Language|显示语言)$/ }).selectOption(locale);
 }
 function flowPhase(description: string) {
   const annotations = test.info().annotations; const current = annotations.find(value => value.type === 'flow-phase');
@@ -406,8 +406,11 @@ test('preaudit retries an accepted request after response loss with the original
   await page.getByLabel('Supplied text', { exact: true }).fill('eval(value);'); await page.getByRole('button', { name: 'Record preaudit', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Retry same request', exact: true })).toBeVisible();
   await expect(page.getByLabel('Supplied text', { exact: true })).toBeDisabled();
-  await page.getByRole('button', { name: 'Retry same request', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Text preaudit report', exact: true })).toBeVisible();
+  await language(page, 'zh-CN');
+  await expect(page.getByLabel('提供的文本', { exact: true })).toBeDisabled();
+  await expect(page.getByLabel('提供的文本', { exact: true })).toHaveValue('eval(value);');
+  await page.getByRole('button', { name: '重试同一请求', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '文本预审报告', exact: true })).toBeVisible();
   expect(attempts).toHaveLength(2); expect(attempts[1]).toEqual(attempts[0]);
   expect((await stack.database.admin.query('SELECT count(*)::int AS count FROM itervane.preaudits WHERE project_id=$1', [project.id])).rows[0]?.count).toBe(1);
 });
@@ -428,7 +431,7 @@ test('preaudit readers cannot create reports and revoked membership hides the ru
 
 test('a real added-line diff preaudit does not report removed text as analyzed code', async ({ page, stack }) => {
   const project = await seedProject(stack); await openPreaudit(page, stack, project);
-  await page.getByLabel('Input format', { exact: true }).click(); await page.getByRole('option', { name: 'Single-file unified diff', exact: true }).click();
+  await page.getByLabel('Input format', { exact: true }).selectOption('unified_diff');
   await page.getByLabel('Supplied text', { exact: true }).fill('--- a/x.ts\n+++ b/x.ts\n@@ -1 +1 @@\n-eval(old);\n+const value = 1;\n');
   await page.getByRole('button', { name: 'Record preaudit', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Text preaudit report', exact: true })).toBeVisible();
@@ -443,6 +446,9 @@ test('the narrow Chinese preaudit form enforces UTF-8 limits without submitting 
   await page.getByLabel('提供的文本', { exact: true }).fill('界'.repeat(6000));
   await page.getByRole('button', { name: '记录预审', exact: true }).click();
   await expect(page.getByText('请填写非空纯文本，限制为 16 KiB、1000 行，不接受不支持的控制字符。', { exact: true })).toBeVisible();
+  await language(page, 'en');
+  await expect(page.getByLabel('Supplied text', { exact: true })).toHaveValue('界'.repeat(6000));
+  await expect(page.getByText('Enter nonempty plain text within 16 KiB and 1000 lines; unsupported control characters are refused.', { exact: true })).toBeVisible();
   expect(posts).toBe(0); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
 });
 
