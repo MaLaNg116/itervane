@@ -19,6 +19,20 @@ sudo -n mkdir -m 0711 "$marker_dir"
 sudo -n install -m 0600 /dev/null "$marker_dir/control-plane.marker"
 printf '%s\n' 'synthetic host-only marker' | sudo -n tee "$marker_dir/control-plane.marker" >/dev/null
 
+# The distro's AppArmor rules govern the daemon's QEMU exec transition. The
+# session is pre-started with no bounding capabilities before the NNP client.
+sudo -n systemd-run --quiet --unit=itervane-probe-libvirtd --uid="$runner_user" --gid="$runner_user" \
+  --property=Type=exec --property=CapabilityBoundingSet= --property=AmbientCapabilities= --property=UMask=0077 \
+  --setenv="XDG_RUNTIME_DIR=$runtime" --setenv="XDG_CONFIG_HOME=$runner_home/.config" \
+  --setenv="XDG_CACHE_HOME=$runner_home/.cache" --setenv=LANG=C.UTF-8 /usr/sbin/libvirtd
+for attempt in {1..100}; do
+  if sudo -n test -S "$runtime/libvirt/libvirt-sock"; then
+    break
+  fi
+  sleep 0.1
+done
+sudo -n test -S "$runtime/libvirt/libvirt-sock"
+
 error_file=$(mktemp)
 trap 'rm -f -- "$error_file"' EXIT
 if ! sudo -n -u "$runner_user" -- /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 \

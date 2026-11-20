@@ -10,19 +10,21 @@ from pathlib import Path
 
 SESSION_URI = "qemu:///session"
 HOST_MARKER = Path("/run/itervane-probe-private/control-plane.marker")
+EMPTY_CAPABILITIES = "0000000000000000"
 
 
 class SessionRejected(Exception):
     pass
 
 
-def process_is_unprivileged(status, uid):
+def process_is_unprivileged(status, uid, *, controller=True):
     fields = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
+    key, expected = ("NoNewPrivs", "1") if controller else ("CapBnd", EMPTY_CAPABILITIES)
     return (
         uid > 0
         and fields.get("Uid", "").split() == [str(uid)] * 4
-        and fields.get("NoNewPrivs", "").strip() == "1"
-        and fields.get("CapEff", "").strip() == "0000000000000000"
+        and all(fields.get(field, "").strip() == EMPTY_CAPABILITIES for field in ("CapEff", "CapPrm", "CapAmb"))
+        and fields.get(key, "").strip() == expected
     )
 
 
@@ -105,7 +107,7 @@ def verify_qemu_process(runtime, name, run_id):
         if (
             os.path.basename(argv[0]) != b"qemu-system-x86_64"
             or uuid_pair not in zip(argv, argv[1:])
-            or not process_is_unprivileged(status, uid)
+            or not process_is_unprivileged(status, uid, controller=False)
             or process_exited(process_fd, timeout=0)
         ):
             raise SessionRejected("qemu-process")
