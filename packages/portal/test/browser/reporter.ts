@@ -11,6 +11,8 @@ export default class SafeReporter implements Reporter {
   onStdErr() { /* Do not forward third-party raw errors or request data. */ }
   onError() { console.error('Browser worker failed; raw diagnostic omitted.'); }
   onStepBegin(test: TestCase, _result: TestResult, step: TestStep) {
+    if (step.category !== 'pw:api') return;
+    for (let parent = step.parent; parent; parent = parent.parent) if (parent.category === 'hook' && /after/i.test(parent.title)) return;
     const location = step.location;
     if (location && /(?:portal\.spec|stack)\.ts$/.test(location.file)) this.locations.set(test.id, `${location.file.split(/[\\/]/).at(-1)}:${location.line}:${location.column}`);
   }
@@ -19,7 +21,8 @@ export default class SafeReporter implements Reporter {
     const location = result.error?.stack?.match(/(?:portal\.spec|stack)\.ts:\d+:\d+/)?.[0] ?? (result.error ? this.locations.get(test.id) ?? '' : '');
     const infrastructure = result.error?.message?.match(/\bIDP_(?:IMPORT_UNREADABLE|MEMORY_LIMIT|IMPORT_FAILED|READINESS_TIMEOUT)\b/)?.[0] ?? '';
     const surface = test.annotations.find(value => value.type === 'failure-surface' && /^(?:application|identity|other)$/.test(value.description ?? ''))?.description ?? '';
-    const diagnostic = [category, location, infrastructure, surface].filter(Boolean).join(' ');
+    const phase = test.annotations.find(value => value.type === 'flow-phase' && /^(?:portal|login|callback|project|repository|task|inspection|mcp|capture|resume|localization|cancel|logout)$/.test(value.description ?? ''))?.description ?? '';
+    const diagnostic = [category, location, infrastructure, surface, phase].filter(Boolean).join(' ');
     this.locations.delete(test.id);
     this.results.push({ title: test.title, status: result.status, ...(diagnostic ? { diagnostic } : {}) });
     console.log(`${result.status}: ${test.title}${diagnostic ? ` — ${diagnostic}` : ''}`);

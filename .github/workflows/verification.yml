@@ -59,6 +59,14 @@ jobs:
       - name: Sanitized browser verification evidence
         if: always()
         run: test ! -f .reports/p1-c/browser.json || cat .reports/p1-c/browser.json
+      - name: Application-only failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: portal-application-failures
+          path: .reports/p1-c/failed-*.png
+          if-no-files-found: ignore
+          retention-days: 3
 
   scanners:
     runs-on: ubuntu-24.04

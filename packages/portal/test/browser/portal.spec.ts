@@ -23,10 +23,17 @@ async function language(page: Page, locale: 'en' | 'zh-CN') {
   await page.getByRole('combobox').first().click();
   await page.getByRole('option', { name: locale === 'en' ? 'English' : '简体中文', exact: true }).click();
 }
+function flowPhase(description: string) {
+  const annotations = test.info().annotations; const current = annotations.find(value => value.type === 'flow-phase');
+  if (current) current.description = description; else annotations.push({ type: 'flow-phase', description });
+}
 async function login(page: Page, stack: Stack, username = 'owner', locale: 'en' | 'zh-CN' = 'en') {
+  flowPhase('portal');
   await page.goto(stack.origin); if (locale === 'zh-CN') await language(page, locale);
+  flowPhase('login');
   await page.getByRole('button', { name: locale === 'en' ? 'Sign in' : '登录平台', exact: true }).click();
   await page.locator('#username').fill(username); await page.locator('#password').fill(stack.password); await page.locator('#kc-login').click();
+  flowPhase('callback');
 }
 
 function authorizationFrom(page: Page) {
@@ -117,25 +124,30 @@ for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycl
   await expect(page.getByRole('heading', { name: zh ? '项目' : 'Projects', exact: true })).toBeVisible(); expect(challenge).toBe(true); expect(identityMatches).toBe(true);
   expect(new URL(page.url()).search).toBe('');
   const title = `Browser ${locale} ${randomUUID().slice(0, 6)}`;
+  flowPhase('project');
   await page.getByRole('button', { name: zh ? '创建项目' : 'Create project', exact: true }).click();
   await page.getByLabel(zh ? '项目名称' : 'Project name', { exact: true }).fill(title);
   await page.getByLabel(zh ? '项目标识' : 'Project slug', { exact: true }).fill(`browser-${randomUUID().slice(0, 8)}`);
   await page.getByRole('dialog').getByRole('button', { name: zh ? '创建项目' : 'Create project', exact: true }).click();
   await expect(page.getByRole('heading', { name: title })).toBeVisible();
+  flowPhase('repository');
   await page.getByRole('button', { name: zh ? '登记仓库' : 'Register repository', exact: true }).click();
   await page.getByLabel(zh ? '仓库名称' : 'Repository name', { exact: true }).fill('Reference source');
   await page.getByLabel(zh ? 'HTTPS 仓库地址' : 'HTTPS repository URL', { exact: true }).fill('https://example.invalid/browser.git');
   await page.getByRole('button', { name: zh ? '保存仓库' : 'Save repository', exact: true }).click();
   await expect(page.getByText('https://example.invalid/browser.git', { exact: true })).toBeVisible();
+  flowPhase('task');
   await page.getByRole('button', { name: zh ? '发起前置检查' : 'Start preflight', exact: true }).click();
   await page.getByLabel(zh ? '完整 Git 版本' : 'Full Git commit', { exact: true }).fill('a'.repeat(40));
   const purpose = `Inspect ${locale} <img src=x onerror=alert(1)>`;
   await page.getByLabel(zh ? '任务目标' : 'Task goal', { exact: true }).fill(purpose);
   await page.getByRole('button', { name: zh ? '提交任务' : 'Queue task', exact: true }).click();
   await expect(page.getByRole('heading', { name: zh ? '任务详情' : 'Task details', exact: true })).toBeVisible();
+  flowPhase('inspection');
   await expect(page.getByText(zh ? '任务正在等待经过验证的 Runner。' : 'Task is waiting for a verified Runner.', { exact: true })).toBeVisible();
   expect(await page.locator('img[src="x"]').count()).toBe(0);
   const taskId = page.url().split('/').at(-1)!;
+  flowPhase('mcp');
   const client = new Client({ name: 'itervane-browser-cross-check', version: '0.0.0' });
   try {
     await client.connect(new StreamableHTTPClientTransport(new URL(`${stack.origin}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${await stack.mcpToken()}` } } }));
@@ -151,18 +163,22 @@ for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycl
     return entries.every(value => !/access_token|refresh_token|id_token|eyJ[A-Za-z0-9_-]+\./.test(value));
   });
   expect(storageSafe).toBe(true);
+  flowPhase('capture');
   await page.screenshot({ path: `.reports/p1-c/portal-${locale}.png`, fullPage: true });
+  flowPhase('resume');
   await page.getByRole('button', { name: zh ? '重试前置检查' : 'Retry preflight', exact: true }).click();
   await page.getByRole('button', { name: zh ? '确认重试' : 'Confirm retry', exact: true }).click();
   await expect.poll(async () => (await stack.database.admin.query('SELECT resume_count FROM itervane.run_runtime WHERE task_id=$1', [taskId])).rows[0]?.resume_count).toBe(1);
   await expect(page.getByText(zh ? '任务正在等待经过验证的 Runner。' : 'Task is waiting for a verified Runner.', { exact: true })).toHaveCount(2);
   await expect(page.getByRole('button', { name: zh ? '重试前置检查' : 'Retry preflight', exact: true })).toBeVisible();
   expect((await stack.database.admin.query('SELECT count(*)::int AS count FROM itervane.inspection_plans WHERE task_id=$1', [taskId])).rows[0]?.count).toBe(1);
-  await language(page, zh ? 'en' : 'zh-CN');
+  flowPhase('localization'); await language(page, zh ? 'en' : 'zh-CN');
   await expect(page.getByTestId('task-locale')).toHaveText(zh ? '简体中文' : 'English');
+  flowPhase('cancel');
   await page.getByRole('button', { name: zh ? 'Cancel task' : '取消任务', exact: true }).click();
   await page.getByRole('button', { name: zh ? 'Confirm cancellation' : '确认取消', exact: true }).click();
   await expect.poll(async () => (await stack.database.admin.query('SELECT state FROM itervane.tasks WHERE id=$1', [taskId])).rows[0]?.state).toBe('cancelled');
+  flowPhase('logout');
   await page.getByRole('button', { name: zh ? 'Sign out' : '退出登录', exact: true }).click();
   const logoutConfirmation = page.locator('#kc-logout');
   const signedOut = page.getByText(zh ? 'You have signed out.' : '你已退出登录。', { exact: true });
