@@ -4,7 +4,9 @@ body { margin: 0; }
 .portal-root { color: var(--iv-ink); background: var(--iv-canvas); min-height: 100vh; font-size: 14px; line-height: 1.6; }
 a { color: var(--iv-brand); text-decoration: none; text-underline-offset: 3px; }
 a:hover { text-decoration: underline; }
-button, input, textarea, select { font: inherit; }
+@layer base {
+  button, input, textarea, select { font: inherit; }
+}
 button, summary, a { touch-action: manipulation; }
 code { font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace; font-size: 12px; }
 p { line-height: 1.7; }

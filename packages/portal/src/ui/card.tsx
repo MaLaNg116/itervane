@@ -7,7 +7,7 @@ export function Card({ className, ...props }: ComponentProps<'div'>) {
 }
 
 export function CardHeader({ className, ...props }: ComponentProps<'div'>) {
-  return <div data-slot="card-header" className={cn('flex flex-wrap items-center justify-between gap-3 border-b border-solid border-border px-5 py-4 sm:px-6', className)} {...props} />;
+  return <div data-slot="card-header" className={cn('flex flex-wrap items-center justify-between gap-3 border-0 border-b border-solid border-border px-5 py-4 sm:px-6', className)} {...props} />;
 }
 
 export function CardTitle({ className, ...props }: ComponentProps<'h2'>) {
