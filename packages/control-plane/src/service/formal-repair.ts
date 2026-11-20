@@ -36,8 +36,8 @@ export async function prepareFormalRepairInput(tx: Transaction, task: TaskRow, s
   if (current.stored) {
     const previous = formalRepairInputSchema.parse(current.stored.document);
     if (current.stored.sha256 !== hash || hash !== sha256(JSON.stringify(previous))) throw new Error('formal_repair_input_integrity');
-    return { sha256: hash, document: previous };
+    return { sha256: hash, document: previous, audit };
   }
   await tx.insert(formalRepairInputs).values({ runId: scope.runId, preparedFence: scope.fence, workerId: scope.workerId, sha256: hash, document });
-  return { sha256: hash, document };
+  return { sha256: hash, document, audit };
 }

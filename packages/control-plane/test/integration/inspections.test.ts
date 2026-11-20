@@ -19,6 +19,7 @@ import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepa
   inspectionAttempts } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
+import { runFormalRepair } from '../../src/runtime/formal-repair.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
 import { GuardedCheckpointer } from '../../src/runtime/checkpointer.js';
 import { FormalRepairExecution, type RepairRunner } from '../../src/runtime/repair-execution.js';
@@ -184,7 +185,9 @@ function repairReceipt(scan: QualifiedInspectionReceipt, request: Parameters<Rep
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length });
   const domainId = randomUUID();
   const file = patch.files[0]!;
-  const modified = original + file.edits[0]!.replacement;
+  const edit = file.edits[0]!;
+  const bytes = Buffer.from(original);
+  const modified = Buffer.concat([bytes.subarray(0, edit.startByte), Buffer.from(edit.replacement), bytes.subarray(edit.endByte)]);
   return {
     kind: 'repair_receipt', scope, domainId, imageSha256, originSha256: sha256(registered), commitSha256: scan.commitSha256,
     cleanupConfirmed: true, sessionVerified: true,
@@ -193,7 +196,7 @@ function repairReceipt(scan: QualifiedInspectionReceipt, request: Parameters<Rep
       manifestSha256: scope.baseSnapshotSha256, commandSha256: scope.commandSha256, readOnly: true, offline: true,
       candidate: { version: 1, operationId: scope.operationId, repairInputSha256: scope.repairInputSha256,
         baseSnapshotSha256: scope.baseSnapshotSha256, workspaceSha256: command.workspaceSha256, patchSha256: command.patchSha256,
-        candidateManifestSha256: sha256(modified + ' candidate'),
+        candidateManifestSha256: sha256(Buffer.concat([modified, Buffer.from(' candidate')])),
         changes: [{ path: file.path, beforeSha256: file.beforeSha256, afterSha256: sha256(modified), beforeBytes: Buffer.byteLength(original),
           afterBytes: Buffer.byteLength(modified), edits: file.edits.length }] },
     },
@@ -201,6 +204,27 @@ function repairReceipt(scan: QualifiedInspectionReceipt, request: Parameters<Rep
 }
 
 const idleRepairRunner = () => ({ kind: 'status' as const, version: 1 as const, state: 'idle' as const, workspaceSha256, imageSha256 });
+
+function repairObservationReceipt(scan: QualifiedInspectionReceipt, raw: Parameters<RepairObservationRunner['observeRepair']>[0],
+  workspace: Parameters<RepairObservationRunner['observeRepair']>[1], targets: Parameters<RepairObservationRunner['observeRepair']>[2],
+  original: string, range: QualifiedRepairObservationReceipt['snapshot']['observation']['targets'][number]['range'] = null
+): QualifiedRepairObservationReceipt {
+  const command = canonicalRepairObservation({ workspace, targets });
+  const { origin: registered, ...request } = qualifiedRepairObservationRequestSchema.parse({ ...raw, operation: 'observe_repair',
+    commandSha256: sha256(command.bytes), commandBytes: command.bytes.length });
+  const domainId = randomUUID();
+  return {
+    kind: 'repair_observation', scope: request, domainId, imageSha256, originSha256: sha256(registered), commitSha256: scan.commitSha256,
+    cleanupConfirmed: true, sessionVerified: true, snapshot: {
+      runId: domainId, repositoryId: request.repositoryId, commit: request.commit, tree: scan.snapshot.tree, files: scan.snapshot.files,
+      manifestSha256: workspace.baseSnapshotSha256, commandSha256: request.commandSha256, readOnly: true, offline: true,
+      observation: { version: 1, operationId: workspace.operationId, repairInputSha256: workspace.repairInputSha256,
+        baseSnapshotSha256: workspace.baseSnapshotSha256, targets: targets.map(target => ({
+          ...target, status: 'text', file: { bytes: Buffer.byteLength(original), sha256: sha256(original) }, range, templates: [],
+        })) },
+    },
+  };
+}
 
 it('observes only published audit targets while the current project grant survives', async () => {
   const { scope, proposal, scan, original } = await repairReady();
@@ -213,22 +237,7 @@ it('observes only published audit targets while the current project grant surviv
       try { await authorize(); } catch { blockedPulse = true; }
       await database.admin.query('INSERT INTO itervane.workspace_members(workspace_id,principal_id) VALUES($1,$2)', [grant.workspace_id, grant.principal_id]);
     }
-    const command = canonicalRepairObservation({ workspace, targets });
-    const { origin: registered, ...request } = qualifiedRepairObservationRequestSchema.parse({ ...raw, operation: 'observe_repair',
-      commandSha256: sha256(command.bytes), commandBytes: command.bytes.length });
-    const domainId = randomUUID();
-    const response: QualifiedRepairObservationReceipt = {
-      kind: 'repair_observation', scope: request, domainId, imageSha256, originSha256: sha256(registered), commitSha256: scan.commitSha256,
-      cleanupConfirmed: true, sessionVerified: true, snapshot: {
-        runId: domainId, repositoryId: request.repositoryId, commit: request.commit, tree: scan.snapshot.tree, files: scan.snapshot.files,
-        manifestSha256: workspace.baseSnapshotSha256, commandSha256: request.commandSha256, readOnly: true, offline: true,
-        observation: { version: 1, operationId: workspace.operationId, repairInputSha256: workspace.repairInputSha256,
-          baseSnapshotSha256: workspace.baseSnapshotSha256, targets: targets.map(target => ({
-            ...target, status: 'text', file: { bytes: Buffer.byteLength(original), sha256: sha256(original) }, range: null, templates: [],
-          })) },
-      },
-    };
-    return response;
+    return repairObservationReceipt(scan, raw, workspace, targets, original);
   });
   const options = { runner: { observe: async () => idleRepairRunner(), observeRepair }, protectedPaths: [] };
   await expect(observeFormalRepairTargets(coordinator, scope, [sha256('foreign finding')], options)).rejects.toMatchObject({ code: 'forbidden' });
@@ -241,6 +250,72 @@ it('observes only published audit targets while the current project grant surviv
   await expect(observeFormalRepairTargets(coordinator, scope, proposal.findingIds, options)).rejects.toMatchObject({ code: 'not_found' });
   expect(blockedPulse).toBe(true);
   expect(observeRepair).toHaveBeenCalledTimes(2);
+});
+
+it('uses the recorded mutation after a new worker claims a reserved repair whose checkpoint result was lost', async () => {
+  const { scope, proposal, scan } = await repairReady();
+  const prefix = 'fixture=one\nfixture2=two\n';
+  const line = 'fixture3=public\n';
+  const replacement = '# Replaced fixture line\n';
+  const original = prefix + line;
+  const range = { startByte: Buffer.byteLength(prefix), endByte: Buffer.byteLength(original), sha256: sha256(line) };
+  const signal = new AbortController();
+  const retired = new ExecutionLost();
+  const observeRepair = vi.fn<RepairObservationRunner['observeRepair']>(async (request, workspace, targets, authorize) => {
+    await authorize();
+    return repairObservationReceipt(scan, request, workspace, targets, original, range);
+  });
+  const repair = vi.fn<RepairRunner['repair']>(async (request, workspace, patch, authorize) => {
+    await authorize();
+    expect(patch.files).toEqual([{ path: fixtureFindingPath, beforeSha256: sha256(original),
+      edits: [{ startByte: range.startByte, endByte: range.endByte, replacement }] }]);
+    return repairReceipt(scan, request, workspace, patch, original);
+  });
+  const complete = vi.fn<ModelAdapter['complete']>(async ({ conversation }) => {
+    const context = conversation[0];
+    if (context?.kind !== 'user') throw new Error('Missing repair context');
+    const { observations } = JSON.parse(context.text) as { observations: AgentEvidence[] };
+    const candidate = observations.find(item => item.data.kind === 'repair_candidate');
+    if (candidate) return auditTurn('finish_role', { summary: '已按观测区间修改。', evidenceId: candidate.id });
+    const target = observations.find(item => item.data.kind === 'repair_targets');
+    if (!target || target.data.kind !== 'repair_targets') return auditTurn('read_repair_targets', { findingIds: proposal.findingIds });
+    const { startByte, endByte } = target.data.observation.targets[0]!.range!;
+    return auditTurn('apply_repair_patch', {
+      observationId: target.id, targets: [{ targetIndex: 0, edits: [{ startByte, endByte, replacement }] }],
+    });
+  });
+  const options = { runner: { observe: async () => idleRepairRunner(), observeRepair, repair }, protectedPaths: [] };
+  const storage = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+  const saveWrites = storage.putWrites.bind(storage);
+  const intercept = vi.spyOn(storage, 'putWrites').mockImplementation(async (config, writes, taskId, path) => {
+    if (writes.some(([channel, value]) => channel === 'state' && JSON.stringify(value).includes('"kind":"repair_candidate"'))) {
+      signal.abort(retired);
+    }
+    await saveWrites(config, writes, taskId, path);
+  });
+  try {
+    await expect(runFormalRepair(coordinator, scope, storage, auditModel(complete), options, signal.signal)).rejects.toBe(retired);
+    intercept.mockRestore();
+    const [before] = await database.storage.db.select().from(formalRepairAttempts);
+    expect(before).toMatchObject({ state: 'recorded', settledFence: scope.fence });
+    expect(complete).toHaveBeenCalledTimes(2);
+    await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+    await coordinator.reconcile(randomUUID());
+    const replacementScope = await claim();
+    const report = await runFormalRepair(coordinator, replacementScope, storage, auditModel(complete), options, new AbortController().signal);
+    expect(replacementScope.fence).toBeGreaterThan(scope.fence);
+    expect(report).toMatchObject({ reason: 'repair_complete', releaseEligible: false, usage: { turns: 3, toolCalls: 2 },
+      formalRepair: { operationId: before!.operationId, receiptSha256: before!.receiptSha256 },
+    });
+    expect(await database.storage.db.select().from(formalRepairAttempts)).toEqual([before]);
+    const [operation] = await database.storage.db.select().from(formalRepairOperations);
+    expect(operation).toMatchObject({ callKeySha256: sha256(`${report.bindingSha256}:2`), operationId: before!.operationId });
+    const [pointer] = await database.storage.db.select().from(formalRepairRuntime);
+    expect(pointer).toMatchObject({ checkpointId: report.checkpointId, publishedFence: replacementScope.fence });
+    expect(observeRepair).toHaveBeenCalledTimes(1);
+    expect(repair).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledTimes(3);
+  } finally { intercept.mockRestore(); await storage.end(); }
 });
 
 it('records one immutable repair command and a checked receipt across concurrent duplicate dispatches', async () => {
@@ -659,7 +734,9 @@ it('revalidates the same repair input after a new lease and seals existing compl
   const scope = await claimAfterAudit();
   const prepare = (execution = scope) => coordinator.withLease(execution, (tx, current) => prepareFormalRepairInput(tx, current.task, execution));
   const prepared = await prepare();
-  expect(prepared).toEqual({ sha256: sealed!.sha256, document: formalRepairInputSchema.parse(sealed!.document) });
+  expect(prepared).toMatchObject({ sha256: sealed!.sha256, document: formalRepairInputSchema.parse(sealed!.document),
+    audit: { checkpointId: sealed!.document.audit.checkpointId, status: 'completed' },
+  });
   expect(await prepare()).toEqual(prepared);
   expect((await database.storage.db.select().from(formalRepairInputs))[0]?.preparedFence).toBe(sealed!.preparedFence);
   await expect(prepare({ ...scope, fence: sealed!.preparedFence })).rejects.toBeInstanceOf(ExecutionLost);
