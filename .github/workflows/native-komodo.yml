@@ -1,0 +1,49 @@
+name: Native Komodo
+
+on:
+  push:
+    branches: [main, 'feat/**']
+    paths:
+      - '.github/workflows/native-komodo.yml'
+      - 'fixtures/komodo/**'
+      - 'packages/verification/src/native/komodo*.ts'
+      - 'packages/verification/src/entries/komodo-native.ts'
+      - 'packages/verification/src/report.ts'
+      - 'pnpm-lock.yaml'
+      - 'package.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-komodo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-komodo:
+    # A fresh GitHub-hosted VM owns the fixture Docker daemon. No production
+    # environment or repository secret is passed to the fixture.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.14.0
+      - name: Install pinned package manager
+        run: npm install --global pnpm@11.9.0 --ignore-scripts
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Release, upgrade and restore a fixed trusted fixture
+        run: pnpm probe:komodo
+      - name: Retain sanitized Komodo observations
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: komodo-native-evidence
+          path: .reports/p0/komodo-native.json
+          if-no-files-found: ignore
+          retention-days: 14
