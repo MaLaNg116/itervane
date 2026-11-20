@@ -23,6 +23,7 @@
 | 017 | P1-D2-C 专用宿主身份、工作负载隔离及 QEMU 退出 | [#17](https://github.com/MaLaNg116/itervane/pull/17)，基于已合入 #16 的 main | [隔离验收导读](p1-d2-runner-isolation.md) | [七个实际临时域及限额检查通过](https://github.com/MaLaNg116/itervane/actions/runs/44731986107)，正式源获取与扫描进入 D3 |
 | 018 | P1-D3-A 登记 HTTPS 源、固定 Git 对象与出口关闭 | [#18](https://github.com/MaLaNg116/itervane/pull/18)，基于已合入 #17 的 main | [Git 来源获取导读](p1-d3-source-acquisition.md) | [两轮真实 Git 获取及七轮原生回归通过](https://github.com/MaLaNg116/itervane/actions/runs/44737581998)，只读快照、离线扫描与正式 Worker 接入待验 |
 | 019 | P1-D3-B 固定只读快照、封存扫描输入与双语回执 | [#19](https://github.com/MaLaNg116/itervane/pull/19)，基于已合入 #18 的 main | [客体离线扫描导读](p1-d3-offline-inspection.md) | [两轮真实离线扫描与九轮既有原生用例通过](https://github.com/MaLaNg116/itervane/actions/runs/44746001023)，正式 Worker 接入待验 |
+| 020 | P1-D3-C1 独立本机控制器、检查回执与断连回收 | [#20](https://github.com/MaLaNg116/itervane/pull/20)，基于已合入 #19 的 main | [独立检查控制器导读](p1-d3-qualified-controller.md) | [真实扫描、三类准入拒绝及两个已启动域的停止通过](https://github.com/MaLaNg116/itervane/actions/runs/44753059024)，Worker 数据库准入与持久化进入 C2 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 

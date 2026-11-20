@@ -1,16 +1,15 @@
 import { renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { publishGuestSnapshot } from '../guest-snapshot.js';
-import {
-  INSPECTION_OUTPUT, INSPECTION_SOURCE, INSPECTION_TOOLS, PROBE_REPOSITORY_ID, inspectGuestSnapshot, inspectionFailures,
-} from '../guest-inspection.js';
+import { INSPECTION_OUTPUT, INSPECTION_SOURCE, INSPECTION_TOOLS, inspectGuestSnapshot, inspectionFailures } from '../guest-inspection.js';
 
 const [command, ...args] = process.argv.slice(2);
 process.umask(0o027);
-if (command === 'snapshot' && args.length === 3) {
-  const [repository, runId, commit] = args as [string, string, string];
+if (command === 'snapshot' && args.length === 5) {
+  const [repository, runId, commit, repositoryId, mode] = args as [string, string, string, string, string];
   try {
-    publishGuestSnapshot(INSPECTION_SOURCE, repository, runId, { repositoryId: PROBE_REPOSITORY_ID, commit });
+    if (mode !== 'fixture' && mode !== 'qualified') throw new Error('snapshot-mode');
+    publishGuestSnapshot(INSPECTION_SOURCE, repository, runId, { repositoryId, commit }, mode);
   } catch { process.exitCode = 1; }
 } else if (command === 'scan' && args.length === 0 && process.env.ITERVANE_SCAN_BOUNDARY === 'verified') {
   let receipt: object;

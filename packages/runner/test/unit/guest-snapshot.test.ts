@@ -17,7 +17,7 @@ describe.runIf(process.platform === 'linux')('fixed object publication inside th
       const runId = randomUUID();
       expect(publishGuestSnapshot(base, sample.root, runId, sample.source)).toEqual(sample.manifest);
       const ready = join(base, 'ready');
-      expect(readGuestSnapshot(ready)).toEqual({ runId, manifest: sample.manifest });
+      expect(readGuestSnapshot(ready)).toEqual({ runId, mode: 'fixture', manifest: sample.manifest });
       const projected = join(ready, 'npm/app/package-lock.json');
       await rm(projected);
       await writeFile(projected, '{"lockfileVersion":3}\n');

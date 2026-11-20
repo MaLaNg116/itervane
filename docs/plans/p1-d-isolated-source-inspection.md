@@ -1,6 +1,6 @@
 # P1-D：隔离 Runner、固定源码快照与真实扫描
 
-- 日期 2026-11-18。D1 已通过本地及三组 Linux CI，托管 KVM 已验证 D2 的专用会话和客体作业隔离。D3-A 已验证固定公开来源获取及关闭，D3-B 已实测固定只读快照和离线 Gitleaks／Trivy。D3-C 继续验收正式执行权、证据持久化和恢复。 [D1 导读](../reviews/p1-d-source-inspection.md) · [D2-C 导读](../reviews/p1-d2-runner-isolation.md) · [D3-A 导读](../reviews/p1-d3-source-acquisition.md) · [D3-B 计划](p1-d3-offline-inspection.md) · [D3-B 导读](../reviews/p1-d3-offline-inspection.md)
+- 日期 2026-11-18。D1 已通过本地及三组 Linux CI，托管 KVM 已验证 D2 的专用会话和客体作业隔离。D3-A 验证固定公开来源获取及关闭，D3-B 实测固定只读快照和离线 Gitleaks／Trivy，D3-C1 实测本机控制器、作用域回执和断连回收。D3-C2 继续验收正式执行权、证据持久化和恢复。 [D1 导读](../reviews/p1-d-source-inspection.md) · [D2-C 导读](../reviews/p1-d2-runner-isolation.md) · [D3-A 导读](../reviews/p1-d3-source-acquisition.md) · [D3-B 导读](../reviews/p1-d3-offline-inspection.md) · [D3-C 计划](p1-d3-qualified-inspection.md) · [D3-C1 导读](../reviews/p1-d3-qualified-controller.md)
 - 前置：P1-C / PR #4，代码 `f274c914d54fdcfc9785aa0836ff59f41a200bd4`；新草稿 PR 比较基线为 `feat/p1-portal-login`，不合并前置 PR。
 - 依据：v6 §9/§15—18、TS + PostgreSQL 实施计划 P1.4/P1.5、ADR 0001/0002/0004。
 - D1 开发时没有已验证的 KVM 宿主。后续原生验收使用 GitHub 托管工作机，完整隔离条件仍以 D2 验收为准。

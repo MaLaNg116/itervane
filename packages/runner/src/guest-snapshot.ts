@@ -13,6 +13,7 @@ const regularMode = z.enum(['100644', '100755']);
 const entrySchema = z.strictObject({ path: z.string().min(1).max(240), mode: regularMode });
 const publicationSchema = z.strictObject({
   runId: z.uuidv4(), source: sourceRefSchema, manifestSha256: sha256Schema,
+  mode: z.enum(['fixture', 'qualified']),
   entries: z.array(entrySchema).min(1).max(sourceLimits.maxFiles),
 });
 const publicationBytes = 3 * 1024 * 1024;
@@ -92,12 +93,14 @@ export function isNpmLock(path: string) {
 }
 
 /** The caller is the sealed acquisition service and provides the bare Git store. */
-export function publishGuestSnapshot(base: string, repository: string, runId: string, rawSource: Source) {
+export function publishGuestSnapshot(
+  base: string, repository: string, runId: string, rawSource: Source, mode: 'fixture' | 'qualified' = 'fixture',
+) {
   const source = sourceRefSchema.parse(rawSource);
   const { commitObject, files } = readGitObjects(repository, source);
   const manifest = verifySourceSnapshot({ source, commitObject, files });
   const publication = publicationSchema.parse({
-    runId, source, manifestSha256: manifest.sha256, entries: files.map(({ path, mode }) => ({ path, mode })),
+    runId, source, mode, manifestSha256: manifest.sha256, entries: files.map(({ path, mode }) => ({ path, mode })),
   });
   const ready = join(base, 'ready');
   if (lstatSync(ready, { throwIfNoEntry: false })) throw new Error('snapshot-exists');
@@ -176,5 +179,5 @@ export function readGuestSnapshot(ready: string) {
   const commitObject = readBoundedFile(join(ready, 'commit.object'), sourceLimits.maxCommitBytes);
   const manifest = verifySourceSnapshot({ source: publication.source, commitObject, files });
   if (manifest.sha256 !== publication.manifestSha256) throw new Error('snapshot-manifest');
-  return { runId: publication.runId, manifest };
+  return { runId: publication.runId, mode: publication.mode, manifest };
 }

@@ -19,8 +19,9 @@ if __name__ == "__main__":
 
 from guest_job import ProtocolError, verify_workload_receipt
 from source_wire import (
-    CLOSED, GUEST_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_REQUEST_BYTES, MAX_TRANSFER_BYTES,
-    PACK_TYPE, RECEIPT, REFS_TYPE, SOURCE_PORT, START, UPLOAD_TYPE, SourceWire,
+    CLOSED, GUEST_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_QUALIFIED_RECEIPT,
+    MAX_REQUEST_BYTES, MAX_TRANSFER_BYTES, PACK_TYPE, QUALIFIED_START, RECEIPT,
+    REFS_TYPE, SOURCE_PORT, START, UPLOAD_TYPE, SourceWire,
 )
 
 
@@ -28,6 +29,7 @@ WORK = "/var/lib/itervane-probe-source"
 INSPECTION_TOOLS = Path("/usr/local/libexec/itervane-inspection")
 INSPECTION_REQUEST = Path("/var/lib/itervane-inspection-source/scan-request")
 INSPECTION_RECEIPT = Path("/var/lib/itervane-inspection-output/receipt.json")
+FIXTURE_REPOSITORY_ID = "a955164f-7cf2-45c5-8a53-7cdb556db805"
 GIT_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"}
 
@@ -153,14 +155,15 @@ def verify_objects(root, identity, commit):
     return RECEIPT.pack(identity, bytes.fromhex(commit), bytes.fromhex(tree.decode()), hashlib.sha256(raw_commit).digest(), len(records) - 1)
 
 
-def inspect_source(repository, identity, commit, wire):
+def inspect_source(repository, identity, commit, repository_id, mode, wire):
     result = subprocess.run(
         [INSPECTION_TOOLS / "node", INSPECTION_TOOLS / "worker.mjs", "snapshot", repository,
-         str(uuid.UUID(bytes=identity)), commit],
+         str(uuid.UUID(bytes=identity)), commit, repository_id, mode],
         env=GIT_ENV, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=35,
     )
     if result.returncode:
         raise GuestFailure("snapshot-rejected")
+    receipt_limit = MAX_QUALIFIED_RECEIPT if mode == "qualified" else MAX_INSPECTION_RECEIPT
     INSPECTION_REQUEST.touch(mode=0o600, exist_ok=False)
     try:
         while True:
@@ -174,11 +177,11 @@ def inspect_source(repository, identity, commit, wire):
         with os.fdopen(fd, "rb") as report:
             if not stat.S_ISREG(os.fstat(report.fileno()).st_mode):
                 raise GuestFailure("scan-integrity")
-            receipt = report.read(MAX_INSPECTION_RECEIPT + 1)
+            receipt = report.read(receipt_limit + 1)
     finally:
         INSPECTION_REQUEST.unlink()
     try:
-        proof = json.loads(receipt) if len(receipt) <= MAX_INSPECTION_RECEIPT else None
+        proof = json.loads(receipt) if len(receipt) <= receipt_limit else None
         if not isinstance(proof, dict):
             raise ValueError()
         if "code" in proof:
@@ -193,10 +196,15 @@ def inspect_source(repository, identity, commit, wire):
 
 def serve_source(wire, work):
     wire.greeting()
-    scenario, start = wire.receive({b"S": START.size, b"A": START.size})
-    if len(start) != START.size:
+    scenario, start = wire.receive({b"S": START.size, b"A": START.size, b"F": QUALIFIED_START.size})
+    if scenario == b"F" and len(start) == QUALIFIED_START.size:
+        identity, commit_bytes, repository = QUALIFIED_START.unpack(start)
+        repository_id = str(uuid.UUID(bytes=repository))
+    elif scenario != b"F" and len(start) == START.size:
+        identity, commit_bytes = START.unpack(start)
+        repository_id = FIXTURE_REPOSITORY_ID
+    else:
         raise GuestFailure("guest-input")
-    identity, commit_bytes = START.unpack(start)
     commit = commit_bytes.hex()
     with TemporaryDirectory(prefix="fixed-", dir=work) as repository:
         acquire(repository, wire, commit, wire.check_deadline)
@@ -207,8 +215,9 @@ def serve_source(wire, work):
         if wire.receive({b"X": len(CLOSED)})[1] != CLOSED:
             raise GuestFailure("guest-input")
         wire.send(b"M", verify_objects(repository, identity, commit))
-        if scenario == b"A":
-            inspect_source(repository, identity, commit, wire)
+        if scenario != b"S":
+            mode = "qualified" if scenario == b"F" else "fixture"
+            inspect_source(repository, identity, commit, repository_id, mode, wire)
 
 
 def main():
