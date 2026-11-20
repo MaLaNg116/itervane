@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
   agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type InspectionPlan,
-  type PreauditRecord, type ReleaseDecision, type ReleaseOperationState,
+  type PreauditRecord, type QualifiedInspectionReceipt, type ReleaseDecision, type ReleaseOperationState,
 } from '@itervane/contracts';
 
 export const domain = pgSchema('itervane');
@@ -128,6 +128,48 @@ export const inspectionPlans = domain.table('inspection_plans', {
 }, t => [foreignKey({ name: 'inspection_run_task_fk', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
   check('inspection_plan_binding', sql`(${t.preparedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
   AND ${t.document}->>'taskId' = ${t.taskId}::text AND ${t.document}->>'runId' = ${t.runId}::text AND ${t.document}->>'version' = '1') IS TRUE`)]);
+
+export const inspectionAttempts = domain.table('inspection_attempts', {
+  requestId: uuid('request_id').primaryKey(),
+  taskId: uuid('task_id').notNull(), projectId: uuid('project_id').notNull(),
+  runId: uuid('run_id').notNull().references(() => inspectionPlans.runId),
+  repositoryId: uuid('repository_id').notNull(), commit: text('commit').notNull(),
+  generation: integer('generation').notNull(), fence: integer('fence').notNull(), workerId: uuid('worker_id').notNull(),
+  planSha256: text('plan_sha256').notNull(), originSha256: text('origin_sha256').notNull(), imageSha256: text('image_sha256').notNull(),
+  state: text('state').$type<'reserved' | 'closed' | 'uncertain' | 'recorded'>().notNull().default('reserved'),
+  settledFence: integer('settled_fence'), settledAt: timestamp('settled_at', { withTimezone: true }),
+  receiptSha256: text('receipt_sha256'), receipt: jsonb('receipt').$type<QualifiedInspectionReceipt>(),
+  createdAt: createdAt(),
+}, t => [
+  foreignKey({ name: 'inspection_attempt_run_task', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
+  foreignKey({ name: 'inspection_attempt_task_project', columns: [t.taskId, t.projectId], foreignColumns: [tasks.id, tasks.projectId] }),
+  foreignKey({ name: 'inspection_attempt_repository_project', columns: [t.repositoryId, t.projectId], foreignColumns: [repositories.id, repositories.projectId] }),
+  unique('inspection_attempt_per_fence').on(t.runId, t.fence),
+  uniqueIndex('inspection_open_attempt_per_run').on(t.runId).where(sql`${t.state} <> 'closed'`),
+  check('inspection_attempt_coordinates', sql`
+    ${t.generation} > 0 AND ${t.fence} > 0 AND ${t.commit} ~ '^[a-f0-9]{40}$'
+    AND ${t.planSha256} ~ '^[a-f0-9]{64}$' AND ${t.originSha256} ~ '^[a-f0-9]{64}$' AND ${t.imageSha256} ~ '^[a-f0-9]{64}$'`),
+  check('inspection_attempt_state', sql`(
+    (${t.state} = 'reserved' AND ${t.settledFence} IS NULL AND ${t.settledAt} IS NULL)
+    OR (${t.state} IN ('closed', 'uncertain', 'recorded') AND ${t.settledFence} >= ${t.fence} AND ${t.settledAt} IS NOT NULL)
+  ) IS TRUE`),
+  check('inspection_attempt_receipt_binding', sql`(
+    (${t.state} <> 'recorded' AND ${t.receipt} IS NULL AND ${t.receiptSha256} IS NULL)
+    OR (${t.state} = 'recorded' AND ${t.settledFence} = ${t.fence} AND ${t.receiptSha256} ~ '^[a-f0-9]{64}$'
+      AND octet_length(${t.receipt}::text) <= 4202496
+      AND ${t.receipt}->>'kind' = 'receipt' AND ${t.receipt}->'cleanupConfirmed' = 'true'::jsonb
+      AND ${t.receipt}->'sessionVerified' = 'true'::jsonb AND ${t.receipt}->>'originSha256' = ${t.originSha256}
+      AND ${t.receipt}->>'imageSha256' = ${t.imageSha256}
+      AND ${t.receipt}#>>'{scope,requestId}' = ${t.requestId}::text
+      AND ${t.receipt}#>>'{scope,taskId}' = ${t.taskId}::text AND ${t.receipt}#>>'{scope,runId}' = ${t.runId}::text
+      AND ${t.receipt}#>>'{scope,projectId}' = ${t.projectId}::text AND ${t.receipt}#>>'{scope,repositoryId}' = ${t.repositoryId}::text
+      AND ${t.receipt}#>>'{scope,commit}' = ${t.commit} AND ${t.receipt}#>>'{scope,planSha256}' = ${t.planSha256}
+      AND ${t.receipt}#>>'{scope,fence}' = ${t.fence}::text AND ${t.receipt}#>>'{scope,generation}' = ${t.generation}::text
+      AND ${t.receipt}->>'domainId' = ${t.receipt}#>>'{snapshot,runId}'
+      AND ${t.receipt}#>>'{snapshot,repositoryId}' = ${t.repositoryId}::text AND ${t.receipt}#>>'{snapshot,commit}' = ${t.commit}
+      AND ${t.receipt}#>'{snapshot,offline}' = 'true'::jsonb AND ${t.receipt}#>'{snapshot,readOnly}' = 'true'::jsonb)
+  ) IS TRUE`),
+]);
 
 export const preaudits = domain.table('preaudits', {
   id: uuid('id').primaryKey(), projectId: uuid('project_id').notNull().references(() => projects.id),

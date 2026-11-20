@@ -1,9 +1,13 @@
 import { randomUUID } from 'node:crypto';
+import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
+import { qualifiedInspectionResponseSchema } from '@itervane/contracts';
+import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { queueName } from '../../src/persistence/database.js';
+import { inspectionAttempts } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
-import { ExecutionLost } from '../../src/runtime/authority.js';
+import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
 import { ToolGateway } from '../../src/runtime/tools.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
 import { InspectionService, prepareInspection } from '../../src/service/inspections.js';
@@ -70,4 +74,70 @@ it('enforces current project permission for both preparing and reading the plan'
   await expect(new ToolGateway(coordinator).call(scope, 'source.inspect', {}, 'revoked')).rejects.toMatchObject({ code: 'not_found' });
   await expect(new InspectionService(database.storage).get(identity, task.id)).rejects.toMatchObject({ code: 'not_found' });
   expect((await database.admin.query('SELECT * FROM itervane.inspection_plans')).rowCount).toBe(0);
+});
+
+async function attempt(scope: ExecutionScope) {
+  const plan = await coordinator.withLease(scope, (tx, current) => prepareInspection(tx, current.task, scope.runId, scope.fence));
+  const binding = {
+    requestId: randomUUID(), taskId: task.id, projectId: task.projectId, runId: scope.runId,
+    repositoryId: task.source.repositoryId, commit: task.source.commit, generation: scope.generation,
+    fence: scope.fence, planSha256: plan.sha256,
+  };
+  const imageSha256 = 'a'.repeat(64);
+  const originSha256 = sha256('https://example.invalid/inspection.git');
+  const domainId = randomUUID();
+  const manifestSha256 = 'b'.repeat(64);
+  const receipt = qualifiedInspectionResponseSchema.parse({
+    kind: 'receipt', scope: { version: 1, ...binding }, domainId, imageSha256, originSha256, commitSha256: 'c'.repeat(64),
+    cleanupConfirmed: true, sessionVerified: true,
+    snapshot: { runId: domainId, repositoryId: binding.repositoryId, commit: binding.commit, tree: 'd'.repeat(40),
+      manifestSha256, files: 1, totalBytes: 42, inputsSha256: 'e'.repeat(64), readOnly: true, offline: true,
+      reports: scannerProfiles.map(({ scanner, version, policySha256 }) => ({
+        scanner, version, policySha256, snapshotSha256: manifestSha256, status: 'completed', reason: null, findings: [],
+        database: scanner === 'trivy' ? { sha256: 'f'.repeat(64), updatedAt: new Date().toISOString() } : null,
+      })),
+    },
+  });
+  if (receipt.kind !== 'receipt') throw new Error('Invalid test receipt');
+  const storage = database.storage.db;
+  const row = { ...binding, workerId: scope.workerId, imageSha256, originSha256 };
+  return {
+    row, receipt,
+    reserve: () => storage.insert(inspectionAttempts).values(row),
+    record: (value = receipt) => storage.update(inspectionAttempts).set({
+      state: 'recorded', settledFence: scope.fence, settledAt: new Date(), receiptSha256: sha256(JSON.stringify(value)), receipt: value,
+    }).where(eq(inspectionAttempts.requestId, binding.requestId)),
+  };
+}
+
+it('fences a late inspection receipt and requires closure of an earlier attempt before reserving a recovered one', async () => {
+  const old = await claim(); const first = await attempt(old);
+  await first.reserve();
+  await expect(database.storage.db.update(inspectionAttempts).set({ workerId: randomUUID() })).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'inspection_attempt_binding_is_immutable' } });
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await expect(first.record()).rejects.toMatchObject({ cause: { code: '23514', message: 'inspection_attempt_authority_lost' } });
+  await coordinator.reconcile(randomUUID());
+  const current = await claim(); const second = await attempt(current);
+  await expect(second.reserve()).rejects.toMatchObject({ cause: { code: '23505' } });
+  await database.storage.db.update(inspectionAttempts).set({
+    state: 'closed', settledFence: current.fence, settledAt: new Date(),
+  }).where(eq(inspectionAttempts.requestId, first.row.requestId));
+  await second.reserve();
+  await expect(second.record(first.receipt)).rejects.toMatchObject({ cause: { code: '23514', constraint: 'inspection_attempt_receipt_binding' } });
+  await second.record();
+  const observed = await database.admin.query('SELECT state, settled_fence FROM itervane.inspection_attempts ORDER BY fence');
+  expect(observed.rows).toEqual([{ state: 'closed', settled_fence: current.fence }, { state: 'recorded', settled_fence: current.fence }]);
+  await expect(database.storage.db.delete(inspectionAttempts)).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'inspection_attempt_is_retained' } });
+});
+
+it('blocks publication after task cancellation while allowing the active worker to record closure', async () => {
+  const scope = await claim(); const pending = await attempt(scope);
+  await pending.reserve();
+  await new TaskService(database.storage).cancel(identity, task.id, { expectedVersion: 2 });
+  await expect(pending.record()).rejects.toMatchObject({ cause: { code: '23514', message: 'inspection_attempt_authority_lost' } });
+  await database.storage.db.update(inspectionAttempts).set({ state: 'closed', settledFence: scope.fence, settledAt: new Date() })
+    .where(eq(inspectionAttempts.requestId, pending.row.requestId));
+  expect((await database.admin.query('SELECT state, receipt FROM itervane.inspection_attempts')).rows).toEqual([{ state: 'closed', receipt: null }]);
 });
