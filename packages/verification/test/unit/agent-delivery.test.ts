@@ -206,13 +206,20 @@ it('stops repeated observations, loss of authorization and cancellation before f
   expect(observe).not.toHaveBeenCalled();
 });
 
-it('stops a hung provider at the run deadline', async () => {
-  const limits: Partial<AgentSpec['limits']> = { maxDurationMs: 700 };
+it('reports the timer deadline for a hung provider even before the wall clock advances', async () => {
+  const limits: Partial<AgentSpec['limits']> = { maxDurationMs: 100 };
   const { spec, host } = createDeliveryFixture('display', 'en', limits);
   const complete = vi.fn<ModelAdapter['complete']>(() => new Promise(() => {}));
   const observe = vi.fn(host.observe);
-  const result = await createAgentHarness({ host: { ...host, observe }, model: { protocol: 'anthropic', complete }, checkpointer: new MemorySaver() }).run(spec);
-  expect(result).toMatchObject({ status: 'requires_human', reason: 'deadline' });
-  expect(complete).toHaveBeenCalledTimes(1);
-  expect(observe).not.toHaveBeenCalled();
+  const wallClock = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
+  try {
+    const result = await createAgentHarness({
+      host: { ...host, observe }, model: { protocol: 'anthropic', complete }, checkpointer: new MemorySaver(),
+    }).run(spec);
+    expect(result).toMatchObject({ status: 'requires_human', reason: 'deadline' });
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(observe).not.toHaveBeenCalled();
+  } finally {
+    wallClock.mockRestore();
+  }
 });

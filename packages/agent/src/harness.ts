@@ -149,8 +149,9 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
   async function execute(spec: AgentSpec, bindingSha256: string, options: RunOptions) {
     const { limits } = spec;
     const externalSignal = options.signal;
-    const lapse = (state: AgentState) => externalSignal?.aborted ? stopped(state, 'cancelled', 'cancelled')
-      : Date.now() >= state.deadlineAt ? stopped(state, 'deadline') : undefined;
+    // The timer can abort before the wall clock reaches the exact deadline millisecond.
+    const lapse = (state: AgentState, signal?: AbortSignal) => externalSignal?.aborted ? stopped(state, 'cancelled', 'cancelled')
+      : signal?.aborted || Date.now() >= state.deadlineAt ? stopped(state, 'deadline') : undefined;
     const signalFor = (deadlineAt: number) => {
       const timeout = AbortSignal.timeout(Math.max(0, deadlineAt - Date.now()));
       return externalSignal ? AbortSignal.any([timeout, externalSignal]) : timeout;
@@ -169,10 +170,10 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
       }
     }
     async function gate(state: AgentState, signal: AbortSignal) {
-      const expired = lapse(state);
+      const expired = lapse(state, signal);
       if (expired) return expired;
       const allowed = await authorized(state, signal);
-      return lapse(state) ?? (allowed ? undefined : stopped(state, 'permission_denied'));
+      return lapse(state, signal) ?? (allowed ? undefined : stopped(state, 'permission_denied'));
     }
     function stalled(state: AgentState, feedback: Feedback) {
       const next = { ...state, feedback, stalled: state.stalled + 1 };
@@ -208,7 +209,7 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
             maxOutputTokens: Math.min(1_024, limits.maxTokens - state.usage.tokens), singleTool: true,
           }));
         } catch {
-          return { state: lapse(state) ?? stopped(state, 'provider_error') };
+          return { state: lapse(state, signal) ?? stopped(state, 'provider_error') };
         }
         if (!turn || !Number.isSafeInteger(turn.tokenUsage) || turn.tokenUsage < 0
           || !Array.isArray(turn.calls)) return { state: stopped(state, 'provider_error') };
@@ -243,7 +244,7 @@ export function createAgentHarness({ model, checkpointer, host }: HarnessOptions
             audit: structuredClone(state.audit), signal,
           }));
         } catch {
-          return { state: lapse(state) ?? stopped(state, 'interrupted_action') };
+          return { state: lapse(state, signal) ?? stopped(state, 'interrupted_action') };
         }
         const after = await gate(state, signal);
         if (after) return { state: after };
