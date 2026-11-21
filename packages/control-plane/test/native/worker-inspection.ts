@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   admissionDtoSchema, auditFindingsPerScan, formalAuditDtoSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema, idSchema, projectDtoSchema,
-  formalVerificationInputSchema, formalVerificationResultSchema, qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
+  formalRepairRetrySchema, formalVerificationInputSchema, formalVerificationResultSchema, qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
   repositoryDtoSchema, sha256Schema, sourceInspectionDtoSchema,
   qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
   taskDtoSchema, taskEventDtoSchema, translate, type FormalAuditResult, type StandardVerificationProfile,
@@ -31,6 +31,7 @@ const cleanVerificationCommit = '49799e18f4f63cf22767a9cd8054cab979b9b6d2';
 const standardBuildCommit = '3a719ca44f306d30cdf2d27e9a6d3b954ed656f0';
 const standardLockDriftCommit = '03e5d18a27d23960f040c0d5d70afefac15ec46e';
 const standardHealthRegressionCommit = '1eac5c8776c6e81613cfb5adf6edd2cd6b163ba3';
+const repairRetryCommit = '39e9b7f34fdd01ec55fe4dda5358ffce5d68cbf8';
 const origin = 'https://github.com/MaLaNg116/itervane.git';
 const publicUrl = 'https://itervane.example';
 const controllerAccount = 'itervane-probe';
@@ -80,11 +81,12 @@ function sourceWorkerEnvironment(socket: string, controllerUid: string, image: s
 }
 
 async function startWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string,
-  auditURL?: string, verification?: StandardVerificationProfile) {
+  auditURL?: string, verification?: StandardVerificationProfile, repair = false) {
   const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', ...sourceWorkerEnvironment(socket, controllerUid, image),
     ...(auditURL ? ['ITERVANE_AUDIT_MODEL_PROVIDER=anthropic', `ANTHROPIC_BASE_URL=${auditURL}`,
       `ANTHROPIC_MODEL=${auditFixtureModel}`, `ANTHROPIC_API_KEY=${auditFixtureKey}`] : []),
     ...(verification ? [`ITERVANE_VERIFICATION_PROFILE=${JSON.stringify(verification)}`] : []),
+    ...(repair ? ['ITERVANE_FORMAL_REPAIR=1'] : []),
     'ITERVANE_WORKER_POLL_MS=100', '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c',
     'set -eu; IFS= read -r DATABASE_URL; export DATABASE_URL; printf "%s\\n" "$$"; exec "$@"', 'itervane-worker', process.execPath, bundle,
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -267,14 +269,14 @@ async function probe() {
     };
 
     if (build) {
-      const audit = auditProvider = await auditProtocolFixture();
+      const audit = auditProvider = await auditProtocolFixture({ repairRetry: ociRun });
       const automaticProfile = build.oci ? standardVerificationProfileSchema.parse({
         id: 'isolated-rescan-fixture', baselineSha256: build.baseline, policySha256: sha256(JSON.stringify(scannerProfiles)),
         scannerInputsSha256: JSON.parse(readFileSync('.reports/p0/kvm-inspection-inputs.json', 'utf8')).inputsSha256,
         runnerImageSha256: imageSha256, buildProfileSha256: build.profile, runStandardBaseline: true,
         ociInputsSha256: build.oci, retainStandardImage: true,
       }) : undefined;
-      const recordedVerification = async (task: Awaited<ReturnType<typeof start>>, failed: boolean) => {
+      const recordedVerification = async (task: Awaited<ReturnType<typeof start>>, failed: boolean, subject: 'original' | 'repair' = 'original') => {
         const { rows } = await db.admin.query<{
           result: unknown; result_sha: string; input: unknown; input_sha: string; receipt: unknown;
           attempt_fence: number; finalized_fence: number;
@@ -297,14 +299,15 @@ async function probe() {
         equal(result.inputSha256, stored.input_sha);
         equal(result.receiptSha256, sha256(JSON.stringify(receipt)));
         equal(result.taskId, task.id);
-        equal(input.subject.kind, 'original');
+        equal(input.subject.kind, subject);
         equal(receipt.scope.fence, stored.attempt_fence);
         equal(stored.finalized_fence, stored.attempt_fence);
         equal(result.review.outcome, failed ? 'checks_failed' : 'observed');
         const sections = result.observations.map(item => item.section);
         deepStrictEqual(sections, failed ? ['baseline', 'source', 'build'] : ['baseline', 'image', 'source', 'build']);
-        const [last] = (await db.admin.query(`SELECT type,detail FROM itervane.task_events WHERE task_id=$1 ORDER BY sequence DESC LIMIT 1`,
-          [task.id])).rows;
+        const [last] = (await db.admin.query(`SELECT type,detail FROM itervane.task_events
+          WHERE task_id=$1 AND type='task.verification_recorded' AND detail->>'runId'=$2 ORDER BY sequence DESC LIMIT 1`,
+          [task.id, task.runId])).rows;
         equal(last?.type, 'task.verification_recorded');
         equal(last?.detail?.reason, failed ? 'verification_checks_failed' : 'verification_observed');
         equal(last?.detail?.verificationResultSha256, stored.result_sha);
@@ -317,7 +320,8 @@ async function probe() {
         return {
           domainId: receipt.domainId, commit: scope.commit, inputSha256: result.inputSha256, receiptSha256: result.receiptSha256,
           commandSha256: scope.commandSha256, baseSnapshotSha256: scope.baseSnapshotSha256, targetManifestSha256: scope.targetManifestSha256,
-          patchSha256: null, originalReportsSha256: sha256(JSON.stringify(snapshot.reports)), targetReportsSha256: null,
+          patchSha256: snapshot.target?.patchSha256 ?? null, originalReportsSha256: sha256(JSON.stringify(snapshot.reports)),
+          targetReportsSha256: snapshot.target ? sha256(JSON.stringify(snapshot.target.reports)) : null,
           totals, targetRuleId: null, newFindingGroups: totals.introduced, remainingFindingGroups: totals.remaining,
           dispatches: 1, cleanupConfirmed: receipt.cleanupConfirmed, build: snapshot.build ?? null, verificationResultSha256: stored.result_sha,
           reviewTrial: { input: { sha256: stored.input_sha, document: input }, evidence: result.evidence,
@@ -391,8 +395,54 @@ async function probe() {
       ok(failed.checks.slice(1).every(check => check.status === 'passed'));
       const drift = await buildFixture(standardLockDriftCommit, 'profile_mismatch');
       equal(drift.build.status, 'blocked');
+      let retry;
+      if (automaticProfile) {
+        phase = 'standard_repair_retry_run';
+        worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, audit.baseURL, automaticProfile, true);
+        const first = await start('Apply a bounded repair and verify the retry after a real health regression', repairRetryCommit);
+        await poll(async () => {
+          const [row] = (await db.admin.query(`SELECT t.state, r.reason FROM itervane.tasks t
+            JOIN itervane.task_runs run ON run.task_id=t.id AND run.generation=t.generation
+            JOIN itervane.run_runtime r ON r.run_id=run.id WHERE t.id=$1`, [first.id])).rows;
+          if (row?.state === 'waiting_input') return true;
+          if (row && ['needs_human', 'failed', 'cancelled', 'reconciling'].includes(row.state)) {
+            if (typeof row.reason === 'string' && /^[a-z_]{1,58}$/.test(row.reason)) phase = `standard_retry_${row.reason}`;
+            throw new Error('retry_fixture_stopped');
+          }
+        }, 780_000, 'standard_repair_retry_run');
+        const current = taskDtoSchema.parse(await request(`/v1/tasks/${first.id}`));
+        notEqual(first.runId, current.runId);
+        await worker.stop('TERM'); worker = undefined;
+        phase = 'standard_repair_retry_receipts';
+        const before = await recordedVerification(first, true, 'repair');
+        const after = await recordedVerification(current, false, 'repair');
+        equal(before.commit, repairRetryCommit);
+        equal(after.commit, repairRetryCommit);
+        equal(before.baseSnapshotSha256, after.baseSnapshotSha256);
+        notEqual(before.targetManifestSha256, after.targetManifestSha256);
+        ok(before.patchSha256 && after.patchSha256);
+        notEqual(before.patchSha256, after.patchSha256);
+        deepStrictEqual(after.totals, { introduced: 0, resolved: 1, remaining: 0 });
+        const [stored] = (await db.admin.query(
+          'SELECT document,sha256,run_id,previous_run_id FROM itervane.formal_repair_retries WHERE task_id=$1', [first.id],
+        )).rows;
+        ok(stored);
+        const retrySha256 = sha256Schema.parse(stored.sha256);
+        const handoff = formalRepairRetrySchema.parse(stored.document);
+        equal(sha256(JSON.stringify(handoff)), retrySha256);
+        equal(stored.run_id, current.runId);
+        equal(stored.previous_run_id, first.runId);
+        equal(handoff.previous.verificationResultSha256, before.verificationResultSha256);
+        equal(handoff.previous.receiptSha256, before.receiptSha256);
+        equal(handoff.generation, 2);
+        const events = (await client.callTool({ name: 'get_task_events', arguments: { taskId: first.id } })).structuredContent as { items: unknown[] };
+        const lifecycle = events.items.map(event => taskEventDtoSchema.parse(event));
+        equal(lifecycle.filter(event => event.type === 'task.repair_retry_queued').length, 1);
+        match(lifecycle.find(event => event.type === 'task.repair_retry_queued')!.message, /返修/);
+        retry = { before, after, retrySha256, generation: handoff.generation };
+      }
       return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
-        built, healthRegression, drift, stagedFilesRemaining: false };
+        built, healthRegression, drift, ...(retry ? { retry } : {}), stagedFilesRemaining: false };
     }
 
     phase = 'scan_and_shared_reads';

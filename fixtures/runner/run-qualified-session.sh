@@ -20,7 +20,7 @@ case "$scenario" in
   standard-oci)
     artifacts="$directory/artifacts"
     sudo -n install -d -m 0700 -o "$runner" -g "$runner" "$artifacts"
-    features=(--enable-verification --enable-standard-build --enable-standard-baseline --enable-standard-oci --artifact-store "$artifacts")
+    features=(--enable-repair --enable-verification --enable-standard-build --enable-standard-baseline --enable-standard-oci --artifact-store "$artifacts")
     ;;
   standard-build-missing-cache) features=(--enable-verification --enable-standard-build) ;;
   *) exit 1 ;;
@@ -174,12 +174,17 @@ assert_empty
 
 if [[ "$scenario" == standard-oci ]]; then
   sudo -n install -m 0444 fixtures/runner/verify-stored-oci.py "$shared/verify-stored-oci.py"
-  read -r archive_sha archive_bytes expected_manifest < <(/usr/bin/python3 - "$report" <<'PY'
+  check_archive() {
+    local case_path=$1 output=$2 archive_sha archive_bytes expected_manifest archive measured_manifest
+    read -r archive_sha archive_bytes expected_manifest < <(/usr/bin/python3 - "$report" "$case_path" <<'PY'
 import json
 import re
 import sys
 with open(sys.argv[1]) as stream:
-    receipt = json.load(stream)["built"]["build"]["baseline"]["image"]
+    proof = json.load(stream)
+for key in sys.argv[2].split("."):
+    proof = proof[key]
+receipt = proof["build"]["baseline"]["image"]
 archive = receipt["archive"]
 assert re.fullmatch(r"[a-f0-9]{64}", archive["sha256"])
 assert re.fullmatch(r"sha256:[a-f0-9]{64}", receipt["manifestDigest"])
@@ -187,13 +192,26 @@ assert type(archive["bytes"]) is int and 0 < archive["bytes"] <= 200 * 1024**2
 print(archive["sha256"], archive["bytes"], receipt["manifestDigest"])
 PY
 )
-  archive="$artifacts/$archive_sha.oci.tar"
-  test "$(sudo -n -u "$runner" stat -c '%s %a' -- "$archive")" = "$archive_bytes 400"
-  test "$(sudo -n -u "$runner" sha256sum -- "$archive" | cut -d ' ' -f 1)" = "$archive_sha"
-  measured_manifest=$(sudo -n -u "$runner" /usr/bin/python3 -I -B "$shared/verify-stored-oci.py" "$archive" "$expected_manifest")
-  test "$measured_manifest" = "$expected_manifest"
-  test "$(sudo -n -u "$runner" find "$artifacts" -maxdepth 1 -type f -name '*.oci.tar' -printf '.' )" = .
+    archive="$artifacts/$archive_sha.oci.tar"
+    test "$(sudo -n -u "$runner" stat -c '%s %a' -- "$archive")" = "$archive_bytes 400"
+    test "$(sudo -n -u "$runner" sha256sum -- "$archive" | cut -d ' ' -f 1)" = "$archive_sha"
+    measured_manifest=$(sudo -n -u "$runner" /usr/bin/python3 -I -B "$shared/verify-stored-oci.py" "$archive" "$expected_manifest")
+    test "$measured_manifest" = "$expected_manifest"
+    printf '{"archiveSha256":"%s","bytes":%s,"manifestDigest":"%s","workspaceAndStagingEmpty":true}\n' \
+      "$archive_sha" "$archive_bytes" "$measured_manifest" > "$output"
+  }
+  check_archive built "$reports/runner-oci-artifact.json"
+  check_archive retry.after "$reports/runner-retry-oci-artifact.json"
+  expected_count=$(/usr/bin/python3 - "$reports/runner-oci-artifact.json" "$reports/runner-retry-oci-artifact.json" <<'PY'
+import json
+import sys
+hashes = set()
+for path in sys.argv[1:]:
+    with open(path) as stream:
+        hashes.add(json.load(stream)["archiveSha256"])
+print(len(hashes))
+PY
+)
+  test "$(sudo -n -u "$runner" find "$artifacts" -maxdepth 1 -type f -name '*.oci.tar' -printf '.' | wc -c)" -eq "$expected_count"
   test -z "$(sudo -n -u "$runner" find "$artifacts" -maxdepth 1 -name '.pending-*' -print -quit)"
-  printf '{"archiveSha256":"%s","bytes":%s,"manifestDigest":"%s","workspaceAndStagingEmpty":true}\n' \
-    "$archive_sha" "$archive_bytes" "$measured_manifest" > "$reports/runner-oci-artifact.json"
 fi
