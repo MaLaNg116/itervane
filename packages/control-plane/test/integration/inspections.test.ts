@@ -9,7 +9,7 @@ import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { createFormalVerification } from '@itervane/agent';
 import { apiErrorSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
-  formalReleaseCandidateDtoSchema, formalReleaseViewSchema, formalRepairRetryContextSchema, verificationViewSchema,
+  formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseViewSchema, formalRepairRetryContextSchema, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
@@ -1036,7 +1036,7 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
   const portalClientId = 'itervane-test-portal';
   const publicUrl = 'https://itervane.example';
   const api = createApi(database.storage, { ...issuer.config, portalClientId, publicUrl }, { logger: false });
-  let viewerMcp: Client | undefined;
+  const clients: Client[] = [];
   const url = `/v1/tasks/${task.id}/release-candidate`;
   const headers = { authorization: `Bearer ${await issuer.token()}`, 'Accept-Language': 'zh-CN' };
   const portalHeaders = { ...headers, authorization: `Bearer ${await issuer.token('owner', { azp: portalClientId })}` };
@@ -1105,11 +1105,16 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
       message: 'The release candidate is awaiting a human decision.',
     });
     const address = await api.listen({ host: '127.0.0.1', port: 0 });
-    const token = await issuer.token('release-viewer', { aud: `${publicUrl}/mcp`, scope: 'itervane:read' });
-    viewerMcp = new Client({ name: 'release-candidate-reader', version: '0.0.0' });
-    await viewerMcp.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
-      requestInit: { headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'en' } },
-    }));
+    async function connect(subject: string, scope: string, locale: string) {
+      const token = await issuer.token(subject, { aud: `${publicUrl}/mcp`, scope });
+      const client = new Client({ name: 'release-candidate-test', version: '0.0.0' });
+      clients.push(client);
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+        requestInit: { headers: { Authorization: `Bearer ${token}`, 'Accept-Language': locale } },
+      }));
+      return client;
+    }
+    const viewerMcp = await connect('release-viewer', 'itervane:read itervane:write', 'en');
     const args = { name: 'get_release_candidate', arguments: { taskId: task.id } };
     const readCandidate = await viewerMcp.callTool(args);
     expect(readCandidate.isError).not.toBe(true);
@@ -1117,12 +1122,19 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
     expect((await api.inject({ method: 'POST', url, headers: viewerHeaders, payload })).statusCode).toBe(403);
     expect(await view(viewerHeaders)).toMatchObject({ candidate: { id: candidate.id, locale: 'en' },
       candidateTarget: display, actions: [], availableTargets: [] });
+    const options = { name: 'get_release_options', arguments: { taskId: task.id } };
+    const request = (expectedVersion: number, environmentId = environment.id) => ({
+      name: 'request_release', arguments: { taskId: task.id, environmentId, expectedVersion },
+    });
+    expect(formalReleaseOptionsSchema.parse((await viewerMcp.callTool(options)).structuredContent).availableTargets).toEqual([]);
+    expect(apiErrorSchema.parse((await viewerMcp.callTool(request(current.version + 1))).structuredContent).error.code).toBe('forbidden');
     await database.admin.query('DELETE FROM itervane.project_members WHERE principal_id=$1', [viewer]);
     expect((await api.inject({ url, headers: viewerHeaders })).statusCode).toBe(404);
     expect((await api.inject({ url: viewUrl, headers: viewerHeaders })).statusCode).toBe(404);
     const denied = await viewerMcp.callTool(args);
     expect(denied.isError).toBe(true);
     expect(apiErrorSchema.parse(denied.structuredContent).error.code).toBe('not_found');
+    expect(apiErrorSchema.parse((await viewerMcp.callTool(options)).structuredContent).error.code).toBe('not_found');
 
     expect(await registerReleaseTarget(database.storage, { ...target, blockImageSeverities: ['critical', 'medium'] })).toMatchObject({ revision: 2 });
     expect((await api.inject({ url, headers })).json()).toMatchObject({ id: candidate.id, status: 'evidence_changed' });
@@ -1132,9 +1144,23 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
     expect(await registerReleaseTarget(database.storage, target)).toMatchObject({ revision: 3, fingerprint: registered.fingerprint });
     expect((await api.inject({ url, headers })).json()).toMatchObject({ id: candidate.id, status: 'evidence_changed' });
     expect(await view()).toMatchObject({ availableTargets: [{ ...display, revision: 3 }], actions: [] });
-    const next = await freeze({ ...payload, expectedVersion: current.version + 1 });
-    expect(next.statusCode).toBe(201);
-    const replacement = formalReleaseCandidateDtoSchema.parse(next.json());
+    const externalOwner = await connect('owner', 'itervane:read itervane:write', 'zh-CN');
+    expect(formalReleaseOptionsSchema.parse((await externalOwner.callTool(options)).structuredContent)).toEqual({
+      taskId: task.id, runId: current.runId, taskVersion: current.version + 1, availableTargets: [{ ...display, revision: 3 }],
+    });
+    const staleRequest = await externalOwner.callTool(request(current.version));
+    expect(apiErrorSchema.parse(staleRequest.structuredContent).error.code).toBe('version_conflict');
+    const outsideProject = await externalOwner.callTool(request(current.version + 1, otherEnvironment.id));
+    expect(apiErrorSchema.parse(outsideProject.structuredContent).error.code).toBe('not_found');
+    const nextRequest = request(current.version + 1);
+    const invalid = await externalOwner.callTool({ ...nextRequest, arguments: { ...nextRequest.arguments, approve: true } });
+    expect(apiErrorSchema.parse(invalid.structuredContent).error.code).toBe('invalid_input');
+    const next = await externalOwner.callTool(nextRequest);
+    expect(next.isError).not.toBe(true);
+    const replacement = formalReleaseCandidateDtoSchema.parse(next.structuredContent);
+    expect((await externalOwner.callTool(nextRequest)).structuredContent).toEqual(replacement);
+    expect((await api.inject({ url, headers })).json()).toEqual(replacement);
+    expect(replacement).toMatchObject({ status: 'pending', operationId: null, decisions: [] });
     expect(replacement.fingerprint).not.toBe(candidate.fingerprint);
     expect(replacement.manifest.evidenceVersion).toBe(2);
     expect(replacement.manifest.target.revision).toBe(3);
@@ -1142,7 +1168,7 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
       .toMatchObject({ type: 'task.release_candidate_frozen', state: 'waiting_approval', message: /人工决定/ });
     expect((await database.admin.query('SELECT count(*)::int AS count FROM itervane.release_operations')).rows[0]?.count).toBe(0);
     await assertReleaseApproval(api, replacement, candidate, portalClientId, stop);
-  } finally { await viewerMcp?.close(); await api.close(); }
+  } finally { await Promise.allSettled(clients.map(client => client.close())); await api.close(); }
 }
 
 async function assertReleaseApproval(api: ReturnType<typeof createApi>, current: ReturnType<typeof formalReleaseCandidateDtoSchema.parse>,

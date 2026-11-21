@@ -67,10 +67,11 @@ it('advertises a fixed canonical MCP resource and rejects wrong audience, missin
 it('serves localized SDK tool discovery and real task start/query/events/cancel across reconnects', async () => {
   const bearer = await token(); const first = await connect(bearer, 'zh-CN');
   const catalog = await first.listTools();
-  expect(catalog.tools.map(tool => tool.name).sort()).toEqual(['cancel_task', 'get_audit', 'get_preaudit', 'get_release_candidate', 'get_repair', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'get_verification', 'list_preaudits', 'list_rules', 'preaudit_text', 'resume_task', 'start_audit']);
+  expect(catalog.tools.map(tool => tool.name).sort()).toEqual(['cancel_task', 'get_audit', 'get_preaudit', 'get_release_candidate', 'get_release_options', 'get_repair', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'get_verification', 'list_preaudits', 'list_rules', 'preaudit_text', 'request_release', 'resume_task', 'start_audit']);
   expect(catalog.tools.find(tool => tool.name === 'start_audit')?.description).toBe(translate('zh-CN', 'mcp.start'));
   expect(catalog.tools.find(tool => tool.name === 'get_verification')).toMatchObject({ description: translate('zh-CN', 'mcp.verification'), annotations: { readOnlyHint: true } });
   expect(catalog.tools.find(tool => tool.name === 'get_release_candidate')).toMatchObject({ description: translate('zh-CN', 'mcp.release_candidate'), annotations: { readOnlyHint: true } });
+  expect(catalog.tools.find(tool => tool.name === 'request_release')).toMatchObject({ description: translate('zh-CN', 'mcp.request_release'), annotations: { readOnlyHint: false } });
   const accepted = admissionDtoSchema.parse((await first.callTool({ name: 'start_audit', arguments: input })).structuredContent);
   expect(accepted.task).toMatchObject({ locale: 'zh-CN', state: 'queued' });
   await first.close(); const second = await connect(bearer);
@@ -135,10 +136,13 @@ it('does not persist stale or executable preaudit requests and does not echo inv
 
 it('enforces read-only scopes even for direct unadvertised write calls and localizes validation errors', async () => {
   const readToken = await token('itervane:read'); const reader = await connect(readToken, 'zh-CN');
-  expect((await reader.listTools()).tools.map(tool => tool.name).sort()).toEqual(['get_audit', 'get_preaudit', 'get_release_candidate', 'get_repair', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'get_verification', 'list_preaudits', 'list_rules']);
-  const write = await fetch(`${address}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${readToken}`,
-    'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify(rpc('start_audit', input)) });
-  expect(write.status).toBe(403); expect(write.headers.get('www-authenticate')).toContain('scope="itervane:write"');
+  expect((await reader.listTools()).tools.map(tool => tool.name).sort()).toEqual(['get_audit', 'get_preaudit', 'get_release_candidate', 'get_release_options', 'get_repair', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'get_verification', 'list_preaudits', 'list_rules']);
+  for (const body of [rpc('start_audit', input), rpc('request_release', { taskId: randomUUID(), environmentId: randomUUID(), expectedVersion: 1 })]) {
+    const write = await fetch(`${address}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${readToken}`,
+      'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify(body) });
+    expect(write.status).toBe(403);
+    expect(write.headers.get('www-authenticate')).toContain('scope="itervane:write"');
+  }
   const invalid = await reader.callTool({ name: 'get_task', arguments: { taskId: 'invalid-private-test-value', approved: true } });
   expect(invalid.isError).toBe(true);
   expect(apiErrorSchema.parse(invalid.structuredContent).error).toMatchObject({ code: 'invalid_input', locale: 'zh-CN', message: translate('zh-CN', 'error.invalid_input') });

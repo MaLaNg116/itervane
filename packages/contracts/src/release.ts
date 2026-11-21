@@ -112,6 +112,9 @@ export const formalReleaseViewSchema = z.strictObject({
   availableTargets: releaseTargetDisplaySchema.extend({ revision: version.min(1) }).array(),
   actions: releaseDecisionSchema.array().max(2),
 });
+export const formalReleaseOptionsSchema = formalReleaseViewSchema.pick({
+  taskId: true, runId: true, taskVersion: true, availableTargets: true,
+});
 export const formalReleaseDecisionResultSchema = z.strictObject({ candidate: formalReleaseCandidateDtoSchema, replayed: z.boolean() });
 export type FormalReleaseCandidateDto = z.infer<typeof formalReleaseCandidateDtoSchema>;
 export type FormalReleaseView = z.infer<typeof formalReleaseViewSchema>;

@@ -3,8 +3,8 @@ import { Server, createMcpHandler, isSpecType, type CallToolResult } from '@mode
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { cancelTaskSchema, idSchema, listQuerySchema, resumeTaskSchema, startTaskSchema, translate, preauditInputSchema, ruleIdSchema, ruleQuerySchema,
-  type Locale } from '@itervane/contracts';
+import { cancelTaskSchema, formalReleaseOptionsSchema, freezeFormalReleaseSchema, idSchema, listQuerySchema, preauditInputSchema,
+  resumeTaskSchema, ruleIdSchema, ruleQuerySchema, startTaskSchema, translate, type Locale } from '@itervane/contracts';
 import { assertVerifiedIdentity, AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
 import { canonicalPublicUrl } from './config.js';
 import type { Database } from './persistence/database.js';
@@ -22,6 +22,7 @@ import { PreauditService, RuleService } from './service/preaudits.js';
 const taskIdInput = z.object({ taskId: idSchema }).strict();
 const versionInput = cancelTaskSchema.extend({ taskId: idSchema }).strict();
 const resumeInput = resumeTaskSchema.extend({ taskId: idSchema }).strict();
+const releaseRequestInput = freezeFormalReleaseSchema.extend({ taskId: idSchema });
 const eventsInput = listQuerySchema.extend({ taskId: idSchema }).strict();
 const ruleListInput = ruleQuerySchema.extend({ projectId: idSchema }).strict();
 const ruleGetInput = ruleListInput.extend({ ruleId: ruleIdSchema }).strict();
@@ -36,6 +37,8 @@ const specs = [
   { name: 'get_repair', key: 'mcp.repair', input: taskIdInput, write: false },
   { name: 'get_verification', key: 'mcp.verification', input: taskIdInput, write: false },
   { name: 'get_release_candidate', key: 'mcp.release_candidate', input: taskIdInput, write: false },
+  { name: 'get_release_options', key: 'mcp.release_options', input: taskIdInput, write: false },
+  { name: 'request_release', key: 'mcp.request_release', input: releaseRequestInput, write: true },
   { name: 'cancel_task', key: 'mcp.cancel', input: versionInput, write: true },
   { name: 'resume_task', key: 'mcp.resume', input: resumeInput, write: true },
   { name: 'list_rules', key: 'mcp.rules', input: ruleListInput, write: false },
@@ -94,6 +97,14 @@ export function createMcpEndpoint(database: Database, config: IdentityConfig & {
           case 'get_repair': output = await repairs.get(identity, taskIdInput.parse(args).taskId, locale); break;
           case 'get_verification': output = await verification.get(identity, taskIdInput.parse(args).taskId, locale); break;
           case 'get_release_candidate': output = await release.get(identity, taskIdInput.parse(args).taskId, locale); break;
+          case 'get_release_options': {
+            const { taskId, runId, taskVersion, availableTargets } = await release.getView(identity, taskIdInput.parse(args).taskId, locale);
+            output = formalReleaseOptionsSchema.parse({ taskId, runId, taskVersion, availableTargets }); break;
+          }
+          case 'request_release': {
+            const { taskId, ...input } = releaseRequestInput.parse(args);
+            output = (await release.freeze(identity, taskId, input, locale)).candidate; break;
+          }
           case 'list_rules': { const { projectId, ...query } = ruleListInput.parse(args); output = await rules.list(identity, projectId, query, locale); break; }
           case 'get_rule': { const { projectId, ruleId, ...query } = ruleGetInput.parse(args); output = await rules.get(identity, projectId, ruleId, query, locale); break; }
           case 'preaudit_text': output = await preaudits.create(identity, args, 'mcp', locale); break;
