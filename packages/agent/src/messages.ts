@@ -37,7 +37,7 @@ const en = {
   formalVerification: {
     goal: 'Explain what the protected checks found for the fixed candidate and identify supported follow-up work.',
     instruction: 'Use read_verification to review source, build and baseline. The baseline result determines whether the image section is available. Explain actual failures, remaining and new findings, and evidence gaps. Use observed facts for follow-up suggestions. Approval is handled by the platform.',
-    finish: 'Cite the IDs of all observations in evidenceIds. Submit a short summary and a followUps list, citing one observed ID per suggestion. Use an empty list when no follow-up is needed.',
+    finish: 'Cite all observed IDs in evidenceIds. Keep summary to one or two sentences and at most 480 characters. Put individual suggestions in followUps, with one observed ID and at most 320 characters each. Use an empty list when no follow-up is needed.',
   },
   role: {
     audit: 'Review the source, distinguish hypotheses from facts, and explain each protected finding.',
@@ -48,6 +48,7 @@ const en = {
     invalid_call: 'Choose exactly one available tool with valid arguments.',
     multiple_calls: 'The previous response proposed several calls and none ran. Choose only the single most useful available call now.',
     insufficient_evidence: 'The cited facts do not support this conclusion. Obtain the required observations or request human review.',
+    verification_text_too_long: 'Shorten the verification summary to at most 480 characters and each follow-up to at most 320 characters. Submit up to four follow-ups and keep the observed evidence references.',
     no_new_evidence: 'This observation was already recorded. Choose a different action or conclude with current evidence.',
   },
   reason: {
@@ -116,7 +117,7 @@ const zh: Translations = {
   formalVerification: {
     goal: '说明受保护检查对固定候选的发现，并给出有证据支持的后续动作。',
     instruction: '用 read_verification 查看源码复扫、构建和基线。基线结果决定是否可查看镜像。说明实际失败、未解决及新增的问题，以及缺证范围。建议只基于已取得的观察，审批由平台处理。',
-    finish: '在 evidenceIds 中引用全部观察编号。提交简要摘要和 followUps 列表，每条建议引用一项已观察的证据。无需跟进时提交空列表。',
+    finish: '在 evidenceIds 中引用全部观察编号。摘要写一到两句，最多 480 个字符。各项建议放入 followUps，每条最多 320 个字符并引用一项已观察的证据。无需跟进时提交空列表。',
   },
   role: {
     audit: '审阅源码，区分假设与事实，逐项说明受保护检查的发现。',
@@ -127,6 +128,7 @@ const zh: Translations = {
     invalid_call: '请选择一个可用工具并填写有效参数。',
     multiple_calls: '上一轮提出了多项调用，尚未执行其中任何一项。请只选择当前最有用的一项。',
     insufficient_evidence: '现有事实无法支持该结论。请补充必要观察或请求人工处理。',
+    verification_text_too_long: '请把复验摘要缩短到 480 个字符以内，每条建议缩短到 320 个字符以内，最多提交四条建议，并保留已有证据引用。',
     no_new_evidence: '这条观察已经记录。请选择不同操作或基于现有证据结束。',
   },
   reason: {
