@@ -94,6 +94,9 @@ export async function readApprovedArchive(databaseUrl: string, address: Qualifie
       }, unreachable), /fixture_revoked/);
       deepStrictEqual(await readdir(staging), []);
       const publisher = new ReleaseRegistryPublisher({ origin: registry.origin }, { materializer: registry.materializer, skopeo: '/usr/bin/skopeo' });
+      const observer = new ReleaseRegistryPublisher({ origin: registry.origin },
+        { materializer: '/itervane-test-unavailable/materializer', skopeo: '/itervane-test-unavailable/skopeo' });
+      equal(await observer.observe(target, image, authorize), null);
       const imported = await runner.withRetainedArchive(proof, authorize, async path => {
         await rejects(publisher.publish({ ...target, registryOrigin: 'https://other-registry.invalid' }, image, path, unreachable),
           /release_registry_drift/);
@@ -104,8 +107,11 @@ export async function readApprovedArchive(databaseUrl: string, address: Qualifie
         return proof;
       });
       deepStrictEqual(await readdir(staging), []);
+      deepStrictEqual(await observer.observe(target, image, authorize), imported);
+      await rejects(observer.observe({ ...target, registryOrigin: 'https://other-registry.invalid' }, image, unreachable), /release_registry_drift/);
+      await rejects(observer.observe(target, { ...image, configDigest: `sha256:${sha256('different configuration')}` }, authorize), /registry_config_binding/);
       return { operationId, fingerprint, ...received, wrongRunnerDenied: true, wrongSizeDenied: true,
-        revokedDenied: true, stagedFilesRemaining: false, registry: imported };
+        revokedDenied: true, stagedFilesRemaining: false, registry: imported, registryReadOnly: { initiallyAbsent: true, matchedAfterCleanup: true } };
     } finally {
       if (originalTmp === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = originalTmp;
