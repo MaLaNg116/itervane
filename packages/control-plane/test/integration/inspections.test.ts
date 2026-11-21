@@ -9,7 +9,8 @@ import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { createFormalVerification } from '@itervane/agent';
 import { apiErrorSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
-  formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseViewSchema, formalRepairRetryContextSchema, formalVerificationResultSchema, verificationViewSchema,
+  formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
+  formalVerificationResultSchema, translate, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type FormalReleaseManifest, type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
@@ -1075,7 +1076,7 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
   try {
     if (!eligible) {
       expect((await freeze()).statusCode).toBe(409);
-      expect(await view()).toMatchObject({ candidate: null, candidateTarget: null, availableTargets: [], actions: [] });
+      expect(await view()).toMatchObject({ candidate: null, candidateTarget: null, result: null, availableTargets: [], actions: [] });
       expect(await database.storage.db.select().from(releaseCandidates)).toEqual([]);
       return;
     }
@@ -1087,7 +1088,7 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
     const display = { environmentId: environment.id, applicationId: environment.applicationId,
       environmentName: environment.name, applicationName: 'Release sample' };
     expect(await view()).toEqual({ taskId: task.id, runId: current.runId, taskVersion: current.version,
-      candidate: null, candidateTarget: null, availableTargets: [{ ...display, revision: 1 }], actions: [] });
+      candidate: null, candidateTarget: null, result: null, availableTargets: [{ ...display, revision: 1 }], actions: [] });
     expect((await freeze({ ...payload, environmentId: otherEnvironment.id })).statusCode).toBe(404);
     expect((await freeze({ ...payload, expectedVersion: current.version + 1 })).statusCode).toBe(409);
 
@@ -1110,7 +1111,7 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
     expect(candidate.manifest.verification).toMatchObject({ inputSha256: proof?.inputSha256, resultSha256: proof?.sha256, receiptSha256: proof?.receiptSha256 });
     expect(candidate.manifest.image.archive).toEqual(proof?.document.archiveVerification?.archive);
     expect(await view()).toEqual({ taskId: task.id, runId: current.runId, taskVersion: current.version + 1,
-      candidate, candidateTarget: display, availableTargets: [], actions: ['confirm', 'reject'] });
+      candidate, candidateTarget: display, result: null, availableTargets: [], actions: ['confirm', 'reject'] });
     expect((await view(headers)).actions).toEqual([]);
     const [stored] = await database.storage.db.select().from(releaseCandidates);
     const substitute = { ...candidate.manifest, evidenceVersion: 2, image: { ...candidate.manifest.image,
@@ -2052,6 +2053,82 @@ function observedRuntime(binding: Awaited<ReturnType<FormalRolloutCoordinator['a
     runtimeConfigSha256: binding.target.runtimeConfigSha256, network: binding.check.network,
     anonymousStatus: 401 as const, healthStatus: 200 as const, version: 'standard-v2' };
 }
+
+it.each(['verified', 'manual_review'] as const)('shares the %s formal release result between HTTP and MCP under current grants', async status => {
+  const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
+  const { operationId, approval } = submitted;
+  const principalId = randomUUID();
+  const subject = 'formal-result-viewer';
+  const publicUrl = 'https://itervane.example';
+  await database.storage.db.insert(principals).values({ id: principalId, issuer: issuer.config.issuer, subject });
+  await database.storage.db.insert(projectMembers).values({ projectId: task.projectId, principalId, role: 'viewer' });
+  const authorization = `Bearer ${await issuer.token(subject)}`;
+  const mcpToken = await issuer.token(subject, { aud: `${publicUrl}/mcp`, scope: 'itervane:read' });
+  const api = createApi(database.storage, { ...issuer.config, publicUrl }, { logger: false });
+  const clients: Client[] = [];
+  const route = `/v1/tasks/${task.id}/release`;
+  const request = { name: 'get_release_result', arguments: { taskId: task.id } };
+  async function readHttp(locale: 'en' | 'zh-CN') {
+    const response = await api.inject({ url: route, headers: { authorization, 'accept-language': locale } });
+    expect(response.statusCode).toBe(200);
+    return formalReleaseViewSchema.parse(response.json());
+  }
+  try {
+    const address = await api.listen({ host: '127.0.0.1', port: 0 });
+    const queued = await readHttp('en');
+    expect(queued.result).toMatchObject({ operationId, candidateId: approval.id, status: 'queued', updateId: null });
+    expect(queued.result).not.toHaveProperty('evidence');
+    const { update, image } = await parkForRollout(submitted);
+    expect((await readHttp('en')).result).toMatchObject({ operationId, updateId: update.updateId, status: 'reconciling' });
+
+    const observer = new FormalRolloutCoordinator(database.storage, releaseOrigin);
+    const scope = await observer.claimNext(randomUUID());
+    if (!scope) throw new Error('Expected formal rollout attempt');
+    expect((await readHttp('en')).result).toMatchObject({ status: 'checking' });
+    const binding = await observer.authorize(scope);
+    if (status === 'verified') {
+      await observer.settle(scope, { version: 1, ...binding.decision, rolloutFence: scope.fence, generation: binding.manifest.generation,
+        targetRevision: binding.manifest.target.revision, mappingSha256: binding.manifest.target.mappingSha256,
+        manifestDigest: image.manifestDigest, update, runtime: observedRuntime(binding) });
+    } else {
+      await observer.requireManualReview(scope, 'release_rollout_health_failed');
+    }
+
+    for (const locale of ['en', 'zh-CN'] as const) {
+      const client = new Client({ name: 'release-result-test', version: '0.0.0' });
+      clients.push(client);
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+        requestInit: { headers: { authorization: `Bearer ${mcpToken}`, 'accept-language': locale } },
+      }));
+      const result = await client.callTool(request);
+      expect(result.isError).not.toBe(true);
+      const outcome = formalReleaseResultSchema.parse(result.structuredContent);
+      const http = await readHttp(locale);
+      expect(outcome).toEqual({ taskId: http.taskId, runId: http.runId, taskVersion: http.taskVersion, result: http.result });
+      expect(http.actions).toEqual([]);
+      expect(outcome.result).toMatchObject({ operationId, candidateId: approval.id, updateId: update.updateId, status, locale });
+      if (status === 'verified') {
+        expect(outcome.result).toMatchObject({ message: translate(locale, 'release.operation.verified_formal'), evidence: {
+          manifestDigest: image.manifestDigest, configDigest: image.configDigest, version: observedRuntime(binding).version,
+          checkedAt: expect.any(String), healthy: true, accessProtected: true,
+        } });
+      } else {
+        expect(outcome.result).not.toHaveProperty('evidence');
+        expect(outcome.result).toMatchObject({ message: translate(locale, 'release.result.manual_review'),
+          reason: 'release_rollout_health_failed', reasonMessage: translate(locale, 'reason.release_rollout_health_failed') });
+      }
+      expect(JSON.stringify(outcome)).not.toContain(image.reference);
+    }
+    await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
+    expect((await api.inject({ url: route, headers: { authorization } })).statusCode).toBe(404);
+    const denied = await clients[0]!.callTool(request);
+    expect(denied.isError).toBe(true);
+    expect(apiErrorSchema.parse(denied.structuredContent).error.code).toBe('not_found');
+  } finally {
+    await Promise.all(clients.map(client => client.close()));
+    await api.close();
+  }
+});
 
 it('settles one formal rollout and releases the environment only with a complete current proof', async () => {
   const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });

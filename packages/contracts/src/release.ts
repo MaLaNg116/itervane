@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { applicationDtoSchema, environmentDtoSchema } from './control-plane.js';
 import { verificationComparisonCountsSchema, verificationImageFindingCountsSchema } from './formal-verification-evidence.js';
 import { sha256Schema } from './inspection.js';
-import { localeSchema } from './i18n.js';
+import { localeSchema, taskEventReasonSchema } from './i18n.js';
 import { idSchema, sourceRefSchema } from './primitives.js';
 import { qualifiedImageArchiveSchema } from './qualified-standard-image.js';
 
@@ -225,8 +225,26 @@ const releaseTargetDisplaySchema = z.strictObject({
   applicationId: idSchema, applicationName: applicationDtoSchema.shape.name,
   environmentId: idSchema, environmentName: environmentDtoSchema.shape.name,
 });
-export const formalReleaseViewSchema = z.strictObject({
+const releaseResultBase = z.strictObject({
+  operationId: idSchema, candidateId: idSchema, updateId: komodoResourceIdSchema.nullable(),
+  locale: localeSchema, message: z.string().min(1).max(320),
+});
+export const formalReleaseOperationResultSchema = z.discriminatedUnion('status', [
+  releaseResultBase.extend({ status: z.enum(['queued', 'dispatching', 'reconciling', 'checking']) }),
+  releaseResultBase.extend({ status: z.enum(['manual_review', 'blocked']),
+    reason: taskEventReasonSchema.nullable(), reasonMessage: z.string().min(1).max(320).nullable() }),
+  releaseResultBase.extend({ status: z.literal('verified'), updateId: komodoResourceIdSchema,
+    evidence: z.strictObject({
+      checkedAt: timestamp, manifestDigest: imageDigest, configDigest: imageDigest, version: releaseRuntimeObservationSchema.shape.version,
+      healthy: z.literal(true), accessProtected: z.literal(true),
+    }),
+  }),
+]);
+export const formalReleaseResultSchema = z.strictObject({
   taskId: idSchema, runId: idSchema, taskVersion: version.min(1),
+  result: formalReleaseOperationResultSchema.nullable(),
+});
+export const formalReleaseViewSchema = formalReleaseResultSchema.extend({
   candidate: formalReleaseCandidateDtoSchema.nullable(),
   candidateTarget: releaseTargetDisplaySchema.nullable(),
   availableTargets: releaseTargetDisplaySchema.extend({ revision: version.min(1) }).array(),

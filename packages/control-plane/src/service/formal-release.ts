@@ -15,6 +15,7 @@ import { appendEvent, type TaskRow } from '../runtime/authority.js';
 import { blockQueuedRelease, enqueueReleaseOperation } from '../runtime/release-queue.js';
 import { requireActor, requireProject, requireProjectAccess, requireStoredActor, type Actor, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
+import { readFormalReleaseOperationResult } from './release-result.js';
 import { readReleaseTarget } from './release-targets.js';
 import { databaseNow } from './releases.js';
 import { readPublishedVerification } from './verification-result.js';
@@ -256,6 +257,9 @@ export class FormalReleaseService {
       if (!run) throw new DomainError('not_found');
       const assessment = await readLatestFormalCandidate(tx, task, locale);
       const candidate = assessment?.view ?? null;
+      const result = candidate?.operationId ? await readFormalReleaseOperationResult(tx, {
+        taskId, runId: run.runId, candidateId: candidate.id,
+      }, locale) : null;
       const target = candidate?.manifest.target;
       const [candidateTarget] = target ? await tx.select(targetDisplay).from(environments)
         .innerJoin(applications, eq(applications.id, environments.applicationId))
@@ -273,7 +277,7 @@ export class FormalReleaseService {
       const availableTargets = mayPrepare && requesterAuthorized ? await this.availableTargets(tx, task, run.runId, candidate) : [];
       if (identity.expiresAt * 1000 <= (await databaseNow(tx)).getTime()) throw new DomainError('unauthenticated');
       return formalReleaseViewSchema.parse({
-        taskId, runId: run.runId, taskVersion: task.version, candidate, candidateTarget: candidateTarget ?? null, availableTargets, actions,
+        taskId, runId: run.runId, taskVersion: task.version, candidate, candidateTarget: candidateTarget ?? null, availableTargets, actions, result,
       });
     });
   }

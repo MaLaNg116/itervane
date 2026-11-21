@@ -8,7 +8,9 @@
 
 TypeScript 与 202 项单元通过。`df5f1ad` 在真实 PostgreSQL 17.12 通过十项安装及上线核验专项和 171 项全量，源码指纹 `aa5199d69feb0b0a0f20fa460511d0383142145b1427d2f8f794c9daabcdd809`。核对密钥归属后的代码通过托管 PostgreSQL、浏览器和扫描器回归。未配置的实际启动进程返回退出码 1，日志为固定错误消息。
 
-Komodo v2.3.4 原生验证通过六项检查，包含发布前验证同一密钥的正确与错误账号。原生报告源码指纹 `b8fe4162a8d2a36115758b384633a1e4a51406e1021da79162c8d4f308f3044e`。KVM 全量回归待归档。C2 接入双语结果，D3-D 用同一发布操作完成真实端到端验收。 [常规 CI](https://github.com/MaLaNg116/itervane/actions/runs/44950737250) · [原生 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/44950649151) · [托管 Runner](https://github.com/MaLaNg116/itervane/actions/runs/44950649076)
+Komodo v2.3.4 原生验证通过六项检查，包含发布前验证同一密钥的正确与错误账号。原生报告及四组通过的托管 KVM 回归使用源码指纹 `b8fe4162a8d2a36115758b384633a1e4a51406e1021da79162c8d4f308f3044e`。隔离回归观察到五个临时域，OCI 回归保留正常和未知原生更新的两条恢复路径。 [常规 CI](https://github.com/MaLaNg116/itervane/actions/runs/44950737250) · [原生 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/44950649151) · [托管 Runner](https://github.com/MaLaNg116/itervane/actions/runs/44950649076)
+
+在审查版本 `53e71f3b1a5127e3aa4711b1cc18da2a001157b1` 核对了安装指纹、身份所有者、独立观察与执行权的边界及其他环境的唤醒。两组主线常规检查通过。已合入 `9545c6691b19f53db511688dbd4f0d1badb98661`。C2 接入双语结果，D3-D 用同一发布操作完成真实端到端验收。 [PR #58](https://github.com/MaLaNg116/itervane/pull/58) · [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44952668649) · [分支 CI](https://github.com/MaLaNg116/itervane/actions/runs/44952664936)
 
 ## 安装配置
 
