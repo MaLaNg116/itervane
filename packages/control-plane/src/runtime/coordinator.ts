@@ -2,12 +2,20 @@ import { and, eq, sql } from 'drizzle-orm';
 import { fromDrizzle, type Job } from 'pg-boss';
 import { idSchema, wakeupSchema, type SourceInspectionPauseReason, type TaskEventReason } from '@itervane/contracts';
 import { queueName, type Database } from '../persistence/database.js';
-import { executionSlot, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
-import { requireProject, requireStoredActor, type Transaction } from '../service/access.js';
+import { executionSlot, formalRepairRetries, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
+import { requireProjectAccess, requireStoredActor, type Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
 import { appendEvent, clearSlot, enqueue, ExecutionLost, lockSlot, type ExecutionScope, type TaskRow } from './authority.js';
 
 type Current = { task: TaskRow; runtime: typeof runRuntime.$inferSelect };
+
+async function authorizeRun(tx: Transaction, task: TaskRow, runId: string) {
+  const { grantId } = await requireProjectAccess(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
+  if (task.generation === 1) return;
+  const [retry] = await tx.select({ grantId: formalRepairRetries.grantId }).from(formalRepairRetries).where(eq(formalRepairRetries.runId, runId));
+  if (retry && retry.grantId !== grantId) throw new DomainError('forbidden');
+}
+
 export class ExecutionCoordinator {
   readonly leaseSeconds: number;
   constructor(readonly database: Database, options: { leaseSeconds?: number } = {}) {
@@ -24,7 +32,7 @@ export class ExecutionCoordinator {
       if (!task || !run || !runtime || !slot.live || slot.taskId !== task.id || slot.runId !== run.id || slot.workerId !== scope.workerId || slot.fence !== scope.fence
         || task.generation !== scope.generation || run.taskId !== task.id || runtime.taskId !== task.id || run.generation !== scope.generation
         || (task.state !== 'running' && !(options.allowCancel && task.state === 'cancel_requested'))) throw new ExecutionLost();
-      if (options.authorize !== false) await requireProject(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
+      if (options.authorize !== false) await authorizeRun(tx, task, run.id);
       const result = await action(tx, { task, runtime });
       // 释放 slot 也不能绕过租约检查；心跳则使用本次延长后的截止时间。
       const [valid] = await tx.select({ live: sql<boolean>`CASE WHEN ${executionSlot.taskId} IS NULL
@@ -65,7 +73,7 @@ export class ExecutionCoordinator {
       if (slot.taskId && slot.live) {
         await settle(); await enqueue(tx, this.database, task, run.id, true); return null;
       }
-      try { await requireProject(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true); }
+      try { await authorizeRun(tx, task, run.id); }
       catch (error) {
         if (!(error instanceof DomainError)) throw error;
         await appendEvent(tx, task, 'task.needs_human', 'needs_human', { workerId, reason: 'permission_revoked' });

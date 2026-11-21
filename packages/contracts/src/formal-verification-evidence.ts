@@ -4,6 +4,12 @@ import { idSchema, sourceRefSchema } from './primitives.js';
 import { ociDigestSchema, qualifiedImageArchiveSchema } from './qualified-standard-image.js';
 
 const count = z.int().min(0).max(4_000);
+export const verificationComparisonCountsSchema = z.strictObject({ introduced: count, resolved: count, remaining: count });
+export const verificationBaselineFailuresSchema = z.array(z.strictObject({
+  id: z.enum(['health', 'version', 'synthetic_data', 'page', 'compiled_asset']),
+  code: z.enum(['unexpected_status', 'unexpected_content', 'timeout', 'unavailable', 'missing_page_asset']),
+  statusCode: z.int().min(100).max(599).nullable(),
+})).max(5);
 const pending = z.strictObject({ status: z.enum(['not_requested', 'not_reached']) });
 const stopped = z.strictObject({
   status: z.enum(['blocked', 'failed']), code: z.string().regex(/^[a-z_]{1,48}$/),
@@ -16,7 +22,7 @@ export const formalVerificationEvidenceSchema = z.strictObject({
     subjectManifestSha256: sha256Schema,
   }),
   source: z.discriminatedUnion('status', [
-    z.strictObject({ status: z.literal('compared'), introduced: count, resolved: count, remaining: count }),
+    z.strictObject({ status: z.literal('compared'), ...verificationComparisonCountsSchema.shape }),
     z.strictObject({
       status: z.literal('unavailable'), scanner: z.enum(['gitleaks', 'trivy']),
       reason: z.enum(['report_binding', 'incomplete_coverage', 'profile_mismatch']),
@@ -30,11 +36,7 @@ export const formalVerificationEvidenceSchema = z.strictObject({
     z.strictObject({ status: z.literal('blocked'), code: z.string().regex(/^[a-z_]{1,48}$/) }),
     z.strictObject({
       status: z.enum(['passed', 'failed']), baselineSha256: sha256Schema, runtimeInputsSha256: sha256Schema,
-      failures: z.array(z.strictObject({
-        id: z.enum(['health', 'version', 'synthetic_data', 'page', 'compiled_asset']),
-        code: z.enum(['unexpected_status', 'unexpected_content', 'timeout', 'unavailable', 'missing_page_asset']),
-        statusCode: z.int().min(100).max(599).nullable(),
-      })).max(5),
+      failures: verificationBaselineFailuresSchema,
     }).refine(baseline => (baseline.status === 'passed') === (baseline.failures.length === 0)),
   ]),
   image: z.discriminatedUnion('status', [

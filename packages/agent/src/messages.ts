@@ -31,7 +31,7 @@ const en = {
   },
   formalRepair: {
     goal: 'Prepare a candidate patch for the published audit findings within the isolated Runner.',
-    instruction: 'Read the relevant repair targets before choosing a tool. Prefer a listed template when its conditions fit. Use the observed byte range for an explicit edit. For an approved npm upgrade, send both target indices without edit contents. Once a repair_candidate is present, call finish_role with its evidence ID and a short summary. Independent verification follows. If the observations cannot justify an edit, request human review.',
+    instruction: 'Read the relevant repair targets before choosing a tool. Prefer a listed template when its conditions fit. When previousVerification is present, use the recorded failure and patch shape to choose a different correction for the fixed original. A previous_failed_patch observation calls for a different edit or human review. Use the observed byte range for an explicit edit. For an approved npm upgrade, send both target indices without edit contents. Once a repair_candidate is present, call finish_role with its evidence ID and a short summary. Independent verification follows. If the observations cannot justify an edit, request human review.',
     finish: 'Call this once a repair_candidate is present. Set evidenceId to the enumerated evidence ID and provide a short summary of the applied change.',
   },
   formalVerification: {
@@ -71,6 +71,7 @@ const en = {
     audit_incomplete: 'The audit has incomplete coverage or unresolved hypotheses.',
     repair_limit: 'The repair limit was reached with outstanding verification issues.',
     repair_complete: 'The candidate patch is recorded and ready for independent verification.',
+    repair_no_progress: 'The retry produced the same candidate as the previous failed run.',
     repair_reconciling: 'The repair Runner requires reconciliation before another action.',
     repair_unavailable: 'The scoped repair Runner is unavailable.',
     verification_review_complete: 'The verification review cites the protected checks for this candidate.',
@@ -111,7 +112,7 @@ const zh: Translations = {
   },
   formalRepair: {
     goal: '在隔离 Runner 内为已发布审计发现准备候选补丁。',
-    instruction: '先读取相关修复目标，再根据实际观测选择工具。符合前提时优先使用列出的模板。显式修改使用观测给出的字节范围。已批准的 npm 升级只提交成对的目标序号。取得 repair_candidate 后，调用 finish_role 引用其证据编号并简要概述修改，随后由独立流程复验。观测无法支撑修改时请请求人工处理。',
+    instruction: '先读取相关修复目标，再根据实际观测选择工具。符合前提时优先使用列出的模板。有 previousVerification 时，根据已记录的失败和补丁改动概况，为固定原稿选择另一种修正。遇到 previous_failed_patch，请换一种修改或请求人工处理。显式修改使用观测给出的字节范围。已批准的 npm 升级只提交成对的目标序号。取得 repair_candidate 后，调用 finish_role 引用其证据编号并简要概述修改，随后由独立流程复验。观测无法支撑修改时请请求人工处理。',
     finish: '取得 repair_candidate 后调用此工具。从枚举值中选择证据编号填入 evidenceId，简要概述已发生的修改。',
   },
   formalVerification: {
@@ -151,6 +152,7 @@ const zh: Translations = {
     audit_incomplete: '审计覆盖不完整或仍有待核对的假设。',
     repair_limit: '返修次数已达上限，仍有复验问题。',
     repair_complete: '候选补丁已记录，等待独立复验。',
+    repair_no_progress: '返修生成的候选与上一轮复验失败的候选相同。',
     repair_reconciling: '修复 Runner 需要核对后才能继续操作。',
     repair_unavailable: '当前作用范围内的修复 Runner 暂不可用。',
     verification_review_complete: '复验意见已引用该候选的受保护检查结果。',

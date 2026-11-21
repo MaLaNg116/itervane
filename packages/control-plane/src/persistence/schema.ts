@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
   agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
-  type FormalRepairInput, type FormalRepairResult, type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
+  type FormalRepairInput, type FormalRepairResult, type FormalRepairRetry, type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
   type PreauditRecord, type QualifiedInspectionReceipt, type QualifiedRepairReceipt, type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState,
 } from '@itervane/contracts';
 
@@ -36,7 +36,9 @@ export const projects = domain.table('projects', {
 export const projectMembers = domain.table('project_members', {
   projectId: uuid('project_id').notNull().references(() => projects.id),
   principalId: uuid('principal_id').notNull().references(() => principals.id), role: text('role').notNull(),
-}, t => [primaryKey({ columns: [t.projectId, t.principalId] }), check('project_role', sql`${t.role} IN ('maintainer', 'viewer')`)]);
+  grantId: uuid('grant_id').notNull().defaultRandom(),
+}, t => [primaryKey({ columns: [t.projectId, t.principalId] }), unique('project_member_grant').on(t.grantId),
+  check('project_role', sql`${t.role} IN ('maintainer', 'viewer')`)]);
 
 export const repositories = domain.table('repositories', {
   id: uuid('id').primaryKey().defaultRandom(), projectId: uuid('project_id').notNull().references(() => projects.id),
@@ -348,6 +350,21 @@ export const formalVerificationResults = domain.table('formal_verification_resul
   AND octet_length(${t.document}::text) <= 16384
   AND ((${t.document}->>'status' = 'reviewed' AND jsonb_typeof(${t.document}->'review') = 'object')
     OR (${t.document}->>'status' = 'requires_human' AND ${t.document}->'review' = 'null'::jsonb))) IS TRUE`)]);
+
+export const formalRepairRetries = domain.table('formal_repair_retries', {
+  taskId: uuid('task_id').primaryKey().references(() => tasks.id),
+  previousRunId: uuid('previous_run_id').notNull().references(() => formalVerificationResults.runId),
+  runId: uuid('run_id').notNull(),
+  grantId: uuid('grant_id').notNull(), workerId: uuid('worker_id').notNull(), preparedFence: integer('prepared_fence').notNull(),
+  sha256: text('sha256').notNull(), document: jsonb('document').$type<FormalRepairRetry>().notNull(), createdAt: createdAt(),
+}, t => [
+  unique('formal_repair_retry_run').on(t.runId),
+  foreignKey({ name: 'formal_repair_retry_task_run_fk', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
+  check('formal_repair_retry_binding', sql`(${t.preparedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.document}->>'version' = '1' AND ${t.document}->>'taskId' = ${t.taskId}::text AND ${t.document}->>'runId' = ${t.runId}::text
+    AND ${t.document}#>>'{previous,previousRunId}' = ${t.previousRunId}::text AND ${t.previousRunId} <> ${t.runId}
+    AND octet_length(${t.document}::text) <= 8192) IS TRUE`),
+]);
 
 export const preaudits = domain.table('preaudits', {
   id: uuid('id').primaryKey(), projectId: uuid('project_id').notNull().references(() => projects.id),

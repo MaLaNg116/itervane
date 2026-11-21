@@ -5,6 +5,7 @@ import { formalAuditInputs, formalAuditResults, formalRepairInputs } from '../pe
 import type { ExecutionScope, TaskRow } from '../runtime/authority.js';
 import type { Transaction } from './access.js';
 import { DomainError } from './errors.js';
+import { readRepairRetry } from './repair-retry.js';
 
 export function isRepairableAudit(document: unknown) {
   const audit = formalAuditResultSchema.safeParse(document).data;
@@ -38,12 +39,16 @@ export async function prepareFormalRepairInput(tx: Transaction, task: TaskRow, s
     audit: { inputSha256: current.input.sha256, resultSha256: current.audit.sha256, checkpointId: audit.checkpointId },
     catalogSha256: audit.catalogSha256, findingIds: checklist.findings.map(item => item.id),
   });
+  const retry = await readRepairRetry(tx, task, scope);
+  if (retry && (retry.baseSnapshotSha256 !== document.inspection.snapshotSha256 || retry.catalogSha256 !== document.catalogSha256)) {
+    throw new DomainError('conflict');
+  }
   const hash = sha256(JSON.stringify(document));
   if (current.stored) {
     const previous = formalRepairInputSchema.parse(current.stored.document);
     if (current.stored.sha256 !== hash || hash !== sha256(JSON.stringify(previous))) throw new Error('formal_repair_input_integrity');
-    return { sha256: hash, document: previous, audit };
+    return { sha256: hash, document: previous, audit, retry };
   }
   await tx.insert(formalRepairInputs).values({ runId: scope.runId, preparedFence: scope.fence, workerId: scope.workerId, sha256: hash, document });
-  return { sha256: hash, document, audit };
+  return { sha256: hash, document, audit, retry };
 }

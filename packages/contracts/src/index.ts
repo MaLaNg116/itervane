@@ -5,6 +5,7 @@ import { localeSchema } from './i18n.js';
 export * from './control-plane.js';
 export * from './formal-audit.js';
 export * from './formal-repair.js';
+export * from './formal-repair-retry.js';
 export * from './formal-verification.js';
 export * from './formal-verification-evidence.js';
 export * from './formal-verification-result.js';

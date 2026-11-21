@@ -28,7 +28,7 @@ export const repairToolInputs = {
 export const repairToolNames = ['read_repair_targets', 'apply_repair_template', 'apply_repair_patch'] as const;
 export const repairActionSchema = z.enum(['apply_repair_template', 'apply_repair_patch']);
 export const repairFailureCodeSchema = z.enum([
-  'invalid_proposal', 'cleanup_unproven', 'not_ready', 'job_failed',
+  'invalid_proposal', 'cleanup_unproven', 'not_ready', 'job_failed', 'previous_failed_patch',
   'repair-base', 'repair-scope', 'repair-precondition', 'repair-invalid', 'repair-integrity',
 ]);
 export type RepairFailureCode = z.infer<typeof repairFailureCodeSchema>;

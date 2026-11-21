@@ -9,6 +9,7 @@ import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { createFormalVerification } from '@itervane/agent';
 import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
+  formalRepairRetryContextSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
@@ -20,8 +21,9 @@ import { scriptedVerification } from '../../../verification/src/agent/verificati
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { queueName } from '../../src/persistence/database.js';
-import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRuntime,
-  formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts } from '../../src/persistence/schema.js';
+import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
+  formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
+  taskRuns, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
 import { runFormalRepair } from '../../src/runtime/formal-repair.js';
@@ -56,7 +58,7 @@ const verificationProfile = { id: 'standard-web-fixture', baselineSha256: sha256
 const standardVerificationProfile: StandardVerificationProfile = { ...verificationProfile, buildProfileSha256: sha256('protected build profile'),
   runStandardBaseline: true, ociInputsSha256: sha256('frozen OCI inputs'), retainStandardImage: true };
 const clearRepairHandoff = () => database.admin.query(
-  'TRUNCATE itervane.formal_verification_results, itervane.formal_verification_runtime, itervane.formal_rescan_attempts, itervane.formal_verification_inputs, '
+  'TRUNCATE itervane.formal_repair_retries, itervane.formal_verification_results, itervane.formal_verification_runtime, itervane.formal_rescan_attempts, itervane.formal_verification_inputs, '
   + 'itervane.formal_repair_results, itervane.formal_repair_attempts, '
   + 'itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs',
 );
@@ -992,6 +994,146 @@ it('keeps verification unavailable while an audit finding has no published repai
     .rejects.toMatchObject({ code: 'unavailable' });
   expect(await database.storage.db.select().from(formalVerificationInputs)).toEqual([]);
 });
+
+it.each(['reclaimed change', 'remaining finding', 'repeat patch', 'budget exhausted', 'restored grant', 'changed policy', 'queue failure'] as const)(
+  'binds failed-candidate retry behavior to the PostgreSQL ledger (%s)', async mode => {
+    const prefix = 'header=fixture\nkeep=on\n';
+    const removed = 'REMOVE=public\n';
+    const replacement = 'REMOVE=disabled\n';
+    const original = prefix + removed;
+    const range = { startByte: Buffer.byteLength(prefix), endByte: Buffer.byteLength(original), sha256: sha256(removed) };
+    let scan: QualifiedInspectionReceipt | undefined;
+    let candidate: QualifiedRepairReceipt['snapshot']['candidate'] | undefined;
+    const inspect = vi.fn<InspectionRunner['inspect']>(async (request, authorize) => {
+      await authorize(); scan = testReceipt(request, false, fixtureFindingPath); return scan;
+    });
+    const observeRepair: RepairObservationRunner['observeRepair'] = async (request, workspace, targets, authorize) => {
+      await authorize(); return repairObservationReceipt(scan!, request, workspace, targets, original, range);
+    };
+    const repair = vi.fn<RepairRunner['repair']>(async (request, workspace, patch, authorize) => {
+      await authorize();
+      const receipt = repairReceipt(scan!, request, workspace, patch, original);
+      candidate = receipt.snapshot.candidate;
+      return receipt;
+    });
+    const verify = vi.fn<RescanRunner['verify']>(async (coordinates, input, patch, authorize) => {
+      await authorize();
+      if (input.subject.kind !== 'repair' || !patch || !candidate) throw new Error('Missing frozen candidate');
+      const request = prepareQualifiedVerificationRequest(coordinates, canonicalVerificationCommand({ input, repair: patch }));
+      const healthy = candidate.changes[0]?.afterSha256 === sha256(prefix + replacement) && mode !== 'budget exhausted';
+      if (mode === 'remaining finding' && input.generation === 1) {
+        const receipt = standardVerificationReceipt(scan!, request, input, false, candidate);
+        const target = receipt.snapshot.target!;
+        const finding = receipt.snapshot.reports[0].findings[0]!;
+        target.reports[0].findings = [{ ...finding,
+          id: sha256(JSON.stringify(['gitleaks', target.manifestSha256, finding.ruleId, finding.path, finding.line])),
+        }];
+        return receipt;
+      }
+      return standardVerificationReceipt(scan!, request, input, !healthy, candidate);
+    });
+    const observedRetries: Array<ReturnType<typeof formalRepairRetryContextSchema.parse>> = [];
+    const model = auditModel(async request => {
+      const context = request.conversation[0];
+      if (context?.kind !== 'user') throw new Error('Missing agent context');
+      const { role, observations, handoff } = JSON.parse(context.text) as {
+        role: string; observations: AgentEvidence[]; handoff: { findings: Array<{ id: string }>; previousVerification?: unknown };
+      };
+      if (role === 'audit') return concludeAudit(request);
+      if (role === 'verify') return scriptedVerification('zh-CN').complete(request);
+      if (handoff.previousVerification) observedRetries.push(formalRepairRetryContextSchema.parse(handoff.previousVerification));
+      const chosen = observations.find(item => item.data.kind === 'repair_candidate');
+      if (chosen) return auditTurn('finish_role', { evidenceId: chosen.id, summary: '候选已按当前证据修改。' });
+      const target = observations.find(item => item.data.kind === 'repair_targets');
+      if (!target) return auditTurn('read_repair_targets', { findingIds: handoff.findings.map(item => item.id) });
+      const rejected = observations.some(item => item.data.kind === 'repair_failure' && item.data.code === 'previous_failed_patch');
+      if (rejected && mode === 'repeat patch') return auditTurn('request_human', {});
+      return auditTurn('apply_repair_patch', { observationId: target.id, targets: [{ targetIndex: 0, edits: [{
+        startByte: range.startByte, endByte: range.endByte, replacement: rejected ? replacement : '',
+      }] }] });
+    });
+    const tasks = new TaskService(database.storage);
+    const runner = inspectionRunner(inspect);
+    const common = { runner, auditModel: model, verification: { runner: { observe: async () => idleRepairRunner(), verify }, profile: standardVerificationProfile } };
+    const open = (protectedPaths: string[] = []) => new DurableWorker(database.storage, database.runtimeUrl, {
+      ...common, repair: { runner: { observe: async () => idleRepairRunner(), observeRepair, repair }, protectedPaths },
+    });
+    const failEnqueue = mode === 'queue failure' ? vi.spyOn(database.storage.boss, 'send').mockResolvedValueOnce(null) : undefined;
+    const first = open();
+    try { expect(await first.tick()).toBe(true); } finally { await first.close(); failEnqueue?.mockRestore(); }
+    const ready = await tasks.get(identity, task.id);
+    const [retry, ...duplicates] = await database.storage.db.select().from(formalRepairRetries);
+    const [previousResult] = await database.storage.db.select().from(formalVerificationResults);
+    if (mode === 'queue failure') {
+      expect(ready).toMatchObject({ runId: task.runId, state: 'needs_human' });
+      expect(retry).toBeUndefined();
+      expect(previousResult).toBeUndefined();
+      expect(await database.storage.db.select().from(taskRuns)).toHaveLength(1);
+      expect((await tasks.events(identity, task.id, 50)).at(-1)).toMatchObject({ reason: 'verification_unavailable' });
+      return;
+    }
+    expect(duplicates).toHaveLength(0);
+    const failure = mode === 'remaining finding' ? { outcome: 'source_findings', introduced: 0, remaining: 1 }
+      : { outcome: 'checks_failed', checks: [{ id: 'health', code: 'unexpected_status', statusCode: 503 }] };
+    expect(previousResult?.document.review?.outcome).toBe(failure.outcome);
+    expect(retry).toMatchObject({ taskId: task.id, previousRunId: task.runId, runId: ready.runId, document: {
+      generation: 2, previous: { verificationResultSha256: previousResult?.sha256, receiptSha256: previousResult?.receiptSha256,
+        patchShape: { files: 1, replacementBytes: 0 }, failure },
+    } });
+    expect(ready).toMatchObject({ state: 'queued' });
+    expect((await tasks.events(identity, task.id, 50, 'zh-CN')).at(-1)).toMatchObject({ type: 'task.repair_retry_queued', message: /返修/ });
+    expect((await database.storage.db.select().from(taskRuns).where(eq(taskRuns.id, task.runId)))[0]).toMatchObject({ state: 'failed' });
+    await expect(database.storage.db.update(formalRepairRetries).set({ sha256: sha256('different proof') }))
+      .rejects.toMatchObject({ cause: { code: '23514', message: 'formal_repair_retry_is_immutable' } });
+    await expect(coordinator.withLease({ taskId: task.id, runId: task.runId, generation: 1, fence: previousResult!.finalizedFence,
+      workerId: previousResult!.workerId }, async () => true)).rejects.toBeInstanceOf(ExecutionLost);
+
+    if (mode === 'reclaimed change') {
+      const interrupted = await claim();
+      expect(interrupted).toMatchObject({ runId: ready.runId, generation: 2 });
+      await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+    } else if (mode === 'restored grant') {
+      const [owner] = await database.storage.db.delete(workspaceMembers).returning();
+      await database.storage.db.insert(workspaceMembers).values({ principalId: owner!.principalId, workspaceId: owner!.workspaceId });
+    }
+    const second = open(mode === 'changed policy' ? ['protected-elsewhere'] : []);
+    try { expect(await second.tick()).toBe(true); expect(await second.tick()).toBe(false); } finally { await second.close(); }
+    const after = await tasks.get(identity, task.id);
+    if (mode === 'restored grant' || mode === 'changed policy') {
+      expect(after.state).toBe('needs_human');
+      expect((await tasks.events(identity, task.id, 50)).at(-1)).toMatchObject({
+        reason: mode === 'restored grant' ? 'permission_revoked' : 'repair_retry_configuration_changed',
+      });
+      expect(inspect).toHaveBeenCalledTimes(1);
+      expect(repair).toHaveBeenCalledTimes(1);
+      expect(verify).toHaveBeenCalledTimes(1);
+      return;
+    }
+    expect(observedRetries).not.toHaveLength(0);
+    expect(observedRetries.every(value => JSON.stringify(value) === JSON.stringify(formalRepairRetryContextSchema.parse(retry!.document.previous)))).toBe(true);
+    expect(inspect).toHaveBeenCalledTimes(2);
+    const [newRepair] = await database.storage.db.select().from(formalRepairResults).where(eq(formalRepairResults.runId, ready.runId));
+    if (mode === 'repeat patch') {
+      expect(after.state).toBe('needs_human');
+      expect(repair).toHaveBeenCalledTimes(1);
+      expect(verify).toHaveBeenCalledTimes(1);
+      expect(newRepair?.document).toMatchObject({ status: 'requires_human', reason: 'manual_review' });
+    } else {
+      expect(repair).toHaveBeenCalledTimes(2);
+      expect(verify).toHaveBeenCalledTimes(2);
+      expect(newRepair?.document).toMatchObject({ status: 'candidate_ready', candidate: { changes: [{ afterSha256: sha256(prefix + replacement) }] } });
+      const [review] = await database.storage.db.select().from(formalVerificationResults).where(eq(formalVerificationResults.runId, ready.runId));
+      const exhausted = mode === 'budget exhausted';
+      expect(review?.document.review).toMatchObject({ outcome: exhausted ? 'checks_failed' : 'observed' });
+      expect(after).toMatchObject({ runId: ready.runId, state: exhausted ? 'needs_human' : 'waiting_input' });
+      expect((await tasks.events(identity, task.id, 50)).at(-1)).toMatchObject({
+        reason: exhausted ? 'repair_retry_limit' : 'verification_observed', type: 'task.verification_recorded',
+      });
+    }
+    expect(await database.storage.db.select().from(taskRuns)).toHaveLength(2);
+    expect(await database.storage.db.select().from(formalRepairRetries)).toHaveLength(1);
+  },
+);
 
 it('records one immutable repair command and a checked receipt across concurrent duplicate dispatches', async () => {
   const { scope, proposal, scan, original } = await repairReady();

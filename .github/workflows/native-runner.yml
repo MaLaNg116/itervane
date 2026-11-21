@@ -187,5 +187,6 @@ jobs:
             .reports/p0/runner-worker-inspection.json
             .reports/p0/runner-worker-build.json
             .reports/p0/runner-oci-artifact.json
+            .reports/p0/runner-retry-oci-artifact.json
           if-no-files-found: error
           retention-days: 14

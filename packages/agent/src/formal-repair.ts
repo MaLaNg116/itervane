@@ -1,6 +1,6 @@
 import {
-  formalAuditResultSchema, formalRepairInputSchema, qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema,
-  repairPatchSchema, type FormalAuditResult, type FormalRepairInput, type QualifiedRepairObservationResponse,
+  formalAuditResultSchema, formalRepairInputSchema, formalRepairRetryContextSchema, qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema,
+  repairPatchSchema, type FormalAuditResult, type FormalRepairInput, type FormalRepairRetryContext, type QualifiedRepairObservationResponse,
   type QualifiedRepairResponse, type RepairObservation, type RepairPatch,
 } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
@@ -20,6 +20,7 @@ type RepairOptions = {
   checkpointer: BaseCheckpointSaver;
   model: ModelAdapter;
   providerSha256: string;
+  previousVerification?: FormalRepairRetryContext;
   authorize: AgentHost['authorize'];
   readTargets(findingIds: readonly string[], signal: AbortSignal): Promise<QualifiedRepairObservationResponse>;
   apply(proposal: RepairProposal, signal: AbortSignal): Promise<QualifiedRepairResponse>;
@@ -67,12 +68,16 @@ function compileProposal(call: ApplyCall, observation: RepairObservation) {
   return patch && { patch, findingIds: [...findingIds].sort() };
 }
 
-export function createFormalRepair({ input, audit: rawAudit, checkpointer, model, providerSha256, authorize, readTargets, apply }: RepairOptions) {
+export function createFormalRepair({ input, audit: rawAudit, checkpointer, model, providerSha256, authorize, readTargets, apply,
+  previousVerification: previous }: RepairOptions) {
   const document = formalRepairInputSchema.parse(input.document);
   const audit = formalAuditResultSchema.parse(rawAudit);
   const { checklist } = audit;
   const { taskId, runId, projectId, generation, source, locale, catalogSha256, inspection } = document;
   const { snapshotSha256 } = inspection;
+  const previousVerification = formalRepairRetryContextSchema.optional().parse(previous);
+  if (previousVerification && (generation < 2 || previousVerification.previousRunId === runId
+      || previousVerification.candidateManifestSha256 === snapshotSha256)) throw new Error('formal_repair_retry_binding');
   if (input.sha256 !== sha256(JSON.stringify(document)) || document.audit.resultSha256 !== sha256(JSON.stringify(audit))
     || audit.status !== 'completed' || checklist?.coverage !== 'complete' || checklist.hypotheses.length
     || audit.checkpointId !== document.audit.checkpointId || audit.inputSha256 !== document.audit.inputSha256
@@ -118,6 +123,7 @@ export function createFormalRepair({ input, audit: rawAudit, checkpointer, model
       const proposal = entry?.data.kind === 'repair_targets' && entry.data.observation.repairInputSha256 === input.sha256
         ? compileProposal(call, entry.data.observation) : undefined;
       if (!proposal) return failure('invalid_proposal');
+      if (previousVerification?.patchSha256 === sha256(JSON.stringify(proposal.patch))) return failure('previous_failed_patch');
       const receipt = qualifiedRepairResponseSchema.parse(await apply({ callKeySha256: operationId, ...proposal }, signal));
       if (receipt.kind === 'rejected') return failure(rejectionCode(receipt));
       requireReceipt(receipt);
@@ -132,6 +138,7 @@ export function createFormalRepair({ input, audit: rawAudit, checkpointer, model
     baselineSha256: inspection.planSha256, goal: agentText(locale).formalRepair.goal, limits };
   const harness = createFormalRepairHarness({ model, checkpointer, host }, {
     inputSha256: input.sha256, providerSha256: shaSchema.parse(providerSha256), findings,
+    ...(previousVerification ? { previousVerification } : {}),
   });
   return { run: (options?: AgentRunOptions) => harness.run(spec, options) };
 }

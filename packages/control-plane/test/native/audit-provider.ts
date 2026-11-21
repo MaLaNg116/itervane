@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage } from 'node:http';
 import { agentText, type AgentEvidence } from '@itervane/agent';
+import { formalRepairRetryContextSchema } from '@itervane/contracts';
 import { verificationFixtureCall } from '../../../verification/src/agent/verification-fixture.js';
 
 export const auditFixtureKey = 'itervane-native-fixture';
@@ -17,7 +18,8 @@ async function auditContext(request: IncomingMessage) {
   const payload = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { model?: string; messages?: Array<{ role: string; content: unknown }> };
   const first = payload.messages?.[0];
   if (payload.model !== auditFixtureModel || first?.role !== 'user' || typeof first.content !== 'string') throw new Error('invalid fixture envelope');
-  const context = JSON.parse(first.content) as { observations: AgentEvidence[]; source?: unknown; role?: unknown; goal?: unknown };
+  const context = JSON.parse(first.content) as { observations: AgentEvidence[]; source?: unknown; role?: unknown; goal?: unknown;
+    handoff?: { findings?: Array<{ id: string; scanner: string; ruleId: string }>; previousVerification?: unknown } };
   if (context.source !== undefined || !Array.isArray(context.observations)) throw new Error('invalid fixture context');
   return context;
 }
@@ -39,7 +41,28 @@ function selectTool(observations: AgentEvidence[]) {
   } };
 }
 
-export async function auditProtocolFixture() {
+function selectRetryRepair(observations: AgentEvidence[], handoff: Awaited<ReturnType<typeof auditContext>>['handoff']) {
+  const candidate = observations.find(item => item.data.kind === 'repair_candidate');
+  if (candidate) return { name: 'finish_role', input: { evidenceId: candidate.id, summary: '已提交候选修改并等待独立复验。' } };
+  const finding = handoff?.findings?.find(item => item.scanner === 'gitleaks' && item.ruleId === 'generic-api-key');
+  if (!finding || handoff?.findings?.length !== 1) throw new Error('retry_fixture_finding');
+  const observation = observations.find(item => item.data.kind === 'repair_targets');
+  if (observation?.data.kind !== 'repair_targets') return { name: 'read_repair_targets', input: { findingIds: [finding.id] } };
+  const target = observation.data.observation.targets[0];
+  if (target?.findingId !== finding.id || !target.range) throw new Error('retry_fixture_range');
+  const { startByte, endByte } = target.range;
+  const previous = formalRepairRetryContextSchema.optional().parse(handoff?.previousVerification);
+  if (previous && (previous.failure.outcome !== 'checks_failed'
+      || !previous.failure.checks.some(check => check.id === 'health' && check.statusCode === 503))) throw new Error('retry_fixture_failure');
+  const replacement = previous
+    ? "    response.status(mode === 'healthy' ? 200 : 503).json({ status: mode, version });\n"
+    : "    response.status(503).json({ status: 'unhealthy', version });\n";
+  return { name: 'apply_repair_patch', input: { observationId: observation.id, targets: [{ targetIndex: 0,
+    edits: [{ startByte, endByte, replacement }],
+  }] } };
+}
+
+export async function auditProtocolFixture(options: { repairRetry?: boolean } = {}) {
   let failAfterObservation = false;
   const calls: string[] = [];
   const server = createServer(async (request, response) => {
@@ -48,14 +71,15 @@ export async function auditProtocolFixture() {
       if (request.method !== 'POST' || request.url !== '/v1/messages' || request.headers.authorization !== `Bearer ${auditFixtureKey}`) {
         throw new Error('unexpected fixture request');
       }
-      const { observations, role, goal } = await auditContext(request);
+      const { observations, role, goal, handoff } = await auditContext(request);
       if (failAfterObservation && observations.length) {
         calls.push('unavailable');
         response.writeHead(503).end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'fixture unavailable' } }));
         return;
       }
       const locale = goal === agentText('zh-CN').formalVerification.goal ? 'zh-CN' : 'en';
-      const selected = role === 'verify' ? verificationFixtureCall(observations, locale) : selectTool(observations);
+      const selected = role === 'verify' ? verificationFixtureCall(observations, locale)
+        : role === 'repair' && options.repairRetry ? selectRetryRepair(observations, handoff) : selectTool(observations);
       calls.push(selected.name);
       response.end(JSON.stringify({
         id: `msg_fixture_${calls.length}`, type: 'message', role: 'assistant', model: auditFixtureModel,

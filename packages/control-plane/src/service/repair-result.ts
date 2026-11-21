@@ -45,12 +45,14 @@ export async function publishFormalRepair(tx: Transaction, task: TaskRow, scope:
   if (!pointer || pointer.checkpointId !== report.checkpointId || pointer.inputSha256 !== input.sha256
       || report.runId !== scope.runId || report.origin !== 'formal_repair' || report.role !== 'repair'
       || (report.status !== 'completed' && report.status !== 'requires_human')) throw new DomainError('unavailable');
-  const result = report.status === 'completed' ? await recordedCandidate(tx, scope.runId, input.sha256, report) : null;
+  const candidate = report.status === 'completed' ? await recordedCandidate(tx, scope.runId, input.sha256, report) : null;
+  const repeated = candidate && input.retry && candidate.candidate.manifestSha256 === input.retry.previous.candidateManifestSha256;
+  const result = repeated ? null : candidate;
   const document = formalRepairResultSchema.parse({
     version: 1, taskId: task.id, runId: scope.runId, projectId: task.projectId, generation: scope.generation, locale: task.locale,
     inputSha256: input.sha256, checkpointId: pointer.checkpointId, auditResultSha256: input.document.audit.resultSha256,
     baseSnapshotSha256: input.document.inspection.snapshotSha256, provider, releaseEligible: report.releaseEligible, usage: report.usage,
-    status: result ? 'candidate_ready' : 'requires_human', reason: report.reason, candidate: result?.candidate ?? null,
+    status: result ? 'candidate_ready' : 'requires_human', reason: repeated ? 'repair_no_progress' : report.reason, candidate: result?.candidate ?? null,
   });
   const hash = sha256(JSON.stringify(document));
   await tx.insert(formalRepairResults).values({ runId: scope.runId, inputSha256: input.sha256, checkpointId: pointer.checkpointId,
