@@ -12,7 +12,7 @@ import {
   admissionDtoSchema, applicationDtoSchema, auditFindingsPerScan, environmentDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema,
   formalRepairDtoSchema, formalRepairPatchDtoSchema, idSchema, projectDtoSchema,
   formalRepairRetrySchema, formalVerificationInputSchema, formalVerificationResultSchema, qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
-  repositoryDtoSchema, sha256Schema, sourceInspectionDtoSchema,
+  repositoryDtoSchema, releaseRegistryImageProofSchema, sha256Schema, sourceInspectionDtoSchema,
   qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
   taskDtoSchema, taskEventDtoSchema, translate, type FormalAuditResult, type StandardVerificationProfile,
 } from '@itervane/contracts';
@@ -30,6 +30,7 @@ import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../v
 import { temporaryPostgres } from '../../../verification/src/postgres-fixture.js';
 import { sourceFingerprint } from '../../../verification/src/report.js';
 import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from './audit-provider.js';
+import type { RegistryImportMarker } from './release-recovery.js';
 import { temporaryRegistry } from './registry-fixture.js';
 
 const execute = promisify(execFile);
@@ -64,11 +65,11 @@ function exitStatus(child: ChildProcess) {
   });
 }
 
-async function firstLine(child: ChildProcess) {
+async function firstLine(child: ChildProcess, timeoutMs = 8_000) {
   if (!child.stdout) throw new Error('probe_stdout');
   const lines = createInterface({ input: child.stdout });
   try {
-    const [first] = await once(lines, 'line', { signal: AbortSignal.timeout(8_000) });
+    const [first] = await once(lines, 'line', { signal: AbortSignal.timeout(timeoutMs) });
     return String(first);
   } finally { lines.close(); child.stdout.resume(); }
 }
@@ -118,19 +119,25 @@ async function startWorker(bundle: string, socket: string, controllerUid: string
   } catch (error) { child.kill(); await boundedExit(child, exit, 5_000); throw error; }
 }
 
-async function runScopedFixtureWorker(bundle: string, socket: string, controllerUid: string, image: string,
-  databaseUrl: string, probe: 'repair' | 'verification', args: string[]) {
+function launchScopedFixtureWorker(bundle: string, socket: string, controllerUid: string, image: string,
+  databaseUrl: string, args: string[]) {
   const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', ...sourceWorkerEnvironment(socket, controllerUid, image),
     '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c', 'set -eu; IFS= read -r DATABASE_URL; export DATABASE_URL; exec "$@"',
     'itervane-fixture-worker', process.execPath, bundle, ...args,
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
   const exit = exitStatus(child);
+  child.stdin.on('error', () => undefined);
+  child.stdin.end(databaseUrl + '\n');
+  return { child, exit };
+}
+
+async function runScopedFixtureWorker(bundle: string, socket: string, controllerUid: string, image: string,
+  databaseUrl: string, probe: 'repair' | 'verification', args: string[]) {
+  const { child, exit } = launchScopedFixtureWorker(bundle, socket, controllerUid, image, databaseUrl, args);
   let diagnostic = '';
   child.stderr.on('data', (chunk: Buffer) => {
     if (probe === 'verification' && diagnostic.length < 256) diagnostic += chunk.subarray(0, 256).toString('utf8');
   });
-  child.stdin.on('error', () => undefined);
-  child.stdin.end(databaseUrl + '\n');
   let size = 0;
   const output: Buffer[] = [];
   const limit = probe === 'verification' ? 2 * 1024 * 1024 : 32768;
@@ -142,6 +149,36 @@ async function runScopedFixtureWorker(bundle: string, socket: string, controller
   const status = await boundedExit(child, exit, probe === 'repair' ? 385_000 : 205_000);
   if (status !== 0 || size > limit) throw new Error(/\bverification_fixture_phase_[a-z_]{1,56}\b/.exec(diagnostic)?.[0] ?? 'scoped_fixture_worker_failed');
   return JSON.parse(Buffer.concat(output).toString('utf8'));
+}
+
+async function killAfterRegistryImport(bundle: string, socket: string, controllerUid: string, image: string,
+  databaseUrl: string, operationId: string, registryOrigin: string, materializer: string) {
+  const { child, exit } = launchScopedFixtureWorker(bundle, socket, controllerUid, image, databaseUrl,
+    ['interrupt-registry-import', operationId, registryOrigin, materializer]);
+  child.stderr.resume();
+  let markedPid: number | undefined;
+  let stopped = false;
+  const kill = (pid: number) => execute('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/bin/kill', '-KILL', String(pid)], { timeout: 5_000 });
+  try {
+    const line = await Promise.race([firstLine(child, 205_000), exit.then(() => { throw new Error('registry_worker_exited_before_import'); })]);
+    const marker = JSON.parse(line) as RegistryImportMarker;
+    ok(Number.isSafeInteger(marker.pid) && marker.pid > 1 && marker.pid <= 2_147_483_647);
+    markedPid = marker.pid;
+    equal(marker.operationId, operationId);
+    ok(Number.isSafeInteger(marker.fence) && marker.fence > 0);
+    equal(marker.stagingEmpty, true);
+    const imported = releaseRegistryImageProofSchema.parse(marker.imported);
+    await kill(markedPid);
+    notEqual(await boundedExit(child, exit, 15_000), 0);
+    stopped = true;
+    return { ...marker, imported };
+  } finally {
+    if (!stopped) {
+      if (markedPid) await kill(markedPid).catch(() => undefined);
+      else child.kill();
+      await boundedExit(child, exit, 5_000).catch(() => undefined);
+    }
+  }
 }
 
 async function runRepairWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string, args: string[],
@@ -525,17 +562,51 @@ async function probe() {
           decisionVersion: scope.decisionVersion, fence: scope.fence, archiveSha256: authority.archiveVerification.archive.sha256,
           wokeAgain: true, staleWakeupDenied: true };
         phase = 'standard_formal_release_archive_transport';
-        const transferred = await runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
-          'verification', ['read-approved-archive', operationId, registry.origin, join(dirname(bundle), 'release-tools/materialize_oci.py')]);
-        const { registry: imported, registryReadOnly, ...transport } = transferred;
+        const transport = await runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+          'verification', ['read-approved-archive', operationId, registry.origin]);
         const { archive, manifestDigest, configDigest } = candidate.manifest.image;
         deepStrictEqual(transport, { operationId, fingerprint: candidate.fingerprint, archiveSha256: archive.sha256,
-          bytes: archive.bytes, wrongRunnerDenied: true, wrongSizeDenied: true, revokedDenied: true, stagedFilesRemaining: false });
-        deepStrictEqual(imported, { registryOrigin: registry.origin, repository: 'testing/standard',
-          reference: `${new URL(registry.origin).host}/testing/standard@${manifestDigest}`, archive, manifestDigest, configDigest });
-        deepStrictEqual(registryReadOnly, { initiallyAbsent: true, matchedAfterCleanup: true });
+          bytes: archive.bytes, wrongRunnerDenied: true, wrongSizeDenied: true, revokedDenied: true, stagedFilesRemaining: false,
+          registryInitiallyAbsent: true });
+        phase = 'standard_registry_import_interruption';
+        const interrupted = await killAfterRegistryImport(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+          operationId, registry.origin, join(dirname(bundle), 'release-tools/materialize_oci.py'));
+        const pinnedImage = { registryOrigin: registry.origin, repository: 'testing/standard',
+          reference: `${new URL(registry.origin).host}/testing/standard@${manifestDigest}`, archive, manifestDigest, configDigest };
+        deepStrictEqual(interrupted.imported, pinnedImage);
+        ok(interrupted.fence > scope.fence);
+        const readRegistryIntent = async () => (await db.storage.pool.query<{
+          state: string; prepared_fence: number; settled_fence: number | null; proof: unknown;
+        }>("SELECT state,prepared_fence,settled_fence,proof FROM itervane.formal_release_steps WHERE operation_id=$1 AND kind='registry'",
+          [operationId])).rows;
+        deepStrictEqual(await readRegistryIntent(), [{ state: 'prepared', prepared_fence: interrupted.fence, settled_fence: null, proof: null }]);
+        await poll(async () => {
+          const [row] = (await db.storage.pool.query<{ expired: boolean }>(
+            'SELECT lease_until<=clock_timestamp() AS expired FROM itervane.execution_slot WHERE task_id=$1 AND fence=$2',
+            [current.id, interrupted.fence])).rows;
+          return row?.expired ? true : undefined;
+        }, 12_000, 'registry_worker_lease_expiry');
+        phase = 'standard_registry_recovery';
+        const resumed = await runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+          'verification', ['recover-registry-import', operationId, registry.origin]);
+        equal(resumed.operationId, operationId);
+        equal(resumed.observations, 1);
+        ok(resumed.fence > interrupted.fence);
+        deepStrictEqual(resumed.proof, pinnedImage);
+        const settled = await readRegistryIntent();
+        equal(settled.length, 1);
+        equal(settled[0]?.state, 'confirmed');
+        equal(settled[0]?.prepared_fence, interrupted.fence);
+        equal(settled[0]?.settled_fence, resumed.fence);
+        deepStrictEqual(releaseRegistryImageProofSchema.parse(settled[0]?.proof), pinnedImage);
+        const [held] = (await db.storage.pool.query(
+          'SELECT state,wakeup_job_id FROM itervane.release_operations WHERE id=$1', [operationId])).rows;
+        deepStrictEqual(held, { state: 'dispatching', wakeup_job_id: null });
         await assertDrained(controllerUid, staging);
-        retry = { before, after, retrySha256, generation: handoff.generation, candidate, claim, archiveTransport: transferred,
+        retry = { before, after, retrySha256, generation: handoff.generation, candidate, claim,
+          archiveTransport: { ...transport, registry: resumed.proof, registryReadOnly: { initiallyAbsent: true, matchedAfterCleanup: true } },
+          registryRecovery: { operationId, preparedFence: interrupted.fence, observedFence: resumed.fence,
+            observations: resumed.observations, writeIntents: settled.length, killedBeforeCommit: true, stagingEmpty: interrupted.stagingEmpty },
           approval: { operationId, decisionVersion: confirmed.decisionVersion } };
       }
       return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
