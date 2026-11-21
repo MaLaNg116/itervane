@@ -13,7 +13,7 @@
 ## 验收记录
 
 - TypeScript 检查、基线探针语法检查、Bash 脚本语法检查和 50 项 Runner 宿主测试通过。
-- PostgreSQL 专项 2 项通过，覆盖构建和基线回执的错绑拒绝与匹配回执的持久化重读。
+- 119 项 PostgreSQL 集成通过，包含构建和基线回执的错绑拒绝与匹配回执的持久化重读。托管 [Verification](https://github.com/MaLaNg116/itervane/actions/runs/44894586749) 完成确定性测试、门户和扫描器三组检查。
 - 固定健康候选为 `3a719ca44f306d30cdf2d27e9a6d3b954ed656f0`，健康回归候选为 `1eac5c8776c6e81613cfb5adf6edd2cd6b163ba3`。托管 KVM 验收结果待核对和归档。
 
 后续依赖为 OCI 产物及其扫描、正式复验 Agent 集成、候选审批后的 Komodo 发布。应用私有回环中的 HTTP 检查仅覆盖固定标准应用运行范围。
