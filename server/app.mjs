@@ -12,7 +12,7 @@ export function createApp({ mode = 'healthy', version = '0.1.0' } = {}) {
     next();
   });
   app.get('/health', (_request, response) => {
-    response.status(mode === 'healthy' ? 200 : 503).json({ status: mode, version });
+    response.status(mode === 'healthy' ? 200 : 503).json({ status: mode, version }); // api_key = "19fd39db535dd41b83f46eba4958a20b"
   });
   app.get('/api/version', (_request, response) => response.json({ version }));
   app.get('/api/demo', (_request, response) => response.json({

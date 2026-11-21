@@ -42,3 +42,7 @@ pnpm exec tsx scripts/prepare-runner-build-dependencies.ts "$fixture_staging/ite
 ```
 
 预取逐包核对锁定的公开 registry 地址和 SHA-512，使用 npm 生成可校验缓存，并记录包清单和锁文件摘要。实际项目依赖安装、构建和运行仍由后续隔离 Runner 验收。
+
+## 两次修复的验收样例
+
+健康检查代码行包含供扫描器识别的合成内容。原生试验对这一行执行两次受限修改。第一次引入 HTTP 503，第二次清除扫描发现并恢复受保护的健康检查。
