@@ -6,6 +6,8 @@ on:
     paths:
       - '.github/workflows/native-komodo.yml'
       - 'fixtures/komodo/**'
+      - 'packages/contracts/src/release.ts'
+      - 'packages/control-plane/src/runtime/release-komodo.ts'
       - 'packages/verification/src/native/komodo*.ts'
       - 'packages/verification/src/entries/komodo-native.ts'
       - 'packages/verification/src/report.ts'

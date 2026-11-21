@@ -39,3 +39,5 @@ Registry 来源由安装维护者配置，镜像仓库名沿用任务目标登�
 正式消费者的锁顺序、认领、恢复和测试安排见 [C3-B 队列与执行权计划](p2-e-formal-release-claim.md)。
 
 归档及 Registry 的步骤记录、写入前后边界和中断恢复见 [C3-C 发布步骤计划](p2-e-formal-release-registry-steps.md)。
+
+Komodo 目标登记、有限接口与独立派发意图见 [C4 正式派发计划](p2-e-formal-komodo-target.md)。

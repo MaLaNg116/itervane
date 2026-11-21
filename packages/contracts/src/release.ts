@@ -9,26 +9,32 @@ import { qualifiedImageArchiveSchema } from './qualified-standard-image.js';
 const version = z.number().int().min(0).max(2_147_483_647);
 const timestamp = z.iso.datetime({ precision: 3 });
 const imageDigest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-const komodoId = z.string().regex(/^[a-f0-9]{24}$/);
+export const komodoResourceIdSchema = z.string().regex(/^[a-f0-9]{24}$/);
 const imageSeverity = z.enum(['critical', 'high', 'medium', 'low', 'unknown']);
 const imageBlockers = z.array(imageSeverity).min(1).max(5)
   .refine(values => new Set(values).size === values.length).transform(values => [...values].sort());
 
-export const releaseRegistryOriginSchema = z.string().max(2048).transform((input, context) => {
-  const url = URL.parse(input);
-  const loopback = url?.protocol === 'http:' && url.hostname === '127.0.0.1' && url.port;
-  if (!url || url.username || url.password || url.pathname !== '/' || url.search || url.hash
-      || (!loopback && url.protocol !== 'https:')) {
-    context.addIssue({ code: 'custom', message: 'Expected a bare HTTPS Registry origin or an explicit loopback endpoint' });
-    return z.NEVER;
-  }
-  return url.origin;
-});
+function releaseServiceOrigin(service: string) {
+  return z.string().max(2048).transform((input, context) => {
+    const url = URL.parse(input);
+    const loopback = url?.protocol === 'http:' && url.hostname === '127.0.0.1' && url.port;
+    if (!url || url.username || url.password || url.pathname !== '/' || url.search || url.hash
+        || (!loopback && url.protocol !== 'https:')) {
+      context.addIssue({ code: 'custom', message: `Expected a bare HTTPS ${service} origin or an explicit loopback endpoint` });
+      return z.NEVER;
+    }
+    return url.origin;
+  });
+}
+
+export const releaseRegistryOriginSchema = releaseServiceOrigin('Registry');
+export const releaseKomodoOriginSchema = releaseServiceOrigin('Komodo');
 
 export const formalReleaseTargetSchema = z.strictObject({
-  environmentId: idSchema, deploymentId: komodoId, serverId: komodoId,
+  environmentId: idSchema, deploymentId: komodoResourceIdSchema, serverId: komodoResourceIdSchema,
   imageRepository: z.string().max(180).regex(/^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$/),
   registryOrigin: releaseRegistryOriginSchema.optional(),
+  komodo: z.strictObject({ origin: releaseKomodoOriginSchema, actorId: komodoResourceIdSchema }).optional(),
   runtimeConfigSha256: sha256Schema, verificationProfileSha256: sha256Schema,
   rolloutCheckSha256: sha256Schema, recoveryPlanSha256: sha256Schema,
   blockImageSeverities: imageBlockers.default(['critical', 'high', 'unknown']),

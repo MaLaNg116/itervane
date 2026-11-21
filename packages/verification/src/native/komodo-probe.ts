@@ -5,6 +5,9 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { localeSchema, type Check } from '@itervane/contracts';
 import { z } from 'zod';
+import {
+  KomodoReleaseClient, KomodoReleaseError, komodoRuntimeConfigSha256, type KomodoReleaseTarget,
+} from '../../../control-plane/src/runtime/release-komodo.js';
 import { report } from '../report.js';
 import { deployment, dockerDigest, KomodoError, KomodoNativeClient, komodoVersion, loginLocalAdmin, observeUpdate, readBounded, requestDeploy, resource } from './komodo.js';
 
@@ -123,7 +126,9 @@ async function bootstrap(password: string, sample: Manifest, name: string, mark:
   try {
     await client.call('read', 'GetDeployment', { deployment: foreign._id.$oid }, z.unknown());
   } catch (error) {
-    if (error instanceof KomodoError && error.reason === 'permission') return { client, target };
+    if (error instanceof KomodoError && error.reason === 'permission') {
+      return { client, target, credentials, foreignId: foreign._id.$oid };
+    }
     if (error instanceof KomodoError) throw new KomodoError('UnrelatedTargetForbidden', error.reason, error.status);
     throw error;
   }
@@ -190,10 +195,65 @@ async function deployFixture(
   }
 }
 
+async function expectReleaseRejection(step: KomodoReleaseError['step'], reason: KomodoReleaseError['reason'],
+  exercise: () => Promise<unknown>) {
+  try { await exercise(); }
+  catch (error) {
+    if (!(error instanceof KomodoReleaseError) || error.step !== step || error.reason !== reason) throw error;
+    if (reason === 'http' && error.statusCode !== 403 && error.statusCode !== 500) throw error;
+    return;
+  }
+  throw new KomodoError(step, 'binding');
+}
+
+async function verifyFormalAdapter(setup: Awaited<ReturnType<typeof bootstrap>>, mark: string, previous: Manifest,
+  approved: Manifest, previousContainer?: string) {
+  const { client, target, credentials, foreignId } = setup;
+  const native = await client.call('read', 'GetDeployment', { deployment: target.id }, z.unknown());
+  const binding = {
+    deploymentId: target.id, serverId: target.server, imageRepository: 'itervane-fixture',
+    registryOrigin: 'http://' + registry, runtimeConfigSha256: komodoRuntimeConfigSha256(native),
+    komodo: { origin: coreOrigin, actorId: target.actor },
+  } satisfies KomodoReleaseTarget;
+  const adapter = new KomodoReleaseClient(coreOrigin, { ...credentials, actorId: target.actor });
+  const authorize = async () => {};
+  const attempt = { previousImage: previous.reference, manifestDigest: approved.digest };
+  const initial = await adapter.inspectTarget(binding, authorize);
+  if (initial.imageReference !== previous.reference) throw new KomodoError('FormalAdapterPreviousImage', 'binding');
+  await expectReleaseRejection('target', 'binding', () =>
+    adapter.inspectTarget({ ...binding, komodo: { ...binding.komodo, origin: 'http://127.0.0.1:49121' } }, authorize));
+  await expectReleaseRejection('target', 'binding', () =>
+    adapter.inspectTarget({ ...binding, komodo: { ...binding.komodo, actorId: foreignId } }, authorize));
+  await expectReleaseRejection('GetDeployment', 'binding', () =>
+    adapter.inspectTarget({ ...binding, serverId: foreignId }, authorize));
+  await expectReleaseRejection('GetDeployment', 'binding', () =>
+    adapter.configureImage({ ...binding, runtimeConfigSha256: '0'.repeat(64) }, attempt, authorize));
+  await expectReleaseRejection('GetDeployment', 'http', () =>
+    adapter.inspectTarget({ ...binding, deploymentId: foreignId }, authorize));
+  await expectReleaseRejection('UpdateDeployment', 'binding', () =>
+    adapter.configureImage(binding, { ...attempt, previousImage: approved.reference }, authorize));
+  await expectReleaseRejection('Deploy', 'binding', () => adapter.dispatch(binding, approved.digest, authorize));
+  const configured = await adapter.configureImage(binding, attempt, authorize);
+  if (configured.imageReference !== approved.reference) throw new KomodoError('FormalAdapterConfiguredImage', 'binding');
+  const { updateId } = await adapter.dispatch(binding, approved.digest, authorize);
+  const result = await waitFor('FormalAdapterUpdate', async () => {
+    const update = await adapter.observeUpdate(binding, updateId, authorize);
+    return update.status === 'Complete' ? update : undefined;
+  }, 65_000);
+  if (!result.success) throw new KomodoError('FormalAdapterUpdate', 'response');
+  const mismatch = new KomodoReleaseClient(coreOrigin, { ...credentials, actorId: foreignId });
+  await expectReleaseRejection('GetUpdate', 'binding', () =>
+    mismatch.observeUpdate({ ...binding, komodo: { ...binding.komodo, actorId: foreignId } }, updateId, authorize));
+  return { updateId, runtimeConfigSha256: binding.runtimeConfigSha256,
+    observed: await waitFor('FormalAdapterFixture', () => observeFixture(target.name, mark, approved, previousContainer), 12_000) };
+}
+
 const text = {
   environment: ['Run the trusted fixture on a dedicated GitHub-hosted Linux x64 runner.', '请使用独立的 GitHub 托管 Linux x64 工作机运行可信样例。'],
   authorized: ['Periphery connected; service access was confined by native resource permissions.', 'Periphery 已连接，原生权限按资源约束了服务身份访问。'],
   match: ['Native update, OCI manifest, running image and HTTP health matched.', '原生操作、OCI manifest、实际运行镜像和 HTTP 健康响应一致。'],
+  formal: ['The release adapter enforced target and update bindings and verified the fixture.',
+    '正式发布适配器校验了目标与更新绑定，并核对了实际样例。'],
   cleaned: ['Removed the owned fixture and temporary Compose resources.', '本轮样例和临时 Compose 资源已清理。'],
   failure: ['Verification interrupted at', '验证中止于'],
 } as const;
@@ -231,7 +291,8 @@ export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
     const a = await publishFixture('a');
     const b = await publishFixture('b');
     if (a.digest === b.digest || a.config === b.config) throw new KomodoError('FixtureVersions', 'binding');
-    const { client, target } = await bootstrap(adminPassword, a, name, mark);
+    const setup = await bootstrap(adminPassword, a, name, mark);
+    const { client, target } = setup;
     checks.push({ id: 'native-komodo-identity', status: 'passed', detail: 'Komodo ' + komodoVersion + '. ' + text.authorized[lang] });
     const seen = new Set<string>();
     let previous = a;
@@ -245,10 +306,14 @@ export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
       checks.push({ id, status: 'passed', detail: text.match[lang]
         + ' Update=' + result.updateId + ' OCI=' + manifest.digest + ' Image=' + result.observed.Image + '.' });
     }
+    const release = await verifyFormalAdapter(setup, mark, a, b, previousContainer);
+    if (seen.has(release.updateId)) throw new KomodoError('FormalAdapterDistinctUpdate', 'binding');
+    checks.push({ id: 'formal-komodo-adapter', status: 'passed', detail: text.formal[lang] + ' Update=' + release.updateId
+      + ' OCI=' + b.digest + ' Image=' + release.observed.Image + ' Runtime=' + release.runtimeConfigSha256 + '.' });
   } catch (error) {
     const reason = error instanceof KomodoError
       ? error.step + ' (' + error.reason + (error.status ? ', HTTP ' + error.status : '') + ')'
-      : 'FixtureEvidence';
+      : error instanceof KomodoReleaseError ? error.step + ' (' + error.reason + ')' : 'FixtureEvidence';
     checks.push({ id: 'native-verification', status: 'failed', detail: text.failure[lang] + ' ' + reason + '.' });
   } finally {
     let cleanupFailed = false;
