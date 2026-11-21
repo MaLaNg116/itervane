@@ -9,4 +9,6 @@
 
 本机 TypeScript、163 项单元与两项浏览器专项通过。首轮真实 PostgreSQL 集成的新增覆盖通过，共 137 项通过，现有 Agent 检查点续跑用例返回 `requires_human`。固定 `d718aa1e5c5dd156ba42a559f73d8f4f55ca9c48` 全量复跑 138 项通过，源码指纹为 `56747ad6a4b9fc4a14d2d38b01fbde23b78cd5c651dd6be5735331539afbe472`。该次波动的原因仍待确认。 [PR #42](https://github.com/MaLaNg116/itervane/pull/42) · [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44917062529)
 
+常规 CI 与四组 KVM 通过。OCI 和源代码回归工件的源码指纹一致，第二代正式候选、决定版本 1 和独立归档核对相互对应，宿主暂存已清空。#42 以 `ee8525d09d60af4885073c01e468618565549bad` 合入 main。
+
 蓝图中的外部 MCP 发布申请继续复用冻结命令。E-C 和 E-D 负责制品导入、Komodo 执行、对端核对与 P2 真实出口。
