@@ -81,7 +81,8 @@ export class ReleaseRegistryPublisher {
   readonly #authorization?: string;
 
   constructor(config: RegistryConfiguration, tools: RegistryTools) {
-    const url = new URL(config.origin);
+    const url = URL.parse(config.origin);
+    if (!url) throw new Error('invalid_release_registry');
     const credentials = config.credentials && credentialsSchema.parse(config.credentials);
     const loopbackFixture = url.protocol === 'http:' && url.hostname === '127.0.0.1' && url.port && !credentials;
     if (url.username || url.password || url.pathname !== '/' || url.search || url.hash
