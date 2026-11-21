@@ -8,6 +8,6 @@
 4. `492a7b2` 为构建证据增加 PostgreSQL 约束。构建请求缺证或更换候选及基线时不能保存正式回执。旧的复扫记录仍按原有范围验证。 [迁移](https://github.com/MaLaNg116/itervane/blob/492a7b2/packages/control-plane/migrations/0021_formal_standard_build_evidence.sql) · [真实事务回归](https://github.com/MaLaNg116/itervane/blob/492a7b2/packages/control-plane/test/integration/inspections.test.ts)
 5. `e598d45` 把标准应用、锁文件漂移和缓存缺失分别纳入托管原生验收。测试使用真实审计 Worker、有限的固定样例、PostgreSQL 租约和专用宿主账户。以复验回执与宿主域清理核对对应结果。 [验收入口](https://github.com/MaLaNg116/itervane/blob/e598d45/.github/workflows/native-runner.yml) · [版本固定的标准应用](https://github.com/MaLaNg116/itervane/tree/3a719ca44f306d30cdf2d27e9a6d3b954ed656f0) · [锁文件漂移对照](https://github.com/MaLaNg116/itervane/tree/03e5d18a27d23960f040c0d5d70afefac15ec46e)
 
-本地严格类型检查、48 项宿主测试以及 PostgreSQL 构建证据专项通过。标准样例锁文件的真实 Trivy 离线检查无发现。实际安装和构建验收以托管 KVM 产物为依据。
+本地严格类型检查、156 项 Linux 单元、48 项宿主和 118 项 PostgreSQL 集成通过。标准样例锁文件的真实 Trivy 离线检查无发现。配方、基线和 91 份依赖制品已在可信准备环境封存。实际安装和构建验收以托管 KVM 产物为依据。 [托管任务](https://github.com/MaLaNg116/itervane/actions/runs/44892525169) · [草稿](https://github.com/MaLaNg116/itervane/pull/28)
 
 C2-C 接入同一候选上的 HTTP 基线运行和退出清理。C3 绑定最终镜像及其扫描。生产复验 Worker 和真实发布继续由各自阶段验收。 [P2-D3 完整计划](../plans/p2-d3-formal-verification.md)
