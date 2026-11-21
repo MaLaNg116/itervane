@@ -1,11 +1,15 @@
 import gzip
 import hashlib
+import io
 import json
 import os
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
 
+from materialize_oci import materialize
+from oci_guest import archive_image
 from oci_layout import CONFIG, LAYER, MANIFEST, verify_layout
 
 
@@ -84,3 +88,40 @@ class OciLayoutTest(unittest.TestCase):
         self.write_image()
         with self.assertRaisesRegex(ValueError, "invalid OCI platform"):
             verify_layout(self.layout)
+
+    def test_materializes_the_qualified_archive_and_verifies_the_frozen_coordinates(self):
+        image = verify_layout(self.layout)
+        archive = self.layout / "qualified.oci.tar"
+        descriptor = archive_image(self.layout, archive, image)
+        staged = self.layout / "release"
+        evidence = materialize(archive, staged, descriptor, image.manifest_digest, image.config_digest)
+        self.assertEqual(evidence, {"manifestDigest": image.manifest_digest, "configDigest": image.config_digest})
+        self.assertEqual(verify_layout(staged), image)
+
+        with self.assertRaisesRegex(ValueError, "frozen descriptor"):
+            materialize(archive, self.layout / "wrong-file", {**descriptor, "sha256": "0" * 64},
+                        image.manifest_digest, image.config_digest)
+        self.assertFalse((self.layout / "wrong-file").exists())
+        with self.assertRaisesRegex(ValueError, "approved image"):
+            materialize(archive, self.layout / "wrong-config", descriptor, image.manifest_digest, "sha256:" + "0" * 64)
+
+    def test_materializer_refuses_noncanonical_members_even_with_matching_archive_digest(self):
+        image = verify_layout(self.layout)
+        for index, name in enumerate(["../escaped", "index.json", "blobs/sha256/" + "0" * 64]):
+            archive = self.layout / f"invalid-{index}.oci.tar"
+            descriptor = archive_image(self.layout, archive, image)
+            archive.chmod(0o600)
+            with tarfile.open(archive, "a") as output:
+                entry = tarfile.TarInfo(name)
+                if index == 2:
+                    entry.type = tarfile.SYMTYPE
+                    entry.linkname = "../outside"
+                    output.addfile(entry)
+                else:
+                    entry.size = 1
+                    output.addfile(entry, io.BytesIO(b"x"))
+            with archive.open("rb") as file:
+                modified = {**descriptor, "bytes": archive.stat().st_size, "sha256": hashlib.file_digest(file, "sha256").hexdigest()}
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "unexpected OCI archive entry"):
+                materialize(archive, self.layout / f"blocked-{index}", modified, image.manifest_digest, image.config_digest)
+        self.assertFalse((self.layout / "escaped").exists())
