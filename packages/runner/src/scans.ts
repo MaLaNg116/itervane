@@ -12,7 +12,7 @@ export type ScanSummary = {
   reason: 'timeout' | 'scanner_error' | 'invalid_report' | 'missing_inventory' | 'database_unavailable' | 'empty_source' | null;
   findings: Finding[]; database: { sha256: string; updatedAt: string } | null;
 };
-type Input = { manifest: SourceManifest; report: string; exitCode: number | null; timedOut?: boolean; sourceRoot?: string;
+type Input = { manifest: Pick<SourceManifest, 'sha256' | 'files'>; report: string; exitCode: number | null; timedOut?: boolean; sourceRoot?: string;
   database?: { sha256: string; updatedAt: string }; now?: number };
 const record = z.record(z.string(), z.unknown());
 const severity = z.enum(['unknown', 'low', 'medium', 'high', 'critical']);

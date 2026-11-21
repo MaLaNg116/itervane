@@ -1,13 +1,15 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { constants, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { constants, lstatSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { sha256Schema } from '@itervane/contracts';
+import { qualifiedGuestVerificationProofSchema, sha256Schema } from '@itervane/contracts';
 import { z } from 'zod';
 import { exerciseGuestRepair } from './guest-repair-fixture.js';
+import { readGuestCandidate } from './guest-repair.js';
 import { readBoundedFile, readGuestSnapshot } from './guest-snapshot.js';
+import { readGuestVerificationSource } from './guest-verification-source.js';
 import { scannerCommands, scannerProfiles, sha256 } from './profiles.js';
 import { normalizeScan, type ScanSummary } from './scans.js';
 
@@ -92,6 +94,56 @@ function readScanReport(output: string, scanner: Scanner) {
   catch { return ''; }
 }
 
+type ScanManifest = Parameters<typeof normalizeScan>[1]['manifest'];
+
+function scanTree(scanner: Scanner, ready: string, tools: string, output: string, manifest: ScanManifest, inputs: InspectionInputs) {
+  const database = scanner === 'trivy' ? { sha256: inputs.databaseSha256, updatedAt: inputs.databaseUpdatedAt } : undefined;
+  const result = invoke(scanner, tools, ready, output, database ? join(tools, 'cache') : undefined);
+  return normalizeScan(scanner, { manifest, exitCode: result.code, sourceRoot: result.sourceRoot,
+    timedOut: result.timedOut, report: readScanReport(output, scanner), ...(database ? { database } : {}),
+  });
+}
+
+function scanVerificationTree(ready: string, tools: string, manifest: ScanManifest, inputs: InspectionInputs) {
+  const output = mkdtempSync(join(tmpdir(), 'itervane-raw-scan-'));
+  try {
+    return [scanTree('gitleaks', ready, tools, output, manifest, inputs), scanTree('trivy', ready, tools, output, manifest, inputs)];
+  } finally { rmSync(output, { recursive: true, force: true }); }
+}
+
+export async function inspectVerificationSnapshots(source: string, tools: string) {
+  const { command, fixed } = readGuestVerificationSource(source);
+  const { input } = command;
+  const { runId, manifest } = fixed;
+  const { inputs, inputsSha256 } = await verifyInputs(tools);
+  if (inputsSha256 !== input.profile.scannerInputsSha256) throw new Error('scan-inputs');
+  const ready = join(source, 'ready');
+  const candidate = join(source, 'candidate');
+  const reports = scanVerificationTree(ready, tools, manifest, inputs);
+  let target = null;
+  if (input.subject.kind === 'repair') {
+    const expected = input.subject.manifestSha256;
+    const changed = readGuestCandidate(candidate, expected).manifest;
+    if (changed.source.repositoryId !== manifest.source.repositoryId || changed.source.commit !== manifest.source.commit
+      || changed.baseSnapshotSha256 !== manifest.sha256 || changed.files.length !== manifest.files.length) throw new Error('scan-integrity');
+    target = {
+      manifestSha256: expected, totalBytes: changed.totalBytes, patchSha256: input.subject.patchSha256,
+      reports: scanVerificationTree(candidate, tools, { sha256: expected, files: changed.files }, inputs),
+    };
+    readGuestCandidate(candidate, expected);
+  } else if (lstatSync(candidate, { throwIfNoEntry: false })) {
+    throw new Error('scan-integrity');
+  }
+  const checked = readGuestSnapshot(ready);
+  if (checked.runId !== runId || checked.mode !== 'verification' || checked.manifest.sha256 !== manifest.sha256
+      || await fileDigest(join(tools, 'cache/db/trivy.db'), MAX_DATABASE_BYTES) !== inputs.databaseSha256) throw new Error('scan-integrity');
+  return qualifiedGuestVerificationProofSchema.parse({
+    runId, repositoryId: manifest.source.repositoryId, commit: manifest.source.commit, tree: manifest.tree, manifestSha256: manifest.sha256,
+    files: manifest.files.length, totalBytes: manifest.totalBytes, inputsSha256, readOnly: true, offline: true,
+    verificationInputSha256: command.inputSha256, commandSha256: sha256(command.bytes), reports, target,
+  });
+}
+
 function fixtureControls(gitleaks: ScanSummary, trivy: ScanSummary) {
   const secret = (variant: string) => gitleaks.findings.some(finding => finding.path === `${controls}/${variant}/config.txt`);
   const vulnerability = (variant: string) => trivy.findings.some(finding => finding.ruleId === expectedCve
@@ -111,9 +163,7 @@ export async function inspectGuestSnapshot(ready: string, tools: string) {
   const { inputs, inputsSha256 } = await verifyInputs(tools);
   const output = mkdtempSync(join(tmpdir(), 'itervane-raw-scan-'));
   try {
-    const gitleaksResult = invoke('gitleaks', tools, ready, output);
-    const gitleaks = normalizeScan('gitleaks', { manifest, exitCode: gitleaksResult.code, sourceRoot: gitleaksResult.sourceRoot,
-      timedOut: gitleaksResult.timedOut, report: readScanReport(output, 'gitleaks') });
+    const gitleaks = scanTree('gitleaks', ready, tools, output, manifest, inputs);
     if (mode === 'fixture') {
       if (gitleaks.status !== 'completed') throw new Error('scan-gitleaks');
       const missing = join(output, 'missing-cache');
@@ -122,10 +172,7 @@ export async function inspectGuestSnapshot(ready: string, tools: string) {
       if (rejected.code !== 1 || rejected.timedOut) throw new Error('scan-trivy');
     }
 
-    const trivyResult = invoke('trivy', tools, ready, output, join(tools, 'cache'));
-    const trivy = normalizeScan('trivy', { manifest, exitCode: trivyResult.code, sourceRoot: trivyResult.sourceRoot,
-      timedOut: trivyResult.timedOut, report: readScanReport(output, 'trivy'),
-      database: { sha256: inputs.databaseSha256, updatedAt: inputs.databaseUpdatedAt } });
+    const trivy = scanTree('trivy', ready, tools, output, manifest, inputs);
     const checked = readGuestSnapshot(ready);
     if (await fileDigest(join(tools, 'cache/db/trivy.db'), MAX_DATABASE_BYTES) !== inputs.databaseSha256
         || checked.runId !== runId || checked.mode !== mode || checked.manifest.sha256 !== manifest.sha256) throw new Error('scan-integrity');

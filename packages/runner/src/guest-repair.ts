@@ -1,4 +1,4 @@
-import { linkSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   qualifiedGuestRepairProofSchema, repairCandidateManifestSchema, repairCandidateReceiptSchema, repairCommandByteLimit, repairCommandSchema,
@@ -83,10 +83,14 @@ export function readGuestCandidate(ready: string, expectedManifestSha256: string
   return { manifest, files };
 }
 
-function publishCandidate(output: string, snapshot: ReturnType<typeof readGuestSnapshotData>, command: RepairCommand) {
+function publishCandidate(output: string, snapshot: ReturnType<typeof readGuestSnapshotData>, command: RepairCommand,
+  expectedManifestSha256?: string) {
   const target = join(output, 'candidate');
   if (lstatSync(target, { throwIfNoEntry: false })) throw new Error('repair-publication-exists');
   const { contents, manifest, patch, receipt } = prepareCandidate(snapshot, command);
+  if (expectedManifestSha256 !== undefined && receipt.candidateManifestSha256 !== expectedManifestSha256) {
+    throw new Error('verify-replay');
+  }
   const staging = mkdtempSync(join(output, '.candidate-'));
   try {
     const inventory = join(staging, 'npm');
@@ -105,6 +109,7 @@ function publishCandidate(output: string, snapshot: ReturnType<typeof readGuestS
     writeFileSync(join(staging, 'manifest.json'), JSON.stringify(manifest), { flag: 'wx', mode: 0o440 });
     writeFileSync(join(staging, 'receipt.json'), JSON.stringify(receipt), { flag: 'wx', mode: 0o440 });
     readGuestCandidate(staging, receipt.candidateManifestSha256);
+    if (expectedManifestSha256 !== undefined) chmodSync(staging, 0o2750);
     renameSync(staging, target);
     return receipt;
   } catch (error) {
@@ -117,6 +122,13 @@ function publishCandidate(output: string, snapshot: ReturnType<typeof readGuestS
 export function publishGuestRepair(ready: string, output: string, rawWorkspace: unknown, rawPatch: unknown) {
   const command = canonicalRepairCommand(rawWorkspace, rawPatch);
   return publishCandidate(output, readGuestSnapshotData(ready), command);
+}
+
+/** Publish a verified replay in the acquisition tree for the read-only scanner mount. */
+export function publishGuestVerificationCandidate(output: string, snapshot: ReturnType<typeof readGuestSnapshotData>,
+  material: Pick<RepairCommand, 'workspace' | 'patch'>, expectedManifestSha256: string) {
+  if (snapshot.mode !== 'verification') throw new Error('verify-binding');
+  return publishCandidate(output, snapshot, canonicalRepairCommand(material.workspace, material.patch), expectedManifestSha256);
 }
 
 export function repairQualifiedGuestSnapshot(source: string, output: string) {

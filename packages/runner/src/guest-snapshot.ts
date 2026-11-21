@@ -13,7 +13,7 @@ const regularMode = z.enum(['100644', '100755']);
 const entrySchema = z.strictObject({ path: z.string().min(1).max(240), mode: regularMode });
 const publicationSchema = z.strictObject({
   runId: z.uuidv4(), source: sourceRefSchema, manifestSha256: sha256Schema,
-  mode: z.enum(['fixture', 'qualified', 'repair', 'repair-observation']),
+  mode: z.enum(['fixture', 'qualified', 'repair', 'repair-observation', 'verification']),
   entries: z.array(entrySchema).min(1).max(sourceLimits.maxFiles),
 });
 const publicationBytes = 3 * 1024 * 1024;
@@ -95,7 +95,7 @@ export function isNpmLock(path: string) {
 /** The caller is the sealed acquisition service and provides the bare Git store. */
 export function publishGuestSnapshot(
   base: string, repository: string, runId: string, rawSource: Source,
-  mode: 'fixture' | 'qualified' | 'repair' | 'repair-observation' = 'fixture',
+  mode: z.infer<typeof publicationSchema>['mode'] = 'fixture',
 ) {
   const source = sourceRefSchema.parse(rawSource);
   const { commitObject, files } = readGitObjects(repository, source);
