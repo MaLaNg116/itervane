@@ -35,6 +35,7 @@ try {
     const komodo = new KomodoReleaseClient(identity.origin, {
       actorId: identity.actorId, key: credentials.komodoKey, secret: credentials.komodoSecret,
     });
+    await komodo.verifyCredentialOwner(controller.signal);
     const runner = new QualifiedInspectionClient(config.runner);
     const writer = new FormalReleaseWorker(database, { origin: registryOrigin, registry, runner, komodo, installed: config.installed },
       { leaseSeconds: config.leaseSeconds });

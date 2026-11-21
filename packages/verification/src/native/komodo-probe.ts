@@ -219,6 +219,9 @@ async function verifyFormalAdapter(setup: Awaited<ReturnType<typeof bootstrap>>,
     komodo: { origin: coreOrigin, actorId: target.actor },
   } satisfies KomodoReleaseTarget;
   const adapter = new KomodoReleaseClient(coreOrigin, { ...credentials, actorId: target.actor });
+  const mismatch = new KomodoReleaseClient(coreOrigin, { ...credentials, actorId: foreignId });
+  await adapter.verifyCredentialOwner();
+  await expectReleaseRejection('ListApiKeys', 'binding', () => mismatch.verifyCredentialOwner());
   const authorize = async () => {};
   const attempt = { previousImage: previous.reference, manifestDigest: approved.digest };
   const initial = await adapter.inspectTarget(binding, authorize);
@@ -244,7 +247,6 @@ async function verifyFormalAdapter(setup: Awaited<ReturnType<typeof bootstrap>>,
     return update.status === 'Complete' ? update : undefined;
   }, 65_000);
   if (!result.success) throw new KomodoError('FormalAdapterUpdate', 'response');
-  const mismatch = new KomodoReleaseClient(coreOrigin, { ...credentials, actorId: foreignId });
   await expectReleaseRejection('GetUpdate', 'binding', () =>
     mismatch.observeUpdate({ ...binding, komodo: { ...binding.komodo, actorId: foreignId } }, updateId, authorize));
   const observed = await waitFor('FormalAdapterFixture', () => observeFixture(target.name, mark, approved, previousContainer), 12_000);
