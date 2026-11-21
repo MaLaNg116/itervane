@@ -1924,6 +1924,12 @@ it.each(['normal', 'config response lost', 'config unconfirmed', 'dispatch ID lo
       },
     } });
     const run = async (worker: FormalReleaseWorker, phase: string) => {
+      // Delayed wakeups use PostgreSQL time. The local test process and database can disagree on elapsed time.
+      await database.admin.query(`SELECT pg_sleep_until(LEAST(
+          job.start_after + interval '10 milliseconds', clock_timestamp() + interval '3 seconds'))
+        FROM itervane.release_operations operation
+        JOIN itervane_queue.job job ON job.id=operation.wakeup_job_id
+        WHERE operation.id=$1 AND job.name=$2 AND job.state='created'`, [operationId, formalReleaseQueue]);
       const deadline = performance.now() + 5_000;
       do {
         const result = await worker.tick();
