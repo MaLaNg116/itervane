@@ -21,14 +21,18 @@ const route = { name: 'demo@file', provider: 'file', status: 'enabled', tls: {},
   rule: 'Host(`demo.example.invalid`)', service: 'demo', middlewares: ['demo-auth', 'demo-strip'] };
 const login = { ...route, name: 'demo-login@file', rule: route.rule + ' && PathPrefix(`/oauth2/`)',
   service: 'demo-login', middlewares: [] };
+const health = { ...route, name: 'demo-health@file', rule: route.rule + ' && Path(`/health`) && Method(`GET`)',
+  middlewares: ['demo-health-auth', 'demo-strip'] };
 const fixtures = {
-  '/api/http/routers?per_page=100': [route, login],
+  '/api/http/routers?per_page=100': [route, login, health],
   '/api/tcp/routers?per_page=100': [],
   '/api/http/services/demo%40file': { name: 'demo@file', provider: 'file', status: 'enabled',
     type: 'loadbalancer', loadBalancer: { servers: [{ url: 'http://demo-runtime:3000' }] } },
   '/api/http/services/demo-login%40file': { name: 'demo-login@file', provider: 'file', status: 'enabled',
     type: 'loadbalancer', loadBalancer: { servers: [{ url: 'http://demo-access:4180' }] } },
   '/api/http/middlewares/demo-auth%40file': { name: 'demo-auth@file', provider: 'file', status: 'enabled', type: 'forwardauth',
+    forwardAuth: { address: profile.traefik.forwardAuthAddress, trustForwardHeader: false, authRequestHeaders: ['Cookie'] } },
+  '/api/http/middlewares/demo-health-auth%40file': { name: 'demo-health-auth@file', provider: 'file', status: 'enabled', type: 'forwardauth',
     forwardAuth: { address: profile.traefik.forwardAuthAddress, trustForwardHeader: false, authRequestHeaders: ['Authorization', 'Cookie'] } },
   '/api/http/middlewares/demo-strip%40file': { name: 'demo-strip@file', provider: 'file', status: 'enabled', type: 'headers',
     headers: { customRequestHeaders: { Authorization: '', Cookie: '' } } },
@@ -46,7 +50,9 @@ function emulateIngress(changes: Record<string, unknown> = {}, health: (hasToken
   request.mockImplementation(async (url, init) => {
     const address = new URL(String(url));
     const path = address.pathname + address.search;
-    if (address.origin === profile.traefik.apiOrigin) return Response.json({ ...fixtures, ...changes }[path]);
+    if (address.origin === profile.traefik.apiOrigin) return Response.json({ ...fixtures, ...changes }[path], {
+      headers: address.search ? { 'x-next-page': '1' } : {},
+    });
     if (address.origin === profile.origin && path === profile.healthPath) {
       return health(new Headers(init?.headers).get('authorization') === 'Bearer ' + token);
     }
@@ -74,13 +80,18 @@ it('requires two stable runtime reads and sends a credential to the single appro
 });
 
 it.each([
-  ['an unexpected second backend', { '/api/http/services/demo%40file': {
+  ['a different backend', { '/api/http/services/demo%40file': {
     ...fixtures['/api/http/services/demo%40file'], loadBalancer: { servers: [{ url: 'http://healthy-other:3000' }] },
   } }],
   ['missing credential scrubbing', { '/api/http/middlewares/demo-strip%40file': {
     ...fixtures['/api/http/middlewares/demo-strip%40file'], headers: { customRequestHeaders: { Cookie: '' } },
   } }],
-  ['another route for the same host', { '/api/http/routers?per_page=100': [route, login, { ...route, name: 'unexpected@file' }] }],
+  ['bearer credentials accepted on the browser route', { '/api/http/middlewares/demo-auth%40file': {
+    ...fixtures['/api/http/middlewares/demo-auth%40file'], forwardAuth: {
+      ...fixtures['/api/http/middlewares/demo-auth%40file'].forwardAuth, authRequestHeaders: ['Authorization', 'Cookie'],
+    },
+  } }],
+  ['another route for the same host', { '/api/http/routers?per_page=100': [route, login, health, { ...route, name: 'unexpected@file' }] }],
   ['a TCP route on the protected entry point', { '/api/tcp/routers?per_page=100': [{ status: 'enabled', using: ['websecure'] }] }],
 ])('refuses %s before using a credential', async (_name, changes) => {
   emulateIngress(changes);
