@@ -483,6 +483,7 @@ async function probe() {
         result.targetManifestSha256, result.originalReportsSha256]) sha256Schema.parse(value);
       equal(result.cleanupConfirmed, true);
       equal(result.dispatches, 1);
+      equal(result.newFindingGroups, 0);
       equal((await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows[0]?.task_id, null);
       await assertDrained(controllerUid, staging);
       return result;
@@ -493,6 +494,7 @@ async function probe() {
       equal(result.baseSnapshotSha256, published.scope.baseSnapshotSha256);
       equal(result.targetManifestSha256, published.snapshot.candidate.candidateManifestSha256);
       equal(result.patchSha256, published.snapshot.candidate.patchSha256);
+      equal(result.targetRuleId, fixture.finding.ruleId);
       sha256Schema.parse(result.targetReportsSha256);
       notEqual(result.domainId, published.domainId); notEqual(result.domainId, observed.domainId);
       return result;
@@ -516,6 +518,7 @@ async function probe() {
     equal(originalRescan.baseSnapshotSha256, originalAudit.result.snapshotSha256);
     equal(originalRescan.targetManifestSha256, originalRescan.baseSnapshotSha256);
     equal(originalRescan.patchSha256, null); equal(originalRescan.targetReportsSha256, null);
+    equal(originalRescan.targetRuleId, null); equal(originalRescan.remainingFindingGroups, 0);
 
     return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, commit, domains,
       initial: scan.result, replacement: recoveredScan.result, previousFence: closed.fence, recoveredFence: replacement.fence,
