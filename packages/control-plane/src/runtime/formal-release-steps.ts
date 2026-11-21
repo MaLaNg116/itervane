@@ -15,12 +15,12 @@ function registryStep(scope: FormalReleaseScope) {
   return and(eq(formalReleaseSteps.operationId, scope.operationId), eq(formalReleaseSteps.kind, 'registry'));
 }
 
-function stepEvent(scope: FormalReleaseScope) {
+export function releaseStepEvent(scope: FormalReleaseScope) {
   const { workerId, operationId, candidateId, fingerprint, decisionVersion, fence } = scope;
   return { workerId, releaseDecision: { operationId, candidateId, fingerprint, decisionVersion, fence } };
 }
 
-function requireMatchingImage(raw: unknown, mapping: FormalReleaseTarget, image: FormalReleaseManifest['image']) {
+export function requireMatchingRegistryImage(raw: unknown, mapping: FormalReleaseTarget, image: FormalReleaseManifest['image']) {
   const received = parseInput(releaseRegistryImageProofSchema, raw);
   if (received.registryOrigin !== mapping.registryOrigin || received.repository !== mapping.imageRepository
       || received.manifestDigest !== image.manifestDigest || received.configDigest !== image.configDigest
@@ -36,7 +36,7 @@ export class FormalReleaseSteps {
       if (phase !== 'release_claimed') throw new DomainError('unsupported_state');
       const [inserted] = await tx.insert(formalReleaseSteps).values({ operationId: scope.operationId, kind: 'archive',
         preparedFence: scope.fence, preparedBy: scope.workerId, createdAt: sql`clock_timestamp()` }).onConflictDoNothing().returning();
-      if (inserted) await appendEvent(tx, task, 'task.release_archive_prepared', 'running', stepEvent(scope));
+      if (inserted) await appendEvent(tx, task, 'task.release_archive_prepared', 'running', releaseStepEvent(scope));
       return authority.archiveVerification;
     });
   }
@@ -52,7 +52,7 @@ export class FormalReleaseSteps {
       await tx.update(formalReleaseSteps).set({
         state: 'confirmed', proof, settledFence: scope.fence, settledBy: scope.workerId, settledAt: sql`clock_timestamp()`,
       }).where(archiveStep(scope));
-      await appendEvent(tx, task, 'task.release_archive_confirmed', 'running', stepEvent(scope));
+      await appendEvent(tx, task, 'task.release_archive_confirmed', 'running', releaseStepEvent(scope));
     });
   }
 
@@ -65,19 +65,19 @@ export class FormalReleaseSteps {
         preparedFence: scope.fence, preparedBy: scope.workerId, createdAt: sql`clock_timestamp()` }).onConflictDoNothing().returning();
       if (!intent) throw new DomainError('conflict');
       await tx.update(runRuntime).set({ reason: 'release_registry_prepared' }).where(eq(runRuntime.runId, scope.runId));
-      await appendEvent(tx, task, 'task.release_registry_prepared', 'running', stepEvent(scope));
+      await appendEvent(tx, task, 'task.release_registry_prepared', 'running', releaseStepEvent(scope));
       return authority;
     });
   }
 
   async confirmRegistry(scope: FormalReleaseScope, raw: unknown): Promise<ReleaseRegistryImageProof> {
     return this.release.withRegistryObservation(scope, async (tx, task, { phase, mapping, manifest, intent }) => {
-      const proof = requireMatchingImage(raw, mapping, manifest.image);
+      const proof = requireMatchingRegistryImage(raw, mapping, manifest.image);
       if (phase === 'release_registry_verified' && intent.state === 'confirmed') {
-        return requireMatchingImage(intent.proof, mapping, manifest.image);
+        return requireMatchingRegistryImage(intent.proof, mapping, manifest.image);
       }
       if (phase === 'release_registry_verified') throw new DomainError('unsupported_state');
-      if (intent.state === 'confirmed') requireMatchingImage(intent.proof, mapping, manifest.image);
+      if (intent.state === 'confirmed') requireMatchingRegistryImage(intent.proof, mapping, manifest.image);
       else {
         await tx.update(formalReleaseSteps).set({
           state: 'confirmed', proof, settledFence: scope.fence, settledBy: scope.workerId, settledAt: sql`clock_timestamp()`,
@@ -88,7 +88,7 @@ export class FormalReleaseSteps {
         await tx.update(releaseOperations).set({ state: 'dispatching', updatedAt: sql`clock_timestamp()` })
           .where(eq(releaseOperations.id, scope.operationId));
       }
-      await appendEvent(tx, task, 'task.release_registry_confirmed', task.state, stepEvent(scope));
+      await appendEvent(tx, task, 'task.release_registry_confirmed', task.state, releaseStepEvent(scope));
       return proof;
     });
   }
@@ -96,7 +96,7 @@ export class FormalReleaseSteps {
   async readRegistryProof(scope: FormalReleaseScope) {
     return this.release.withRegistryObservation(scope, async (_tx, _task, { phase, intent, mapping, manifest }) =>
       phase === 'release_registry_verified' && intent.state === 'confirmed'
-        ? requireMatchingImage(intent.proof, mapping, manifest.image)
+        ? requireMatchingRegistryImage(intent.proof, mapping, manifest.image)
         : null);
   }
 }

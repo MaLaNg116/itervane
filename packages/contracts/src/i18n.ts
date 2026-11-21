@@ -48,6 +48,11 @@ export const en = {
   'task.release_registry_recheck_started': 'A worker started a read-only check of the recorded registry import.',
   'task.release_registry_manual_review': 'The registry result still needs manual review. The environment remains reserved.',
   'task.release_registry_confirmed': 'The approved image was independently verified in the registry.',
+  'task.release_komodo_config_prepared': 'The Komodo configuration change was recorded for the approved image.',
+  'task.release_komodo_configured': 'The Komodo configuration was read back with the approved image.',
+  'task.release_komodo_dispatch_prepared': 'The Komodo deployment request was recorded before dispatch.',
+  'task.release_komodo_update_recorded': 'Komodo returned an update ID for the deployment request.',
+  'task.release_komodo_dispatch_observed': 'An independent Komodo read recorded the result of the deployment update.',
   'task.release_requeued': 'The release returned to the queue before a downstream change.',
   'task.release_rejected': 'The owner rejected this release candidate.',
   'task.release_revoked': 'The owner revoked approval before dispatch.',
@@ -165,6 +170,11 @@ export const zhCN: Record<MessageKey, string> = {
   'task.release_registry_recheck_started': 'Worker 已开始对原 Registry 导入进行只读核对。',
   'task.release_registry_manual_review': 'Registry 结果仍需人工核对，目标环境继续保留占用。',
   'task.release_registry_confirmed': '已从 Registry 独立核对获批镜像。',
+  'task.release_komodo_config_prepared': '已记录获批镜像的 Komodo 配置变更。',
+  'task.release_komodo_configured': '已从 Komodo 回读配置并确认获批镜像。',
+  'task.release_komodo_dispatch_prepared': '已在发送前记录 Komodo 部署派发意图。',
+  'task.release_komodo_update_recorded': '已记录 Komodo 返回的部署更新 ID。',
+  'task.release_komodo_dispatch_observed': '已从 Komodo 独立核对并记录部署更新结果。',
   'task.release_requeued': '发布操作在下游变更前已返回队列。',
   'task.release_rejected': '所有者已拒绝此发布候选。',
   'task.release_revoked': '所有者已在派发前撤销确认。',
@@ -243,7 +253,9 @@ export const taskEventTypes = ['task.accepted', 'task.cancelled', 'task.started'
   'task.repair_retry_queued', 'task.release_candidate_frozen', 'task.release_confirmed', 'task.release_claimed', 'task.release_blocked', 'task.release_requeued',
   'task.release_rejected', 'task.release_revoked', 'task.release_archive_prepared', 'task.release_archive_confirmed',
   'task.release_registry_prepared', 'task.release_registry_uncertain', 'task.release_registry_recovered',
-  'task.release_registry_recheck_started', 'task.release_registry_manual_review', 'task.release_registry_confirmed'] as const;
+  'task.release_registry_recheck_started', 'task.release_registry_manual_review', 'task.release_registry_confirmed',
+  'task.release_komodo_config_prepared', 'task.release_komodo_configured', 'task.release_komodo_dispatch_prepared',
+  'task.release_komodo_update_recorded', 'task.release_komodo_dispatch_observed'] as const;
 
 export const eventReasonMessages = {
   runner_unavailable: 'tool.runner_unavailable', lease_expired: 'reason.lease_expired', expired_cancel: 'reason.expired_cancel',

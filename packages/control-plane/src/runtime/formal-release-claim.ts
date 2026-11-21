@@ -1,4 +1,4 @@
-import { formalReleaseManifestSchema, idSchema, releaseRegistryOriginSchema, releaseWakeupSchema, type FormalReleaseManifest,
+import { formalReleaseManifestSchema, idSchema, komodoReleasePhases, releaseRegistryOriginSchema, releaseWakeupSchema, type FormalReleaseManifest,
   type FormalReleaseTarget } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
@@ -67,12 +67,13 @@ async function lockQueuedRelease(tx: Transaction, operationId: string) {
 }
 
 type LockedRelease = Awaited<ReturnType<typeof lockRelease>>;
-const releasePhases = ['release_claimed', 'release_registry_prepared', 'release_registry_reconciling', 'release_registry_verified'] as const;
+const registryObservationPhases = ['release_registry_prepared', 'release_registry_reconciling', 'release_registry_verified'] as const;
+const releasePhases = ['release_claimed', ...registryObservationPhases, ...komodoReleasePhases] as const;
 type ReleasePhase = typeof releasePhases[number];
 type ReleaseAuthority = Awaited<ReturnType<typeof verifyAuthority>>;
 type RegistryIntent = typeof formalReleaseSteps.$inferSelect;
 type RegistryObservation = {
-  phase: Exclude<ReleasePhase, 'release_claimed'>;
+  phase: typeof registryObservationPhases[number];
   manifest: FormalReleaseManifest;
   mapping: FormalReleaseTarget & { registryOrigin: string };
   intent: RegistryIntent;
@@ -82,6 +83,10 @@ export type RegistryPendingReason = 'release_registry_missing' | 'release_regist
 
 function isReleasePhase(reason: string | null): reason is ReleasePhase {
   return releasePhases.some(phase => phase === reason);
+}
+
+function isRegistryObservationPhase(phase: ReleasePhase): phase is RegistryObservation['phase'] {
+  return registryObservationPhases.some(candidate => candidate === phase);
 }
 
 async function lockRegistryIntent(tx: Transaction, operationId: string) {
@@ -234,16 +239,26 @@ export class FormalReleaseCoordinator {
   async withAuthorizedRelease<T>(scope: FormalReleaseScope,
     action: (tx: Transaction, task: TaskRow, phase: ReleasePhase, authority: ReleaseAuthority) => Promise<T>) {
     return this.withClaim(scope, async (tx, task, release, phase) => {
-      if (phase === 'release_registry_reconciling') throw new ExecutionLost();
+      if (scope.mode !== 'import' || phase === 'release_registry_reconciling') throw new ExecutionLost();
       const authority = await verifyAuthority(tx, task, release, this.workerOrigin);
       return action(tx, task, phase, authority);
     });
   }
 
+  async withKomodoObservation<T>(scope: FormalReleaseScope, expected: typeof komodoReleasePhases[number],
+    observe: (tx: Transaction, task: TaskRow) => Promise<T>) {
+    return this.withClaim(scope, async (tx, task, release, phase) => {
+      if (scope.mode !== 'import' || phase !== expected) throw new ExecutionLost();
+      await verifyTarget(tx, task, release, readReleaseManifest(release.candidate), this.workerOrigin);
+      // A recorded Komodo request can be observed after the approval to write has ended.
+      return observe(tx, task);
+    }, true);
+  }
+
   private async withRegistryIntent<T>(scope: FormalReleaseScope,
     action: (tx: Transaction, task: TaskRow, release: LockedRelease, phase: RegistryObservation['phase'], intent: RegistryIntent) => Promise<T>) {
     return this.withClaim(scope, async (tx, task, release, phase) => {
-      if (phase === 'release_claimed') throw new DomainError('unsupported_state');
+      if (!isRegistryObservationPhase(phase)) throw new DomainError('unsupported_state');
       const intent = await lockRegistryIntent(tx, scope.operationId);
       if (!intent) throw new ExecutionLost();
       const original = intent.preparedFence === scope.fence && intent.preparedBy === scope.workerId;
