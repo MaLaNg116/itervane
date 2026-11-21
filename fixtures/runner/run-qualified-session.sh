@@ -17,7 +17,7 @@ node=$(command -v node)
 case "$scenario" in
   regression) features=(--enable-repair --enable-verification) ;;
   standard-build) features=(--enable-verification --enable-standard-build --enable-standard-baseline) ;;
-  standard-oci|protected-release|protected-release-npm|protected-release-drift)
+  standard-oci|protected-release|protected-release-npm|protected-release-drift|protected-release-faults)
     artifacts="$directory/artifacts"
     sudo -n install -d -m 0700 -o "$runner" -g "$runner" "$artifacts"
     features=(--enable-repair --enable-verification --enable-standard-build --enable-standard-baseline --enable-standard-oci --artifact-store "$artifacts")
@@ -222,6 +222,10 @@ PY
     check_archive drift.targetBuild "${archive_reports[0]}"
     archive_reports+=("$reports/runner-drift-oci-artifact.json")
     check_archive drift.archiveBuild "${archive_reports[1]}"
+  elif [[ "$scenario" == protected-release-faults ]]; then
+    check_archive faults.health.after "${archive_reports[0]}"
+    archive_reports+=("$reports/runner-faults-oci-artifact.json")
+    check_archive faults.identity.after "${archive_reports[1]}"
   elif [[ "$scenario" == protected-release* ]]; then
     archive_path=retry.after
     if [[ "$scenario" == protected-release-npm ]]; then archive_path=dependency.after; fi

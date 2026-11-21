@@ -48,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm, protected-release-drift]
+        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm, protected-release-drift, protected-release-faults]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -192,6 +192,13 @@ jobs:
               .drift.target.externalSteps == 0 and .drift.archive.externalSteps == 0 and .drift.originalArchiveRestored == true' "$report" >/dev/null
             exit 0
           fi
+          if [[ "$NATIVE_SCENARIO" == protected-release-faults ]]; then
+            jq -e '.faults.health.reason == "release_rollout_health_failed" and .faults.health.originStatusAfter == 503 and
+              .faults.identity.reason == "release_rollout_unavailable" and .faults.identity.originStatusAfter == 200 and
+              ([.faults.health, .faults.identity] | all(.environmentHeld and .httpMcpAgreement and .recovery.writes == 1 and
+                (.anonymousStatus == 401 or .anonymousStatus == 403)))' "$report" >/dev/null
+            exit 0
+          fi
           jq -e '.release.healthStatus == 200 and .release.httpMcpAgreement == true' "$report" >/dev/null
           if [[ "$NATIVE_SCENARIO" == protected-release-npm ]]; then
             jq -e '.release.repairCategory == "npm_dependency" and .dependency.advisoryId != null' "$report" >/dev/null
@@ -215,6 +222,7 @@ jobs:
             .reports/p0/runner-worker-build.json
             .reports/p0/runner-protected-release.json
             .reports/p0/runner-drift-oci-artifact.json
+            .reports/p0/runner-faults-oci-artifact.json
             .reports/p0/runner-oci-artifact.json
             .reports/p0/runner-retry-oci-artifact.json
           if-no-files-found: error
