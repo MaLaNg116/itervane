@@ -15,7 +15,7 @@ import { readPublishedVerification } from '../service/verification-result.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope, type TaskRow } from './authority.js';
 import { authorizeRun, type ExecutionCoordinator } from './coordinator.js';
-import { recoverClaimedRelease, renewFormalWakeup } from './release-queue.js';
+import { recoverClaimedRelease, recoverRegistryLease, registryRecheckEvent, renewFormalWakeup } from './release-queue.js';
 
 const formalCandidate = sql`${releaseCandidates.document}->>'origin' = 'formal_verification'`;
 type ReleaseBlockReason = 'permission_revoked' | 'release_approval_invalid' | 'release_target_changed' | 'release_evidence_changed';
@@ -26,6 +26,7 @@ export class ReleaseAuthorityRejected extends Error {
 
 export type FormalReleaseScope = ExecutionScope & Readonly<{
   operationId: string; candidateId: string; fingerprint: string; decisionVersion: number;
+  mode: 'import' | 'registry_recovery';
 }>;
 
 async function readLink(tx: Transaction, operationId: string) {
@@ -50,25 +51,44 @@ async function lockQueuedRelease(tx: Transaction, operationId: string) {
   const link = await readLink(tx, operationId);
   if (!link) return null;
   const [task] = await tx.select().from(tasks).where(eq(tasks.id, link.candidate.taskId)).for('update');
-  if (task?.state !== 'queued') return null;
+  if (!task || !['queued', 'reconciling', 'cancel_requested'].includes(task.state)) return null;
   const [bound] = await tx.select({ run: taskRuns, runtime: runRuntime }).from(taskRuns)
     .innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id)).where(eq(taskRuns.id, link.candidate.runId));
   if (!bound || bound.run.taskId !== task.id || bound.runtime.taskId !== task.id || bound.run.generation !== task.generation
-      || bound.run.state !== 'queued' || bound.run.wakeupJobId !== null || bound.runtime.reason !== 'release_queued') return null;
+      || bound.run.state !== task.state || bound.run.wakeupJobId !== null) return null;
+  const queued = task.state === 'queued' && bound.runtime.reason === 'release_queued';
+  const recovering = (task.state === 'reconciling' || task.state === 'cancel_requested')
+    && bound.runtime.reason === 'release_registry_reconciling';
+  if (!queued && !recovering) return null;
   const release = await lockRelease(tx, link);
-  if (release.operation.state !== 'queued' || !release.operation.wakeupJobId) return null;
-  return { ...release, task, wakeupJobId: release.operation.wakeupJobId };
+  if (release.operation.state !== (queued ? 'queued' : 'reconciling') || !release.operation.wakeupJobId) return null;
+  const mode = queued ? 'import' as const : 'registry_recovery' as const;
+  return { ...release, task, mode, wakeupJobId: release.operation.wakeupJobId };
 }
 
 type LockedRelease = Awaited<ReturnType<typeof lockRelease>>;
-type ReleasePhase = 'release_claimed' | 'release_registry_prepared' | 'release_registry_verified';
+const releasePhases = ['release_claimed', 'release_registry_prepared', 'release_registry_reconciling', 'release_registry_verified'] as const;
+type ReleasePhase = typeof releasePhases[number];
 type ReleaseAuthority = Awaited<ReturnType<typeof verifyAuthority>>;
+type RegistryIntent = typeof formalReleaseSteps.$inferSelect;
 type RegistryObservation = {
   phase: Exclude<ReleasePhase, 'release_claimed'>;
   manifest: FormalReleaseManifest;
-  mapping: FormalReleaseTarget;
-  intent: typeof formalReleaseSteps.$inferSelect;
+  mapping: FormalReleaseTarget & { registryOrigin: string };
+  intent: RegistryIntent;
 };
+
+export type RegistryPendingReason = 'release_registry_missing' | 'release_registry_unavailable' | 'release_target_changed';
+
+function isReleasePhase(reason: string | null): reason is ReleasePhase {
+  return releasePhases.some(phase => phase === reason);
+}
+
+async function lockRegistryIntent(tx: Transaction, operationId: string) {
+  const [intent] = await tx.select().from(formalReleaseSteps)
+    .where(and(eq(formalReleaseSteps.operationId, operationId), eq(formalReleaseSteps.kind, 'registry'))).for('update');
+  return intent;
+}
 
 function decisionBinding({ operation, candidate }: LockedRelease) {
   return { operationId: operation.id, candidateId: candidate.id, fingerprint: candidate.fingerprint, decisionVersion: operation.approvalVersion };
@@ -84,7 +104,7 @@ async function verifyTarget(tx: Transaction, task: TaskRow, { candidate, environ
   }
   const mapping = readReleaseTarget(target);
   if (mapping.registryOrigin !== workerOrigin) throw new ReleaseAuthorityRejected('release_target_changed');
-  return { target, mapping };
+  return { target, mapping: { ...mapping, registryOrigin: workerOrigin } };
 }
 
 async function verifyAuthority(tx: Transaction, task: TaskRow, release: LockedRelease, workerOrigin: string) {
@@ -146,11 +166,28 @@ export class FormalReleaseCoordinator {
       const { operation, candidate, task } = binding;
       const completed = await settle();
       if (completed.affected !== 1) return null;
+      if (binding.mode === 'registry_recovery') {
+        if (slot.taskId) {
+          await renewFormalWakeup(tx, database, operation.id, { state: 'reconciling', delaySeconds: 1 });
+          return null;
+        }
+        const intent = await lockRegistryIntent(tx, operation.id);
+        if (!intent) throw new DomainError('unavailable');
+        const scope = await assignSlot(tx, task, candidate.runId, workerId, leaseSeconds);
+        if (intent.preparedFence >= scope.fence) throw new ExecutionLost();
+        await tx.update(releaseOperations).set({ wakeupJobId: null, updatedAt: sql`clock_timestamp()` })
+          .where(eq(releaseOperations.id, operation.id));
+        const releaseDecision = decisionBinding(binding);
+        await appendEvent(tx, task, registryRecheckEvent, task.state === 'cancel_requested' ? task.state : 'running', {
+          workerId, releaseDecision: { ...releaseDecision, fence: scope.fence },
+        });
+        return Object.freeze({ ...scope, ...releaseDecision, mode: binding.mode });
+      }
       const [hold] = await tx.select({ id: releaseOperations.id }).from(releaseOperations)
         .where(and(eq(releaseOperations.environmentId, operation.environmentId), inArray(releaseOperations.state, ['dispatching', 'reconciling'])))
         .limit(1);
       if (slot.taskId || hold) {
-        await renewFormalWakeup(tx, database, operation.id, true);
+        await renewFormalWakeup(tx, database, operation.id, { delaySeconds: 1 });
         return null;
       }
       const releaseDecision = decisionBinding(binding);
@@ -168,7 +205,7 @@ export class FormalReleaseCoordinator {
       await tx.update(runRuntime).set({ reason: 'release_claimed' }).where(eq(runRuntime.runId, candidate.runId));
       await appendEvent(tx, task, 'task.release_claimed', 'running', { workerId, reason: 'release_claimed', releaseDecision });
       const scope = await assignSlot(tx, task, candidate.runId, workerId, leaseSeconds);
-      return Object.freeze({ ...scope, ...releaseDecision });
+      return Object.freeze({ ...scope, ...releaseDecision, mode: binding.mode });
     });
   }
 
@@ -177,12 +214,13 @@ export class FormalReleaseCoordinator {
     return this.coordinator.database.db.transaction(async tx => {
       const { slot, task, runtime } = await lockExecution(tx, scope, allowCancel);
       const phase = runtime.reason;
-      if (phase !== 'release_claimed' && phase !== 'release_registry_prepared' && phase !== 'release_registry_verified') throw new ExecutionLost();
+      if (!isReleasePhase(phase)) throw new ExecutionLost();
       const link = await readLink(tx, scope.operationId);
       if (!link || link.candidate.taskId !== task.id || link.candidate.runId !== scope.runId || link.candidate.id !== scope.candidateId
           || link.candidate.fingerprint !== scope.fingerprint || link.operation.approvalVersion !== scope.decisionVersion) throw new ExecutionLost();
       const release = await lockRelease(tx, link);
-      if (release.operation.state !== 'dispatching') throw new ExecutionLost();
+      const expectedState = phase === 'release_registry_reconciling' ? 'reconciling' : 'dispatching';
+      if (release.operation.state !== expectedState || release.operation.wakeupJobId) throw new ExecutionLost();
       const result = await action(tx, task, release, phase);
       await assertLeaseLive(tx, slot.leaseUntil);
       return result;
@@ -196,27 +234,98 @@ export class FormalReleaseCoordinator {
   async withAuthorizedRelease<T>(scope: FormalReleaseScope,
     action: (tx: Transaction, task: TaskRow, phase: ReleasePhase, authority: ReleaseAuthority) => Promise<T>) {
     return this.withClaim(scope, async (tx, task, release, phase) => {
+      if (phase === 'release_registry_reconciling') throw new ExecutionLost();
       const authority = await verifyAuthority(tx, task, release, this.workerOrigin);
       return action(tx, task, phase, authority);
     });
   }
 
-  async withRegistryObservation<T>(scope: FormalReleaseScope,
-    action: (tx: Transaction, task: TaskRow, observation: RegistryObservation) => Promise<T>) {
+  private async withRegistryIntent<T>(scope: FormalReleaseScope,
+    action: (tx: Transaction, task: TaskRow, release: LockedRelease, phase: RegistryObservation['phase'], intent: RegistryIntent) => Promise<T>) {
     return this.withClaim(scope, async (tx, task, release, phase) => {
       if (phase === 'release_claimed') throw new DomainError('unsupported_state');
-      const [intent] = await tx.select().from(formalReleaseSteps)
-        .where(and(eq(formalReleaseSteps.operationId, scope.operationId), eq(formalReleaseSteps.kind, 'registry'))).for('update');
-      if (!intent || intent.preparedFence !== scope.fence) throw new ExecutionLost();
+      const intent = await lockRegistryIntent(tx, scope.operationId);
+      if (!intent) throw new ExecutionLost();
+      const original = intent.preparedFence === scope.fence && intent.preparedBy === scope.workerId;
+      const previous = intent.preparedFence < scope.fence;
+      if (scope.mode === 'import' ? !original || phase === 'release_registry_reconciling'
+        : !previous || phase === 'release_registry_prepared') throw new ExecutionLost();
+      return action(tx, task, release, phase, intent);
+    }, true);
+  }
+
+  async withRegistryObservation<T>(scope: FormalReleaseScope,
+    action: (tx: Transaction, task: TaskRow, observation: RegistryObservation) => Promise<T>) {
+    return this.withRegistryIntent(scope, async (tx, task, release, phase, intent) => {
       const manifest = readReleaseManifest(release.candidate);
       const { mapping } = await verifyTarget(tx, task, release, manifest, this.workerOrigin);
       // The recorded intent permits outcome checks even if the original permission to write has since ended.
       return action(tx, task, { phase, manifest, mapping, intent });
+    });
+  }
+
+  async authorizeRegistryWrite(scope: FormalReleaseScope) {
+    await this.withAuthorizedRelease(scope, async (tx, _task, phase) => {
+      if (scope.mode !== 'import' || phase !== 'release_registry_prepared') throw new ExecutionLost();
+      const intent = await lockRegistryIntent(tx, scope.operationId);
+      if (intent?.state !== 'prepared' || intent.preparedFence !== scope.fence || intent.preparedBy !== scope.workerId) {
+        throw new ExecutionLost();
+      }
+    });
+  }
+
+  async deferRegistryObservation(scope: FormalReleaseScope, reason: RegistryPendingReason) {
+    return this.withRegistryIntent(scope, async (tx, task, release, phase, intent) => {
+      if (phase === 'release_registry_verified') throw new ExecutionLost();
+      let current = task;
+      if (intent.state === 'prepared') {
+        await tx.update(formalReleaseSteps).set({
+          state: 'uncertain', settledFence: scope.fence, settledBy: scope.workerId, settledAt: sql`clock_timestamp()`,
+        }).where(and(eq(formalReleaseSteps.operationId, scope.operationId), eq(formalReleaseSteps.kind, 'registry')));
+        current = await appendEvent(tx, task, 'task.release_registry_uncertain', task.state, {
+          workerId: scope.workerId, reason, releaseDecision: { ...decisionBinding(release), fence: scope.fence },
+        });
+      }
+      const queued = await recoverRegistryLease(tx, this.coordinator.database, current, scope.runId, scope.workerId, reason);
+      await clearSlot(tx);
+      return queued;
+    });
+  }
+
+  async settleRegistryCancellation(scope: FormalReleaseScope) {
+    return this.withRegistryIntent(scope, async (tx, task, release, phase, intent) => {
+      if (phase !== 'release_registry_verified' || intent.state !== 'confirmed') throw new ExecutionLost();
+      if (task.state !== 'cancel_requested') return false;
+      await tx.update(releaseOperations).set({ state: 'blocked', updatedAt: sql`clock_timestamp()` })
+        .where(eq(releaseOperations.id, scope.operationId));
+      await tx.update(runRuntime).set({ reason: 'release_cancelled' }).where(eq(runRuntime.runId, scope.runId));
+      await appendEvent(tx, task, 'task.cancelled', 'cancelled', {
+        workerId: scope.workerId, reason: 'cancelled', releaseDecision: { ...decisionBinding(release), fence: scope.fence },
+      });
+      await clearSlot(tx);
+      return true;
+    });
+  }
+
+  async stopBeforeRegistry(scope: FormalReleaseScope, blockedReason: ReleaseBlockReason | 'release_archive_unavailable' = 'release_archive_unavailable') {
+    return this.withClaim(scope, async (tx, task, release, phase) => {
+      if (phase !== 'release_claimed') throw new ExecutionLost();
+      const cancelled = task.state === 'cancel_requested';
+      const reason = cancelled ? 'cancelled' : blockedReason;
+      await tx.update(releaseOperations).set({ state: 'blocked', updatedAt: sql`clock_timestamp()` })
+        .where(eq(releaseOperations.id, scope.operationId));
+      await tx.update(runRuntime).set({ reason: cancelled ? 'release_cancelled' : reason }).where(eq(runRuntime.runId, scope.runId));
+      await appendEvent(tx, task, cancelled ? 'task.cancelled' : 'task.release_blocked', cancelled ? 'cancelled' : 'needs_human', {
+        workerId: scope.workerId, reason, releaseDecision: { ...decisionBinding(release), fence: scope.fence },
+      });
+      await clearSlot(tx);
+      return cancelled;
     }, true);
   }
 
   async heartbeat(scope: FormalReleaseScope) {
-    return this.withClaim(scope, async (tx, task, release) => {
+    return this.withClaim(scope, async (tx, task, release, phase) => {
+      if (phase === 'release_registry_reconciling') throw new ExecutionLost();
       if (task.state === 'cancel_requested') return false;
       await verifyAuthority(tx, task, release, this.workerOrigin);
       await renewSlot(tx, this.coordinator.leaseSeconds);
@@ -224,11 +333,19 @@ export class FormalReleaseCoordinator {
     }, true);
   }
 
+  async heartbeatRegistryObservation(scope: FormalReleaseScope) {
+    return this.withRegistryIntent(scope, async tx => {
+      await renewSlot(tx, this.coordinator.leaseSeconds);
+      return true;
+    });
+  }
+
   async yieldClaim(scope: FormalReleaseScope) {
-    await this.withClaim(scope, async (tx, task, _release, phase) => {
+    return this.withClaim(scope, async (tx, task, _release, phase) => {
       if (phase !== 'release_claimed') throw new DomainError('unsupported_state');
       await recoverClaimedRelease(tx, this.coordinator.database, task, scope.runId, scope.workerId, false);
       await clearSlot(tx);
+      return task.state === 'cancel_requested';
     }, true);
   }
 
@@ -238,7 +355,8 @@ export class FormalReleaseCoordinator {
     await database.db.transaction(tx => this.coordinator.recoverExpired(tx, workerId));
     const pending = await database.db.select({ id: releaseOperations.id }).from(releaseOperations)
       .innerJoin(releaseCandidates, eq(releaseCandidates.id, releaseOperations.candidateId))
-      .where(and(eq(releaseOperations.state, 'queued'), formalCandidate)).orderBy(releaseOperations.createdAt).limit(20);
+      .where(and(inArray(releaseOperations.state, ['queued', 'reconciling']),
+        sql`${releaseOperations.wakeupJobId} IS NOT NULL`, formalCandidate)).orderBy(releaseOperations.createdAt).limit(20);
     for (const { id } of pending) {
       await database.db.transaction(async tx => {
         await lockSlot(tx);
@@ -254,7 +372,7 @@ export class FormalReleaseCoordinator {
         }
         if (job?.state === 'active') await database.boss.cancel(formalReleaseQueue, job, { db });
         if (job?.state === 'created' || job?.state === 'retry') await database.boss.cancel(formalReleaseQueue, job.id, { db });
-        await renewFormalWakeup(tx, database, id);
+        await renewFormalWakeup(tx, database, id, { state: binding.mode === 'import' ? 'queued' : 'reconciling' });
       });
     }
   }

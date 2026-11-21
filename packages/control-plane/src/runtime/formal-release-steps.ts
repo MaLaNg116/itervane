@@ -1,7 +1,7 @@
 import { qualifiedOciArchiveVerificationSchema, releaseRegistryImageProofSchema, type FormalReleaseManifest,
   type FormalReleaseTarget, type ReleaseRegistryImageProof } from '@itervane/contracts';
 import { and, eq, sql } from 'drizzle-orm';
-import { formalReleaseSteps, runRuntime } from '../persistence/schema.js';
+import { formalReleaseSteps, releaseOperations, runRuntime } from '../persistence/schema.js';
 import { DomainError, parseInput } from '../service/errors.js';
 import { appendEvent } from './authority.js';
 import type { FormalReleaseCoordinator, FormalReleaseScope } from './formal-release-claim.js';
@@ -16,8 +16,8 @@ function registryStep(scope: FormalReleaseScope) {
 }
 
 function stepEvent(scope: FormalReleaseScope) {
-  const { workerId, operationId, candidateId, fingerprint, decisionVersion } = scope;
-  return { workerId, releaseDecision: { operationId, candidateId, fingerprint, decisionVersion } };
+  const { workerId, operationId, candidateId, fingerprint, decisionVersion, fence } = scope;
+  return { workerId, releaseDecision: { operationId, candidateId, fingerprint, decisionVersion, fence } };
 }
 
 function requireMatchingImage(raw: unknown, mapping: FormalReleaseTarget, image: FormalReleaseManifest['image']) {
@@ -76,24 +76,20 @@ export class FormalReleaseSteps {
       if (phase === 'release_registry_verified' && intent.state === 'confirmed') {
         return requireMatchingImage(intent.proof, mapping, manifest.image);
       }
-      if (intent.state === 'confirmed' || phase !== 'release_registry_prepared') throw new DomainError('unsupported_state');
-      await tx.update(formalReleaseSteps).set({
-        state: 'confirmed', proof, settledFence: scope.fence, settledBy: scope.workerId, settledAt: sql`clock_timestamp()`,
-      }).where(registryStep(scope));
+      if (phase === 'release_registry_verified') throw new DomainError('unsupported_state');
+      if (intent.state === 'confirmed') requireMatchingImage(intent.proof, mapping, manifest.image);
+      else {
+        await tx.update(formalReleaseSteps).set({
+          state: 'confirmed', proof, settledFence: scope.fence, settledBy: scope.workerId, settledAt: sql`clock_timestamp()`,
+        }).where(registryStep(scope));
+      }
       await tx.update(runRuntime).set({ reason: 'release_registry_verified' }).where(eq(runRuntime.runId, scope.runId));
+      if (phase === 'release_registry_reconciling') {
+        await tx.update(releaseOperations).set({ state: 'dispatching', updatedAt: sql`clock_timestamp()` })
+          .where(eq(releaseOperations.id, scope.operationId));
+      }
       await appendEvent(tx, task, 'task.release_registry_confirmed', task.state, stepEvent(scope));
       return proof;
-    });
-  }
-
-  async recordRegistryUncertain(scope: FormalReleaseScope) {
-    await this.release.withRegistryObservation(scope, async (tx, task, { phase, intent }) => {
-      if (phase !== 'release_registry_prepared' || intent.state === 'confirmed') throw new DomainError('unsupported_state');
-      if (intent.state === 'uncertain') return;
-      await tx.update(formalReleaseSteps).set({
-        state: 'uncertain', settledFence: scope.fence, settledBy: scope.workerId, settledAt: sql`clock_timestamp()`,
-      }).where(registryStep(scope));
-      await appendEvent(tx, task, 'task.release_registry_uncertain', task.state, stepEvent(scope));
     });
   }
 

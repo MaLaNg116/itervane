@@ -21,6 +21,7 @@ import { readPublishedVerification } from './verification-result.js';
 type Candidate = typeof releaseCandidates.$inferSelect;
 type Decision = typeof releaseDecisions.$inferSelect;
 type CandidateStatus = ReturnType<typeof formalReleaseCandidateDtoSchema.parse>['status'];
+type CandidateProgress = 'task.release_claimed' | 'task.release_registry_uncertain';
 
 async function visibleTask(tx: Transaction, identity: VerifiedIdentity, taskId: string, write = false) {
   const actor = await requireActor(tx, identity);
@@ -109,8 +110,8 @@ const decisionMessages = { pending: 'task.release_candidate_frozen', confirmed: 
 } as const;
 
 function present(row: Candidate, manifest: FormalReleaseManifest, status: CandidateStatus, locale: Locale,
-  history: Decision[] = [], operationId: string | null = null, claimed = false) {
-  const message = status === 'confirmed' && claimed ? 'task.release_claimed'
+  history: Decision[] = [], operationId: string | null = null, progress?: CandidateProgress) {
+  const message = status === 'confirmed' && progress ? progress
     : (status === 'pending' || status === 'confirmed' || status === 'rejected' || status === 'revoked'
       ? decisionMessages[status] : `release.${status}` as const);
   return formalReleaseCandidateDtoSchema.parse({ id: row.id, fingerprint: row.fingerprint, manifest, status, locale,
@@ -128,9 +129,12 @@ async function assessCandidate(tx: Transaction, task: TaskRow, row: Candidate, m
   const claimed = operation?.state === 'dispatching'
     && ['release_claimed', 'release_registry_prepared', 'release_registry_verified'].includes(runtime?.reason ?? '')
     && (task.state === 'running' || task.state === 'cancel_requested');
+  const observing = operation?.state === 'reconciling' && runtime?.reason === 'release_registry_reconciling'
+    && ['running', 'reconciling', 'cancel_requested'].includes(task.state);
+  const progress = claimed ? 'task.release_claimed' as const : observing ? 'task.release_registry_uncertain' as const : undefined;
   const queued = operation?.state === 'queued' && task.state === 'queued' && runtime?.reason === 'release_queued';
   const active = task.generation === manifest.generation && task.requestedBy === row.requestedBy && (last?.action === 'confirm'
-    ? queued || claimed
+    ? queued || claimed || observing
     : task.state === 'waiting_approval' && runtime?.reason === 'release_candidate_ready');
   let status: CandidateStatus;
   if (last?.action === 'revoke') status = 'revoked';
@@ -147,7 +151,7 @@ async function assessCandidate(tx: Transaction, task: TaskRow, row: Candidate, m
   }
   const now = await databaseNow(tx);
   if ((status === 'pending' || status === 'confirmed') && Date.parse(manifest.validUntil) <= now.getTime()) status = 'expired';
-  return { status, history, operation, claimed, active, now };
+  return { status, history, operation, progress, active, now };
 }
 
 async function readLatestFormalCandidate(tx: Transaction, task: TaskRow, locale: Locale) {
@@ -155,7 +159,7 @@ async function readLatestFormalCandidate(tx: Transaction, task: TaskRow, locale:
   if (row?.document.origin !== 'formal_verification') return null;
   const manifest = readReleaseManifest(row);
   const assessment = await assessCandidate(tx, task, row, manifest);
-  return { ...assessment, view: present(row, manifest, assessment.status, locale, assessment.history, assessment.operation?.id, assessment.claimed) };
+  return { ...assessment, view: present(row, manifest, assessment.status, locale, assessment.history, assessment.operation?.id, assessment.progress) };
 }
 
 function queuedConfirmation({ active, history, operation }: Awaited<ReturnType<typeof assessCandidate>>) {
@@ -302,12 +306,12 @@ export class FormalReleaseService {
       if (row.fingerprint !== input.fingerprint) throw new DomainError('version_conflict');
       const manifest = readReleaseManifest(row);
       const assessment = await assessCandidate(tx, task, row, manifest);
-      const { status, history, operation, claimed, now } = assessment;
+      const { status, history, operation, progress, now } = assessment;
       if (identity.expiresAt * 1000 <= now.getTime()) throw new DomainError('unauthenticated');
       const duplicate = history.find(item => item.actorId === actor.principalId && item.idempotencyKey === input.idempotencyKey);
       if (duplicate) {
         if (duplicate.action !== input.action || duplicate.version !== input.expectedVersion + 1) throw new DomainError('idempotency_conflict');
-        return { candidate: present(row, manifest, status, locale, history, operation?.id, claimed), replayed: true };
+        return { candidate: present(row, manifest, status, locale, history, operation?.id, progress), replayed: true };
       }
       const version = history.at(-1)?.version ?? 0;
       if (input.expectedVersion !== version) throw new DomainError('version_conflict');

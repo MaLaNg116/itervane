@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { releaseWakeupSchema } from '@itervane/contracts';
-import { and, eq, sql } from 'drizzle-orm';
+import { releaseWakeupSchema, type TaskEventReason } from '@itervane/contracts';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
 import { formalReleaseQueue, releaseFixtureQueue, type Database } from '../persistence/database.js';
-import { environments, releaseCandidates, releaseOperations, runRuntime } from '../persistence/schema.js';
+import { environments, formalReleaseSteps, releaseCandidates, releaseOperations, runRuntime, taskEvents } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
 import { appendEvent, type TaskRow } from './authority.js';
@@ -32,34 +32,43 @@ export async function blockQueuedRelease(tx: Transaction, database: Database, op
   return true;
 }
 
-export async function renewFormalWakeup(tx: Transaction, database: Database, operationId: string, delay = false) {
+export async function renewFormalWakeup(tx: Transaction, database: Database, operationId: string,
+  options: { state?: 'queued' | 'reconciling'; delaySeconds?: number } = {}) {
   const id = randomUUID();
   const jobId = await database.boss.send(formalReleaseQueue, releaseWakeupSchema.parse({ operationId }), {
-    id, db: fromDrizzle(tx, sql), ...(delay ? { startAfter: 1 } : {}),
+    id, db: fromDrizzle(tx, sql), ...(options.delaySeconds ? { startAfter: options.delaySeconds } : {}),
   });
   if (jobId !== id) throw new DomainError('unavailable');
-  await tx.update(releaseOperations).set({ state: 'queued', wakeupJobId: id, updatedAt: sql`clock_timestamp()` })
+  await tx.update(releaseOperations).set({ state: options.state ?? 'queued', wakeupJobId: id, updatedAt: sql`clock_timestamp()` })
     .where(eq(releaseOperations.id, operationId));
   return id;
 }
 
-export async function recoverClaimedRelease(tx: Transaction, database: Database, task: TaskRow, runId: string,
-  workerId: string, expired: boolean) {
+async function lockReleaseForRecovery(tx: Transaction, task: TaskRow, runId: string) {
   const operations = await tx.select({ operation: releaseOperations, candidate: releaseCandidates }).from(releaseOperations)
     .innerJoin(releaseCandidates, eq(releaseCandidates.id, releaseOperations.candidateId))
     .where(and(eq(releaseCandidates.runId, runId), eq(releaseCandidates.taskId, task.id),
-      eq(releaseOperations.state, 'dispatching'), sql`${releaseCandidates.document}->>'origin' = 'formal_verification'`)).limit(2);
+      inArray(releaseOperations.state, ['dispatching', 'reconciling']), sql`${releaseCandidates.document}->>'origin' = 'formal_verification'`)).limit(2);
   const reserved = operations[0];
   if (!reserved || operations.length !== 1 || (task.state !== 'running' && task.state !== 'cancel_requested')) {
     throw new DomainError('unavailable');
   }
   const { candidate, operation } = reserved;
   await tx.select({ id: environments.id }).from(environments).where(eq(environments.id, operation.environmentId)).for('update');
-  const [current] = await tx.select({ state: releaseOperations.state }).from(releaseOperations)
+  const [current] = await tx.select().from(releaseOperations)
     .where(eq(releaseOperations.id, operation.id)).for('update');
-  if (current?.state !== 'dispatching') throw new DomainError('unavailable');
+  if (!current || (current.state !== 'dispatching' && current.state !== 'reconciling') || current.wakeupJobId) {
+    throw new DomainError('unavailable');
+  }
   const releaseDecision = { candidateId: candidate.id, fingerprint: candidate.fingerprint,
     decisionVersion: operation.approvalVersion, operationId: operation.id };
+  return { operation: current, releaseDecision };
+}
+
+export async function recoverClaimedRelease(tx: Transaction, database: Database, task: TaskRow, runId: string,
+  workerId: string, expired: boolean) {
+  const { operation, releaseDecision } = await lockReleaseForRecovery(tx, task, runId);
+  if (operation.state !== 'dispatching') throw new DomainError('unavailable');
   if (task.state === 'cancel_requested') {
     await tx.update(releaseOperations).set({ state: 'blocked', updatedAt: sql`clock_timestamp()` }).where(eq(releaseOperations.id, operation.id));
     await appendEvent(tx, task, 'task.cancelled', 'cancelled', { workerId, reason: expired ? 'expired_cancel' : 'cancelled', releaseDecision });
@@ -71,4 +80,31 @@ export async function recoverClaimedRelease(tx: Transaction, database: Database,
     });
     await tx.update(runRuntime).set({ reason: 'release_queued' }).where(eq(runRuntime.runId, runId));
   }
+}
+
+export const registryRecheckEvent = 'task.release_registry_recheck_started';
+const maxRegistryRechecks = 3;
+
+export async function recoverRegistryLease(tx: Transaction, database: Database, task: TaskRow, runId: string, workerId: string,
+  reason: TaskEventReason = 'lease_expired') {
+  const { operation, releaseDecision } = await lockReleaseForRecovery(tx, task, runId);
+  const [intent] = await tx.select({ state: formalReleaseSteps.state }).from(formalReleaseSteps)
+    .where(and(eq(formalReleaseSteps.operationId, operation.id), eq(formalReleaseSteps.kind, 'registry'))).for('update');
+  if (!intent) throw new DomainError('unavailable');
+  const attempts = await tx.select({ sequence: taskEvents.sequence }).from(taskEvents)
+    .where(and(eq(taskEvents.taskId, task.id), eq(taskEvents.type, registryRecheckEvent),
+      sql`${taskEvents.detail}->>'operationId' = ${operation.id}`)).limit(maxRegistryRechecks);
+  const queued = attempts.length < maxRegistryRechecks;
+  if (queued) {
+    const delaySeconds = reason === 'lease_expired' && attempts.length === 0 ? undefined : 1;
+    await renewFormalWakeup(tx, database, operation.id, { state: 'reconciling', ...(delaySeconds ? { delaySeconds } : {}) });
+  } else if (operation.state !== 'reconciling') {
+    await tx.update(releaseOperations).set({ state: 'reconciling', updatedAt: sql`clock_timestamp()` }).where(eq(releaseOperations.id, operation.id));
+  }
+  await tx.update(runRuntime).set({ reason: 'release_registry_reconciling' }).where(eq(runRuntime.runId, runId));
+  await appendEvent(tx, task, queued ? 'task.release_registry_recovered' : 'task.release_registry_manual_review',
+    task.state === 'cancel_requested' ? task.state : 'reconciling', {
+    workerId, reason, releaseDecision,
+  });
+  return queued;
 }

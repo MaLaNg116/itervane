@@ -108,10 +108,14 @@ export class TaskService {
       const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId)).for('update');
       if (!task) throw new DomainError('not_found');
       if (task.state === 'cancelled' || task.state === 'cancel_requested') return taskView(tx, taskId);
-      if (!['queued', 'running', 'waiting_input', 'waiting_approval'].includes(task.state)) throw new DomainError('unsupported_state');
+      if (!['queued', 'running', 'waiting_input', 'waiting_approval', 'reconciling'].includes(task.state)) throw new DomainError('unsupported_state');
       if (task.version !== input.expectedVersion) throw new DomainError('version_conflict');
       const [run] = await tx.select().from(taskRuns).where(and(eq(taskRuns.taskId, taskId), eq(taskRuns.generation, task.generation)));
       if (!run) throw new DomainError('unavailable');
+      if (task.state === 'reconciling') {
+        const [runtime] = await tx.select({ reason: runRuntime.reason }).from(runRuntime).where(eq(runRuntime.runId, run.id));
+        if (runtime?.reason !== 'release_registry_reconciling') throw new DomainError('unsupported_state');
+      }
       if (run.wakeupJobId) await this.database.boss.cancel(queueName, run.wakeupJobId, { db: fromDrizzle(tx, sql) });
       if (task.state === 'queued' && !run.wakeupJobId) {
         const [operation] = await tx.select({ id: releaseOperations.id }).from(releaseOperations)
@@ -120,7 +124,7 @@ export class TaskService {
             sql`${releaseCandidates.document}->>'origin' = 'formal_verification'`));
         if (operation && !await blockQueuedRelease(tx, this.database, operation.id, await databaseNow(tx))) throw new DomainError('conflict');
       }
-      const running = task.state === 'running';
+      const running = task.state === 'running' || task.state === 'reconciling';
       await appendEvent(tx, task, running ? 'task.cancel_requested' : 'task.cancelled', running ? 'cancel_requested' : 'cancelled', { actorId: actor.principalId });
       await tx.update(runRuntime).set({ resumePending: false, waitingForTaskId: null }).where(eq(runRuntime.runId, run.id));
       return taskView(tx, taskId);

@@ -14,6 +14,7 @@ import { runFormalVerification } from '../../src/runtime/formal-verification.js'
 import { currentInspectionAttempt } from '../../src/service/inspection-evidence.js';
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
 import { readApprovedArchive } from './release-archive.js';
+import { interruptibleRegistryImport, recoverInterruptedRegistry } from './release-recovery.js';
 
 let phase = 'config';
 
@@ -208,9 +209,21 @@ try {
   if (action === 'read-approved-archive') {
     phase = 'archive_registry_transfer';
     equal(extra.length, 0);
-    ok(origin && materializer);
+    ok(origin && !materializer);
     const { databaseUrl, runner } = fixtureConfig();
-    console.log(JSON.stringify(await readApprovedArchive(databaseUrl, runner, operationId, { origin, materializer })));
+    console.log(JSON.stringify(await readApprovedArchive(databaseUrl, runner, operationId, origin)));
+  } else if (action === 'interrupt-registry-import') {
+    phase = 'registry_import_before_kill';
+    ok(origin && materializer);
+    equal(extra.length, 0);
+    const { databaseUrl, runner } = fixtureConfig();
+    await interruptibleRegistryImport(databaseUrl, runner, operationId, origin, materializer);
+  } else if (action === 'recover-registry-import') {
+    phase = 'registry_recovery_readback';
+    ok(origin && !materializer);
+    equal(extra.length, 0);
+    const { databaseUrl } = fixtureConfig();
+    console.log(JSON.stringify(await recoverInterruptedRegistry(databaseUrl, operationId, origin)));
   } else console.log(JSON.stringify(await verify()));
 }
 catch { console.error(`verification_fixture_phase_${phase}`); process.exitCode = 1; }

@@ -10,4 +10,6 @@
 
 步骤专项及 PostgreSQL 17.12 全量 149 项通过，源码指纹为 `57c6ac20c6b468569bd696525536d9d8422c49a2138a1f2b6ceef22aaf7f6f65`。托管源码 `d890ccbd61ae0e2a158a84944c845d00acfcc73c` 的改动为托管前导读，运行代码和集成测试一致。 [PR #48](https://github.com/MaLaNg116/itervane/pull/48) · [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44928454610)
 
+四组托管 KVM 与常规检查均通过。独立制品记录、冻结候选和 Registry 回读核对了同一镜像摘要、配置摘要及 79,042,560 字节归档。Registry 实际观察发生在暂存清理后。已审查版本 `33ae2289fc1a9c0796534ce91aabb7ffbea6ff44` 已合入 `main`。 [合并提交](https://github.com/MaLaNg116/itervane/commit/09ef14b6fb720c9432bf5584161d1c6cf3e874bd)
+
 C3-C2 接线正式 Worker 的传输、导入和待核对调度，让新 fence 能用原始导入意图恢复只读核对。完整发布继续等待 Komodo 与运行版本独立验收。
