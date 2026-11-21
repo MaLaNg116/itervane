@@ -8,6 +8,8 @@
 4. `f2e9ab7` 用真实 PostgreSQL 验证同一消息的并发与回放、事务回滚、源码占槽、环境占用、过期 fence、丢失唤醒和取消。拒绝用例覆盖目标改版、Registry 错配、批准人重授、请求人撤权和等锁期间批准过期。`b2ce344` 注入另一条内部自洽的复验记录来验证原批准指纹失效。 [数据库验收](https://github.com/MaLaNg116/itervane/blob/b2ce344/packages/control-plane/test/integration/inspections.test.ts)
 5. `a4dc318` 托管 OCI 场景新增独立原生探针，认领真实第二代候选、核对批准归档、发送心跳并交还租约。仍有待执行的同一发布操作会换用新的队列 ID，旧唤醒重放会被拒绝。 [托管探针](https://github.com/MaLaNg116/itervane/blob/a4dc318/packages/control-plane/test/native/worker-inspection.ts)
 
-固定运行源码 `a4dc3188b17769c873e88b416217ba3ff6fde520`。TypeScript、163 项单元、70 项 Python 宿主测试和原生 Worker 打包通过。首次全量 PostgreSQL 147 项通过，复验证据负例的夹具初始化被外键拦截，更换夹具后复跑。托管源码 `0645c5989f21c96ae4a8db121e828d0f7b989a2a` 正在验证。 [PR #47](https://github.com/MaLaNg116/itervane/pull/47) · [托管原生验收](https://github.com/MaLaNg116/itervane/actions/runs/44926192666)
+固定运行源码 `a4dc3188b17769c873e88b416217ba3ff6fde520`。TypeScript、163 项单元、70 项 Python 宿主测试和原生 Worker 打包通过。首次全量 PostgreSQL 147 项通过，复验证据负例的夹具初始化被外键拦截。更新夹具后，`b2ce344fb8759731342fa4e877d3026db7e92dfd` 在 PostgreSQL 17.12 全量复跑 148 项通过，指纹为 `aea49ef4a54fc144828220ef4087674b98887e897598bc2675628c5b54fbde53`。
+
+托管源码 `0645c5989f21c96ae4a8db121e828d0f7b989a2a` 正在验证。此后的改动集中在数据库集成测试及文档，正式运行代码与原生探针一致。 [PR #47](https://github.com/MaLaNg116/itervane/pull/47) · [托管原生验收](https://github.com/MaLaNg116/itervane/actions/runs/44926192666)
 
 本批的正式阶段为预留执行权。C3-C 接入外部写入意图、同摘要 Registry 导入和结果核对。C4 与 E-D 分别进行正式 Komodo 派发与独立上线核验。 [发布执行计划](../plans/p2-e-formal-release-execution.md)
