@@ -54,7 +54,8 @@ const workspaceSha256 = 'd'.repeat(64);
 const verificationProfile = { id: 'standard-web-fixture', baselineSha256: sha256('protected baseline'),
   policySha256: sha256('verification policy'), scannerInputsSha256: sha256('verification scanners'), runnerImageSha256: imageSha256 };
 const clearRepairHandoff = () => database.admin.query(
-  'TRUNCATE itervane.formal_rescan_attempts, itervane.formal_verification_inputs, itervane.formal_repair_results, itervane.formal_repair_attempts, '
+  'TRUNCATE itervane.formal_verification_runtime, itervane.formal_rescan_attempts, itervane.formal_verification_inputs, '
+  + 'itervane.formal_repair_results, itervane.formal_repair_attempts, '
   + 'itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs',
 );
 beforeAll(async () => { database = await databaseFixture(); issuer = await identityFixture(); identity = await createIdentityVerifier(issuer.config)(await issuer.token()); });
