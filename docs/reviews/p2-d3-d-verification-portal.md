@@ -6,4 +6,6 @@
 2. 当前状态沿用可读的实时提示。历史与摘要使用现有 GSAP `Disclosure`，支持键盘操作和动态减少动效。接口失败时清除面板中的证据并给出重试入口。 [查询键](https://github.com/MaLaNg116/itervane/blob/e6f28aa/packages/portal/src/context.tsx) · [双语文案](https://github.com/MaLaNg116/itervane/blob/e6f28aa/packages/portal/src/messages.ts)
 3. `b141fe6` 使用真实 Chrome、Keycloak、PostgreSQL 和 Worker 驱动登录与任务面板。本用例在 HTTP 边界模拟两代查询的结果，检查版本递增触发刷新、503 历史、语言切换、错误恢复、键盘与减少动效。实际回执和成员权限由 [复验查询验收](p2-d3-d-verification-read.md) 覆盖。 [浏览器场景](https://github.com/MaLaNg116/itervane/blob/b141fe6/packages/portal/test/browser/portal.spec.ts)
 
-本机 TypeScript 和该浏览器场景已通过，受测页面没有 CSP 违规。全量浏览器回归随 PR 验收。面板显示的证据为人工查看和核对使用，后续发布交给 P2-E 的审批流程。
+本机 TypeScript 和该浏览器场景已通过，受测页面没有 CSP 违规。以 `629bb8f` 运行的 Linux CI 通过 Chrome、Keycloak、PostgreSQL 和 Worker 的全部 24 项浏览器场景，包含语言切换、任务版本、权限和已有动效。 [全量浏览器回归](https://github.com/MaLaNg116/itervane/actions/runs/44909983933/job/136863611546)
+
+面板显示的证据为人工查看和核对使用。后续发布交给 P2-E 的审批流程。
