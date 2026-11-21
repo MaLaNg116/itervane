@@ -9,6 +9,7 @@ import { buildLockByteLimit, readBuildDependencies } from '../packages/runner/sr
 import { fileDigest } from '../packages/runner/src/guest-inspection.js';
 import { readBoundedFile } from '../packages/runner/src/guest-snapshot.js';
 import { sha256 } from '../packages/runner/src/profiles.js';
+import { standardNpmReleaseFiles } from '../packages/verification/src/native/npm-release-fixture.js';
 
 const execute = promisify(execFile);
 const fixture = fileURLToPath(new URL('../fixtures/standard-app/', import.meta.url));
@@ -33,13 +34,15 @@ async function verifiedTarball(url: string, integrity: string, remainingBytes: n
   return Buffer.concat(chunks, size);
 }
 
-async function prepare(destination: string, ociInputsSha256?: string) {
+async function prepare(destination: string, ociInputsSha256?: string, approvedNpm = false) {
   if (process.platform !== 'linux' || process.arch !== 'x64' || basename(destination) !== 'itervane-build-inputs') {
     throw new Error('build_input_target');
   }
   phase = 'lockfile';
-  const manifest = readBoundedFile(join(fixture, 'package.json'), 65_536);
-  const { lockSha256, tarballs } = readBuildDependencies(readBoundedFile(join(fixture, 'package-lock.json'), buildLockByteLimit));
+  const npmBasis = approvedNpm ? standardNpmReleaseFiles('approved') : undefined;
+  const manifest = npmBasis?.manifest ?? readBoundedFile(join(fixture, 'package.json'), 65_536);
+  const lock = npmBasis?.lock ?? readBoundedFile(join(fixture, 'package-lock.json'), buildLockByteLimit);
+  const { lockSha256, tarballs } = readBuildDependencies(lock);
   const npmRoot = resolve(dirname(process.execPath), '../lib/node_modules/npm');
   const npm = join(npmRoot, 'bin/npm-cli.js');
   await mkdir(destination, { mode: 0o700 });
@@ -97,11 +100,12 @@ async function prepare(destination: string, ociInputsSha256?: string) {
 }
 
 try {
-  const [target, ociInputsSha256, ...extra] = process.argv.slice(2);
-  if (!target || extra.length || (ociInputsSha256 !== undefined && !/^[a-f0-9]{64}$/.test(ociInputsSha256))) {
+  const [target, ociInputsSha256, basis, ...extra] = process.argv.slice(2);
+  if (!target || extra.length || (ociInputsSha256 !== undefined && !/^[a-f0-9]{64}$/.test(ociInputsSha256))
+      || (basis !== undefined && (basis !== 'approved-npm' || !ociInputsSha256))) {
     throw new Error('build_input_arguments');
   }
-  await prepare(resolve(target), ociInputsSha256);
+  await prepare(resolve(target), ociInputsSha256, basis === 'approved-npm');
 } catch (error) {
   const code = error instanceof Error && /^build_[a-z_]+$/.test(error.message) ? error.message : 'preparation_failed';
   console.error(`Trusted build dependency preparation failed at ${phase} (${code}).`);
