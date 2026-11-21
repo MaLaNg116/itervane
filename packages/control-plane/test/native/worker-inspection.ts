@@ -664,7 +664,7 @@ async function probe() {
               });
 
               const [record] = (await db.admin.query(`SELECT state, wakeup_job_id,
-                (SELECT count(*)::int FROM itervane.formal_release_steps WHERE operation_id=$1) AS external_steps,
+                (SELECT count(*)::int FROM itervane.formal_release_steps WHERE operation_id=$1 AND kind<>'archive') AS external_steps,
                 (SELECT count(*)::int FROM itervane.formal_release_rollout_attempts WHERE operation_id=$1) AS rollouts
                 FROM itervane.release_operations WHERE id=$1 AND candidate_id=$2`, [operationId, candidate.id])).rows;
               deepStrictEqual(record, { state: 'blocked', wakeup_job_id: null, external_steps: 0, rollouts: 0 });
@@ -675,7 +675,12 @@ async function probe() {
               equal(event?.detail?.reason, reason);
               equal(event?.detail?.fingerprint, candidate.fingerprint);
               equal(event?.detail?.decisionVersion, approved.decisionVersion);
-              equal(Number.isSafeInteger(event?.detail?.fence), reason === 'release_archive_unavailable');
+              const archiveReadPrepared = reason === 'release_archive_unavailable';
+              equal(Number.isSafeInteger(event?.detail?.fence), archiveReadPrepared);
+              const { rows: archiveReads } = await db.admin.query(`SELECT state,prepared_fence,settled_fence,proof
+                FROM itervane.formal_release_steps WHERE operation_id=$1 AND kind='archive'`, [operationId]);
+              deepStrictEqual(archiveReads, archiveReadPrepared
+                ? [{ state: 'prepared', prepared_fence: event?.detail?.fence, settled_fence: null, proof: null }] : []);
               equal(taskDtoSchema.parse(await request(`/v1/tasks/${task.id}`)).state, 'needs_human');
               const [slot] = (await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows;
               equal(slot?.task_id, null);
@@ -688,7 +693,8 @@ async function probe() {
               await assertDrained(controllerUid, staging);
               return { taskId: task.id, candidateId: candidate.id, operationId, reason,
                 archiveSha256: candidate.manifest.image.archive.sha256, approvalVersion: approved.decisionVersion,
-                externalSteps: 0, registryManifestAbsent: true, komodoTargetUnchanged: true, httpMcpAgreement: true, slotReleased: true };
+                externalSteps: 0, archiveReadPrepared, registryManifestAbsent: true, komodoTargetUnchanged: true,
+                httpMcpAgreement: true, slotReleased: true };
             } finally {
               await worker.stop('TERM');
               worker = undefined;
@@ -708,8 +714,10 @@ async function probe() {
           equal(restored.revision, drifted.revision + 1);
           const nextApproval = await approve(next.current, next.after, next.generation, restored.fingerprint);
           phase = 'protected_release_archive_drift';
-          const archiveRejected = await withReplacementArchive(shared, nextApproval.candidate.manifest.image.archive,
-            () => runBlocked(next.current, nextApproval, restored.fingerprint, 'release_archive_unavailable'));
+          const archiveRejected = await withReplacementArchive(shared, nextApproval.candidate.manifest.image.archive, () => {
+            phase = 'protected_release_archive_drift_read';
+            return runBlocked(next.current, nextApproval, restored.fingerprint, 'release_archive_unavailable');
+          });
           return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
             drift: { target: targetRejected, archive: archiveRejected,
               targetBuild: after, archiveBuild: next.after, originalArchiveRestored: true } };
