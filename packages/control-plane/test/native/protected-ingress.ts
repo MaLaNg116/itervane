@@ -186,7 +186,15 @@ export async function openProtectedIngress(
     });
     return { check, caFile, probeSecret: identity.probe.secret,
       otherIdentity: { ...check.probeIdentity, clientId: identity.other.clientId, subject: identity.other.subject },
-      otherSecret: identity.other.secret, close };
+      otherSecret: identity.other.secret, close,
+      async stopIdentity() { await docker(['stop', '--timeout', '3', 'keycloak'], 20_000); },
+      async anonymousHealthStatus() {
+        const { stdout } = await execute('curl', ['--noproxy', '*', '--silent', '--max-time', '4', '--output', '/dev/null',
+          '--cacert', tls.cert, '--write-out', '%{http_code}', check.origin + check.healthPath], { timeout: 5_000 });
+        match(stdout, /^[1-5][0-9]{2}$/);
+        return Number(stdout);
+      },
+    };
   } catch {
     await close().catch(() => { throw new Error('protected_ingress_cleanup'); });
     throw new Error('protected_ingress_' + phase);

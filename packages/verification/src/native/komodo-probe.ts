@@ -353,6 +353,16 @@ export async function openNativeReleaseKomodo(env: NodeJS.ProcessEnv = process.e
       const setup = await bootstrap(stack.adminPassword, '', 'itervane-release-' + mark, network);
       const { target, credentials, client } = setup;
       const raw = await client.call('read', 'GetDeployment', { deployment: target.id }, z.unknown());
+      const observeContainer = async (reference: string, configDigest: string) => {
+        const container = await waitFor('ObserveApprovedContainer', async () => {
+          const status = await inspect(target);
+          return status.State.Running ? status : undefined;
+        }, 20_000);
+        if (container.Config.Labels[labelKey] !== mark || container.Config.Image !== reference || container.Image !== configDigest) {
+          throw new KomodoError('ApprovedRuntimeIdentity', 'binding');
+        }
+        return { reference: container.Config.Image, configDigest: container.Image, containerId: container.Id };
+      };
       return {
         binding: { deploymentId: target.id, serverId: target.server, runtimeConfigSha256: komodoRuntimeConfigSha256(raw),
           komodo: { origin: coreOrigin, actorId: target.actor } },
@@ -366,15 +376,20 @@ export async function openNativeReleaseKomodo(env: NodeJS.ProcessEnv = process.e
           ]);
           if (ownedContainer) throw new KomodoError('UnexpectedFixtureDeployment', 'binding');
         },
-        async observeContainer(reference: string, configDigest: string) {
-          const container = await waitFor('ObserveApprovedContainer', async () => {
-            const status = await inspect(target);
-            return status.State.Running ? status : undefined;
-          }, 20_000);
-          if (container.Config.Labels[labelKey] !== mark || container.Config.Image !== reference || container.Image !== configDigest) {
-            throw new KomodoError('ApprovedRuntimeIdentity', 'binding');
-          }
-          return { reference: container.Config.Image, configDigest: container.Image, containerId: container.Id };
+        observeContainer,
+        async exerciseFixtureHealth(reference: string, configDigest: string, port: number, failHealth: boolean) {
+          if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new KomodoError('FixtureHealthPort', 'binding');
+          const before = await observeContainer(reference, configDigest);
+          const readStatus = () => docker('ReadFixtureHealth', ['container', 'exec', before.containerId, '/opt/itervane/bin/node', '-e',
+            'fetch(process.argv[1], { signal: AbortSignal.timeout(2500) }).then(response => console.log(response.status)).catch(() => { process.exitCode = 1; });',
+            `http://127.0.0.1:${port}/health`]);
+          await waitFor('FixtureHealthInitial', async () => await readStatus() === '200' ? true : undefined, 12_000);
+          if (failHealth) await docker('SignalFixtureHealth', ['container', 'kill', '--signal=USR2', before.containerId]);
+          const afterStatus = failHealth ? 503 : 200;
+          await waitFor('FixtureHealthExpected', async () => await readStatus() === String(afterStatus) ? true : undefined, 12_000);
+          const after = await observeContainer(reference, configDigest);
+          if (after.containerId !== before.containerId) throw new KomodoError('FixtureHealthContainerChanged', 'binding');
+          return { beforeStatus: 200, afterStatus, containerId: before.containerId };
         },
       };
     },

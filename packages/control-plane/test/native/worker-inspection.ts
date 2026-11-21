@@ -32,7 +32,7 @@ import { sourceFingerprint } from '../../../verification/src/report.js';
 import { openNativeReleaseKomodo } from '../../../verification/src/native/komodo-probe.js';
 import { npmReleaseApproval, standardNpmReleaseFiles } from '../../../verification/src/native/npm-release-fixture.js';
 import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from './audit-provider.js';
-import { proveKnownKomodoRecovery, proveUnknownKomodoDispatch } from './komodo-release-proof.js';
+import { proveKnownKomodoRecovery, proveUnknownKomodoDispatch, recoverRecordedReleaseForRollout } from './komodo-release-proof.js';
 import type { KomodoInterruption, runKomodoReleaseFixture } from './komodo-release-worker.js';
 import type { RegistryImportMarker } from './release-recovery.js';
 import { temporaryRegistry } from './registry-fixture.js';
@@ -47,6 +47,7 @@ const standardLockDriftCommit = '03e5d18a27d23960f040c0d5d70afefac15ec46e';
 const standardHealthRegressionCommit = '1eac5c8776c6e81613cfb5adf6edd2cd6b163ba3';
 const repairRetryCommit = '39e9b7f34fdd01ec55fe4dda5358ffce5d68cbf8';
 const dependencyReleaseCommit = '37ac62431fd9bf7b2a6c0f4b3f15d5d5f1f030b8';
+const runtimeFaultCommit = '5b9db1015069be891233231a7b947831ac46fe39';
 const origin = 'https://github.com/MaLaNg116/itervane.git';
 const publicUrl = 'https://itervane.example';
 const standardRuntimePort = 38171; // The port sealed in the OCI runtime plan by runtime_guest.py.
@@ -54,6 +55,8 @@ const controllerAccount = 'itervane-probe';
 const workerAccount = 'itervane-inspection-client';
 const domainName = /^itervane-d2-[a-f0-9-]{36}$/;
 let phase = 'configuration';
+type NativeKomodo = Awaited<ReturnType<typeof openNativeReleaseKomodo>>;
+type NativeKomodoTarget = Awaited<ReturnType<NativeKomodo['prepare']>>;
 
 async function poll<T>(read: () => Promise<T | undefined>, timeoutMs: number, label: string): Promise<T> {
   const until = performance.now() + timeoutMs;
@@ -276,7 +279,8 @@ async function probe() {
   const [buildMode, buildProfile, baseline, oci] = extra;
   const dependencyRun = buildMode === 'protected-release-npm';
   const driftRun = buildMode === 'protected-release-drift';
-  const protectedRun = buildMode === 'protected-release' || dependencyRun || driftRun;
+  const faultRun = buildMode === 'protected-release-faults';
+  const protectedRun = buildMode === 'protected-release' || dependencyRun || driftRun || faultRun;
   const ociRun = buildMode === 'standard-oci' || protectedRun;
   const buildRun = buildMode === 'standard-build' || buildMode === 'standard-build-missing-cache' || ociRun;
   if (process.platform !== 'linux' || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted' || process.env.DATABASE_URL
@@ -299,8 +303,19 @@ async function probe() {
   let worker: Awaited<ReturnType<typeof startWorker>> | undefined;
   let auditProvider: Awaited<ReturnType<typeof auditProtocolFixture>> | undefined;
   let releaseRegistry: Awaited<ReturnType<typeof temporaryRegistry>> | undefined;
-  let releaseKomodo: Awaited<ReturnType<typeof openNativeReleaseKomodo>> | undefined;
+  let releaseKomodo: NativeKomodo | undefined;
   let protectedIngress: Awaited<ReturnType<typeof openProtectedIngress>> | undefined;
+  const closeReleaseFixtures = async () => {
+    const ingress = protectedIngress;
+    const komodo = releaseKomodo;
+    const registry = releaseRegistry;
+    protectedIngress = undefined;
+    releaseKomodo = undefined;
+    releaseRegistry = undefined;
+    // The edge must leave the owned application network before Komodo removes it.
+    try { await ingress?.close(); }
+    finally { await Promise.all([komodo?.close(), registry?.close()]); }
+  };
   const client = new Client({ name: 'itervane-native-worker', version: '0.0.0' });
   try {
     const db = database = await databaseFixture(postgres.url);
@@ -367,9 +382,31 @@ async function probe() {
       await assertDrained(controllerUid, staging);
       return result;
     };
+    const komodoTrial = (registryOrigin: string, fixture: NativeKomodoTarget, taskId: string, releaseId: string,
+      image: { reference: string; configDigest: string }) => {
+      const credentials = JSON.stringify({ origin: fixture.binding.komodo.origin, ...fixture.credentials });
+      const args = (boundary: string, materializer = '-') =>
+        ['komodo-release-step', releaseId, registryOrigin, materializer, boundary];
+      return {
+        database: db.storage, taskId, operationId: releaseId, reference: image.reference, configDigest: image.configDigest,
+        tick: (materializer?: string): ReturnType<typeof runKomodoReleaseFixture> =>
+          runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+            'verification', args('tick', materializer), credentials),
+        interrupt: (boundary: KomodoInterruption['boundary']) =>
+          interruptFixture<KomodoInterruption>(launchScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256,
+            db.runtimeUrl, args(boundary), credentials), releaseId, marker => {
+            equal(marker.boundary, boundary);
+            if (boundary !== 'configured') komodoResourceIdSchema.parse(marker.updateId);
+            return marker;
+          }, 'komodo_worker_exited_before_interruption'),
+        observeContainer: fixture.observeContainer,
+      };
+    };
 
     if (build) {
-      const audit = auditProvider = await auditProtocolFixture({ repairRetry: ociRun && !dependencyRun && !driftRun, dependencyRepair: dependencyRun });
+      const audit = auditProvider = await auditProtocolFixture({
+        repairRetry: ociRun && !dependencyRun && !driftRun && !faultRun, dependencyRepair: dependencyRun,
+      });
       const automaticProfile = build.oci ? standardVerificationProfileSchema.parse({
         id: 'isolated-rescan-fixture', baselineSha256: build.baseline, policySha256: sha256(JSON.stringify(scannerProfiles)),
         scannerInputsSha256: JSON.parse(readFileSync('.reports/p0/kvm-inspection-inputs.json', 'utf8')).inputsSha256,
@@ -539,16 +576,16 @@ async function probe() {
         equal(evidence.runId, fact.domainId);
         return { ...fact, build: evidence, taskId: task.id };
       };
-      if (protectedRun) {
+      const runProtectedCase = async (fault?: 'health' | 'identity') => {
         ok(automaticProfile);
         const proxyDir = process.env.ITERVANE_NATIVE_RELEASE_PROXIES;
         ok(proxyDir && proxyDir.startsWith('/') && proxyDir.endsWith('/itervane-release-proxies'));
         const cleanReleaseFixture = async () => {
-          const after = await buildFixture(standardBuildCommit, 'built', 'passed');
+          const after = await buildFixture(fault === 'health' ? runtimeFaultCommit : standardBuildCommit, 'built', 'passed');
           const current = taskDtoSchema.parse(await request(`/v1/tasks/${after.taskId}`));
           return { current, after, generation: 1 };
         };
-        const prepared = driftRun ? await cleanReleaseFixture()
+        const prepared = driftRun || fault ? await cleanReleaseFixture()
           : dependencyRun ? await dependencyFixture(automaticProfile) : await repairRetryFixture(automaticProfile);
         const { current, after, generation } = prepared;
         phase = 'protected_release_target';
@@ -715,6 +752,68 @@ async function probe() {
               targetBuild: after, archiveBuild: next.after, originalArchiveRestored: true } };
         }
 
+        if (fault) {
+          phase = 'protected_release_recorded_dispatch_recovery';
+          const reference = `${new URL(registry.origin).host}/${targetSettings.imageRepository}@${image.manifestDigest}`;
+          const trial = komodoTrial(registry.origin, target, current.id, operationId, { reference, configDigest: image.configDigest });
+          const recovery = await recoverRecordedReleaseForRollout(trial, join(shared, 'release-tools/materialize_oci.py'));
+          const anonymousBefore = await ingress.anonymousHealthStatus();
+          ok(anonymousBefore === 401 || anonymousBefore === 403);
+          phase = fault === 'health' ? 'protected_release_runtime_health_failure' : 'protected_release_identity_outage';
+          const runtime = await target.exerciseFixtureHealth(reference, image.configDigest, standardRuntimePort, fault === 'health');
+          if (fault === 'identity') await ingress.stopIdentity();
+          const anonymousStatus = await ingress.anonymousHealthStatus();
+          ok(anonymousStatus === 401 || anonymousStatus === 403);
+          const expectedReason = fault === 'health' ? 'release_rollout_health_failed' : 'release_rollout_unavailable';
+          worker = await startReleaseWorker(mapping.fingerprint);
+          const review = await poll(async () => {
+            const view = await readResult('zh-CN');
+            if (view.result?.status === 'verified' || view.result?.status === 'blocked') throw new Error('protected_release_fault_verdict');
+            return view.result?.status === 'manual_review' ? view : undefined;
+          }, 55_000, 'protected_release_fault_result');
+          await worker.stop('TERM'); worker = undefined;
+          ok(review.result?.status === 'manual_review');
+          equal(review.result.operationId, operationId);
+          equal(review.result.updateId, recovery.updateId);
+          equal(review.result.reason, expectedReason);
+          equal(review.candidate?.fingerprint, candidate.fingerprint);
+          equal(review.candidate?.decisions.at(-1)?.version, approved.decisionVersion);
+          const zh = await client.callTool({ name: 'get_release_result', arguments: { taskId: current.id } });
+          deepStrictEqual(formalReleaseResultSchema.parse(zh.structuredContent), {
+            taskId: current.id, runId: current.runId, taskVersion: review.taskVersion, result: review.result,
+          });
+          const english = await readResult('en');
+          ok(english.result?.status === 'manual_review');
+          equal(english.result.reason, expectedReason);
+          equal(english.result.updateId, recovery.updateId);
+          notEqual(english.result.reasonMessage, review.result.reasonMessage);
+          await withEnglishReader(async lookup => {
+            const en = await lookup.callTool({ name: 'get_release_result', arguments: { taskId: current.id } });
+            deepStrictEqual(formalReleaseResultSchema.parse(en.structuredContent), {
+              taskId: current.id, runId: current.runId, taskVersion: english.taskVersion, result: english.result,
+            });
+          });
+
+          const [record] = (await db.admin.query(`SELECT operation.state, operation.wakeup_job_id,
+            observation.state AS observed_state, observation.failure, observation.proof
+            FROM itervane.release_operations operation
+            JOIN itervane.formal_release_rollout_attempts observation ON observation.operation_id=operation.id
+            WHERE operation.id=$1 AND operation.candidate_id=$2`, [operationId, candidate.id])).rows;
+          deepStrictEqual(record, { state: 'reconciling', wakeup_job_id: null, observed_state: 'rejected', failure: expectedReason, proof: null });
+          const { rows: dispatches } = await db.admin.query(`SELECT state, external_update_id, prepared_fence, settled_fence
+            FROM itervane.formal_release_steps WHERE operation_id=$1 AND kind='komodo_dispatch'`, [operationId]);
+          deepStrictEqual(dispatches, [{ state: 'confirmed', external_update_id: recovery.updateId,
+            prepared_fence: recovery.dispatchFence, settled_fence: recovery.observedFence }]);
+          equal(taskDtoSchema.parse(await request(`/v1/tasks/${current.id}`)).state, 'needs_human');
+          const [slot] = (await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows;
+          equal(slot?.task_id, null);
+          equal((await target.observeContainer(reference, image.configDigest)).containerId, runtime.containerId);
+          await assertDrained(controllerUid, staging);
+          return { fault: { taskId: current.id, operationId, candidateId: candidate.id, reason: expectedReason, recovery,
+            originStatusBefore: runtime.beforeStatus, originStatusAfter: runtime.afterStatus, anonymousStatus, after,
+            manifestDigest: image.manifestDigest, configDigest: image.configDigest, httpMcpAgreement: true, environmentHeld: true } };
+        }
+
         phase = 'protected_release_installed_worker';
         worker = await startReleaseWorker(mapping.fingerprint);
         const verified = await poll(async () => {
@@ -793,6 +892,15 @@ async function probe() {
             repairCategory: dependencyRun ? 'npm_dependency' : 'synthetic_secret',
             stagedFilesRemaining: false },
         };
+      };
+      if (protectedRun) {
+        if (!faultRun) return runProtectedCase();
+        const unhealthy = await runProtectedCase('health');
+        await closeReleaseFixtures();
+        const identity = await runProtectedCase('identity');
+        ok(unhealthy.fault && identity.fault);
+        return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
+          faults: { health: unhealthy.fault, identity: identity.fault } };
       }
       if (buildMode === 'standard-build-missing-cache') {
         const missing = await buildFixture(standardBuildCommit, 'offline_install');
@@ -950,28 +1058,8 @@ async function probe() {
         deepStrictEqual(held, { state: 'dispatching', wakeup_job_id: null });
         await assertDrained(controllerUid, staging);
 
-        const komodoTrial = (fixture: typeof knownTarget, taskId: string, releaseId: string,
-          image: typeof pinnedImage) => {
-          const credentials = JSON.stringify({ origin: fixture.binding.komodo.origin, ...fixture.credentials });
-          const args = (boundary: string, materializer = '-') =>
-            ['komodo-release-step', releaseId, registry.origin, materializer, boundary];
-          return {
-            database: db.storage, taskId, operationId: releaseId, reference: image.reference, configDigest: image.configDigest,
-            tick: (materializer?: string): ReturnType<typeof runKomodoReleaseFixture> =>
-              runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
-                'verification', args('tick', materializer), credentials),
-            interrupt: (boundary: KomodoInterruption['boundary']) =>
-              interruptFixture<KomodoInterruption>(launchScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256,
-                db.runtimeUrl, args(boundary), credentials), releaseId, marker => {
-                equal(marker.boundary, boundary);
-                if (boundary !== 'configured') komodoResourceIdSchema.parse(marker.updateId);
-                return marker;
-              }, 'komodo_worker_exited_before_interruption'),
-            observeContainer: fixture.observeContainer,
-          };
-        };
         phase = 'standard_komodo_known_update';
-        const komodoRecovery = await proveKnownKomodoRecovery(komodoTrial(knownTarget, current.id, operationId, pinnedImage), resumed.fence);
+        const komodoRecovery = await proveKnownKomodoRecovery(komodoTrial(registry.origin, knownTarget, current.id, operationId, pinnedImage), resumed.fence);
 
         phase = 'standard_komodo_missing_update';
         const unknownTarget = await komodo.prepare();
@@ -995,7 +1083,7 @@ async function probe() {
         const cleanProof = { registryOrigin: registry.origin, repository: 'testing/standard',
           reference: `${new URL(registry.origin).host}/testing/standard@${cleanImage.manifestDigest}`,
           archive: cleanImage.archive, manifestDigest: cleanImage.manifestDigest, configDigest: cleanImage.configDigest };
-        const unknownKomodo = await proveUnknownKomodoDispatch(komodoTrial(unknownTarget, cleanTask.id, otherOperation, cleanProof),
+        const unknownKomodo = await proveUnknownKomodoDispatch(komodoTrial(registry.origin, unknownTarget, cleanTask.id, otherOperation, cleanProof),
           join(dirname(bundle), 'release-tools/materialize_oci.py'), komodoRecovery.updateId);
         await assertDrained(controllerUid, staging);
         retry = { before, after, retrySha256, generation, candidate, claim,
@@ -1311,12 +1399,8 @@ async function probe() {
     };
   } finally {
     try {
-      // The edge must leave the owned application network before Komodo removes it.
       try { await worker?.stop('TERM'); }
-      finally {
-        try { await protectedIngress?.close(); }
-        finally { await Promise.all([releaseKomodo?.close(), releaseRegistry?.close()]); }
-      }
+      finally { await closeReleaseFixtures(); }
     }
     finally {
       await auditProvider?.close(); await client.close(); await api?.close(); await identity?.close(); await database?.close(); await postgres.close();
