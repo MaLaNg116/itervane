@@ -244,8 +244,10 @@ async function verifyFormalAdapter(setup: Awaited<ReturnType<typeof bootstrap>>,
   const mismatch = new KomodoReleaseClient(coreOrigin, { ...credentials, actorId: foreignId });
   await expectReleaseRejection('GetUpdate', 'binding', () =>
     mismatch.observeUpdate({ ...binding, komodo: { ...binding.komodo, actorId: foreignId } }, updateId, authorize));
-  return { updateId, runtimeConfigSha256: binding.runtimeConfigSha256,
-    observed: await waitFor('FormalAdapterFixture', () => observeFixture(target.name, mark, approved, previousContainer), 12_000) };
+  const observed = await waitFor('FormalAdapterFixture', () => observeFixture(target.name, mark, approved, previousContainer), 12_000);
+  const runtime = await adapter.inspectRuntime(binding, { manifestDigest: approved.digest, configDigest: approved.config }, 'none', authorize);
+  if (runtime.containerId !== observed.Id || runtime.configDigest !== observed.Image) throw new KomodoError('FormalAdapterRunningImage', 'binding');
+  return { updateId, runtimeConfigSha256: binding.runtimeConfigSha256, observed };
 }
 
 const text = {
