@@ -44,7 +44,7 @@ export class ResourceService {
   async me(identity: VerifiedIdentity) {
     return this.database.db.transaction(async tx => {
       const actor = await requireActor(tx, identity);
-      return meDtoSchema.parse({ ...actor, isWorkspaceOwner: actor.workspaceId !== null });
+      return meDtoSchema.parse({ principalId: actor.principalId, workspaceId: actor.workspaceId, isWorkspaceOwner: actor.workspaceId !== null });
     });
   }
 
