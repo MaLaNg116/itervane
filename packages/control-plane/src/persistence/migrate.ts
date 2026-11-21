@@ -5,7 +5,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { readMigrationFiles } from 'drizzle-orm/migrator';
 import { PgBoss } from 'pg-boss';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
-import { queueName, queueSchema, releaseFixtureQueue } from './database.js';
+import { formalReleaseQueue, queueName, queueSchema, releaseFixtureQueue } from './database.js';
 
 export const migrationsFolder = fileURLToPath(new URL('../../migrations/', import.meta.url));
 
@@ -33,6 +33,7 @@ export async function migrateDatabase(connectionString: string) {
     await boss.start();
     await boss.createQueue(queueName, { retryLimit: 1 });
     await boss.createQueue(releaseFixtureQueue, { retryLimit: 0 });
+    await boss.createQueue(formalReleaseQueue, { retryLimit: 0 });
     saver = PostgresSaver.fromConnString(connectionString, { schema: 'itervane_checkpoint' });
     await saver.setup();
   } finally {

@@ -1,14 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import {
-  formalReleaseCandidateDtoSchema, formalReleaseManifestSchema, freezeFormalReleaseSchema, idSchema,
+  formalReleaseCandidateDtoSchema, formalReleaseManifestSchema, freezeFormalReleaseSchema, idSchema, releaseDecisionInputSchema,
   standardVerificationProfileSchema, translate, type FormalReleaseManifest, type Locale,
 } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq } from 'drizzle-orm';
 import type { VerifiedIdentity } from '../auth/identity.js';
-import type { Database } from '../persistence/database.js';
-import { environments, formalReleaseTargets, releaseCandidates, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
-import { appendEvent } from '../runtime/authority.js';
+import { formalReleaseQueue, type Database } from '../persistence/database.js';
+import { environments, formalReleaseTargets, releaseCandidates, releaseDecisions, releaseOperations, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
+import { appendEvent, type TaskRow } from '../runtime/authority.js';
+import { blockQueuedRelease, enqueueReleaseOperation } from '../runtime/release-queue.js';
 import { requireActor, requireProject, requireStoredActor, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 import { readReleaseTarget } from './release-targets.js';
@@ -16,14 +17,15 @@ import { databaseNow } from './releases.js';
 import { readPublishedVerification } from './verification-result.js';
 
 type Candidate = typeof releaseCandidates.$inferSelect;
+type Decision = typeof releaseDecisions.$inferSelect;
 type CandidateStatus = ReturnType<typeof formalReleaseCandidateDtoSchema.parse>['status'];
 
 async function visibleTask(tx: Transaction, identity: VerifiedIdentity, taskId: string, write = false) {
   const actor = await requireActor(tx, identity);
   const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId)).for(write ? 'update' : 'share');
   if (!task) throw new DomainError('not_found');
-  await requireProject(tx, actor, task.projectId, write);
-  return { actor, task };
+  const project = await requireProject(tx, actor, task.projectId, write);
+  return { actor, task, project };
 }
 
 async function latestCandidate(tx: Transaction, taskId: string) {
@@ -41,15 +43,51 @@ function readCandidate(row: Candidate) {
   return document;
 }
 
-function present(row: Candidate, manifest: FormalReleaseManifest, status: CandidateStatus, locale: Locale) {
+const decisionEvents = { confirm: 'task.release_confirmed', reject: 'task.release_rejected', revoke: 'task.release_revoked' } as const;
+const decisionStatuses = { confirm: 'confirmed', reject: 'rejected', revoke: 'revoked' } as const;
+const decisionMessages = { pending: 'task.release_candidate_frozen', confirmed: decisionEvents.confirm,
+  rejected: decisionEvents.reject, revoked: decisionEvents.revoke,
+} as const;
+
+function present(row: Candidate, manifest: FormalReleaseManifest, status: CandidateStatus, locale: Locale,
+  history: Decision[] = [], operationId: string | null = null) {
+  const message = status === 'pending' || status === 'confirmed' || status === 'rejected' || status === 'revoked'
+    ? decisionMessages[status] : `release.${status}` as const;
   return formalReleaseCandidateDtoSchema.parse({ id: row.id, fingerprint: row.fingerprint, manifest, status, locale,
-    createdAt: row.createdAt.toISOString(),
-    message: translate(locale, status === 'pending' ? 'task.release_candidate_frozen' : `release.${status}`),
+    createdAt: row.createdAt.toISOString(), message: translate(locale, message), operationId,
+    decisionVersion: history.at(-1)?.version ?? 0,
+    decisions: history.map(({ version, action, actorId, selfConfirmed, decidedAt }) => ({ version, action, actorId, selfConfirmed, decidedAt: decidedAt.toISOString() })),
   });
 }
 
+async function assessCandidate(tx: Transaction, task: TaskRow, row: Candidate, manifest: FormalReleaseManifest) {
+  const history = await tx.select().from(releaseDecisions).where(eq(releaseDecisions.candidateId, row.id)).orderBy(asc(releaseDecisions.version));
+  const last = history.at(-1);
+  const [operation] = await tx.select().from(releaseOperations).where(eq(releaseOperations.candidateId, row.id));
+  const [runtime] = await tx.select({ reason: runRuntime.reason }).from(runRuntime).where(eq(runRuntime.runId, row.runId));
+  const active = task.generation === manifest.generation && task.requestedBy === row.requestedBy && (last?.action === 'confirm'
+    ? task.state === 'queued' && runtime?.reason === 'release_queued'
+    : task.state === 'waiting_approval' && runtime?.reason === 'release_candidate_ready');
+  let status: CandidateStatus;
+  if (last?.action === 'revoke') status = 'revoked';
+  else if (last?.action === 'reject') status = 'rejected';
+  else if (!active) status = 'task_changed';
+  else if ((await latestCandidate(tx, task.id))?.id !== row.id) status = 'superseded';
+  else {
+    await tx.select({ id: environments.id }).from(environments).where(eq(environments.id, row.environmentId)).for('share');
+    const [target] = await tx.select().from(formalReleaseTargets).where(eq(formalReleaseTargets.environmentId, row.environmentId)).for('share');
+    if (target) readReleaseTarget(target);
+    if (target?.sha256 !== manifest.target.mappingSha256 || target.revision !== manifest.target.revision) status = 'evidence_changed';
+    else if (last?.action === 'confirm' && (await requireStoredActor(tx, last.actorId)).workspaceGrantId !== last.grantId) status = 'approver_revoked';
+    else status = last ? 'confirmed' : 'pending';
+  }
+  const now = await databaseNow(tx);
+  if ((status === 'pending' || status === 'confirmed') && Date.parse(manifest.validUntil) <= now.getTime()) status = 'expired';
+  return { status, history, operation, active, now };
+}
+
 export class FormalReleaseService {
-  constructor(private readonly database: Database) {}
+  constructor(private readonly database: Database, private readonly humanClientId?: string) {}
 
   async freeze(identity: VerifiedIdentity, taskId: string, raw: unknown, locale: Locale) {
     parseInput(idSchema, taskId);
@@ -135,14 +173,61 @@ export class FormalReleaseService {
       const row = await latestCandidate(tx, taskId);
       if (row?.document.origin !== 'formal_verification') throw new DomainError('not_found');
       const manifest = readCandidate(row);
-      const [target] = await tx.select().from(formalReleaseTargets).where(eq(formalReleaseTargets.environmentId, row.environmentId)).for('share');
-      if (target) readReleaseTarget(target);
-      const now = await databaseNow(tx);
+      const { status, history, operation, now } = await assessCandidate(tx, task, row, manifest);
       if (identity.expiresAt * 1000 <= now.getTime()) throw new DomainError('unauthenticated');
-      const status = task.generation !== manifest.generation || task.state !== 'waiting_approval' ? 'task_changed'
-        : target?.sha256 !== manifest.target.mappingSha256 || target.revision !== manifest.target.revision ? 'evidence_changed'
-        : Date.parse(manifest.validUntil) <= now.getTime() ? 'expired' : 'pending';
-      return present(row, manifest, status, locale);
+      return present(row, manifest, status, locale, history, operation?.id);
+    });
+  }
+
+  async decide(identity: VerifiedIdentity, rawCandidateId: string, raw: unknown, locale: Locale) {
+    const candidateId = parseInput(idSchema, rawCandidateId);
+    const input = parseInput(releaseDecisionInputSchema, raw);
+    return this.database.db.transaction(async tx => {
+      const [row] = await tx.select().from(releaseCandidates).where(eq(releaseCandidates.id, candidateId));
+      if (row?.document.origin !== 'formal_verification') throw new DomainError('not_found');
+      const { actor, task, project } = await visibleTask(tx, identity, row.taskId, true);
+      if (!this.humanClientId || this.humanClientId === 'signed-access-token' || identity.clientId !== this.humanClientId
+          || actor.workspaceId !== project.workspaceId || !actor.workspaceGrantId) throw new DomainError('forbidden');
+      if (row.fingerprint !== input.fingerprint) throw new DomainError('version_conflict');
+      const manifest = readCandidate(row);
+      const { status, history, operation, active, now } = await assessCandidate(tx, task, row, manifest);
+      if (identity.expiresAt * 1000 <= now.getTime()) throw new DomainError('unauthenticated');
+      const duplicate = history.find(item => item.actorId === actor.principalId && item.idempotencyKey === input.idempotencyKey);
+      if (duplicate) {
+        if (duplicate.action !== input.action || duplicate.version !== input.expectedVersion + 1) throw new DomainError('idempotency_conflict');
+        return { candidate: present(row, manifest, status, locale, history, operation?.id), replayed: true };
+      }
+      const version = history.at(-1)?.version ?? 0;
+      if (input.expectedVersion !== version) throw new DomainError('version_conflict');
+      if (input.action === 'revoke') {
+        if (!active || history.at(-1)?.action !== 'confirm' || operation?.state !== 'queued'
+            || !await blockQueuedRelease(tx, this.database, operation.id, now)) throw new DomainError('unsupported_state');
+      } else if (status !== 'pending') throw new DomainError('unsupported_state');
+
+      if (input.action === 'confirm') {
+        await requireProject(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
+        const verification = await readPublishedVerification(tx, task, { runId: row.runId, generation: task.generation });
+        if (!verification?.result.archiveVerification || verification.row.sha256 !== manifest.verification.resultSha256
+            || verification.row.receiptSha256 !== manifest.verification.receiptSha256) throw new DomainError('unsupported_state');
+      }
+      const decidedAt = await databaseNow(tx);
+      if (identity.expiresAt * 1000 <= decidedAt.getTime()) throw new DomainError('unauthenticated');
+      if (input.action !== 'revoke' && Date.parse(manifest.validUntil) <= decidedAt.getTime()) throw new DomainError('unsupported_state');
+      const decision: Decision = { candidateId, version: version + 1, actorId: actor.principalId, grantId: actor.workspaceGrantId,
+        idempotencyKey: input.idempotencyKey, action: input.action, decidedAt,
+        selfConfirmed: input.action === 'confirm' && actor.principalId === row.requestedBy,
+      };
+      await tx.insert(releaseDecisions).values(decision);
+      const operationId = input.action === 'confirm' ? await enqueueReleaseOperation(tx, this.database, formalReleaseQueue, {
+        candidateId, environmentId: row.environmentId, approvalVersion: decision.version,
+      }) : operation?.id;
+      if (input.action === 'confirm') await tx.update(taskRuns).set({ wakeupJobId: null }).where(eq(taskRuns.id, row.runId));
+      await tx.update(runRuntime).set({ reason: input.action === 'confirm' ? 'release_queued' : null }).where(eq(runRuntime.runId, row.runId));
+      await appendEvent(tx, task, decisionEvents[input.action], input.action === 'confirm' ? 'queued' : 'needs_human', {
+        actorId: actor.principalId, ...(input.action === 'confirm' ? { reason: 'release_queued' as const } : {}),
+        releaseDecision: { candidateId, fingerprint: row.fingerprint, decisionVersion: decision.version, ...(operationId ? { operationId } : {}) },
+      });
+      return { candidate: present(row, manifest, decisionStatuses[input.action], locale, [...history, decision], operationId), replayed: false };
     });
   }
 }

@@ -45,12 +45,6 @@ export const formalReleaseManifestSchema = z.strictObject({
 }).refine(manifest => (manifest.originalSnapshotSha256 === manifest.repairedSnapshotSha256) === (manifest.diffSha256 === null));
 export type FormalReleaseManifest = z.infer<typeof formalReleaseManifestSchema>;
 
-export const formalReleaseCandidateDtoSchema = z.strictObject({
-  id: idSchema, fingerprint: sha256Schema, manifest: formalReleaseManifestSchema, createdAt: timestamp,
-  status: z.enum(['pending', 'expired', 'evidence_changed', 'task_changed']),
-  locale: localeSchema, message: z.string().min(1).max(320),
-});
-
 export const fixtureReleaseManifestSchema = z.object({
   version: z.literal(1),
   origin: z.literal('trusted_fixture'),
@@ -101,6 +95,11 @@ export const releaseDecisionDtoSchema = z.object({
   version: version.min(1), action: releaseDecisionSchema, actorId: idSchema,
   selfConfirmed: z.boolean(), decidedAt: timestamp,
 }).strict();
+export const formalReleaseCandidateDtoSchema = z.strictObject({
+  id: idSchema, fingerprint: sha256Schema, manifest: formalReleaseManifestSchema, createdAt: timestamp,
+  status: releaseCandidateStatusSchema, decisionVersion: version, decisions: releaseDecisionDtoSchema.array().max(2),
+  operationId: idSchema.nullable(), locale: localeSchema, message: z.string().min(1).max(320),
+});
 export const releaseCandidateDtoSchema = z.object({
   id: idSchema, fingerprint: sha256Schema, requestedBy: idSchema, createdAt: timestamp,
   origin: z.literal('trusted_fixture'), releaseEligible: z.literal(false),
@@ -116,7 +115,8 @@ export type ReleaseDecision = z.infer<typeof releaseDecisionSchema>;
 export type ReleaseCandidateStatus = z.infer<typeof releaseCandidateStatusSchema>;
 export type ReleaseCandidateDto = z.infer<typeof releaseCandidateDtoSchema>;
 
-export const fixtureReleaseWakeupSchema = z.object({ operationId: idSchema }).strict();
+export const releaseWakeupSchema = z.strictObject({ operationId: idSchema });
+export const fixtureReleaseWakeupSchema = releaseWakeupSchema;
 export const fixtureReleaseObservationSchema = z.object({
   version: z.literal(1),
   origin: z.literal('trusted_fixture'),

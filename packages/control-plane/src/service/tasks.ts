@@ -5,11 +5,13 @@ import { cancelTaskSchema, resumeTaskSchema, idSchema, listQuerySchema, startTas
   eventReasonMessages, retrySourceInspectionReasonSchema, taskEventReasonSchema, type Locale, type MessageKey } from '@itervane/contracts';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import { queueName, type Database } from '../persistence/database.js';
-import { formalAuditInputs, formalAuditResults, repositories, runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
+import { formalAuditInputs, formalAuditResults, releaseCandidates, releaseOperations, repositories, runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
 import { requireActor, requireProject, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 import { isRepairableAudit } from './formal-repair.js';
 import { appendEvent, enqueue, lockSlot } from '../runtime/authority.js';
+import { blockQueuedRelease } from '../runtime/release-queue.js';
+import { databaseNow } from './releases.js';
 
 function presentTask(task: typeof tasks.$inferSelect, runId: string) {
   return taskDtoSchema.parse({ id: task.id, projectId: task.projectId, requestedBy: task.requestedBy, runId,
@@ -111,6 +113,13 @@ export class TaskService {
       const [run] = await tx.select().from(taskRuns).where(and(eq(taskRuns.taskId, taskId), eq(taskRuns.generation, task.generation)));
       if (!run) throw new DomainError('unavailable');
       if (run.wakeupJobId) await this.database.boss.cancel(queueName, run.wakeupJobId, { db: fromDrizzle(tx, sql) });
+      if (task.state === 'queued' && !run.wakeupJobId) {
+        const [operation] = await tx.select({ id: releaseOperations.id }).from(releaseOperations)
+          .innerJoin(releaseCandidates, eq(releaseCandidates.id, releaseOperations.candidateId))
+          .where(and(eq(releaseCandidates.runId, run.id), eq(releaseOperations.state, 'queued'),
+            sql`${releaseCandidates.document}->>'origin' = 'formal_verification'`));
+        if (operation && !await blockQueuedRelease(tx, this.database, operation.id, await databaseNow(tx))) throw new DomainError('conflict');
+      }
       const running = task.state === 'running';
       await appendEvent(tx, task, running ? 'task.cancel_requested' : 'task.cancelled', running ? 'cancel_requested' : 'cancelled', { actorId: actor.principalId });
       await tx.update(runRuntime).set({ resumePending: false, waitingForTaskId: null }).where(eq(runRuntime.runId, run.id));

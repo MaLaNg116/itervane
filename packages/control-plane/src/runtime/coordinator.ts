@@ -67,9 +67,11 @@ export class ExecutionCoordinator {
       if (!parsed.success) { await settle(); return null; }
       const input = parsed.data;
       const [task] = await tx.select().from(tasks).where(eq(tasks.id, input.taskId)).for('update');
-      const [run] = await tx.select().from(taskRuns).where(eq(taskRuns.id, input.runId));
+      const [bound] = await tx.select({ run: taskRuns, reason: runRuntime.reason }).from(taskRuns)
+        .innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id)).where(eq(taskRuns.id, input.runId));
+      const run = bound?.run;
       if (!task || !run || task.state !== 'queued' || task.generation !== input.generation || run.taskId !== task.id
-        || run.generation !== input.generation || run.wakeupJobId !== job.id) { await settle(); return null; }
+        || run.generation !== input.generation || run.wakeupJobId !== job.id || bound?.reason === 'release_queued') { await settle(); return null; }
       if (slot.taskId && slot.live) {
         await settle(); await enqueue(tx, this.database, task, run.id, true); return null;
       }
@@ -143,7 +145,8 @@ export class ExecutionCoordinator {
     await this.database.db.transaction(tx => this.recoverExpired(tx, workerId));
     const candidates = await this.database.db.select({ task: tasks, run: taskRuns }).from(tasks)
       .innerJoin(taskRuns, and(eq(taskRuns.taskId, tasks.id), eq(taskRuns.generation, tasks.generation)))
-      .where(eq(tasks.state, 'queued')).limit(20);
+      .innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id))
+      .where(and(eq(tasks.state, 'queued'), sql`${runRuntime.reason} IS DISTINCT FROM 'release_queued'`)).limit(20);
     for (const candidate of candidates) {
       const jobs = candidate.run.wakeupJobId ? await this.database.boss.findJobs(queueName, { id: candidate.run.wakeupJobId }) : [];
       const job = jobs[0];
@@ -152,8 +155,11 @@ export class ExecutionCoordinator {
       await this.database.db.transaction(async tx => {
         const slot = await lockSlot(tx);
         const [task] = await tx.select().from(tasks).where(eq(tasks.id, candidate.task.id)).for('update');
-        const [run] = await tx.select().from(taskRuns).where(eq(taskRuns.id, candidate.run.id));
-        if (!task || !run || task.state !== 'queued' || run.wakeupJobId !== candidate.run.wakeupJobId || slot.taskId === task.id) return;
+        const [bound] = await tx.select({ run: taskRuns, reason: runRuntime.reason }).from(taskRuns)
+          .innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id)).where(eq(taskRuns.id, candidate.run.id));
+        const run = bound?.run;
+        if (!task || !run || task.state !== 'queued' || run.wakeupJobId !== candidate.run.wakeupJobId
+            || slot.taskId === task.id || bound?.reason === 'release_queued') return;
         if (job) await this.database.boss.cancel(queueName, job, { db: fromDrizzle(tx, sql) });
         await enqueue(tx, this.database, task, run.id);
       });
