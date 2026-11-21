@@ -331,7 +331,10 @@ async function probe() {
           ...(locale ? { 'Accept-Language': locale } : {}),
           ...(payload ? { 'content-type': 'application/json' } : {}) },
         ...(payload ? { body: JSON.stringify(payload) } : {}) });
-      equal(response.ok, true, path);
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error(`fixture_http_${response.status}`);
+      }
       return response.json() as Promise<unknown>;
     };
     const project = projectDtoSchema.parse(await request('/v1/projects', { name: 'Native inspection fixture', slug: 'native-inspection' }));
@@ -588,8 +591,10 @@ async function probe() {
         const prepared = driftRun || fault ? await cleanReleaseFixture()
           : dependencyRun ? await dependencyFixture(automaticProfile) : await repairRetryFixture(automaticProfile);
         const { current, after, generation } = prepared;
-        phase = 'protected_release_target';
-        const application = applicationDtoSchema.parse(await request(`/v1/projects/${project.id}/applications`, { name: 'Protected standard release' }));
+        phase = fault ? `protected_release_${fault}_target` : 'protected_release_target';
+        const application = applicationDtoSchema.parse(await request(`/v1/projects/${project.id}/applications`, {
+          name: fault ? `Protected release ${fault} fixture` : 'Protected standard release',
+        }));
         const environment = environmentDtoSchema.parse(await request(`/v1/projects/${project.id}/environments`, {
           name: 'Protected application', applicationId: application.id,
         }));
@@ -908,6 +913,8 @@ async function probe() {
         await closeReleaseFixtures();
         const identity = await runProtectedCase('identity');
         ok(unhealthy.fault && identity.fault);
+        notEqual(unhealthy.fault.taskId, identity.fault.taskId);
+        notEqual(unhealthy.fault.operationId, identity.fault.operationId);
         return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
           faults: { health: unhealthy.fault, identity: identity.fault } };
       }
@@ -1419,7 +1426,7 @@ async function probe() {
 
 try { console.log(JSON.stringify(await probe())); }
 catch (error) {
-  const message = error instanceof Error && /^(?:[a-z_]+_timeout|verification_fixture_phase_[a-z_]{1,56}|(?:protected_ingress|release_(?:rollout|registry|komodo))_[a-z_]{1,48})$/.test(error.message)
+  const message = error instanceof Error && /^(?:[a-z_]+_timeout|fixture_http_[1-5][0-9]{2}|verification_fixture_phase_[a-z_]{1,56}|(?:protected_ingress|release_(?:rollout|registry|komodo))_[a-z_]{1,48})$/.test(error.message)
     ? ` (${error.message})` : '';
   console.error(`Native Worker inspection failed during ${phase}${message}.`);
   process.exitCode = 1;
