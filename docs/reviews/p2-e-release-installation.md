@@ -1,0 +1,29 @@
+# P2-E-D3-C1 · 发布 Worker 安装导读
+
+接续 [上线结算 #57](https://github.com/MaLaNg116/itervane/pull/57)。固定代码 `38e9dec91d6b23ed2382bf8dfafbac77dbfd7ff5`。 [D3-C 计划](../plans/p2-e-release-installation.md)
+
+1. `3dded18` 启动前核对维护者登记的保护环境和目标指纹。独立进程分别轮询发布写入与只读结算。写入沿用全局执行槽和人工授权，观察使用自己的短租约。已排队的其他环境操作保留唤醒，安装身份无法取得它的执行权。 [启动入口](https://github.com/MaLaNg116/itervane/blob/3dded18/packages/control-plane/src/entries/release-worker.ts) · [写入协调器](https://github.com/MaLaNg116/itervane/blob/3dded18/packages/control-plane/src/runtime/formal-release-claim.ts) · [核验协调器](https://github.com/MaLaNg116/itervane/blob/3dded18/packages/control-plane/src/runtime/formal-rollout-claim.ts)
+2. `df5f1ad` 核对配置缺项、其他环境、注册目标漂移及错误指纹无法取得只读租约。测试使用配送队列和真实数据库，外部写入使用可观测夹具。 [安装闸门回归](https://github.com/MaLaNg116/itervane/blob/df5f1ad/packages/control-plane/test/integration/inspections.test.ts)
+3. `38e9dec` 在队列消费前通过 Komodo 自身的 `ListApiKeys` 核对当前密钥属于登记服务身份。请求和响应只在发布进程内使用，日志记录固定错误码。 [受限适配器](https://github.com/MaLaNg116/itervane/blob/38e9dec/packages/control-plane/src/runtime/release-komodo.ts) · [Komodo v2.3.4 实现](https://github.com/moghtech/komodo/blob/v2.3.4/bin/core/src/api/read/user.rs#L92)
+
+TypeScript 与 202 项单元通过。真实 PostgreSQL 17.12 在 `df5f1ad` 通过十项安装和上线核验专项。最终版本的托管 PostgreSQL、密钥归属原生验证和 KVM 回归随交付归档。C2 接入双语结果，D3-D 用同一发布操作完成真实端到端验收。
+
+## 安装配置
+
+使用 Linux 上已验证的 Runner 与受保护入口参考配置。通过 `pnpm register:release-target <配置文件>` 登记完整目标，保留输出的 `environmentId` 和 `fingerprint`。由维护者向专用进程提供这些变量，再运行 `pnpm start:release-worker`。 [自托管入口](../../fixtures/ingress/reference/README.md)
+
+| 变量 | 用途 |
+| --- | --- |
+| `DATABASE_URL` | 已迁移的控制面运行账号 |
+| `ITERVANE_RUNNER_SOCKET`、`ITERVANE_RUNNER_UID`、`ITERVANE_RUNNER_IMAGE_SHA256` | Runner 本机通道、身份和镜像 |
+| `ITERVANE_RELEASE_ENVIRONMENT_ID`、`ITERVANE_RELEASE_TARGET_SHA256` | 登记的环境与目标指纹 |
+| `ITERVANE_RELEASE_MATERIALIZER`、`ITERVANE_RELEASE_SKOPEO` | 维护者安装的 `materialize_oci.py` 和 `skopeo` 的绝对路径，Python 文件与其依赖放在同一可信目录 |
+| `ITERVANE_RELEASE_KOMODO_KEY`、`ITERVANE_RELEASE_KOMODO_SECRET` | 登记的 Komodo 服务账号凭证 |
+| `ITERVANE_RELEASE_PROBE_SECRET` | 登记的 Keycloak 探测客户端密钥 |
+| `ITERVANE_RELEASE_REGISTRY_USER`、`ITERVANE_RELEASE_REGISTRY_PASSWORD` | Registry 使用认证时成对提供 |
+
+进程环境由宿主服务管理器或私密配置注入。发布凭证留在发布进程，API 和普通任务 Worker 使用各自的环境。
+
+## English
+
+Use the qualified Linux Runner and protected ingress reference. Enroll the full release target and use its environment ID and fingerprint for the variables above. Install the OCI materializer with its sibling Python modules and Skopeo in operator-controlled paths. Provide the enrolled Komodo credentials, Keycloak probe secret and, when required, Registry credentials through the dedicated process environment. Start it with `pnpm start:release-worker`.
