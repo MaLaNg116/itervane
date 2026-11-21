@@ -169,6 +169,13 @@
       "when": 1795258811300,
       "tag": "0023_formal_standard_image_evidence",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1795259805073,
+      "tag": "0024_formal_oci_artifact_receipt",
+      "breakpoints": true
     }
   ]
 }

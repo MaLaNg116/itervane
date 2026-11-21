@@ -1,13 +1,16 @@
 import hashlib
 import json
+import tempfile
 import unittest
 from io import BytesIO
+from pathlib import Path
 from uuid import UUID
 
 from guest_job import ProtocolError
 from native_source import SourceProbe, maintainer_source
+from oci_artifacts import ArtifactStore
 from source_gateway import SourceRejected
-from source_wire import CLOSED, QUALIFIED_START, RECEIPT, START, SourceWire
+from source_wire import CLOSED, OCI_ARCHIVE_FORMAT, QUALIFIED_START, RECEIPT, START, SourceWire
 
 
 RUN = "06d5d64c-664b-4c02-9bcc-48cec79e7696"
@@ -114,3 +117,44 @@ class SourceExchangeTest(unittest.TestCase):
         self.assertEqual(code, "repair_passed")
         self.assertEqual(guest.receive({b"L": QUALIFIED_START.size})[1], QUALIFIED_START.pack(self.identity, self.commit, self.identity))
         self.assertEqual(self.probe.repair, proof)
+
+    def test_verified_archive_chunks_remain_pending_until_controller_retains_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = ArtifactStore(root)
+            command = b"{}"
+            self.probe = SourceProbe(self.relay, repository_id=RUN, verification_command=command, artifact_store=store)
+            payload = b"OCI fixture data"
+            isolated = RECEIPT.pack(self.identity, self.commit, b"t" * 20, b"d" * 32, 2)
+            descriptor = {"format": OCI_ARCHIVE_FORMAT, "sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)}
+            proof = {"runId": RUN, "repositoryId": RUN, "commit": self.commit.hex(), "tree": (b"t" * 20).hex(), "files": 2,
+                     "commandSha256": hashlib.sha256(command).hexdigest(), "build": {"baseline": {
+                         "status": "passed", "appExited": True, "image": {"status": "scanned", "archive": descriptor},
+                     }}}
+            frames = [*self.acquire_and_close, (b"M", isolated), (b"Y", json.dumps(proof).encode())]
+            code, _ = self.exchange([*frames, (b"J", payload[:8]), (b"J", payload[8:]), (b"Q", b"")])
+            self.assertEqual(code, "inspection_passed")
+            self.assertEqual(self.probe.inspection, proof)
+            self.assertEqual(list(root.glob("*.oci.tar")), [])
+            self.assertIsNotNone(self.probe.pending_archive)
+            store.retain(self.probe.pending_archive)
+            self.assertEqual((root / (descriptor["sha256"] + ".oci.tar")).read_bytes(), payload)
+
+    def test_artifact_transfer_requires_explicit_scope_and_complete_framing(self):
+        descriptor = {"format": OCI_ARCHIVE_FORMAT, "sha256": hashlib.sha256(b"ab").hexdigest(), "bytes": 2}
+        proof = {"build": {"baseline": {"status": "passed", "appExited": True,
+                                        "image": {"status": "scanned", "archive": descriptor}}}}
+        data = BytesIO()
+        guest = SourceWire(data.read, data.write, no_deadline)
+        guest.send(b"J", b"a")
+        guest.send(b"Q")
+        data.seek(0)
+        with self.assertRaisesRegex(ProtocolError, "unexpected OCI archive"):
+            self.probe.receive_image_archive(guest, proof)
+        with tempfile.TemporaryDirectory() as directory:
+            store = ArtifactStore(directory)
+            self.probe = SourceProbe(self.relay, repository_id=RUN, verification_command=b"{}", artifact_store=store)
+            with self.assertRaisesRegex(ProtocolError, "invalid OCI archive transfer"):
+                self.probe.receive_image_archive(guest, proof)
+            self.assertIsNone(self.probe.pending_archive)
+            self.assertEqual(list(Path(directory).iterdir()), [])

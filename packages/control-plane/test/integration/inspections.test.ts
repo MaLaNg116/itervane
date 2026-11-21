@@ -662,17 +662,18 @@ it('recovers an uncertain rescan only on the original idle Runner and retains th
   expect(verify).toHaveBeenCalledTimes(2);
 });
 
-it.each(['build', 'baseline', 'image'] as const)('binds the standard %s proof to the frozen candidate in the lease transaction', async stage => {
+it.each(['build', 'baseline', 'image', 'artifact'] as const)('binds the standard %s proof to the frozen candidate in the lease transaction', async stage => {
   const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(), auditModel: auditModel() });
   try { expect(await worker.tick()).toBe(true); } finally { await worker.close(); }
   const scope = await claimAfterAudit();
   const [inspection] = await database.storage.db.select().from(inspectionAttempts);
   const original = qualifiedInspectionResponseSchema.parse(inspection?.receipt);
   if (original.kind !== 'receipt') throw new Error('Missing original inspection');
-  const ociInputs = stage === 'image' ? sha256('frozen OCI inputs') : undefined;
+  const ociInputs = stage === 'image' || stage === 'artifact' ? sha256('frozen OCI inputs') : undefined;
   const profile = { ...verificationProfile, buildProfileSha256: sha256('protected build profile'),
     ...(stage !== 'build' ? { runStandardBaseline: true as const } : {}),
     ...(ociInputs ? { ociInputsSha256: ociInputs } : {}),
+    ...(stage === 'artifact' ? { retainStandardImage: true as const } : {}),
   };
   const runtimeInputs = sha256('runtime inputs');
   const databaseEvidence = original.snapshot.reports[1].database;
@@ -687,6 +688,7 @@ it.each(['build', 'baseline', 'image'] as const)('binds the standard %s proof to
       scanner: 'trivy', version: '0.76.2', imageDigest, configDigest, osPackages: 1, npmPackages: 1, findings: [],
       policySha256: sha256('protected image scan'), reportSha256: sha256('image report'), database: databaseEvidence,
     },
+    ...(stage === 'artifact' ? { archive: { format: 'oci-layout-tar' as const, sha256: sha256('retained bytes'), bytes: 613 } } : {}),
   } : undefined;
   const verify = vi.fn<RescanRunner['verify']>(async (coordinates, input, repair, authorize) => {
     await authorize();
@@ -719,17 +721,20 @@ it.each(['build', 'baseline', 'image'] as const)('binds the standard %s proof to
     const forged = structuredClone(receipt);
     const build = forged.snapshot.build;
     if (build?.status !== 'built') throw new Error('Missing build fixture');
-    if (build.baseline?.status === 'passed' && build.baseline.image) {
+    if (stage === 'artifact' && build.baseline?.status === 'passed' && build.baseline.image?.status === 'scanned') {
+      delete build.baseline.image.archive;
+    } else if (build.baseline?.status === 'passed' && build.baseline.image) {
       build.baseline.image.ociInputsSha256 = sha256('changed image inputs');
     } else if (build.baseline) build.baseline.distSha256 = sha256('changed distribution');
     else build.baselineSha256 = sha256('changed protected baseline');
-    expect(() => verifyQualifiedVerificationReceipt(forged, request, command)).toThrow(`runner_standard_${stage}_binding`);
+    const binding = stage === 'artifact' ? 'image_archive' : stage;
+    expect(() => verifyQualifiedVerificationReceipt(forged, request, command)).toThrow(`runner_standard_${binding}_binding`);
     await expect(database.storage.db.update(formalRescanAttempts).set({
       state: 'recorded', settledFence: scope.fence, settledWorkerId: scope.workerId, settledAt: new Date(),
       receipt: forged, receiptSha256: sha256(JSON.stringify(forged)),
     }).where(eq(formalRescanAttempts.requestId, bound.requestId))).rejects
       .toMatchObject({ cause: { code: '23514', message: `standard_${stage}_evidence_binding` } });
-    if (image && build.baseline?.status === 'passed') {
+    if (stage === 'image' && image && build.baseline?.status === 'passed') {
       const substituted = structuredClone(image);
       if (substituted.status !== 'scanned') throw new Error('Missing scanned image');
       substituted.scan.imageDigest = 'sha256:' + sha256('unrelated manifest');

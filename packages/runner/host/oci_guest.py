@@ -15,6 +15,7 @@ if __name__ == "__main__":
 
 from build_guest import canonical, copy_writable, directory_fd, measured_tree, read_bytes, verify_boundary
 from oci_layout import regular_file, verify_layout, verify_prepared_inputs
+from source_wire import MAX_OCI_ARCHIVE_BYTES, OCI_ARCHIVE_FORMAT
 
 
 TOOLS = Path("/usr/local/libexec/itervane-oci")
@@ -22,6 +23,7 @@ SCANNER = Path("/usr/local/libexec/itervane-inspection")
 GATE = Path("/var/lib/itervane-image-input")
 WORK = Path("/var/lib/itervane-image-work")
 OUTPUT = Path("/var/lib/itervane-image-output")
+ARCHIVE_NAME = "image.oci.tar"
 SERVICE = "itervane-image-compose.service"
 NODE = SCANNER / "node"
 TAR_LIMIT = 320 * 1024**2
@@ -105,6 +107,8 @@ def prepare_image(project, plan, request, profile):
         "scannerInputsSha256": request["scannerInputsSha256"], "runtimeLayerSha256": digest_file(layer, TAR_LIMIT),
         "port": plan["port"], "version": plan["version"],
     }
+    if request.get("retainStandardImage") is True:
+        identity["retainStandardImage"] = True
     with (GATE / "request.json").open("xb") as output:
         output.write(canonical(identity))
         os.fchmod(output.fileno(), 0o440)
@@ -150,6 +154,24 @@ def compose(plan, base):
     return image
 
 
+def archive_image(layout, destination, image):
+    checked = verify_layout(layout, image.manifest_digest)
+    digests = (checked.manifest_digest, checked.config_digest, *checked.layer_digests)
+    names = ["index.json", "oci-layout", *(f"blobs/sha256/{digest[7:]}" for digest in set(digests))]
+    remaining = MAX_OCI_ARCHIVE_BYTES - 32 * 1024
+    with destination.open("xb") as target, tarfile.open(fileobj=target, mode="w", format=tarfile.PAX_FORMAT) as archive:
+        for name in ("blobs", "blobs/sha256"):
+            entry = tarfile.TarInfo(name)
+            entry.type = tarfile.DIRTYPE
+            entry.mode = 0o755
+            archive.addfile(entry)
+        for name in sorted(names):
+            remaining -= add_file(archive, layout / name, name, remaining)
+        os.fchmod(target.fileno(), 0o440)
+    with regular_file(destination, MAX_OCI_ARCHIVE_BYTES) as (source, size):
+        return {"format": OCI_ARCHIVE_FORMAT, "sha256": hashlib.file_digest(source, "sha256").hexdigest(), "bytes": size}
+
+
 def main():
     plan = json.loads(read_bytes(GATE / "request.json", 2048))
     binding = {key: plan[key] for key in ("ociInputsSha256", "runtimeInputsSha256")}
@@ -169,6 +191,9 @@ def main():
         result = {"status": "scanned", "platform": "linux/amd64", "manifestDigest": image.manifest_digest,
                   "configDigest": image.config_digest, "appLayerDigest": image.layer_digests[-1],
                   "baseManifestDigest": base.manifest_digest, "runtimeLayerSha256": plan["runtimeLayerSha256"], "scan": scan}
+        if plan.get("retainStandardImage") is True:
+            code = "image_compose"
+            result["archive"] = archive_image(WORK / "layout", OUTPUT / ARCHIVE_NAME, image)
     except (AttributeError, OSError, KeyError, RecursionError, TypeError, ValueError, subprocess.SubprocessError):
         result = {"status": "blocked", "code": code}
     pending = OUTPUT / "receipt.pending"

@@ -10,6 +10,7 @@ import struct
 import sys
 import time
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from threading import Event, Thread
 from urllib.parse import urlsplit
@@ -19,6 +20,7 @@ if __name__ == "__main__":
 
 from libvirt_probe import IMAGE_DIGEST, Rejected, Result, check_kvm, closed, connect, locked_workspace, probe, start_channel_events
 from native_source import SourceProbe
+from oci_artifacts import ArtifactStore
 from session_boundary import SESSION_URI, SessionRejected, prepare_session
 from source_gateway import COMMIT, RegisteredOrigin, SourceGateway, SourceRejected
 from source_wire import GUEST_REPAIR_ERRORS, MAX_QUALIFIED_RECEIPT, MAX_REPAIR_COMMAND, MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT
@@ -44,6 +46,7 @@ VERIFY_FIELDS = (FIELDS - {"planSha256"}) | {"operation", "commandBytes", *VERIF
 BUILD_PROFILE = "buildProfileSha256"
 RUN_BASELINE = "runStandardBaseline"
 OCI_INPUTS = "ociInputsSha256"
+RETAIN_IMAGE = "retainStandardImage"
 PEER = struct.Struct("3i")
 
 
@@ -83,6 +86,10 @@ def parse_request(line):
             fields = fields | {RUN_BASELINE}
             if OCI_INPUTS in data:
                 fields = fields | {OCI_INPUTS}
+                if RETAIN_IMAGE in data:
+                    if data[RETAIN_IMAGE] is not True:
+                        raise ValueError("invalid artifact retention request")
+                    fields = fields | {RETAIN_IMAGE}
     if data.keys() != fields or type(data["version"]) is not int or data["version"] != 1:
         raise ValueError("invalid request fields")
     if not all(is_v4(data[name]) for name in IDS) or (repair and not is_v4(data["operationId"])):
@@ -146,6 +153,7 @@ def require_verification_command(command, request):
         or profile.get(BUILD_PROFILE) != request.get(BUILD_PROFILE)
         or profile.get(RUN_BASELINE) != request.get(RUN_BASELINE)
         or profile.get(OCI_INPUTS) != request.get(OCI_INPUTS)
+        or profile.get(RETAIN_IMAGE) != request.get(RETAIN_IMAGE)
         or any(profile.get(key) != request[key] for key in ("runnerImageSha256", "scannerInputsSha256"))):
         raise ValueError("verification command evidence mismatch")
     repair = command["repair"]
@@ -282,7 +290,8 @@ def build_proof_matches(request, snapshot):
         return "image" not in baseline
     image = baseline.get("image")
     return (isinstance(image, dict) and image.get(OCI_INPUTS) == request[OCI_INPUTS]
-            and image.get("runtimeInputsSha256") == baseline.get("runtimeInputsSha256"))
+            and image.get("runtimeInputsSha256") == baseline.get("runtimeInputsSha256")
+            and ("archive" in image) == (RETAIN_IMAGE in request and image.get("status") == "scanned"))
 
 
 def verification_proof_matches(request, snapshot, image_sha256):
@@ -341,7 +350,7 @@ def response_for(request, result):
 
 def serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping,
                      enable_repair=False, enable_verification=False, enable_standard_build=False, enable_baseline=False,
-                     enable_oci=False):
+                     enable_oci=False, enable_retention=False):
     connection.settimeout(HANDSHAKE_SECONDS)
     _, uid, _ = PEER.unpack(connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, PEER.size))
     if uid != worker_uid:
@@ -357,7 +366,8 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
     verification = request.get("operation") == VERIFY_SOURCE
     if (request["workspaceSha256"] != fingerprint or (repair and not enable_repair)
         or (verification and not enable_verification) or (BUILD_PROFILE in request and not enable_standard_build)
-        or (RUN_BASELINE in request and not enable_baseline) or (OCI_INPUTS in request and not enable_oci)):
+        or (RUN_BASELINE in request and not enable_baseline) or (OCI_INPUTS in request and not enable_oci)
+        or (RETAIN_IMAGE in request and not enable_retention)):
         return rejected("not_ready", request["requestId"])
     origin = origins.get(request["origin"])
     if origin is None:
@@ -391,7 +401,7 @@ def socket_parent(path):
 
 
 def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping, enable_repair, enable_verification,
-               enable_standard_build, enable_baseline, enable_oci):
+               enable_standard_build, enable_baseline, enable_oci, enable_retention):
     socket_parent(path)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(os.fspath(path))
@@ -408,7 +418,7 @@ def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping
                     try:
                         result = serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping,
                                                   enable_repair, enable_verification, enable_standard_build, enable_baseline,
-                                                  enable_oci)
+                                                  enable_oci, enable_retention)
                         encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
                         limit = MAX_VERIFICATION_RECEIPT if result["kind"] == "verification_receipt" else MAX_QUALIFIED_RECEIPT
                         if len(encoded) > limit + 8192:
@@ -444,12 +454,17 @@ def main():
         digest, name = sys.argv[4:6]
         allowed = sys.argv[6:]
         features = set()
+        artifact_store = None
         while allowed and allowed[0] in ("--enable-repair", "--enable-verification", "--enable-standard-build",
-                                        "--enable-standard-baseline", "--enable-standard-oci"):
+                                        "--enable-standard-baseline", "--enable-standard-oci", "--artifact-store"):
             flag = allowed.pop(0)
             if flag in features:
                 raise ValueError("duplicate capability")
             features.add(flag)
+            if flag == "--artifact-store":
+                if not allowed:
+                    raise ValueError("missing artifact store path")
+                artifact_store = ArtifactStore(allowed.pop(0))
         worker_uid = int(name)
         if (
             not 0 < worker_uid < 2**31 or worker_uid == os.geteuid()
@@ -457,6 +472,9 @@ def main():
             or not root.is_absolute() or root.resolve(strict=True) != root or not image.is_absolute()
         ):
             raise ValueError("invalid runner configuration")
+        if artifact_store and ("--enable-standard-oci" not in features or artifact_store.root.is_relative_to(root)
+                               or root.is_relative_to(artifact_store.root)):
+            raise ValueError("artifact store must be separate from the VM workspace")
         origins = {value: RegisteredOrigin.parse(value, {urlsplit(value).hostname}) for value in allowed}
         check_kvm()
         prepare_session(root, image)
@@ -478,14 +496,29 @@ def main():
                 return Result("config_required")
             if not workspace_idle(libvirt, root, image, fingerprint):
                 return Result("pending_cleanup")
+            storage = artifact_store if RETAIN_IMAGE in request else None
             job = SourceProbe(SourceGateway(origin, request["commit"]), repository_id=request["repositoryId"],
                               repair_command=None if verification else command, repair_observation=request.get("operation") == OBSERVE_REPAIR,
-                              verification_command=command if verification else None)
-            return probe(libvirt, libvirt_qemu, root, image, digest, cancelled, "inspect", True, source_override=job)
+                              verification_command=command if verification else None, artifact_store=storage)
+            try:
+                result = probe(libvirt, libvirt_qemu, root, image, digest, cancelled, "inspect", True, source_override=job)
+                if storage is None or job.pending_archive is None:
+                    return result
+                if cancelled():
+                    return replace(result, code="cancelled", inspection=None)
+                if response_for(request, result)["kind"] == "verification_receipt":
+                    try:
+                        storage.retain(job.pending_archive)
+                    except (OSError, ValueError):
+                        return replace(result, code="job_failed", inspection=None)
+                return result
+            finally:
+                if storage and job.pending_archive:
+                    storage.discard(job.pending_archive)
 
         run_server(path, worker_uid, origins, fingerprint, observe, launch, stopped,
                    "--enable-repair" in features, "--enable-verification" in features, "--enable-standard-build" in features,
-                   "--enable-standard-baseline" in features, "--enable-standard-oci" in features)
+                   "--enable-standard-baseline" in features, "--enable-standard-oci" in features, artifact_store is not None)
     except (ImportError, OSError, ValueError, Rejected, SessionRejected, SourceRejected):
         print("Qualified inspection controller could not start.", file=sys.stderr)
         return 1

@@ -29,7 +29,7 @@ async function verify() {
   const buildProfile = buildArgs.length ? {
     buildProfileSha256: sha256Schema.parse(profileSha), baselineSha256: sha256Schema.parse(baselineSha),
     ...(expectedBaseline ? { runStandardBaseline: true as const } : {}),
-    ...(ociInputsSha ? { ociInputsSha256: sha256Schema.parse(ociInputsSha) } : {}),
+    ...(ociInputsSha ? { ociInputsSha256: sha256Schema.parse(ociInputsSha), retainStandardImage: true as const } : {}),
   } : undefined;
   phase = 'claim';
   const database = await openDatabase(config.databaseUrl);
@@ -122,6 +122,7 @@ async function verify() {
             equal(image.scan.imageDigest, image.manifestDigest);
             equal(image.ociInputsSha256, ociInputsSha);
             deepStrictEqual(image.scan.database, snapshot.reports[1].database);
+            ok(image.archive && image.archive.bytes > 0);
           }
         } else equal(expectedBaseline, undefined);
       }

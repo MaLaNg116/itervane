@@ -303,12 +303,18 @@ EOF
       install -m 0444 /var/tmp/oci_layout.py /var/tmp/oci_guest.py /usr/local/libexec/itervane/
       rm -- /var/tmp/oci_layout.py /var/tmp/oci_guest.py
       install -d -m 2750 -o root -g itervane-image /var/lib/itervane-image-input
-      install -d -m 0700 -o itervane-image -g itervane-image /var/lib/itervane-image-work /var/lib/itervane-image-output
+      install -d -m 0700 -o itervane-image -g itervane-image /var/lib/itervane-image-work
+      install -d -m 2750 -o itervane-image -g itervane-source /var/lib/itervane-image-output
       install -d -m 0755 /etc/systemd/system/itervane-runtime-control.service.d
       cat >/etc/systemd/system/itervane-runtime-control.service.d/20-image.conf <<'EOF'
 [Service]
 ReadWritePaths=/var/lib/itervane-image-input
 TimeoutStartSec=120
+EOF
+      install -d -m 0755 /etc/systemd/system/itervane-guest-source.service.d
+      cat >/etc/systemd/system/itervane-guest-source.service.d/20-image.conf <<'EOF'
+[Service]
+ReadOnlyPaths=/var/lib/itervane-image-output
 EOF
       cat >/etc/systemd/system/itervane-image-compose.service <<'EOF'
 [Unit]

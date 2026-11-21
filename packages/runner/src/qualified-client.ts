@@ -118,6 +118,7 @@ export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificatio
     buildProfileSha256: profile.buildProfileSha256,
     runStandardBaseline: profile.runStandardBaseline,
     ociInputsSha256: profile.ociInputsSha256,
+    retainStandardImage: profile.retainStandardImage,
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
   };
   if (Object.entries(bindings).some(([key, value]) => scope[key as keyof typeof bindings] !== value)) {
@@ -155,6 +156,10 @@ export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificatio
       || image.scan.database.updatedAt !== sourceDatabase.updatedAt)) {
     throw new Error('runner_standard_image_scan_binding');
   }
+  if (receipt.scope.retainStandardImage !== scope.retainStandardImage
+      || (image?.status === 'scanned' && Boolean(image.archive) !== Boolean(scope.retainStandardImage))) {
+    throw new Error('runner_standard_image_archive_binding');
+  }
   const target = snapshot.target;
   if (subject.kind === 'repair'
     ? target?.patchSha256 !== subject.patchSha256 || target?.manifestSha256 !== subject.manifestSha256
@@ -183,6 +188,7 @@ export function prepareQualifiedVerificationRequest(coordinates: VerificationCoo
     ...(profile.buildProfileSha256 ? { buildProfileSha256: profile.buildProfileSha256 } : {}),
     ...(profile.runStandardBaseline ? { runStandardBaseline: profile.runStandardBaseline } : {}),
     ...(profile.ociInputsSha256 ? { ociInputsSha256: profile.ociInputsSha256 } : {}),
+    ...(profile.retainStandardImage ? { retainStandardImage: profile.retainStandardImage } : {}),
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
   });
 }
