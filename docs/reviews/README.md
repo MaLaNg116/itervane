@@ -58,6 +58,7 @@
 | 052 | P2-E-C4-B2 Komodo Worker 交接、限次回读和环境占用 | [#52](https://github.com/MaLaNg116/itervane/pull/52)，基于已合入 #51 的 main | [Worker 交接导读](p2-e-formal-komodo-worker.md) | 179 项单元、161 项 PostgreSQL、[原生适配器](https://github.com/MaLaNg116/itervane/actions/runs/44938461015)及[真实 OCI 中断两路径](https://github.com/MaLaNg116/itervane/actions/runs/44940682806)通过，既有 Runner 崩溃恢复回归单独重跑 |
 | 053 | P2-E-D1 实际运行镜像和容器边界回读 | [#53](https://github.com/MaLaNg116/itervane/pull/53)，基于 #52 | [运行版本导读](p2-e-rollout-verification.md) | 185 项单元及[六项原生 Komodo 检查](https://github.com/MaLaNg116/itervane/actions/runs/44940342603)通过，已同步 #52 的中断验收修正 |
 | 054 | P2-E-D2-A/B 入口配置、Traefik 回读和授权健康核验 | [#54](https://github.com/MaLaNg116/itervane/pull/54)，基于 #53 | [受保护入口导读](p2-e-protected-ingress.md) | 200 项单元、真实 PostgreSQL 修订专项、[七项真实入口](https://github.com/MaLaNg116/itervane/actions/runs/44943972070)及[六项原生 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/44943971983)通过；全量与 Runner 回归中 |
+| 055 | P2-E-D2-C 自托管 HTTPS 入口和 Docker 私网 | [#55](https://github.com/MaLaNg116/itervane/pull/55)，基于 #54 | [自托管接线导读](p2-e-ingress-reference.md) | Compose 校验与三项本机实际网络检查通过，[托管入口与隔离验证](https://github.com/MaLaNg116/itervane/actions/runs/44945649304)进行中 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
