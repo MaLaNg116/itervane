@@ -6,6 +6,8 @@
 
 用绑定的 Komodo 目标回读配置，并调用 `InspectDeploymentContainer` 取得实际容器 ID、状态、请求镜像引用和镜像配置摘要。当前运行配置摘要、参考网络、无宿主端口绑定和非特权运行都要核对。完整环境变量、挂载详情和请求认证不写入证明。 [Komodo v2.3.4 部署读取契约](https://github.com/moghtech/komodo/blob/v2.3.4/client/core/rs/src/api/read/deployment.rs) · [固定版本容器结构](https://github.com/moghtech/komodo/blob/v2.3.4/client/core/rs/src/entities/docker/container.rs)
 
+维护者在 Komodo 为核验服务身份配置登记 Deployment 的 `Inspect` 专项权限。该权限只授予已登记 Deployment；适配器按已冻结的目标身份发起读取。 [部署读取权限实现](https://github.com/moghtech/komodo/blob/v2.3.4/bin/core/src/api/read/deployment.rs#L293) · [Inspect 权限定义](https://github.com/moghtech/komodo/blob/v2.3.4/client/core/rs/src/entities/permission.rs#L167)
+
 ## D2 · 入口和健康
 
 安装维护者登记核验配置。它包含规范 HTTPS 入口、固定健康路径、应用授权的探测身份引用及受控运行网络，并用现有 `rolloutCheckSha256` 绑定冻结候选。探测凭证只由安装侧提供。入口控制继续沿用实施计划的 OIDC 和 Traefik，实际路由必须落到本次登记的后端。
