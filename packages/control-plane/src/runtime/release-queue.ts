@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { releaseWakeupSchema } from '@itervane/contracts';
+import { releaseWakeupSchema, type TaskEventReason } from '@itervane/contracts';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
 import { formalReleaseQueue, releaseFixtureQueue, type Database } from '../persistence/database.js';
-import { environments, formalReleaseSteps, releaseCandidates, releaseOperations, runRuntime } from '../persistence/schema.js';
+import { environments, formalReleaseSteps, releaseCandidates, releaseOperations, runRuntime, taskEvents } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
 import { appendEvent, type TaskRow } from './authority.js';
@@ -82,14 +82,29 @@ export async function recoverClaimedRelease(tx: Transaction, database: Database,
   }
 }
 
-export async function recoverRegistryLease(tx: Transaction, database: Database, task: TaskRow, runId: string, workerId: string) {
+export const registryRecheckEvent = 'task.release_registry_recheck_started';
+const maxRegistryRechecks = 3;
+
+export async function recoverRegistryLease(tx: Transaction, database: Database, task: TaskRow, runId: string, workerId: string,
+  reason: TaskEventReason = 'lease_expired') {
   const { operation, releaseDecision } = await lockReleaseForRecovery(tx, task, runId);
   const [intent] = await tx.select({ state: formalReleaseSteps.state }).from(formalReleaseSteps)
     .where(and(eq(formalReleaseSteps.operationId, operation.id), eq(formalReleaseSteps.kind, 'registry'))).for('update');
   if (!intent) throw new DomainError('unavailable');
-  await renewFormalWakeup(tx, database, operation.id, { state: 'reconciling' });
+  const attempts = await tx.select({ sequence: taskEvents.sequence }).from(taskEvents)
+    .where(and(eq(taskEvents.taskId, task.id), eq(taskEvents.type, registryRecheckEvent),
+      sql`${taskEvents.detail}->>'operationId' = ${operation.id}`)).limit(maxRegistryRechecks);
+  const queued = attempts.length < maxRegistryRechecks;
+  if (queued) {
+    const delaySeconds = reason === 'lease_expired' && attempts.length === 0 ? undefined : 1;
+    await renewFormalWakeup(tx, database, operation.id, { state: 'reconciling', ...(delaySeconds ? { delaySeconds } : {}) });
+  } else if (operation.state !== 'reconciling') {
+    await tx.update(releaseOperations).set({ state: 'reconciling', updatedAt: sql`clock_timestamp()` }).where(eq(releaseOperations.id, operation.id));
+  }
   await tx.update(runRuntime).set({ reason: 'release_registry_reconciling' }).where(eq(runRuntime.runId, runId));
-  await appendEvent(tx, task, 'task.release_registry_recovered', task.state === 'cancel_requested' ? task.state : 'reconciling', {
-    workerId, reason: 'lease_expired', releaseDecision,
+  await appendEvent(tx, task, queued ? 'task.release_registry_recovered' : 'task.release_registry_manual_review',
+    task.state === 'cancel_requested' ? task.state : 'reconciling', {
+    workerId, reason, releaseDecision,
   });
+  return queued;
 }
