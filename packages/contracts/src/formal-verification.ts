@@ -18,6 +18,14 @@ export const verificationProfileSchema = z.strictObject({
   && (!profile.retainStandardImage || Boolean(profile.ociInputsSha256)));
 export type VerificationProfile = z.infer<typeof verificationProfileSchema>;
 
+export const standardVerificationProfileSchema = verificationProfileSchema.safeExtend({
+  buildProfileSha256: sha256Schema,
+  runStandardBaseline: z.literal(true),
+  ociInputsSha256: sha256Schema,
+  retainStandardImage: z.literal(true),
+});
+export type StandardVerificationProfile = z.infer<typeof standardVerificationProfileSchema>;
+
 const subjectSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('original'), manifestSha256: sha256Schema }),
   z.strictObject({

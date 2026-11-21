@@ -1,6 +1,6 @@
 import { posix } from 'node:path';
 import { z } from 'zod';
-import { auditModelProtocolSchema, npmUpgradeApprovalsSchema, sha256Schema } from '@itervane/contracts';
+import { auditModelProtocolSchema, npmUpgradeApprovalsSchema, sha256Schema, standardVerificationProfileSchema } from '@itervane/contracts';
 import { safeEndpoint } from '@itervane/model';
 import { sourcePath } from '@itervane/runner';
 import { validateIdentityConfig } from './auth/identity.js';
@@ -46,14 +46,20 @@ export function workerConfig(env: NodeJS.ProcessEnv = process.env) {
   const repairProtectedPaths = repairEnabled
     ? [...new Set(['.github', '.itervane', ...additionalProtections].map(path => sourcePath(path).toLowerCase()))] : undefined;
   const npmRepairApprovals = repairEnabled ? npmUpgradeApprovalsSchema.parse(JSON.parse(env.ITERVANE_NPM_REPAIR_APPROVALS ?? '[]')) : [];
-  if (selected === undefined) return { ...worker, runner, auditModel: undefined, repairProtectedPaths, npmRepairApprovals };
+  const verificationProfile = env.ITERVANE_VERIFICATION_PROFILE === undefined ? undefined
+    : standardVerificationProfileSchema.parse(JSON.parse(env.ITERVANE_VERIFICATION_PROFILE));
+  if (verificationProfile && (!selected || runner?.imageSha256 !== verificationProfile.runnerImageSha256)) {
+    throw new Error('Formal verification requires a configured model and the same qualified Runner image');
+  }
+  const options = { ...worker, runner, repairProtectedPaths, npmRepairApprovals, verificationProfile };
+  if (selected === undefined) return { ...options, auditModel: undefined };
   const protocol = auditModelProtocolSchema.parse(selected);
   const prefix = protocol === 'anthropic' ? 'ANTHROPIC' : 'OPENAI';
   const modelConfig = z.strictObject({ apiKey: z.string().min(1).max(4096), model: z.string().trim().min(1).max(240),
     baseURL: z.string().min(1).max(2048).transform(safeEndpoint) }).parse({
     apiKey: env[`${prefix}_API_KEY`], model: env[`${prefix}_MODEL`], baseURL: env[`${prefix}_BASE_URL`],
   });
-  return { ...worker, runner, auditModel: { protocol, ...modelConfig }, repairProtectedPaths, npmRepairApprovals };
+  return { ...options, auditModel: { protocol, ...modelConfig } };
 }
 
 export function migrationConfig(env: NodeJS.ProcessEnv = process.env) {
