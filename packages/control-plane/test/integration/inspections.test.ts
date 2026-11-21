@@ -880,7 +880,7 @@ it.each(['build', 'baseline', 'image', 'artifact'] as const)('binds the standard
   expect(verify).toHaveBeenCalledTimes(1);
 });
 
-it.each(['healthy', 'regression', 'reclaimed', 'profile changed', 'revoked', 'cleanup unknown'] as const)(
+it.each(['healthy', 'regression', 'reclaimed', 'profile changed', 'revoked', 'cleanup unknown', 'event blocked'] as const)(
   'continues the frozen source into verification through the ordinary queue (%s)', async mode => {
     const scan = vi.fn<InspectionRunner['inspect']>(async (request, authorize) => { await authorize(); return testReceipt(request); });
     const started = Promise.withResolvers<void>();
@@ -915,6 +915,9 @@ it.each(['healthy', 'regression', 'reclaimed', 'profile changed', 'revoked', 'cl
     const openWorker = (profile: StandardVerificationProfile) => new DurableWorker(database.storage, database.runtimeUrl, {
       runner, auditModel: model, verification: { runner: { observe, verify }, profile },
     });
+    if (mode === 'event blocked') {
+      await database.admin.query("ALTER TABLE itervane.task_events ADD CONSTRAINT injected_verification_event_failure CHECK(type <> 'task.verification_recorded') NOT VALID");
+    }
     const first = openWorker(standardVerificationProfile);
     try {
       const tick = first.tick();
@@ -932,11 +935,23 @@ it.each(['healthy', 'regression', 'reclaimed', 'profile changed', 'revoked', 'cl
         try { expect(await replacement.tick()).toBe(true); } finally { await replacement.close(); }
       }
       expect(await tick).toBe(true);
-    } finally { await first.close(); }
+    } finally {
+      await first.close();
+      if (mode === 'event blocked') await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_verification_event_failure');
+    }
 
     expect(scan).toHaveBeenCalledTimes(1);
     expect(auditing).toHaveBeenCalledTimes(3);
     const records = await database.storage.db.select().from(formalVerificationResults);
+    if (mode === 'event blocked') {
+      expect(records).toEqual([]);
+      expect(verify).toHaveBeenCalledTimes(1);
+      expect(reviewing).toHaveBeenCalledTimes(5);
+      const [receipt] = await database.storage.db.select().from(formalRescanAttempts);
+      expect(receipt).toMatchObject({ state: 'recorded' });
+      expect((await tasks.events(identity, task.id, 20)).at(-1)).toMatchObject({ state: 'needs_human', reason: 'verification_unavailable' });
+      return;
+    }
     if (mode === 'revoked' || mode === 'profile changed' || mode === 'cleanup unknown') {
       expect(records).toEqual([]);
       expect(reviewing).not.toHaveBeenCalled();
@@ -1386,7 +1401,9 @@ it('revalidates the same repair input after a new lease and seals existing compl
   try {
     await vi.waitFor(async () => {
       await worker.tick();
-      expect(await tasks.get(identity, task.id)).toMatchObject({ state: 'waiting_input' });
+      const current = await tasks.get(identity, task.id);
+      const reason = current.state === 'needs_human' ? (await tasks.events(identity, task.id, 20)).at(-1)?.reason : undefined;
+      expect(current.state, reason ?? undefined).toBe('waiting_input');
     }, { timeout: 5_000, interval: 50 });
   } finally { await worker.close(); }
   const [sealed] = await database.storage.db.select().from(formalRepairInputs);
