@@ -2,8 +2,8 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import { formalReleaseTargetSchema, ociDigestSchema, qualifiedImageArchiveSchema, releaseRegistryOriginSchema,
-  type QualifiedImageArchive } from '@itervane/contracts';
+import { formalReleaseTargetSchema, ociDigestSchema, qualifiedImageArchiveSchema, releaseRegistryHost, releaseRegistryOriginSchema,
+  type ReleaseRegistryImageProof } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { z } from 'zod';
 
@@ -23,10 +23,6 @@ const credentialsSchema = z.strictObject({
 });
 type RegistryConfiguration = { origin: string; credentials?: z.input<typeof credentialsSchema> };
 type RegistryTools = Readonly<{ materializer: string; skopeo: string }>;
-export type RegistryImageProof = Readonly<{
-  registryOrigin: string; repository: string; reference: string;
-  manifestDigest: string; configDigest: string; archive: QualifiedImageArchive;
-}>;
 const deadline = (milliseconds: number, signal?: AbortSignal) => {
   const limit = AbortSignal.timeout(milliseconds);
   return signal ? AbortSignal.any([limit, signal]) : limit;
@@ -92,13 +88,11 @@ export class ReleaseRegistryPublisher {
     }
     this.origin = url;
     this.tools = { ...tools };
-    // A bare hostname in a Docker reference would otherwise be a repository namespace.
-    this.registryHost = url.hostname === 'localhost' || url.hostname.includes('.') || url.hostname.includes(':') || url.port
-      ? url.host : `${url.hostname}:443`;
+    this.registryHost = releaseRegistryHost(origin.data);
     if (credentials) this.#authorization = Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64');
   }
 
-  private approvedImage(rawTarget: z.input<typeof registryTargetSchema>, raw: z.input<typeof frozenImageSchema>): RegistryImageProof {
+  private approvedImage(rawTarget: z.input<typeof registryTargetSchema>, raw: z.input<typeof frozenImageSchema>): ReleaseRegistryImageProof {
     const { imageRepository: repository, registryOrigin } = registryTargetSchema.parse(rawTarget);
     if (this.origin.origin !== registryOrigin) throw new Error('release_registry_drift');
     const image = frozenImageSchema.parse(raw);
@@ -106,7 +100,7 @@ export class ReleaseRegistryPublisher {
   }
 
   async observe(rawTarget: z.input<typeof registryTargetSchema>, raw: z.input<typeof frozenImageSchema>,
-    authorize: () => Promise<void>, signal?: AbortSignal): Promise<RegistryImageProof | null> {
+    authorize: () => Promise<void>, signal?: AbortSignal): Promise<ReleaseRegistryImageProof | null> {
     const image = this.approvedImage(rawTarget, raw);
     signal?.throwIfAborted();
     await authorize();
@@ -118,7 +112,7 @@ export class ReleaseRegistryPublisher {
   }
 
   async publish(rawTarget: z.input<typeof registryTargetSchema>, raw: z.input<typeof frozenImageSchema>, archivePath: string,
-    authorize: () => Promise<void>, signal?: AbortSignal): Promise<RegistryImageProof> {
+    authorize: () => Promise<void>, signal?: AbortSignal): Promise<ReleaseRegistryImageProof> {
     const image = this.approvedImage(rawTarget, raw);
     if (process.platform !== 'linux' || !process.getuid?.() || !isAbsolute(archivePath)) throw new Error('invalid_release_archive_path');
     signal?.throwIfAborted();

@@ -125,7 +125,8 @@ async function assessCandidate(tx: Transaction, task: TaskRow, row: Candidate, m
   const last = history.at(-1);
   const [operation] = await tx.select().from(releaseOperations).where(eq(releaseOperations.candidateId, row.id));
   const [runtime] = await tx.select({ reason: runRuntime.reason }).from(runRuntime).where(eq(runRuntime.runId, row.runId));
-  const claimed = operation?.state === 'dispatching' && runtime?.reason === 'release_claimed'
+  const claimed = operation?.state === 'dispatching'
+    && ['release_claimed', 'release_registry_prepared', 'release_registry_verified'].includes(runtime?.reason ?? '')
     && (task.state === 'running' || task.state === 'cancel_requested');
   const queued = operation?.state === 'queued' && task.state === 'queued' && runtime?.reason === 'release_queued';
   const active = task.generation === manifest.generation && task.requestedBy === row.requestedBy && (last?.action === 'confirm'
