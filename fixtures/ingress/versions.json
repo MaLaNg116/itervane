@@ -1,0 +1,14 @@
+{
+  "traefik": {
+    "version": "v3.7.18",
+    "archiveSha256": "bc7e1e520c2d628b784e4e9c19bb259914082d5a70a27d509911caac5df18091",
+    "binarySha256": "4cee4858949d866345d460928d1fac0de2fd8a8375f48b0631ada5ea2ca4569a"
+  },
+  "oauth2Proxy": {
+    "version": "v7.15.6",
+    "binarySha256": "cbaad42f283a1f729ced94b39f7c453039c3aa8d20c9a44c6ff67a4f02072fb2"
+  },
+  "keycloak": {
+    "reference": "quay.io/keycloak/keycloak:26.8.2@sha256:c68e286cacd87b942ac1939a0a1481461109d6acd3a57dc496969a319a76bbf0"
+  }
+}
