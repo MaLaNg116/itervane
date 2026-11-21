@@ -8,4 +8,6 @@
 
 本机 202 项单元、TypeScript、宿主 Bash 和合成应用语法检查通过。用固定合成源码在本机回环运行，发送信号后同一进程从 HTTP 200 转为 503，原版本字符串保持一致。托管 KVM 运行故障验收待归档。
 
-首轮回归报 MCP 会话已断开，抽取后的单场景调用未等待结束即可进入外层关闭流程。`3ad30d3` 补上等待。运行故障组在目标登记阶段停下，两个用例共用了项目内必须唯一的应用名。`bb78dd9` 为两项用例分别登记应用，并按场景记录阶段和脱敏 HTTP 状态。更正后的托管复跑进行中。 [首轮回归](https://github.com/MaLaNg116/itervane/actions/runs/44960177289/job/137017031081) · [故障组首轮](https://github.com/MaLaNg116/itervane/actions/runs/44960177289/job/137017030874)
+首轮回归报 MCP 会话已断开，抽取后的单场景调用未等待结束即可进入外层关闭流程。`3ad30d3` 补上等待。运行故障组在目标登记阶段停下，两个用例共用了项目内必须唯一的应用名。`bb78dd9` 为两项用例分别登记应用，并按场景记录阶段和脱敏 HTTP 状态。 [首轮回归](https://github.com/MaLaNg116/itervane/actions/runs/44960177289/job/137017031081) · [故障组首轮](https://github.com/MaLaNg116/itervane/actions/runs/44960177289/job/137017030874)
+
+更正后的故障组通过。应用异常场景实际从 200 变为 503，身份中断场景应用仍返回 200。两者均保持匿名 401，并分别记录 `release_rollout_health_failed` 和 `release_rollout_unavailable`。PostgreSQL 17.12 证实两项各只有一次派发，后继执行者持新的执行代次核对原更新，操作保留环境占用，业务执行槽已释放。两种语言的 HTTP 与 MCP 结果一致。报告源码指纹 `5a2f9fec1d0c984d91637645c9ca8b37c3f7780b7548fba2fbf7f04cf9f7c6f7`。 [托管实测](https://github.com/MaLaNg116/itervane/actions/runs/44961186575/job/137020213381)

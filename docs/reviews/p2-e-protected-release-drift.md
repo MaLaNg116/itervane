@@ -9,3 +9,7 @@
 本机 202 项单元、TypeScript、Bash 与 Python 语法检查通过。使用本机临时目录验证了等长替换与原文件恢复，托管 KVM 完整验收待归档。
 
 首轮托管运行通过目标变化检查，随后在归档场景停下。`c109dae` 修正了步骤断言，要求归档读取停在 `prepared`、回执为空、Registry 与 Komodo 写入步骤均为零，并在本轮替换就绪后记录单独的检查阶段。 [首轮记录](https://github.com/MaLaNg116/itervane/actions/runs/44959277739/job/137014257705) · [修正](https://github.com/MaLaNg116/itervane/commit/c109dae43b0cd379afdc06a91f1835cc10343cbe)
+
+更正后的独立 KVM 场景通过。PostgreSQL 17.12 留存两项原批准和不同阻断原因。目标变化没有归档读取步骤，归档变化的读取准备未得到确认。两项的外部写入步骤均为零，实际 Registry 中无批准镜像清单，Komodo 的目标与容器观察一致，执行槽已释放。原归档恢复并通过宿主独立摘要核验，中英文 HTTP 与 MCP 结果一致。报告源码指纹 `724405b77c915cbf69aec1cadd77018ba038de3c9e381e23f227c7c3fa366e9a`。 [托管复跑](https://github.com/MaLaNg116/itervane/actions/runs/44960545263/job/137018244593)
+
+合入前核对夹具目录和文件归属、Worker 停止后恢复归档、审批准入及真实下游读回。最终审查版本 `66042c3f4427eafcab96671573ac29d3214dd050` 与托管复跑的非文档内容一致。七组 KVM 和六项常规检查通过，已合入 `4f3690ded22f332d761aa3419f3af8243acf1eda`。 [全部 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44960545263) · [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44961593829) · [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44961590527)
