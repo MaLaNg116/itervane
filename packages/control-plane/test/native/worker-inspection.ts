@@ -20,6 +20,7 @@ import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
 import { formalReleaseQueue } from '../../src/persistence/database.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
+import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
 import { registerReleaseTarget } from '../../src/service/release-targets.js';
 import { bootstrapOwner } from '../../src/service/resources.js';
@@ -491,9 +492,38 @@ async function probe() {
         equal(confirmed.decisions[0]?.selfConfirmed, true);
         equal(approved.replayed, false);
         deepStrictEqual((await db.storage.boss.findJobs(formalReleaseQueue, { id: operationId }))[0]?.data, { operationId });
-        await new ExecutionCoordinator(db.storage).reconcile(randomUUID());
+        const execution = new ExecutionCoordinator(db.storage);
+        await execution.reconcile(randomUUID());
         const [genericWakeup] = (await db.admin.query('SELECT wakeup_job_id FROM itervane.task_runs WHERE id=$1', [current.runId])).rows;
         equal(genericWakeup?.wakeup_job_id, null);
+        phase = 'standard_formal_release_claim';
+        const releaseWork = new FormalReleaseCoordinator(execution, registry.origin);
+        const [wakeup] = await db.storage.boss.fetch(formalReleaseQueue, { includeMetadata: true });
+        ok(wakeup);
+        equal(wakeup.id, operationId);
+        const scope = await releaseWork.claim(wakeup, randomUUID());
+        ok(scope);
+        equal(scope.operationId, operationId);
+        equal(scope.candidateId, candidate.id);
+        equal(scope.fingerprint, candidate.fingerprint);
+        equal(scope.generation, 2);
+        const authority = await releaseWork.authorize(scope);
+        equal(authority.mapping.registryOrigin, registry.origin);
+        equal(authority.mapping.imageRepository, 'testing/standard');
+        deepStrictEqual(authority.manifest, candidate.manifest);
+        deepStrictEqual(authority.archiveVerification, after.archiveVerification);
+        ok(await releaseWork.heartbeat(scope));
+        await releaseWork.yieldClaim(scope);
+        const [yielded] = (await db.storage.pool.query<{ state: string; wakeup_job_id: string }>(
+          'SELECT state,wakeup_job_id FROM itervane.release_operations WHERE id=$1', [operationId])).rows;
+        ok(yielded?.wakeup_job_id);
+        equal(yielded.state, 'queued');
+        notEqual(yielded.wakeup_job_id, wakeup.id);
+        deepStrictEqual((await db.storage.boss.findJobs(formalReleaseQueue, { id: yielded.wakeup_job_id }))[0]?.data, { operationId });
+        equal(await releaseWork.claim(wakeup, randomUUID()), null);
+        const claim = { operationId, runId: scope.runId, generation: scope.generation, candidateId: scope.candidateId,
+          decisionVersion: scope.decisionVersion, fence: scope.fence, archiveSha256: authority.archiveVerification.archive.sha256,
+          wokeAgain: true, staleWakeupDenied: true };
         phase = 'standard_formal_release_archive_transport';
         const transferred = await runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
           'verification', ['read-approved-archive', operationId, registry.origin, join(dirname(bundle), 'release-tools/materialize_oci.py')]);
@@ -504,7 +534,7 @@ async function probe() {
         deepStrictEqual(imported, { registryOrigin: registry.origin, repository: 'testing/standard',
           reference: `${new URL(registry.origin).host}/testing/standard@${manifestDigest}`, archive, manifestDigest, configDigest });
         await assertDrained(controllerUid, staging);
-        retry = { before, after, retrySha256, generation: handoff.generation, candidate, archiveTransport: transferred,
+        retry = { before, after, retrySha256, generation: handoff.generation, candidate, claim, archiveTransport: transferred,
           approval: { operationId, decisionVersion: confirmed.decisionVersion } };
       }
       return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,

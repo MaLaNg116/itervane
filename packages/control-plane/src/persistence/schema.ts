@@ -444,6 +444,7 @@ export const releaseOperations = domain.table('release_operations', {
   candidateId: uuid('candidate_id').notNull(),
   environmentId: uuid('environment_id').notNull(),
   approvalVersion: integer('approval_version').notNull(),
+  wakeupJobId: uuid('wakeup_job_id'),
   state: text('state').$type<ReleaseOperationState>().notNull().default('queued'),
   observation: jsonb('observation').$type<FixtureReleaseObservation>(),
   createdAt: createdAt(),
@@ -454,9 +455,11 @@ export const releaseOperations = domain.table('release_operations', {
   foreignKey({ name: 'release_operation_decision_fk', columns: [t.candidateId, t.approvalVersion],
     foreignColumns: [releaseDecisions.candidateId, releaseDecisions.version] }),
   unique('release_operation_candidate_unique').on(t.candidateId),
+  unique('release_operation_wakeup_unique').on(t.wakeupJobId),
   uniqueIndex('release_operation_environment_hold').on(t.environmentId).where(sql`${t.state} IN ('dispatching', 'reconciling')`),
   check('release_operation_single_approval', sql`${t.approvalVersion} = 1`),
   check('release_operation_state', sql`${t.state} IN ('queued', 'dispatching', 'reconciling', 'verified_fixture', 'blocked')`),
+  check('release_operation_wakeup_queued', sql`${t.wakeupJobId} IS NULL OR ${t.state} = 'queued'`),
   check('release_operation_observation', sql`(
     (${t.state} <> 'verified_fixture' AND ${t.observation} IS NULL) OR
     (${t.state} = 'verified_fixture' AND ${t.observation}->>'origin' = 'trusted_fixture'

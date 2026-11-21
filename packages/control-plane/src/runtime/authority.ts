@@ -2,7 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
 import { wakeupSchema, type TaskState, type TaskEventReason } from '@itervane/contracts';
 import { queueName, type Database } from '../persistence/database.js';
-import { executionSlot, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
+import { executionSlot, runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
 import { DomainError } from '../service/errors.js';
 import type { Transaction } from '../service/access.js';
 
@@ -24,6 +24,40 @@ export async function lockSlot(tx: Transaction) {
 
 export async function clearSlot(tx: Transaction) {
   await tx.update(executionSlot).set({ taskId: null, runId: null, workerId: null, leaseUntil: sql`'-infinity'::timestamptz` }).where(eq(executionSlot.id, 1));
+}
+
+export async function lockExecution(tx: Transaction, scope: ExecutionScope, allowCancel?: boolean) {
+  const slot = await lockSlot(tx);
+  const [task] = await tx.select().from(tasks).where(eq(tasks.id, scope.taskId)).for('update');
+  const [run] = await tx.select().from(taskRuns).where(eq(taskRuns.id, scope.runId));
+  const [runtime] = await tx.select().from(runRuntime).where(eq(runRuntime.runId, scope.runId));
+  if (!task || !run || !runtime || !slot.live || slot.taskId !== task.id || slot.runId !== run.id
+    || slot.workerId !== scope.workerId || slot.fence !== scope.fence || task.generation !== scope.generation
+    || run.taskId !== task.id || runtime.taskId !== task.id || run.generation !== scope.generation
+    || (task.state !== 'running' && !(allowCancel && task.state === 'cancel_requested'))) throw new ExecutionLost();
+  return { slot, task, runtime };
+}
+
+export async function assertLeaseLive(tx: Transaction, previousLeaseUntil: Date) {
+  // 清空执行槽后仍检查原租约，心跳则检查本次延长后的租约。
+  const [valid] = await tx.select({ live: sql<boolean>`CASE WHEN ${executionSlot.taskId} IS NULL
+    THEN ${previousLeaseUntil}::timestamptz > clock_timestamp()
+    ELSE ${executionSlot.leaseUntil} > clock_timestamp() END` }).from(executionSlot).where(eq(executionSlot.id, 1));
+  if (!valid?.live) throw new ExecutionLost();
+}
+
+export async function assignSlot(tx: Transaction, task: TaskRow, runId: string, workerId: string, leaseSeconds: number): Promise<ExecutionScope> {
+  const [assignment] = await tx.update(executionSlot).set({ taskId: task.id, runId, workerId,
+    fence: sql`${executionSlot.fence} + 1`, leaseUntil: sql`clock_timestamp() + ${leaseSeconds} * interval '1 second'` })
+    .where(eq(executionSlot.id, 1)).returning({ fence: executionSlot.fence });
+  if (!assignment) throw new DomainError('unavailable');
+  return Object.freeze({ taskId: task.id, runId, generation: task.generation, workerId, fence: assignment.fence });
+}
+
+export async function renewSlot(tx: Transaction, leaseSeconds: number) {
+  const [renewed] = await tx.update(executionSlot).set({ leaseUntil: sql`clock_timestamp() + ${leaseSeconds} * interval '1 second'` })
+    .where(and(eq(executionSlot.id, 1), sql`${executionSlot.leaseUntil} > clock_timestamp()`)).returning({ id: executionSlot.id });
+  if (!renewed) throw new ExecutionLost();
 }
 
 export async function appendEvent(tx: Transaction, task: TaskRow, type: string, state: TaskState,

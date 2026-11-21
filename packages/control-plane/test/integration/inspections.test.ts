@@ -8,8 +8,8 @@ import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { createFormalVerification } from '@itervane/agent';
-import { apiErrorSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
-  formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseViewSchema, formalRepairRetryContextSchema, verificationViewSchema,
+import { apiErrorSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
+  formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseViewSchema, formalRepairRetryContextSchema, formalVerificationResultSchema, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
@@ -23,16 +23,18 @@ import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/id
 import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
-  releaseCandidates, releaseDecisions, releaseOperations, taskRuns, workspaceMembers } from '../../src/persistence/schema.js';
+  principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
 import { runFormalRepair } from '../../src/runtime/formal-repair.js';
+import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
 import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-rescan.js';
 import { runFormalVerification, type FormalVerificationOptions } from '../../src/runtime/formal-verification.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
 import { GuardedCheckpointer } from '../../src/runtime/checkpointer.js';
 import { FormalRepairExecution, type RepairRunner } from '../../src/runtime/repair-execution.js';
 import { observeFormalRepairTargets, type RepairObservationRunner } from '../../src/runtime/repair-observation.js';
+import { ReleaseRehearsal } from '../../src/runtime/release-rehearsal.js';
 import { ToolGateway } from '../../src/runtime/tools.js';
 import { prepareFormalVerificationInput } from '../../src/runtime/verification-input.js';
 import { projectVerificationEvidence } from '../../src/runtime/verification-evidence.js';
@@ -42,9 +44,11 @@ import { bootstrapOwner, ResourceService } from '../../src/service/resources.js'
 import { InspectionService, prepareInspection } from '../../src/service/inspections.js';
 import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
 import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
+import { FormalReleaseService } from '../../src/service/formal-release.js';
 import { publishFormalRepair } from '../../src/service/repair-result.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
 import { registerReleaseTarget } from '../../src/service/release-targets.js';
+import { ReleaseCandidateService } from '../../src/service/releases.js';
 import { TaskService } from '../../src/service/tasks.js';
 import { VerificationViewService } from '../../src/service/verification-view.js';
 import { databaseFixture } from '../helpers/database.js';
@@ -1243,6 +1247,301 @@ async function assertReleaseApproval(api: ReturnType<typeof createApi>, current:
   expect((await database.storage.db.select().from(releaseOperations))[0]).toMatchObject({ state: 'blocked' });
   expect(await database.storage.boss.fetch(formalReleaseQueue)).toEqual([]);
 }
+
+const releaseOrigin = 'https://registry.example.invalid';
+
+async function adjustFixtureVerification(statement: string, values: unknown[] = []) {
+  const connection = await database.admin.connect();
+  try {
+    await connection.query('BEGIN');
+    await connection.query('ALTER TABLE itervane.formal_verification_results DISABLE TRIGGER formal_verification_result_authority');
+    await connection.query(statement, values);
+    await connection.query('ALTER TABLE itervane.formal_verification_results ENABLE TRIGGER formal_verification_result_authority');
+    await connection.query('COMMIT');
+  } catch (error) {
+    await connection.query('ROLLBACK');
+    throw error;
+  } finally { connection.release(); }
+}
+
+async function queuedFormalRelease(options: { separateRequester?: boolean; expiring?: boolean } = {}) {
+  const taskService = new TaskService(database.storage);
+  const resources = new ResourceService(database.storage);
+  const verifyIdentity = createIdentityVerifier(issuer.config);
+  let requester = identity;
+  if (options.separateRequester) {
+    const [principal] = await database.storage.db.insert(principals).values({ issuer: issuer.config.issuer, subject: 'release-requester' }).returning();
+    await database.storage.db.insert(projectMembers).values({ principalId: principal!.id, projectId: task.projectId, role: 'maintainer' });
+    requester = await verifyIdentity(await issuer.token('release-requester'));
+    await taskService.cancel(identity, task.id, { expectedVersion: task.version });
+    task = (await taskService.admit(requester, { projectId: task.projectId, source: task.source,
+      purpose: 'Request scoped release', dataClass: 'synthetic', locale: 'zh-CN', idempotencyKey: randomUUID() })).task;
+  }
+  const reviewing = scriptedVerification('zh-CN');
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, {
+    runner: inspectionRunner(async (request, authorize) => { await authorize(); return testReceipt(request); }),
+    auditModel: auditModel(request => {
+      const context = request.conversation[0];
+      return context?.kind === 'user' && JSON.parse(context.text).role === 'verify' ? reviewing.complete(request) : concludeAudit(request);
+    }),
+    verification: { profile: standardVerificationProfile, runner: {
+      observe: async () => idleRepairRunner(),
+      verify: async (coordinates, input, repair, authorize) => {
+        await authorize();
+        const [stored] = await database.storage.db.select().from(inspectionAttempts);
+        const original = qualifiedInspectionResponseSchema.parse(stored?.receipt);
+        if (original.kind !== 'receipt') throw new Error('Missing verified original');
+        const request = prepareQualifiedVerificationRequest(coordinates, canonicalVerificationCommand({ input, repair }));
+        return standardVerificationReceipt(original, request, input, false);
+      },
+      verifyArchive: async archive => ({ kind: 'archive_verified', version: 1, runnerImageSha256: imageSha256, archive }),
+    } },
+  });
+  try { expect(await worker.tick()).toBe(true); } finally { await worker.close(); }
+  const application = await resources.createApplication(identity, task.projectId, { name: 'Claim sample' });
+  const environment = await resources.createEnvironment(identity, task.projectId, { applicationId: application.id, name: 'Protected sample' });
+  const target = { environmentId: environment.id, deploymentId: 'a'.repeat(24), serverId: 'b'.repeat(24),
+    imageRepository: 'testing/standard', registryOrigin: releaseOrigin, runtimeConfigSha256: sha256('runtime configuration'),
+    verificationProfileSha256: verificationProfileFingerprint(standardVerificationProfile), verificationMaxAgeSeconds: 60,
+    rolloutCheckSha256: sha256('health verification'), recoveryPlanSha256: sha256('known release'),
+  };
+  await registerReleaseTarget(database.storage, target);
+  const portal = 'itervane-claim-portal';
+  const owner = await verifyIdentity(await issuer.token('owner', { azp: portal }));
+  const service = new FormalReleaseService(database.storage, portal);
+  const verified = await taskService.get(identity, task.id);
+  expect(verified.state).toBe('waiting_input');
+  if (options.expiring) {
+    // Exercise expiry below the runtime's five-second statement timeout even on a fast database.
+    await adjustFixtureVerification("UPDATE itervane.formal_verification_results SET created_at=clock_timestamp()-interval '57 seconds'");
+  }
+  const frozen = (await service.freeze(requester, task.id, { environmentId: environment.id, expectedVersion: verified.version }, 'zh-CN')).candidate;
+  const approval = (await service.decide(owner, frozen.id, {
+    action: 'confirm', fingerprint: frozen.fingerprint, expectedVersion: 0, idempotencyKey: randomUUID(),
+  }, 'zh-CN')).candidate;
+  if (!approval.operationId) throw new Error('Expected formal release operation');
+  return { approval, operationId: approval.operationId, target, owner, service, taskService };
+}
+
+async function fetchFormalWakeup() {
+  return vi.waitFor(async () => {
+    const [job] = await database.storage.boss.fetch(formalReleaseQueue, { includeMetadata: true });
+    if (!job) throw new Error('Waiting for formal release wakeup');
+    return job;
+  }, { timeout: 5_000, interval: 40 });
+}
+
+async function readOperation(operationId: string) {
+  const [row] = await database.storage.db.select().from(releaseOperations).where(eq(releaseOperations.id, operationId));
+  if (!row) throw new Error('Expected a durable release operation');
+  return row;
+}
+
+it('claims one formal release atomically, proves its scope and yields the same operation with a fresh wakeup', async () => {
+  const { approval, operationId, target, owner, service, taskService } = await queuedFormalRelease();
+  const releases = new FormalReleaseCoordinator(coordinator, releaseOrigin);
+  const first = await fetchFormalWakeup();
+  const replay = await database.storage.boss.send(formalReleaseQueue, { operationId });
+  const stray = await fetchFormalWakeup();
+  expect(stray.id).toBe(replay);
+  expect(await releases.claim(stray, randomUUID())).toBeNull();
+  expect(await releases.claim({ ...first, data: { operationId: randomUUID() } }, randomUUID())).toBeNull();
+  expect(await releases.claim({ ...first, retryCount: first.retryCount + 1 }, randomUUID())).toBeNull();
+  expect(await releases.claim({ ...first, name: queueName }, randomUUID())).toBeNull();
+
+  await database.admin.query("ALTER TABLE itervane.task_events ADD CONSTRAINT injected_claim_failure CHECK(type <> 'task.release_claimed') NOT VALID");
+  try { await expect(releases.claim(first, randomUUID())).rejects.toMatchObject({ cause: { code: '23514' } }); }
+  finally { await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_claim_failure'); }
+  expect(await readOperation(operationId)).toMatchObject({ state: 'queued', wakeupJobId: first.id });
+  expect((await database.storage.boss.findJobs(formalReleaseQueue, { id: first.id }))[0]?.state).toBe('active');
+  expect(await taskService.get(identity, task.id)).toMatchObject({ state: 'queued' });
+
+  const results = await Promise.all([releases.claim(first, randomUUID()), releases.claim(first, randomUUID())]);
+  expect(results.filter(Boolean)).toHaveLength(1);
+  const scope = results.find(item => item !== null)!;
+  expect(scope).toMatchObject({ operationId, taskId: task.id, runId: task.runId, decisionVersion: 1,
+    candidateId: approval.id, fingerprint: approval.fingerprint });
+  expect(await readOperation(operationId)).toMatchObject({ state: 'dispatching', wakeupJobId: null });
+  expect(await releases.authorize(scope)).toMatchObject({
+    mapping: target, manifest: approval.manifest, archiveVerification: { archive: approval.manifest.image.archive },
+  });
+  expect(await releases.heartbeat(scope)).toBe(true);
+  await expect(releases.authorize({ ...scope, operationId: randomUUID() })).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(coordinator.withLease(scope, async () => true)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(registerReleaseTarget(database.storage, { ...target, registryOrigin: 'https://changed.invalid' }))
+    .rejects.toMatchObject({ code: 'conflict' });
+  expect(await service.getView(owner, task.id, 'zh-CN')).toMatchObject({ actions: [],
+    candidate: { status: 'confirmed', operationId, message: /预留执行权/ } });
+  expect(await service.getView(owner, task.id, 'en')).toMatchObject({ actions: [],
+    candidate: { status: 'confirmed', message: /reserved execution/ } });
+
+  await releases.yieldClaim(scope);
+  const yielded = await readOperation(operationId);
+  expect(yielded).toMatchObject({ id: operationId, state: 'queued' });
+  expect(yielded.wakeupJobId).not.toBe(first.id);
+  expect(await releases.claim(first, randomUUID())).toBeNull();
+  await expect(releases.authorize(scope)).rejects.toBeInstanceOf(ExecutionLost);
+  expect((await taskService.events(identity, task.id, 50, 'zh-CN')).at(-1))
+    .toMatchObject({ type: 'task.release_requeued', state: 'queued' });
+});
+
+it('uses the same global slot as source work and recovers a release without a source wakeup', async () => {
+  const { operationId, taskService } = await queuedFormalRelease();
+  const release = new FormalReleaseCoordinator(coordinator, releaseOrigin);
+  const companion = (await taskService.admit(identity, { projectId: task.projectId, source: task.source,
+    purpose: 'Competing source work', dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
+  const source = await claim();
+  expect(source.taskId).toBe(companion.id);
+  const first = await fetchFormalWakeup();
+  expect(await release.claim(first, randomUUID())).toBeNull();
+  expect(await readOperation(operationId)).toMatchObject({ state: 'queued' });
+  expect((await readOperation(operationId)).wakeupJobId).not.toBe(first.id);
+  await coordinator.stop(source, 'execution_error');
+
+  const next = await fetchFormalWakeup();
+  const scope = await release.claim(next, randomUUID());
+  if (!scope) throw new Error('Expected a release lease');
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await expect(release.heartbeat(scope)).rejects.toBeInstanceOf(ExecutionLost);
+  await coordinator.reconcile(randomUUID());
+  const recovered = await fetchFormalWakeup();
+  expect(recovered.id).not.toBe(next.id);
+  expect(recovered.data).toEqual({ operationId });
+  expect((await database.storage.db.select().from(taskRuns).where(eq(taskRuns.id, scope.runId)))[0]?.wakeupJobId).toBeNull();
+  expect((await taskService.events(identity, task.id, 50, 'en')).at(-1))
+    .toMatchObject({ type: 'task.recovered', reason: 'lease_expired' });
+  const adopted = await release.claim(recovered, randomUUID());
+  if (!adopted) throw new Error('Expected the replacement release lease');
+  expect(adopted.fence).toBeGreaterThan(scope.fence);
+  const current = await taskService.get(identity, task.id);
+  expect(await taskService.cancel(identity, task.id, { expectedVersion: current.version })).toMatchObject({ state: 'cancel_requested' });
+  expect(await release.heartbeat(adopted)).toBe(false);
+  await expect(release.authorize(adopted)).rejects.toBeInstanceOf(ExecutionLost);
+  await release.yieldClaim(adopted);
+  expect(await readOperation(operationId)).toMatchObject({ state: 'blocked', wakeupJobId: null });
+  expect(await taskService.get(identity, task.id)).toMatchObject({ state: 'cancelled' });
+  expect(await database.storage.boss.fetch(formalReleaseQueue)).toEqual([]);
+});
+
+it('repairs an abandoned formal wakeup before claim and keeps the old delivery stale', async () => {
+  const { operationId } = await queuedFormalRelease();
+  const release = new FormalReleaseCoordinator(coordinator, releaseOrigin);
+  const first = await fetchFormalWakeup();
+  await release.reconcile(randomUUID());
+  expect(await readOperation(operationId)).toMatchObject({ state: 'queued', wakeupJobId: first.id });
+  await database.admin.query("UPDATE itervane_queue.job SET started_on=clock_timestamp()-interval '11 seconds' WHERE id=$1 AND name=$2",
+    [first.id, formalReleaseQueue]);
+  await release.reconcile(randomUUID());
+  const next = await fetchFormalWakeup();
+  expect(next.id).not.toBe(first.id);
+  expect(next.data).toEqual({ operationId });
+  expect(await release.claim(first, randomUUID())).toBeNull();
+  expect(await release.claim(next, randomUUID())).toMatchObject({ operationId });
+});
+
+it('waits for an environment already held by another release operation', async () => {
+  const { approval, operationId, owner } = await queuedFormalRelease();
+  const fixtureTask = randomUUID();
+  const fixtureRun = randomUUID();
+  const { manifest } = approval;
+  await database.storage.db.insert(taskRecords).values({
+    id: fixtureTask, projectId: task.projectId, repositoryId: task.source.repositoryId, requestedBy: task.requestedBy,
+    commit: task.source.commit, purpose: 'Earlier fixture release', dataClass: 'synthetic',
+    requestKey: randomUUID(), requestHash: sha256(fixtureTask), state: 'waiting_approval',
+  });
+  await database.storage.db.insert(taskRuns).values({ id: fixtureRun, taskId: fixtureTask, generation: 1, role: 'verify', state: 'waiting_approval' });
+  const oldManifest = fixtureReleaseManifestSchema.parse({
+    version: 1, origin: 'trusted_fixture', releaseEligible: false, taskId: fixtureTask, runId: fixtureRun, projectId: task.projectId,
+    evidenceVersion: 1, generation: 1, source: manifest.source, originalSnapshotSha256: manifest.originalSnapshotSha256,
+    repairedSnapshotSha256: manifest.repairedSnapshotSha256, diffSha256: manifest.diffSha256,
+    templateSetSha256: sha256('earlier templates'), ruleSetSha256: manifest.verification.catalogSha256,
+    verificationProfileSha256: manifest.verification.profileSha256, imageDigest: manifest.image.manifestDigest,
+    checks: { rescanSha256: manifest.verification.receiptSha256, baselineSha256: manifest.verification.baselineSha256,
+      targetedSha256: manifest.verification.buildSha256, imageScanSha256: manifest.image.scanReportSha256 },
+    target: { applicationId: manifest.target.applicationId, environmentId: manifest.target.environmentId, mappingSha256: manifest.target.mappingSha256 },
+    runtimeConfigSha256: manifest.runtimeConfigSha256, rolloutCheckSha256: manifest.rolloutCheckSha256,
+    recoveryPlanSha256: manifest.recoveryPlanSha256, validUntil: manifest.validUntil,
+  });
+  const fixtures = new ReleaseCandidateService(database.storage,
+    { readCurrent: async (_tx, binding) => binding.taskId === fixtureTask ? oldManifest : null }, 'itervane-claim-portal');
+  const frozen = await fixtures.freeze(fixtureTask);
+  const previous = await fixtures.decide(owner, frozen.id, {
+    action: 'confirm', fingerprint: frozen.fingerprint, expectedVersion: 0, idempotencyKey: randomUUID(),
+  });
+  const rehearsal = new ReleaseRehearsal(database.storage, fixtures, {
+    readCurrent: async (_tx, binding) => ({ ...binding, version: 1, origin: 'trusted_fixture',
+      downstreamId: 'existing-fixture-release', healthy: true, accessProtected: true }),
+  });
+  expect(await rehearsal.reserve({ id: previous.operationId, data: { operationId: previous.operationId } })).toMatchObject({ outcome: 'reserved' });
+  const release = new FormalReleaseCoordinator(coordinator, releaseOrigin);
+  const first = await fetchFormalWakeup();
+  expect(await release.claim(first, randomUUID())).toBeNull();
+  expect(await readOperation(operationId)).toMatchObject({ id: operationId, state: 'queued' });
+  expect((await database.admin.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
+  expect(await rehearsal.reconcile(previous.operationId)).toMatchObject({ state: 'verified_fixture' });
+  expect(await release.claim(await fetchFormalWakeup(), randomUUID())).toMatchObject({ operationId });
+});
+
+it.each([
+  ['target revision', 'release_target_changed'],
+  ['worker origin', 'release_target_changed'],
+  ['approver regrant', 'release_approval_invalid'],
+  ['requester access', 'permission_revoked'],
+  ['verification proof', 'release_evidence_changed'],
+] as const)('blocks formal release when %s no longer matches the approval', async (change, reason) => {
+  const { operationId, target, taskService } = await queuedFormalRelease({ separateRequester: change === 'requester access' });
+  if (change === 'target revision') await registerReleaseTarget(database.storage, { ...target, rolloutCheckSha256: sha256('new check') });
+  if (change === 'approver regrant') {
+    const [removed] = await database.storage.db.delete(workspaceMembers).returning();
+    await database.storage.db.insert(workspaceMembers).values({ principalId: removed!.principalId, workspaceId: removed!.workspaceId });
+  }
+  if (change === 'requester access') await database.storage.db.delete(projectMembers);
+  if (change === 'verification proof') {
+    const [original] = await database.storage.db.select().from(formalVerificationResults);
+    const changed = formalVerificationResultSchema.parse({ ...original!.document,
+      provider: original!.document.provider === 'anthropic' ? 'openai' : 'anthropic' });
+    const document = JSON.stringify(changed);
+    await adjustFixtureVerification('UPDATE itervane.formal_verification_results SET sha256=$1, document=$2 WHERE run_id=$3',
+      [sha256(document), document, original!.runId]);
+  }
+  const coordinatorOrigin = change === 'worker origin' ? 'https://other-registry.invalid' : releaseOrigin;
+  const release = new FormalReleaseCoordinator(coordinator, coordinatorOrigin);
+  expect(await release.claim(await fetchFormalWakeup(), randomUUID())).toBeNull();
+  expect(await readOperation(operationId)).toMatchObject({ state: 'blocked', wakeupJobId: null });
+  expect((await taskService.events(identity, task.id, 50, 'zh-CN')).at(-1))
+    .toMatchObject({ type: 'task.release_blocked', reason, state: 'needs_human' });
+  expect((await database.admin.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
+});
+
+it('checks approval expiry on the database clock after waiting for the environment lock', async () => {
+  const { approval, operationId, target, taskService } = await queuedFormalRelease({ expiring: true });
+  const release = new FormalReleaseCoordinator(coordinator, releaseOrigin);
+  const job = await fetchFormalWakeup();
+  const held = await database.admin.connect();
+  const worker = randomUUID();
+  try {
+    await held.query('BEGIN');
+    await held.query('SELECT id FROM itervane.environments WHERE id=$1 FOR UPDATE', [target.environmentId]);
+    const claiming = release.claim(job, worker);
+    try {
+      await vi.waitFor(async () => {
+        const { rows: [status] } = await held.query(`SELECT EXISTS (
+          SELECT FROM pg_locks WHERE NOT granted AND pg_backend_pid() = ANY(pg_blocking_pids(pid))
+        ) AS blocked, clock_timestamp() < $1::timestamptz AS live`, [approval.manifest.validUntil]);
+        expect(status).toEqual({ blocked: true, live: true });
+      }, { interval: 30, timeout: 2_500 });
+      await held.query('SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM ($1::timestamptz - clock_timestamp())) + 0.05))',
+        [approval.manifest.validUntil]);
+    } finally {
+      await held.query('ROLLBACK');
+      await expect(claiming).resolves.toBeNull();
+    }
+  } finally { held.release(); }
+  expect(await readOperation(operationId)).toMatchObject({ state: 'blocked', wakeupJobId: null });
+  expect((await taskService.events(identity, task.id, 50, 'en')).at(-1)).toMatchObject({
+    type: 'task.release_blocked', reason: 'release_approval_invalid', state: 'needs_human', workerId: worker,
+  });
+});
 
 it('keeps verification unavailable while an audit finding has no published repair candidate', async () => {
   const { scope } = await repairReady();

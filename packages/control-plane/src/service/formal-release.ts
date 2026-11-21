@@ -62,12 +62,37 @@ async function requesterCanWrite(tx: Transaction, task: TaskRow) {
   }
 }
 
-async function latestCandidate(tx: Transaction, taskId: string) {
+export function describeVerifiedRelease(verification: NonNullable<Awaited<ReturnType<typeof readPublishedVerification>>>,
+  target: typeof formalReleaseTargets.$inferSelect, mapping: FormalReleaseTarget) {
+  const { row, input, result } = verification;
+  const evidence = releaseEvidence(result, input.profile, mapping);
+  if (!evidence) return null;
+  const { source, build, baseline, image, archiveVerification } = evidence;
+  const manifest = {
+    version: 1, origin: 'formal_verification', releaseEligible: false,
+    taskId: input.taskId, runId: input.runId, projectId: input.projectId, generation: input.generation, source: input.source,
+    originalSnapshotSha256: input.inspection.snapshotSha256, repairedSnapshotSha256: input.subject.manifestSha256,
+    diffSha256: input.subject.kind === 'repair' ? input.subject.patchSha256 : null,
+    verification: { inputSha256: row.inputSha256, resultSha256: row.sha256, receiptSha256: row.receiptSha256,
+      catalogSha256: input.catalogSha256, profileSha256: mapping.verificationProfileSha256, buildSha256: build.distSha256,
+      baselineSha256: baseline.baselineSha256, source: { introduced: source.introduced, resolved: source.resolved, remaining: source.remaining },
+    },
+    image: { manifestDigest: image.manifestDigest, configDigest: image.configDigest, archive: archiveVerification.archive,
+      runnerImageSha256: archiveVerification.runnerImageSha256, scanReportSha256: image.scanReportSha256,
+      scanPolicySha256: image.scanPolicySha256, findings: image.findings,
+    },
+    runtimeConfigSha256: mapping.runtimeConfigSha256, rolloutCheckSha256: mapping.rolloutCheckSha256, recoveryPlanSha256: mapping.recoveryPlanSha256,
+    target: { applicationId: target.applicationId, environmentId: target.environmentId, mappingSha256: target.sha256, revision: target.revision },
+  };
+  return { manifest, archiveVerification };
+}
+
+export async function latestReleaseCandidate(tx: Transaction, taskId: string) {
   return (await tx.select().from(releaseCandidates).where(eq(releaseCandidates.taskId, taskId))
     .orderBy(desc(releaseCandidates.evidenceVersion)).limit(1))[0];
 }
 
-function readCandidate(row: Candidate) {
+export function readReleaseManifest(row: Candidate) {
   const document = formalReleaseManifestSchema.parse(row.document);
   if (sha256(JSON.stringify(document)) !== row.fingerprint || document.taskId !== row.taskId || document.runId !== row.runId
       || document.projectId !== row.projectId || document.evidenceVersion !== row.evidenceVersion
@@ -84,9 +109,10 @@ const decisionMessages = { pending: 'task.release_candidate_frozen', confirmed: 
 } as const;
 
 function present(row: Candidate, manifest: FormalReleaseManifest, status: CandidateStatus, locale: Locale,
-  history: Decision[] = [], operationId: string | null = null) {
-  const message = status === 'pending' || status === 'confirmed' || status === 'rejected' || status === 'revoked'
-    ? decisionMessages[status] : `release.${status}` as const;
+  history: Decision[] = [], operationId: string | null = null, claimed = false) {
+  const message = status === 'confirmed' && claimed ? 'task.release_claimed'
+    : (status === 'pending' || status === 'confirmed' || status === 'rejected' || status === 'revoked'
+      ? decisionMessages[status] : `release.${status}` as const);
   return formalReleaseCandidateDtoSchema.parse({ id: row.id, fingerprint: row.fingerprint, manifest, status, locale,
     createdAt: row.createdAt.toISOString(), message: translate(locale, message), operationId,
     decisionVersion: history.at(-1)?.version ?? 0,
@@ -99,14 +125,17 @@ async function assessCandidate(tx: Transaction, task: TaskRow, row: Candidate, m
   const last = history.at(-1);
   const [operation] = await tx.select().from(releaseOperations).where(eq(releaseOperations.candidateId, row.id));
   const [runtime] = await tx.select({ reason: runRuntime.reason }).from(runRuntime).where(eq(runRuntime.runId, row.runId));
+  const claimed = operation?.state === 'dispatching' && runtime?.reason === 'release_claimed'
+    && (task.state === 'running' || task.state === 'cancel_requested');
+  const queued = operation?.state === 'queued' && task.state === 'queued' && runtime?.reason === 'release_queued';
   const active = task.generation === manifest.generation && task.requestedBy === row.requestedBy && (last?.action === 'confirm'
-    ? task.state === 'queued' && runtime?.reason === 'release_queued'
+    ? queued || claimed
     : task.state === 'waiting_approval' && runtime?.reason === 'release_candidate_ready');
   let status: CandidateStatus;
   if (last?.action === 'revoke') status = 'revoked';
   else if (last?.action === 'reject') status = 'rejected';
   else if (!active) status = 'task_changed';
-  else if ((await latestCandidate(tx, task.id))?.id !== row.id) status = 'superseded';
+  else if ((await latestReleaseCandidate(tx, task.id))?.id !== row.id) status = 'superseded';
   else {
     await tx.select({ id: environments.id }).from(environments).where(eq(environments.id, row.environmentId)).for('share');
     const [target] = await tx.select().from(formalReleaseTargets).where(eq(formalReleaseTargets.environmentId, row.environmentId)).for('share');
@@ -117,15 +146,15 @@ async function assessCandidate(tx: Transaction, task: TaskRow, row: Candidate, m
   }
   const now = await databaseNow(tx);
   if ((status === 'pending' || status === 'confirmed') && Date.parse(manifest.validUntil) <= now.getTime()) status = 'expired';
-  return { status, history, operation, active, now };
+  return { status, history, operation, claimed, active, now };
 }
 
 async function readLatestFormalCandidate(tx: Transaction, task: TaskRow, locale: Locale) {
-  const row = await latestCandidate(tx, task.id);
+  const row = await latestReleaseCandidate(tx, task.id);
   if (row?.document.origin !== 'formal_verification') return null;
-  const manifest = readCandidate(row);
+  const manifest = readReleaseManifest(row);
   const assessment = await assessCandidate(tx, task, row, manifest);
-  return { ...assessment, view: present(row, manifest, assessment.status, locale, assessment.history, assessment.operation?.id) };
+  return { ...assessment, view: present(row, manifest, assessment.status, locale, assessment.history, assessment.operation?.id, assessment.claimed) };
 }
 
 function queuedConfirmation({ active, history, operation }: Awaited<ReturnType<typeof assessCandidate>>) {
@@ -163,36 +192,19 @@ export class FormalReleaseService {
       const mapping = readReleaseTarget(target);
       const verification = await readPublishedVerification(tx, task, run);
       if (!verification) throw new DomainError('unsupported_state');
-      const { row, input, result } = verification;
-      const evidence = releaseEvidence(result, input.profile, mapping);
+      const evidence = describeVerifiedRelease(verification, target, mapping);
       if (!evidence) throw new DomainError('unsupported_state');
-      const { source, build, baseline, image, archiveVerification } = evidence;
+      const { manifest: basis } = evidence;
 
-      const previous = await latestCandidate(tx, taskId);
+      const previous = await latestReleaseCandidate(tx, taskId);
       const now = await databaseNow(tx);
       if (identity.expiresAt * 1000 <= now.getTime()) throw new DomainError('unauthenticated');
       const expiresAt = Math.min(now.getTime() + mapping.approvalTtlSeconds * 1000,
-        row.createdAt.getTime() + mapping.verificationMaxAgeSeconds * 1000);
+        verification.row.createdAt.getTime() + mapping.verificationMaxAgeSeconds * 1000);
       if (expiresAt <= now.getTime()) throw new DomainError('unsupported_state');
 
-      const basis = {
-        version: 1, origin: 'formal_verification', releaseEligible: false,
-        taskId, runId: run.runId, projectId: task.projectId, generation: run.generation, source: input.source,
-        originalSnapshotSha256: input.inspection.snapshotSha256, repairedSnapshotSha256: input.subject.manifestSha256,
-        diffSha256: input.subject.kind === 'repair' ? input.subject.patchSha256 : null,
-        verification: { inputSha256: row.inputSha256, resultSha256: row.sha256, receiptSha256: row.receiptSha256,
-          catalogSha256: input.catalogSha256, profileSha256: mapping.verificationProfileSha256, buildSha256: build.distSha256,
-          baselineSha256: baseline.baselineSha256, source: { introduced: source.introduced, resolved: source.resolved, remaining: source.remaining },
-        },
-        image: { manifestDigest: image.manifestDigest, configDigest: image.configDigest, archive: archiveVerification.archive,
-          runnerImageSha256: archiveVerification.runnerImageSha256, scanReportSha256: image.scanReportSha256,
-          scanPolicySha256: image.scanPolicySha256, findings: image.findings,
-        },
-        runtimeConfigSha256: mapping.runtimeConfigSha256, rolloutCheckSha256: mapping.rolloutCheckSha256, recoveryPlanSha256: mapping.recoveryPlanSha256,
-        target: { applicationId: target.applicationId, environmentId, mappingSha256: target.sha256, revision: target.revision },
-      };
       if (previous?.document.origin === 'formal_verification') {
-        const existing = readCandidate(previous);
+        const existing = readReleaseManifest(previous);
         const repeated = formalReleaseManifestSchema.parse({ ...basis, evidenceVersion: previous.evidenceVersion, validUntil: existing.validUntil });
         if (Date.parse(existing.validUntil) > now.getTime() && sha256(JSON.stringify(repeated)) === previous.fingerprint) {
           if (expectedVersion !== task.version && expectedVersion !== task.version - 1) throw new DomainError('version_conflict');
@@ -287,14 +299,14 @@ export class FormalReleaseService {
       const { actor, task, project } = await visibleTask(tx, identity, row.taskId, true);
       if (!this.canDecide(identity, actor, project.workspaceId)) throw new DomainError('forbidden');
       if (row.fingerprint !== input.fingerprint) throw new DomainError('version_conflict');
-      const manifest = readCandidate(row);
+      const manifest = readReleaseManifest(row);
       const assessment = await assessCandidate(tx, task, row, manifest);
-      const { status, history, operation, now } = assessment;
+      const { status, history, operation, claimed, now } = assessment;
       if (identity.expiresAt * 1000 <= now.getTime()) throw new DomainError('unauthenticated');
       const duplicate = history.find(item => item.actorId === actor.principalId && item.idempotencyKey === input.idempotencyKey);
       if (duplicate) {
         if (duplicate.action !== input.action || duplicate.version !== input.expectedVersion + 1) throw new DomainError('idempotency_conflict');
-        return { candidate: present(row, manifest, status, locale, history, operation?.id), replayed: true };
+        return { candidate: present(row, manifest, status, locale, history, operation?.id, claimed), replayed: true };
       }
       const version = history.at(-1)?.version ?? 0;
       if (input.expectedVersion !== version) throw new DomainError('version_conflict');
