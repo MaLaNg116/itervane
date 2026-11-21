@@ -53,7 +53,7 @@ export function databaseUpdatedAt(metadata: Uint8Array) {
   return z.iso.datetime().parse(JSON.parse(Buffer.from(metadata).toString('utf8')).UpdatedAt);
 }
 
-async function verifyInputs(tools: string) {
+export async function verifyGuestInspectionInputs(tools: string) {
   const inputsBytes = readBoundedFile(join(tools, 'inputs.json'), 2048);
   const inputs = inputsSchema.parse(JSON.parse(inputsBytes.toString('utf8')));
   const files = [
@@ -115,7 +115,7 @@ export async function inspectVerificationSnapshots(source: string, tools: string
   const { command, fixed } = readGuestVerificationSource(source);
   const { input } = command;
   const { runId, manifest } = fixed;
-  const { inputs, inputsSha256 } = await verifyInputs(tools);
+  const { inputs, inputsSha256 } = await verifyGuestInspectionInputs(tools);
   if (inputsSha256 !== input.profile.scannerInputsSha256) throw new Error('scan-inputs');
   const ready = join(source, 'ready');
   const candidate = join(source, 'candidate');
@@ -160,7 +160,7 @@ function summarize(scan: ScanSummary) {
 export async function inspectGuestSnapshot(ready: string, tools: string) {
   const { runId, mode, manifest } = readGuestSnapshot(ready);
   if (mode !== 'qualified' && mode !== 'fixture') throw new Error('scan-boundary');
-  const { inputs, inputsSha256 } = await verifyInputs(tools);
+  const { inputs, inputsSha256 } = await verifyGuestInspectionInputs(tools);
   const output = mkdtempSync(join(tmpdir(), 'itervane-raw-scan-'));
   try {
     const gitleaks = scanTree('gitleaks', ready, tools, output, manifest, inputs);
