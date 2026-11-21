@@ -13,6 +13,6 @@
 
 TypeScript 和 178 项单元已通过。固定托管提交 `1c20fa532c958e0cfb0356cacc227e88bfe0119a` 通过六项 Komodo 检查。适配器使用独立的原生更新 ID，实际镜像配置和 OCI manifest 均与同版样例一致，运行配置摘要为 `4423de19a6e3d329740365b8f00b52599e3e9cd19f1680d50314f1aacb52fd5f`。报告仅保留操作 ID、匹配结果和摘要。 [PR #50](https://github.com/MaLaNg116/itervane/pull/50) · [Komodo 原生验收](https://github.com/MaLaNg116/itervane/actions/runs/44932748682)
 
-真实 PostgreSQL 首轮通过 151/152 项，目标绑定用例通过，既有源码回执接续审计用例缺少预期审计结果。相同源码专项复跑两项通过，失败原因尚未定位，全量复跑中。 [托管 Runner 回归](https://github.com/MaLaNg116/itervane/actions/runs/44932748615)
+真实 PostgreSQL 首轮通过 151/152 项，目标绑定用例通过，既有源码回执接续审计用例缺少预期审计结果。相同源码的两项专项与全量 152 项复跑均通过，首次波动原因尚未定位。全量复跑使用 PostgreSQL 17.12，源码指纹为 `62a77f5e2c7610c5dab84e987c847f2c21e3f33e4b8f0722794de546b48f10a5`。 [托管 Runner 回归](https://github.com/MaLaNg116/itervane/actions/runs/44932748615)
 
 正式派发需要 C4-B 的配置和部署意图、丢失回执后的只读核对，以及 E-D 的实际版本、访问保护和健康检查。Komodo 接口使用分开的读取和派发请求，安装侧需要让平台独占已登记目标的写入路径，避免域外写入发生在读取与派发的间隔。生产入口仍处于关闭状态。

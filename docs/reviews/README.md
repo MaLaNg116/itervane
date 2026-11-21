@@ -53,7 +53,7 @@
 | 047 | P2-E-C3-B 正式发布队列认领与执行权恢复 | [#47](https://github.com/MaLaNg116/itervane/pull/47)，已合入 main | [正式认领导读](p2-e-formal-release-claim.md) | 148 项真实 PostgreSQL、163 项单元、70 项宿主、常规 CI 和[四组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44926192666)通过 |
 | 048 | P2-E-C3-C1 归档凭据与唯一 Registry 导入意图 | [#48](https://github.com/MaLaNg116/itervane/pull/48)，已合入 main | [发布步骤导读](p2-e-formal-release-registry-steps.md) | 149 项真实 PostgreSQL、163 项单元、常规 CI 与[四组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44928454610)通过，核对实际 Registry 摘要及暂存清理 |
 | 049 | P2-E-C3-C2 Registry 导入 Worker 与中断恢复 | [#49](https://github.com/MaLaNg116/itervane/pull/49)，基于已合入 #48 的 main | [Registry 恢复导读](p2-e-formal-release-registry-recovery.md) | 151 项真实 PostgreSQL、163 项单元和原生 Worker 打包通过，[托管验收](https://github.com/MaLaNg116/itervane/actions/runs/44931283197)进行中 |
-| 050 | P2-E-C4-A 版本化 Komodo 目标与受限适配 | [#50](https://github.com/MaLaNg116/itervane/pull/50)，基于 #49 | [正式适配器导读](p2-e-formal-komodo-target.md) | TypeScript、178 项单元与[六项原生 Komodo 检查](https://github.com/MaLaNg116/itervane/actions/runs/44932748682)通过。PostgreSQL 首轮 151/152，专项复跑通过，全量和 Runner 回归进行中 |
+| 050 | P2-E-C4-A 版本化 Komodo 目标与受限适配 | [#50](https://github.com/MaLaNg116/itervane/pull/50)，基于 #49 | [正式适配器导读](p2-e-formal-komodo-target.md) | TypeScript、178 项单元、152 项真实 PostgreSQL 全量复跑、[六项原生 Komodo 检查](https://github.com/MaLaNg116/itervane/actions/runs/44932748682)通过，Runner 回归进行中 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
