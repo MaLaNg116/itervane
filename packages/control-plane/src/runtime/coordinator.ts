@@ -106,7 +106,10 @@ export class ExecutionCoordinator {
       const cancelled = task.state === 'cancel_requested';
       if (onlyIfCancelled && !cancelled) return;
       await tx.update(runRuntime).set({ reason, resumePending: false }).where(eq(runRuntime.runId, scope.runId));
-      await appendEvent(tx, task, cancelled ? 'task.cancelled' : 'task.needs_human', cancelled ? 'cancelled' : 'needs_human', { workerId: scope.workerId, reason });
+      const reconciling = reason === 'verification_reconciling';
+      const event = cancelled ? 'task.cancelled' : reconciling ? 'task.verification_paused' : 'task.needs_human';
+      const state = cancelled ? 'cancelled' : reconciling ? 'reconciling' : 'needs_human';
+      await appendEvent(tx, task, event, state, { workerId: scope.workerId, reason });
       await clearSlot(tx);
     }, { allowCancel: true, authorize: false });
   }

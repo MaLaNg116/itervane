@@ -38,7 +38,7 @@ async function recordedCandidate(tx: Transaction, runId: string, inputSha256: st
 }
 
 export async function publishFormalRepair(tx: Transaction, task: TaskRow, scope: ExecutionScope, report: FormalRepairReport,
-  provider: FormalRepairResult['provider'], signal: AbortSignal) {
+  provider: FormalRepairResult['provider'], signal: AbortSignal, allowVerification = false) {
   signal.throwIfAborted();
   const input = await prepareFormalRepairInput(tx, task, scope);
   const [pointer] = await tx.select().from(formalRepairRuntime).where(eq(formalRepairRuntime.runId, scope.runId));
@@ -55,14 +55,16 @@ export async function publishFormalRepair(tx: Transaction, task: TaskRow, scope:
   const hash = sha256(JSON.stringify(document));
   await tx.insert(formalRepairResults).values({ runId: scope.runId, inputSha256: input.sha256, checkpointId: pointer.checkpointId,
     requestId: result?.requestId ?? null, finalizedFence: scope.fence, workerId: scope.workerId, sha256: hash, document });
-  const reason = result ? 'repair_ready' : document.reason === 'repair_reconciling' ? 'repair_reconciling' : 'repair_needs_human';
+  const next = result && allowVerification ? 'verification_pending' as const : 'settled' as const;
+  const reason = next === 'verification_pending' ? next
+    : result ? 'repair_ready' : document.reason === 'repair_reconciling' ? 'repair_reconciling' : 'repair_needs_human';
   await tx.update(runRuntime).set({ reason, resumePending: false, waitingForTaskId: null }).where(eq(runRuntime.runId, scope.runId));
-  await appendEvent(tx, task, 'task.repair_recorded', result ? 'waiting_input' : 'needs_human', {
+  await appendEvent(tx, task, 'task.repair_recorded', next === 'verification_pending' ? 'running' : result ? 'waiting_input' : 'needs_human', {
     workerId: scope.workerId, reason, repair: { runId: scope.runId, repairResultSha256: hash },
   });
-  await clearSlot(tx);
+  if (next === 'settled') await clearSlot(tx);
   signal.throwIfAborted();
-  return { document, sha256: hash };
+  return { document, sha256: hash, next };
 }
 
 export async function readPublishedRepairCommand(tx: Transaction, result: Extract<FormalRepairResult, { status: 'candidate_ready' }>, requestId: string) {
