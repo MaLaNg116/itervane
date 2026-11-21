@@ -26,6 +26,7 @@ import { formalAuditInputs, formalAuditResults, formalReleaseSteps, formalRepair
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
+import { FormalKomodoSteps } from '../../src/runtime/formal-komodo-steps.js';
 import { runFormalRepair } from '../../src/runtime/formal-repair.js';
 import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
 import { FormalReleaseSteps } from '../../src/runtime/formal-release-steps.js';
@@ -1267,7 +1268,9 @@ async function adjustFixtureVerification(statement: string, values: unknown[] = 
   } finally { connection.release(); }
 }
 
-async function queuedFormalRelease(options: { separateRequester?: boolean; expiring?: boolean } = {}) {
+const komodoBinding = { origin: 'https://komodo.example.invalid', actorId: 'd'.repeat(24) };
+
+async function queuedFormalRelease(options: { separateRequester?: boolean; expiring?: boolean; komodo?: boolean } = {}) {
   const taskService = new TaskService(database.storage);
   const resources = new ResourceService(database.storage);
   const verifyIdentity = createIdentityVerifier(issuer.config);
@@ -1307,6 +1310,7 @@ async function queuedFormalRelease(options: { separateRequester?: boolean; expir
     imageRepository: 'testing/standard', registryOrigin: releaseOrigin, runtimeConfigSha256: sha256('runtime configuration'),
     verificationProfileSha256: verificationProfileFingerprint(standardVerificationProfile), verificationMaxAgeSeconds: 60,
     rolloutCheckSha256: sha256('health verification'), recoveryPlanSha256: sha256('known release'),
+    ...(options.komodo ? { komodo: komodoBinding } : {}),
   };
   await registerReleaseTarget(database.storage, target);
   const portal = 'itervane-claim-portal';
@@ -1724,6 +1728,125 @@ it('bounds registry recovery to three claims and preserves a held unknown result
   expect(events.some(event => event.reason === 'release_target_changed')).toBe(true);
   expect(events.some(event => event.reason === 'release_registry_missing')).toBe(true);
   expect(events.at(-1)).toMatchObject({ type: 'task.release_registry_manual_review', state: 'cancel_requested', reason: 'release_registry_unavailable' });
+});
+
+it('requires this lease to recheck Registry before making a previously confirmed proof available', async () => {
+  const { operationId, approval, target } = await queuedFormalRelease({ komodo: true });
+  const release = new FormalReleaseCoordinator(coordinator, releaseOrigin);
+  const steps = new FormalReleaseSteps(release);
+  const first = await release.claim(await fetchFormalWakeup(), randomUUID());
+  if (!first) throw new Error('Expected the original release claim');
+  await steps.confirmArchive(first, await steps.prepareArchive(first));
+  await steps.prepareRegistry(first);
+  const proof = standardRegistryProof(approval.manifest.image);
+  await steps.confirmRegistry(first, proof);
+  expect(await steps.readRegistryProof(first)).toEqual(proof);
+
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await release.reconcile(randomUUID());
+  const recovery = await release.claim(await fetchFormalWakeup(), randomUUID());
+  if (!recovery) throw new Error('Expected the Registry observation claim');
+  expect(recovery).toMatchObject({ operationId, mode: 'registry_recovery' });
+  expect(recovery.fence).toBeGreaterThan(first.fence);
+  await expect(steps.readRegistryProof(first)).rejects.toBeInstanceOf(ExecutionLost);
+  expect(await steps.readRegistryProof(recovery)).toBeNull();
+  await steps.confirmRegistry(recovery, proof);
+  expect(await steps.readRegistryProof(recovery)).toEqual(proof);
+  await expect(release.authorizeRegistryWrite(recovery)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(new FormalKomodoSteps(release).prepareConfiguration(recovery, {
+    deploymentId: target.deploymentId, serverId: target.serverId, runtimeConfigSha256: target.runtimeConfigSha256, imageReference: '',
+  })).rejects.toBeInstanceOf(ExecutionLost);
+  expect((await database.storage.db.select().from(formalReleaseSteps).where(eq(formalReleaseSteps.kind, 'registry')))[0])
+    .toMatchObject({ state: 'confirmed', preparedFence: first.fence, settledFence: first.fence, proof });
+});
+
+it('records one Komodo configuration and dispatch with separately bound observations', async () => {
+  const { approval, operationId, target, owner, service, taskService } = await queuedFormalRelease({ komodo: true, separateRequester: true });
+  const release = new FormalReleaseCoordinator(coordinator, releaseOrigin);
+  const registry = new FormalReleaseSteps(release);
+  const komodo = new FormalKomodoSteps(release);
+  const scope = await release.claim(await fetchFormalWakeup(), randomUUID());
+  if (!scope) throw new Error('Expected a formal release claim');
+  const image = standardRegistryProof(approval.manifest.image);
+  const configuration = {
+    deploymentId: target.deploymentId, serverId: target.serverId, runtimeConfigSha256: target.runtimeConfigSha256,
+    imageReference: 'registry.example.invalid/testing/standard:previous',
+  };
+  const approvedConfiguration = { ...configuration, imageReference: image.reference };
+  const { revision, mappingSha256 } = approval.manifest.target;
+  const storedIntent = { ...komodoBinding, revision, mappingSha256, ...approvedConfiguration,
+    previousImageSha256: sha256(configuration.imageReference) };
+  const insert = (kind: 'komodo_config' | 'komodo_dispatch', raw = storedIntent) =>
+    database.storage.db.insert(formalReleaseSteps).values({
+      operationId, kind, preparedFence: scope.fence, preparedBy: scope.workerId, intent: raw,
+    });
+  await expect(komodo.prepareConfiguration(scope, configuration)).rejects.toMatchObject({ code: 'unsupported_state' });
+  await expect(insert('komodo_config')).rejects.toMatchObject({ cause: { code: '23514', message: 'formal_release_step_authority' } });
+  const archive = await registry.prepareArchive(scope);
+  await registry.confirmArchive(scope, archive);
+  await registry.prepareRegistry(scope);
+  await registry.confirmRegistry(scope, image);
+
+  await expect(insert('komodo_config', { ...storedIntent, actorId: 'f'.repeat(24) }))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'formal_release_step_intent_mismatch' } });
+  await expect(komodo.prepareConfiguration(scope, { ...configuration, serverId: 'f'.repeat(24) }))
+    .rejects.toMatchObject({ code: 'conflict' });
+  const preparations = await Promise.allSettled([
+    komodo.prepareConfiguration(scope, configuration), komodo.prepareConfiguration(scope, configuration),
+  ]);
+  expect(preparations.filter(result => result.status === 'fulfilled')).toEqual([{
+    status: 'fulfilled', value: { target: expect.objectContaining({ komodo: komodoBinding }),
+      previousImage: configuration.imageReference, manifestDigest: image.manifestDigest },
+  }]);
+  await expect(komodo.prepareDispatch(scope)).rejects.toMatchObject({ code: 'unsupported_state' });
+  await expect(insert('komodo_dispatch')).rejects.toMatchObject({ cause: { code: '23514', message: 'formal_release_step_authority' } });
+  await expect(komodo.authorizeWrite({ ...scope, fence: scope.fence - 1 }, 'komodo_config')).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(komodo.authorizeWrite(scope, 'komodo_config')).resolves.toBeUndefined();
+  await expect(komodo.confirmConfiguration(scope, configuration)).rejects.toMatchObject({ code: 'conflict' });
+  await expect(database.storage.db.update(formalReleaseSteps).set({
+    state: 'confirmed', proof: configuration, settledFence: scope.fence, settledBy: scope.workerId, settledAt: sql`clock_timestamp()`,
+  }).where(eq(formalReleaseSteps.kind, 'komodo_config')))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'formal_release_step_proof_mismatch' } });
+  expect(await komodo.confirmConfiguration(scope, approvedConfiguration)).toEqual(approvedConfiguration);
+  await expect(komodo.authorizeWrite(scope, 'komodo_config')).rejects.toBeInstanceOf(ExecutionLost);
+  expect(await komodo.prepareDispatch(scope)).toMatchObject({ target: { komodo: komodoBinding }, manifestDigest: image.manifestDigest });
+  await expect(komodo.prepareDispatch(scope)).rejects.toMatchObject({ code: 'unsupported_state' });
+  const update = { updateId: 'e'.repeat(24), actorId: komodoBinding.actorId,
+    deploymentId: target.deploymentId, status: 'Queued', success: false };
+  await expect(komodo.recordUpdate(scope, { ...update, deploymentId: 'f'.repeat(24) })).rejects.toMatchObject({ code: 'conflict' });
+  await expect(komodo.authorizeWrite(scope, 'komodo_dispatch')).resolves.toBeUndefined();
+  expect(await service.getView(owner, task.id, 'zh-CN')).toMatchObject({ actions: [],
+    candidate: { status: 'confirmed', operationId, message: /发送前记录/ } });
+
+  const [removed] = await database.storage.db.delete(workspaceMembers).returning();
+  await expect(komodo.authorizeWrite(scope, 'komodo_dispatch')).rejects.toMatchObject({ reason: 'release_approval_invalid' });
+  expect(await komodo.recordUpdate(scope, update)).toBe(update.updateId);
+  await expect(komodo.confirmDispatch(scope, update)).rejects.toMatchObject({ code: 'invalid_input' });
+  await expect(komodo.confirmDispatch(scope, { ...update, status: 'Complete', updateId: 'f'.repeat(24) }))
+    .rejects.toMatchObject({ code: 'conflict' });
+  await expect(database.storage.db.update(formalReleaseSteps).set({ externalUpdateId: 'f'.repeat(24) })
+    .where(eq(formalReleaseSteps.kind, 'komodo_dispatch')))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'formal_release_step_is_immutable' } });
+  const terminal = { ...update, status: 'Complete', success: true };
+  expect(await komodo.confirmDispatch(scope, terminal)).toEqual(terminal);
+  expect(await readOperation(operationId)).toMatchObject({ state: 'dispatching', wakeupJobId: null, observation: null });
+  const recorded = await database.storage.db.select().from(formalReleaseSteps);
+  expect(recorded.filter(step => step.kind === 'komodo_config')).toMatchObject([
+    { state: 'confirmed', intent: storedIntent, proof: approvedConfiguration, externalUpdateId: null },
+  ]);
+  expect(recorded.filter(step => step.kind === 'komodo_dispatch')).toMatchObject([
+    { state: 'confirmed', intent: storedIntent, proof: terminal, externalUpdateId: update.updateId },
+  ]);
+  expect(JSON.stringify(recorded)).not.toContain(configuration.imageReference);
+  await database.storage.db.insert(workspaceMembers).values({ principalId: removed!.principalId, workspaceId: removed!.workspaceId });
+  const en = await taskService.events(identity, task.id, 50, 'en');
+  const zh = await taskService.events(identity, task.id, 50, 'zh-CN');
+  expect(en.slice(-5).map(event => event.type)).toEqual([
+    'task.release_komodo_config_prepared', 'task.release_komodo_configured',
+    'task.release_komodo_dispatch_prepared', 'task.release_komodo_update_recorded', 'task.release_komodo_dispatch_observed',
+  ]);
+  expect(en.at(-1)?.message).toMatch(/independent Komodo read/);
+  expect(zh.at(-1)?.message).toMatch(/独立核对/);
 });
 
 it('keeps verification unavailable while an audit finding has no published repair candidate', async () => {

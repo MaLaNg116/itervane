@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
-  formalReleaseCandidateDtoSchema, formalReleaseManifestSchema, formalReleaseViewSchema, freezeFormalReleaseSchema, idSchema, releaseDecisionInputSchema,
+  formalReleaseCandidateDtoSchema, formalReleaseManifestSchema, formalReleaseViewSchema, freezeFormalReleaseSchema, idSchema,
+  komodoReleasePhases, releaseDecisionInputSchema,
   standardVerificationProfileSchema, translate, type FormalReleaseCandidateDto, type FormalReleaseManifest, type FormalReleaseTarget,
   type FormalVerificationResult, type Locale, type ReleaseDecision,
 } from '@itervane/contracts';
@@ -21,7 +22,7 @@ import { readPublishedVerification } from './verification-result.js';
 type Candidate = typeof releaseCandidates.$inferSelect;
 type Decision = typeof releaseDecisions.$inferSelect;
 type CandidateStatus = ReturnType<typeof formalReleaseCandidateDtoSchema.parse>['status'];
-type CandidateProgress = 'task.release_claimed' | 'task.release_registry_uncertain';
+type CandidateProgress = 'task.release_claimed' | 'task.release_registry_uncertain' | `task.${typeof komodoReleasePhases[number]}`;
 
 async function visibleTask(tx: Transaction, identity: VerifiedIdentity, taskId: string, write = false) {
   const actor = await requireActor(tx, identity);
@@ -126,12 +127,14 @@ async function assessCandidate(tx: Transaction, task: TaskRow, row: Candidate, m
   const last = history.at(-1);
   const [operation] = await tx.select().from(releaseOperations).where(eq(releaseOperations.candidateId, row.id));
   const [runtime] = await tx.select({ reason: runRuntime.reason }).from(runRuntime).where(eq(runRuntime.runId, row.runId));
+  const komodoPhase = komodoReleasePhases.find(phase => phase === runtime?.reason);
   const claimed = operation?.state === 'dispatching'
-    && ['release_claimed', 'release_registry_prepared', 'release_registry_verified'].includes(runtime?.reason ?? '')
+    && (komodoPhase !== undefined || ['release_claimed', 'release_registry_prepared', 'release_registry_verified'].includes(runtime?.reason ?? ''))
     && (task.state === 'running' || task.state === 'cancel_requested');
   const observing = operation?.state === 'reconciling' && runtime?.reason === 'release_registry_reconciling'
     && ['running', 'reconciling', 'cancel_requested'].includes(task.state);
-  const progress = claimed ? 'task.release_claimed' as const : observing ? 'task.release_registry_uncertain' as const : undefined;
+  const dispatchPhase = komodoPhase ? `task.${komodoPhase}` as const : 'task.release_claimed';
+  const progress: CandidateProgress | undefined = claimed ? dispatchPhase : observing ? 'task.release_registry_uncertain' : undefined;
   const queued = operation?.state === 'queued' && task.state === 'queued' && runtime?.reason === 'release_queued';
   const active = task.generation === manifest.generation && task.requestedBy === row.requestedBy && (last?.action === 'confirm'
     ? queued || claimed || observing

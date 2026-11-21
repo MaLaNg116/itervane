@@ -17,4 +17,6 @@ TypeScript 和 178 项单元已通过。固定托管提交 `1c20fa532c958e0cfb03
 
 四组托管 Runner 回归均通过，OCI 产物的源码指纹与真实 PostgreSQL 全量复跑一致。回读独立 Registry 及归档的实际镜像和配置摘要，再次核对单次导入及跨 fence 接续。合入判断使用 #49 已合入后的主分支为基线，核对运行源码与托管版本一致。 [OCI 与 Runner 验收](https://github.com/MaLaNg116/itervane/actions/runs/44932748615)
 
+交付版本 `5a83983eb34a0a1f2a225e0be7ef5174693ceffb` 的常规 CI 通过。复核受限 API、原生证据、目标漂移和权限测试后已合入主分支。 [合并提交](https://github.com/MaLaNg116/itervane/commit/fdca937d3344b345a7517daaa185f6cae06914f2)
+
 正式派发需要 C4-B 的配置和部署意图、丢失回执后的只读核对，以及 E-D 的实际版本、访问保护和健康检查。Komodo 接口使用分开的读取和派发请求，安装侧需要让平台独占已登记目标的写入路径，避免域外写入发生在读取与派发的间隔。生产入口仍处于关闭状态。

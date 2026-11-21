@@ -6,6 +6,7 @@ import {
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
   type PreauditRecord, type QualifiedInspectionReceipt, type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
+  type ReleaseKomodoCompletion, type ReleaseKomodoConfiguration, type ReleaseKomodoIntent,
 } from '@itervane/contracts';
 
 export const domain = pgSchema('itervane');
@@ -473,11 +474,14 @@ export const releaseOperations = domain.table('release_operations', {
 
 export const formalReleaseSteps = domain.table('formal_release_steps', {
   operationId: uuid('operation_id').notNull().references(() => releaseOperations.id),
-  kind: text('kind').$type<'archive' | 'registry'>().notNull(),
+  kind: text('kind').$type<'archive' | 'registry' | 'komodo_config' | 'komodo_dispatch'>().notNull(),
   preparedFence: integer('prepared_fence').notNull(),
   preparedBy: uuid('prepared_by').notNull(),
   state: text('state').$type<'prepared' | 'confirmed' | 'uncertain'>().notNull().default('prepared'),
-  proof: jsonb('proof').$type<QualifiedOciArchiveVerification | ReleaseRegistryImageProof>(),
+  proof: jsonb('proof').$type<QualifiedOciArchiveVerification | ReleaseRegistryImageProof
+    | ReleaseKomodoConfiguration | ReleaseKomodoCompletion>(),
+  intent: jsonb('intent').$type<ReleaseKomodoIntent>(),
+  externalUpdateId: text('external_update_id'),
   settledFence: integer('settled_fence'),
   settledBy: uuid('settled_by'),
   settledAt: timestamp('settled_at', { withTimezone: true }),
@@ -485,7 +489,20 @@ export const formalReleaseSteps = domain.table('formal_release_steps', {
 }, t => [
   primaryKey({ columns: [t.operationId, t.kind, t.preparedFence] }),
   uniqueIndex('formal_release_single_registry_intent').on(t.operationId).where(sql`${t.kind} = 'registry'`),
-  check('formal_release_step_kind', sql`${t.kind} IN ('archive', 'registry') AND ${t.preparedFence} > 0`),
+  uniqueIndex('formal_release_single_komodo_intent').on(t.operationId, t.kind)
+    .where(sql`${t.kind} IN ('komodo_config', 'komodo_dispatch')`),
+  uniqueIndex('formal_release_komodo_update_unique').on(sql`(${t.intent}->>'origin')`, t.externalUpdateId)
+    .where(sql`${t.kind} = 'komodo_dispatch' AND ${t.externalUpdateId} IS NOT NULL`),
+  check('formal_release_step_kind', sql`${t.kind} IN ('archive', 'registry', 'komodo_config', 'komodo_dispatch') AND ${t.preparedFence} > 0`),
+  check('formal_release_step_intent', sql`(
+    (${t.kind} IN ('archive', 'registry') AND ${t.intent} IS NULL)
+    OR (${t.kind} IN ('komodo_config', 'komodo_dispatch') AND jsonb_typeof(${t.intent}) = 'object'
+      AND octet_length(${t.intent}::text) <= 8192)
+  ) IS TRUE`),
+  check('formal_release_step_update_id', sql`(
+    (${t.externalUpdateId} IS NULL AND (${t.kind} <> 'komodo_dispatch' OR ${t.state} <> 'confirmed'))
+    OR (${t.kind} = 'komodo_dispatch' AND ${t.externalUpdateId} ~ '^[0-9a-f]{24}$')
+  ) IS TRUE`),
   check('formal_release_step_state', sql`(
     (${t.state} = 'prepared' AND ${t.proof} IS NULL AND ${t.settledFence} IS NULL AND ${t.settledBy} IS NULL AND ${t.settledAt} IS NULL)
     OR (${t.state} IN ('confirmed', 'uncertain') AND ${t.settledFence} >= ${t.preparedFence}

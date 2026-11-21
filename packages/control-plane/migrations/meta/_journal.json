@@ -239,6 +239,13 @@
       "when": 1795281246982,
       "tag": "0033_formal_release_registry_recovery",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1795284773010,
+      "tag": "0034_formal_release_komodo_steps",
+      "breakpoints": true
     }
   ]
 }

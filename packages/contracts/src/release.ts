@@ -79,6 +79,33 @@ export const formalReleaseManifestSchema = z.strictObject({
 }).refine(manifest => (manifest.originalSnapshotSha256 === manifest.repairedSnapshotSha256) === (manifest.diffSha256 === null));
 export type FormalReleaseManifest = z.infer<typeof formalReleaseManifestSchema>;
 
+export const komodoReleaseTargetSchema = formalReleaseTargetSchema.pick({
+  komodo: true, registryOrigin: true, deploymentId: true, serverId: true, imageRepository: true, runtimeConfigSha256: true,
+}).required();
+
+export const releaseKomodoConfigurationSchema = z.strictObject({
+  deploymentId: komodoResourceIdSchema, serverId: komodoResourceIdSchema,
+  runtimeConfigSha256: sha256Schema, imageReference: z.string().max(2400),
+});
+export const releaseKomodoUpdateSchema = z.strictObject({
+  updateId: komodoResourceIdSchema, deploymentId: komodoResourceIdSchema, actorId: komodoResourceIdSchema,
+  status: z.enum(['Queued', 'InProgress', 'Complete']), success: z.boolean(),
+});
+export const releaseKomodoCompletionSchema = releaseKomodoUpdateSchema.extend({ status: z.literal('Complete') });
+export const releaseKomodoIntentSchema = z.strictObject({
+  ...releaseKomodoConfigurationSchema.omit({ imageReference: true }).shape,
+  ...formalReleaseTargetSchema.shape.komodo.unwrap().shape,
+  ...formalReleaseManifestSchema.shape.target.pick({ revision: true, mappingSha256: true }).shape,
+  imageReference: releaseRegistryImageProofSchema.shape.reference,
+  previousImageSha256: sha256Schema,
+});
+export type ReleaseKomodoIntent = z.infer<typeof releaseKomodoIntentSchema>;
+export type ReleaseKomodoConfiguration = z.infer<typeof releaseKomodoConfigurationSchema>;
+export type ReleaseKomodoCompletion = z.infer<typeof releaseKomodoCompletionSchema>;
+
+export const komodoReleasePhases = ['release_komodo_config_prepared', 'release_komodo_configured',
+  'release_komodo_dispatch_prepared', 'release_komodo_update_recorded', 'release_komodo_dispatch_observed'] as const;
+
 export const fixtureReleaseManifestSchema = z.object({
   version: z.literal(1),
   origin: z.literal('trusted_fixture'),
