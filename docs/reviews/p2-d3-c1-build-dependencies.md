@@ -9,3 +9,5 @@
 代码版本 `b81ceda7576894e3e3b0810f6149eb4857b550b6` 在 Ubuntu 24.04 的类型检查和 156 项单元测试通过。Node 24.21.0 和 npm 11.19.0 完成 91 份公开 tarball 的下载、SHA-512 校验及缓存写入，共 29,086,883 字节。使用同一 npm 分发的缓存读取接口独立核对，91 个完整性地址都有内容。该次锁文件 SHA-256 为 `ec167bb4bd123cd32c494fec0afbd557b8d6d9d3f948a385610328dad20719c3`。 [专项验收](https://github.com/MaLaNg116/itervane/blob/b81ceda7576894e3e3b0810f6149eb4857b550b6/packages/runner/test/unit/build-dependencies.test.ts)
 
 后续在合格客体内完成离线安装、受保护测试、构建与最终镜像扫描。缓存兼容性需要在固定客体版本复验。
+
+`0fd42fe` 复用了修复模块已有的 registry 路径与 SHA-512 校验规则。复跑 156 项 Linux 单元和实际预取均通过，锁摘要、91 份制品和总字节一致。 [固定复跑版本](https://github.com/MaLaNg116/itervane/commit/0fd42fefceeff04dd31d8f086f140b47c8b27691) · [交付 PR](https://github.com/MaLaNg116/itervane/pull/26)
