@@ -8,4 +8,6 @@
 
 固定源码 `b6088262cd679a3b2ae6651caebb5b4e1ee27817`。本机 68 项宿主测试、163 项单元测试、TypeScript 与原生入口打包通过。Linux 双账户 Unix socket 试验覆盖真实宿主流、内容替换、截断、额外尾部、收到部分字节后中止、交接前执行权拒绝和消费者失败，七项均通过，私有暂存为空。该试验使用合成字节。实际 KVM 镜像、正式审批与已核对的传输证据由托管原生试验覆盖。
 
+固定源码的 138 项 PostgreSQL 集成通过，源码指纹为 `fca38c00e90900ceeb3d8686a8ceb8f387754a47fc4f54c16bd1a66a55089b6a`。 [PR #44](https://github.com/MaLaNg116/itervane/pull/44) · [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44919348867)
+
 C2 使用已核对归档导入受控 Registry。C3 与 C4 分别完成正式执行权认领和 Komodo 派发。
