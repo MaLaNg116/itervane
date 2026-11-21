@@ -37,4 +37,4 @@ if (command === 'snapshot' && args.length === 5) {
     writeFileSync(pending, JSON.stringify(receipt), { flag: 'wx', mode: 0o440 });
     renameSync(pending, join(INSPECTION_OUTPUT, 'receipt.json'));
   } catch { process.exitCode = 1; }
-} else { process.exitCode = 1; }
+} else if (command !== 'self-check' || args.length !== 0) { process.exitCode = 1; }
