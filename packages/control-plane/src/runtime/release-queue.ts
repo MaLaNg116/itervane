@@ -108,3 +108,81 @@ export async function recoverRegistryLease(tx: Transaction, database: Database, 
   });
   return queued;
 }
+
+export const komodoRecheckEvent = {
+  komodo_config: 'task.release_komodo_config_recheck_started',
+  komodo_dispatch: 'task.release_komodo_dispatch_recheck_started',
+} as const;
+export type KomodoStepKind = keyof typeof komodoRecheckEvent;
+export type KomodoContinuation = 'komodo_ready' | 'requeued' | 'manual_review' | 'awaiting_rollout' | 'cancelled' | 'blocked';
+type ReleaseStep = typeof formalReleaseSteps.$inferSelect;
+const maxKomodoRechecks = 3;
+
+export async function lockKomodoSteps(tx: Transaction, operationId: string) {
+  const steps = await tx.select().from(formalReleaseSteps).where(and(eq(formalReleaseSteps.operationId, operationId),
+    inArray(formalReleaseSteps.kind, ['komodo_config', 'komodo_dispatch']))).for('update');
+  return {
+    config: steps.find(step => step.kind === 'komodo_config'),
+    dispatch: steps.find(step => step.kind === 'komodo_dispatch'),
+  };
+}
+
+export function pendingKomodoStep({ config, dispatch }: { config?: ReleaseStep | undefined; dispatch?: ReleaseStep | undefined }) {
+  if (dispatch) return dispatch.state === 'prepared' ? { kind: 'komodo_dispatch' as const, step: dispatch } : null;
+  return config?.state === 'prepared' ? { kind: 'komodo_config' as const, step: config } : null;
+}
+
+export async function countKomodoRechecks(tx: Transaction, taskId: string, operationId: string, kind: KomodoStepKind) {
+  const attempts = await tx.select({ sequence: taskEvents.sequence }).from(taskEvents)
+    .where(and(eq(taskEvents.taskId, taskId), eq(taskEvents.type, komodoRecheckEvent[kind]),
+      sql`${taskEvents.detail}->>'operationId' = ${operationId}`)).limit(maxKomodoRechecks);
+  return { attempted: attempts.length, exhausted: attempts.length >= maxKomodoRechecks };
+}
+
+export async function recoverKomodoLease(tx: Transaction, database: Database, task: TaskRow, runId: string, workerId: string,
+  options: { failure?: TaskEventReason; expired?: boolean; fence?: number } = {}): Promise<KomodoContinuation> {
+  const { operation, releaseDecision } = await lockReleaseForRecovery(tx, task, runId);
+  const steps = await lockKomodoSteps(tx, operation.id);
+  const cancelled = task.state === 'cancel_requested';
+  const event = { workerId, releaseDecision: { ...releaseDecision, ...(options.fence !== undefined ? { fence: options.fence } : {}) } };
+  const changePhase = async (reason: string) => tx.update(runRuntime).set({ reason }).where(eq(runRuntime.runId, runId));
+  const keepEnvironment = async () => {
+    if (operation.state !== 'reconciling') {
+      await tx.update(releaseOperations).set({ state: 'reconciling', updatedAt: sql`clock_timestamp()` })
+        .where(eq(releaseOperations.id, operation.id));
+    }
+  };
+  if (steps.dispatch?.state === 'confirmed') {
+    await keepEnvironment();
+    await changePhase('release_komodo_awaiting_rollout');
+    await appendEvent(tx, task, 'task.release_komodo_awaiting_rollout', cancelled ? task.state : 'reconciling', event);
+    return 'awaiting_rollout';
+  }
+  const pending = pendingKomodoStep(steps);
+  if (pending) {
+    const { attempted, exhausted } = await countKomodoRechecks(tx, task.id, operation.id, pending.kind);
+    const needsManual = exhausted || (pending.kind === 'komodo_dispatch' && !pending.step.externalUpdateId);
+    if (needsManual) await keepEnvironment();
+    else await renewFormalWakeup(tx, database, operation.id, {
+      state: 'reconciling', ...((options.expired && attempted === 0) ? {} : { delaySeconds: 2 }),
+    });
+    await changePhase('release_komodo_reconciling');
+    const reason = options.failure ?? (options.expired ? 'lease_expired' : undefined);
+    await appendEvent(tx, task, needsManual ? 'task.release_komodo_manual_review' : 'task.release_komodo_reconciling',
+      cancelled ? task.state : 'reconciling', { ...event, ...(reason ? { reason } : {}) });
+    return needsManual ? 'manual_review' : 'requeued';
+  }
+  const reason = cancelled ? (options.expired ? 'expired_cancel' : 'cancelled') : options.failure;
+  if (reason) {
+    await tx.update(releaseOperations).set({ state: 'blocked', updatedAt: sql`clock_timestamp()` })
+      .where(eq(releaseOperations.id, operation.id));
+    await changePhase(cancelled ? 'release_cancelled' : reason);
+    await appendEvent(tx, task, cancelled ? 'task.cancelled' : 'task.release_blocked', cancelled ? 'cancelled' : 'needs_human',
+      { ...event, reason });
+    return cancelled ? 'cancelled' : 'blocked';
+  }
+  await renewFormalWakeup(tx, database, operation.id, { state: 'reconciling' });
+  await changePhase('release_komodo_ready');
+  await appendEvent(tx, task, 'task.release_komodo_ready', 'reconciling', event);
+  return 'komodo_ready';
+}

@@ -103,8 +103,9 @@ export type ReleaseKomodoIntent = z.infer<typeof releaseKomodoIntentSchema>;
 export type ReleaseKomodoConfiguration = z.infer<typeof releaseKomodoConfigurationSchema>;
 export type ReleaseKomodoCompletion = z.infer<typeof releaseKomodoCompletionSchema>;
 
-export const komodoReleasePhases = ['release_komodo_config_prepared', 'release_komodo_configured',
-  'release_komodo_dispatch_prepared', 'release_komodo_update_recorded', 'release_komodo_dispatch_observed'] as const;
+export const komodoReleasePhases = ['release_komodo_ready', 'release_komodo_config_prepared', 'release_komodo_configured',
+  'release_komodo_dispatch_prepared', 'release_komodo_update_recorded', 'release_komodo_dispatch_observed',
+  'release_komodo_reconciling', 'release_komodo_awaiting_rollout'] as const;
 
 export const fixtureReleaseManifestSchema = z.object({
   version: z.literal(1),

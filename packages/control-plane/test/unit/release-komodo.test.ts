@@ -113,3 +113,25 @@ it('does not dispatch again when the write response is lost and independently re
   await expect(release.observeUpdate(target, updateId, authorization)).rejects.toMatchObject({ step: 'GetUpdate', reason: 'binding' });
   expect(fetchKomodo.mock.lastCall?.[0]).toBe(origin + '/read/GetUpdate');
 });
+
+it('returns an already issued update under observation authority after write permission ends', async () => {
+  let revoked = false;
+  const authorizeWrite = vi.fn(async () => {
+    if (revoked) throw new Error('approval_ended');
+  });
+  const authorizeObservation = vi.fn(async () => {});
+  fetchKomodo.mockResolvedValueOnce(Response.json(configured))
+    .mockImplementationOnce(async () => {
+      revoked = true;
+      return Response.json(nativeUpdate);
+    })
+    .mockResolvedValueOnce(Response.json(configured));
+  await expect(release.dispatch(target, manifestDigest, authorizeWrite, undefined, authorizeObservation))
+    .resolves.toMatchObject({ updateId });
+  expect(authorizeWrite).toHaveBeenCalledTimes(1);
+  expect(authorizeObservation).toHaveBeenCalledTimes(3);
+  await expect(release.dispatch(target, manifestDigest, authorizeWrite, undefined, authorizeObservation)).rejects.toThrow('approval_ended');
+  expect(fetchKomodo.mock.calls.map(([url]) => url)).toEqual([
+    origin + '/read/GetDeployment', origin + '/execute/Deploy', origin + '/read/GetDeployment',
+  ]);
+});

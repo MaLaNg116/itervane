@@ -19,6 +19,8 @@ on:
       - 'packages/verification/src/runner-vm.ts'
       - 'packages/verification/src/report.ts'
       - 'fixtures/runner/**'
+      - 'fixtures/komodo/**'
+      - 'packages/verification/src/native/komodo*.ts'
       - 'fixtures/standard-app/**'
       - 'scripts/prepare-runner-inspection.ts'
       - 'scripts/prepare-runner-build-dependencies.ts'

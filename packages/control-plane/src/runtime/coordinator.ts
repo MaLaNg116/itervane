@@ -1,13 +1,13 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { fromDrizzle, type Job } from 'pg-boss';
-import { idSchema, wakeupSchema, type SourceInspectionPauseReason, type TaskEventReason } from '@itervane/contracts';
+import { idSchema, komodoReleasePhases, wakeupSchema, type SourceInspectionPauseReason, type TaskEventReason } from '@itervane/contracts';
 import { queueName, type Database } from '../persistence/database.js';
 import { formalRepairRetries, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { requireProjectAccess, requireStoredActor, type Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, enqueue, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope, type TaskRow } from './authority.js';
-import { recoverClaimedRelease, recoverRegistryLease } from './release-queue.js';
+import { recoverClaimedRelease, recoverKomodoLease, recoverRegistryLease } from './release-queue.js';
 
 type Current = { task: TaskRow; runtime: typeof runRuntime.$inferSelect };
 
@@ -47,6 +47,8 @@ export class ExecutionCoordinator {
         if (runtime.reason === 'release_claimed') await recoverClaimedRelease(tx, this.database, task, slot.runId, workerId, true);
         else if (['release_registry_prepared', 'release_registry_reconciling', 'release_registry_verified'].includes(runtime.reason)) {
           await recoverRegistryLease(tx, this.database, task, slot.runId, workerId);
+        } else if (komodoReleasePhases.some(phase => phase === runtime.reason)) {
+          await recoverKomodoLease(tx, this.database, task, slot.runId, workerId, { expired: true, fence: slot.fence });
         } else throw new ExecutionLost();
       } else if (task.state === 'cancel_requested') await appendEvent(tx, task, 'task.cancelled', 'cancelled', { workerId, reason: 'expired_cancel' });
       else if (task.state === 'running') {

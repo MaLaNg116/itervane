@@ -16,4 +16,4 @@
 
 TypeScript、178 项单元、真实 PostgreSQL 17.12 的三项专项与 154 项全量通过。数据库验收的源码指纹为 `5789167b273d4e4d06657be63d8c8d105784895a543dd1ac8cca7cbe55a03458`。同一运行源码的原生 Komodo 六项回归也通过，报告中的适配器更新 ID 独立，实际容器镜像与同版样例摘要一致。 [原生 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/44935345371)
 
-托管 Runner 回归在进行。C4-B2 接续真实 Worker、跨租约核对和受限恢复，E-D 独立核对运行版本及入口保护。 [托管 Runner](https://github.com/MaLaNg116/itervane/actions/runs/44935345510)
+四组托管 Runner 回归及常规 CI 均通过。OCI 报告中的源码指纹与 PostgreSQL 全量结果一致，实际 Registry 镜像及归档与获批候选匹配，只读观察使用新 fence，导入意图保持一条。复核版本 `f93b5ff6092fada609ee8fcdb03b781428c8b25f` 已合入主分支。C4-B2 接续真实 Worker 和跨租约只读核对。 [托管 Runner](https://github.com/MaLaNg116/itervane/actions/runs/44935345510) · [合并提交](https://github.com/MaLaNg116/itervane/commit/23e760b42b9589dd0f8f7699dfbe9ce888549186)

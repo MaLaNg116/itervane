@@ -114,7 +114,8 @@ export class TaskService {
       if (!run) throw new DomainError('unavailable');
       if (task.state === 'reconciling') {
         const [runtime] = await tx.select({ reason: runRuntime.reason }).from(runRuntime).where(eq(runRuntime.runId, run.id));
-        if (runtime?.reason !== 'release_registry_reconciling') throw new DomainError('unsupported_state');
+        if (!['release_registry_reconciling', 'release_komodo_ready', 'release_komodo_reconciling', 'release_komodo_awaiting_rollout']
+          .includes(runtime?.reason ?? '')) throw new DomainError('unsupported_state');
       }
       if (run.wakeupJobId) await this.database.boss.cancel(queueName, run.wakeupJobId, { db: fromDrizzle(tx, sql) });
       if (task.state === 'queued' && !run.wakeupJobId) {

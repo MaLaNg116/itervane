@@ -12,12 +12,13 @@ import { appendEvent, ExecutionLost, type TaskRow } from './authority.js';
 import { ReleaseAuthorityRejected, type FormalReleaseCoordinator, type FormalReleaseScope } from './formal-release-claim.js';
 import { releaseStepEvent, requireMatchingRegistryImage } from './formal-release-steps.js';
 import type { KomodoReleaseTarget } from './release-komodo.js';
+import { lockKomodoSteps, type KomodoStepKind } from './release-queue.js';
 
 const preparedPhase = {
   komodo_config: 'release_komodo_config_prepared',
   komodo_dispatch: 'release_komodo_dispatch_prepared',
 } as const;
-type KomodoStep = keyof typeof preparedPhase;
+type KomodoStep = KomodoStepKind;
 type Phase = typeof komodoReleasePhases[number];
 
 function targetForKomodo(mapping: FormalReleaseTarget & { registryOrigin: string }): KomodoReleaseTarget {
@@ -26,19 +27,23 @@ function targetForKomodo(mapping: FormalReleaseTarget & { registryOrigin: string
   return { komodo, registryOrigin, deploymentId, serverId, imageRepository, runtimeConfigSha256 };
 }
 
-function ownStep(scope: FormalReleaseScope, kind: KomodoStep | 'registry') {
-  return and(eq(formalReleaseSteps.operationId, scope.operationId), eq(formalReleaseSteps.kind, kind),
-    eq(formalReleaseSteps.preparedFence, scope.fence), eq(formalReleaseSteps.preparedBy, scope.workerId));
+function stepFilter(scope: FormalReleaseScope, kind: KomodoStep | 'registry') {
+  return and(eq(formalReleaseSteps.operationId, scope.operationId), eq(formalReleaseSteps.kind, kind));
 }
 
 async function readStep(tx: Transaction, scope: FormalReleaseScope, kind: KomodoStep, state: 'prepared' | 'confirmed') {
-  const [step] = await tx.select().from(formalReleaseSteps).where(ownStep(scope, kind)).for('update');
+  const [step] = await tx.select().from(formalReleaseSteps).where(stepFilter(scope, kind)).for('update');
   if (step?.state !== state) throw new ExecutionLost();
+  if (state === 'prepared') {
+    const recovery = scope.mode === 'komodo_recovery';
+    if (recovery ? scope.komodoStep !== kind || step.preparedFence >= scope.fence
+      : step.preparedFence !== scope.fence || step.preparedBy !== scope.workerId) throw new ExecutionLost();
+  }
   return { ...step, intent: parseInput(releaseKomodoIntentSchema, step.intent) };
 }
 
 async function advance(tx: Transaction, task: TaskRow, scope: FormalReleaseScope, phase: Phase) {
-  await tx.update(runRuntime).set({ reason: phase }).where(eq(runRuntime.runId, scope.runId));
+  if (scope.mode !== 'komodo_recovery') await tx.update(runRuntime).set({ reason: phase }).where(eq(runRuntime.runId, scope.runId));
   await appendEvent(tx, task, `task.${phase}`, task.state, releaseStepEvent(scope));
 }
 
@@ -53,7 +58,7 @@ async function confirm(tx: Transaction, scope: FormalReleaseScope, kind: KomodoS
   proof: ReleaseKomodoConfiguration | ReleaseKomodoCompletion) {
   await tx.update(formalReleaseSteps).set({ state: 'confirmed', proof,
     settledFence: scope.fence, settledBy: scope.workerId, settledAt: sql`clock_timestamp()`,
-  }).where(ownStep(scope, kind));
+  }).where(stepFilter(scope, kind));
 }
 
 function checkConfiguration(raw: unknown, expected: Pick<ReleaseKomodoConfiguration, 'deploymentId' | 'serverId' | 'runtimeConfigSha256'>) {
@@ -66,11 +71,23 @@ function checkConfiguration(raw: unknown, expected: Pick<ReleaseKomodoConfigurat
 export class FormalKomodoSteps {
   constructor(private readonly release: FormalReleaseCoordinator) {}
 
+  async readyTarget(scope: FormalReleaseScope) {
+    return this.release.withAuthorizedRelease(scope, async (tx, _task, phase, { mapping }) => {
+      if (scope.mode !== 'komodo_write' || phase !== 'release_komodo_ready') throw new ExecutionLost();
+      const { config, dispatch } = await lockKomodoSteps(tx, scope.operationId);
+      if (dispatch || (config && config.state !== 'confirmed')) throw new ExecutionLost();
+      return { target: targetForKomodo(mapping), configured: config?.state === 'confirmed' };
+    });
+  }
+
   async prepareConfiguration(scope: FormalReleaseScope, observed: unknown) {
     return this.release.withAuthorizedRelease(scope, async (tx, task, phase, { mapping, manifest }) => {
-      if (phase !== 'release_registry_verified') throw new DomainError('unsupported_state');
-      const [registry] = await tx.select().from(formalReleaseSteps).where(ownStep(scope, 'registry'));
+      if (phase !== 'release_registry_verified' && phase !== 'release_komodo_ready') throw new DomainError('unsupported_state');
+      const [registry] = await tx.select().from(formalReleaseSteps).where(stepFilter(scope, 'registry'));
       if (registry?.state !== 'confirmed') throw new DomainError('unsupported_state');
+      if (scope.mode === 'import' && (registry.preparedFence !== scope.fence || registry.preparedBy !== scope.workerId)) {
+        throw new ExecutionLost();
+      }
       const image = requireMatchingRegistryImage(registry.proof, mapping, manifest.image);
       const target = targetForKomodo(mapping);
       const before = checkConfiguration(observed, target);
@@ -101,13 +118,27 @@ export class FormalKomodoSteps {
     });
   }
 
+  async configurationObservation(scope: FormalReleaseScope) {
+    return this.release.withKomodoObservation(scope, preparedPhase.komodo_config, async (tx, _task, mapping) => {
+      await readStep(tx, scope, 'komodo_config', 'prepared');
+      return targetForKomodo(mapping);
+    });
+  }
+
   async prepareDispatch(scope: FormalReleaseScope) {
     return this.release.withAuthorizedRelease(scope, async (tx, task, phase, { mapping, manifest }) => {
-      if (phase !== 'release_komodo_configured') throw new DomainError('unsupported_state');
+      if (phase !== 'release_komodo_configured' && phase !== 'release_komodo_ready') throw new DomainError('unsupported_state');
       const { intent } = await readStep(tx, scope, 'komodo_config', 'confirmed');
       await prepare(tx, task, scope, 'komodo_dispatch', intent);
       return { target: targetForKomodo(mapping), manifestDigest: manifest.image.manifestDigest };
     });
+  }
+
+  async authorizeDispatchReceipt(scope: FormalReleaseScope) {
+    await this.release.withKomodoObservation(scope, preparedPhase.komodo_dispatch, async tx => {
+      const { externalUpdateId } = await readStep(tx, scope, 'komodo_dispatch', 'prepared');
+      if (externalUpdateId) throw new ExecutionLost();
+    }, false);
   }
 
   async recordUpdate(scope: FormalReleaseScope, received: unknown) {
@@ -117,9 +148,17 @@ export class FormalKomodoSteps {
       if (externalUpdateId || update.deploymentId !== intent.deploymentId || update.actorId !== intent.actorId) {
         throw new DomainError('conflict');
       }
-      await tx.update(formalReleaseSteps).set({ externalUpdateId: update.updateId }).where(ownStep(scope, 'komodo_dispatch'));
+      await tx.update(formalReleaseSteps).set({ externalUpdateId: update.updateId }).where(stepFilter(scope, 'komodo_dispatch'));
       await advance(tx, task, scope, 'release_komodo_update_recorded');
       return update.updateId;
+    }, false);
+  }
+
+  async dispatchObservation(scope: FormalReleaseScope) {
+    return this.release.withKomodoObservation(scope, 'release_komodo_update_recorded', async (tx, _task, mapping) => {
+      const { externalUpdateId } = await readStep(tx, scope, 'komodo_dispatch', 'prepared');
+      if (!externalUpdateId) throw new ExecutionLost();
+      return { target: targetForKomodo(mapping), updateId: externalUpdateId };
     });
   }
 
