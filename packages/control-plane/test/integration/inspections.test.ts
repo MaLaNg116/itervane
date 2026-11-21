@@ -1611,6 +1611,38 @@ it('records a fence-bound archive proof and only one registry intent, then confi
   expect(events.at(-1)).toMatchObject({ state: 'cancel_requested', message: /独立核对获批镜像/ });
 });
 
+it('requeues an expired registry intent for readback while retaining the environment and cancellation', async () => {
+  const { operationId, target, taskService } = await queuedFormalRelease();
+  const release = new FormalReleaseCoordinator(coordinator, releaseOrigin);
+  const steps = new FormalReleaseSteps(release);
+  const initial = await fetchFormalWakeup();
+  const scope = await release.claim(initial, randomUUID());
+  if (!scope) throw new Error('Expected an approved lease');
+  const archive = await steps.prepareArchive(scope);
+  await steps.confirmArchive(scope, archive);
+  await steps.prepareRegistry(scope);
+  const current = await taskService.get(identity, task.id);
+  await taskService.cancel(identity, task.id, { expectedVersion: current.version });
+  await steps.recordRegistryUncertain(scope);
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await coordinator.reconcile(randomUUID());
+  const recovered = await readOperation(operationId);
+  expect(recovered).toMatchObject({ state: 'reconciling', id: operationId });
+  expect(recovered.wakeupJobId).toBeTruthy();
+  expect(recovered.wakeupJobId).not.toBe(initial.id);
+  expect((await database.storage.boss.findJobs(formalReleaseQueue, { id: recovered.wakeupJobId! }))[0])
+    .toMatchObject({ state: 'created', data: { operationId } });
+  expect(await database.storage.boss.fetch(queueName)).toEqual([]);
+  expect((await database.storage.db.select().from(formalReleaseSteps).where(eq(formalReleaseSteps.kind, 'registry')))[0])
+    .toMatchObject({ operationId, state: 'uncertain', preparedFence: scope.fence });
+  await expect(steps.readRegistryProof(scope)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(registerReleaseTarget(database.storage, { ...target, runtimeConfigSha256: sha256('new configuration') }))
+    .rejects.toMatchObject({ code: 'conflict' });
+  expect((await database.admin.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
+  expect((await taskService.events(identity, task.id, 50, 'en')).at(-1))
+    .toMatchObject({ type: 'task.release_registry_recovered', state: 'cancel_requested', reason: 'lease_expired' });
+});
+
 it('keeps verification unavailable while an audit finding has no published repair candidate', async () => {
   const { scope } = await repairReady();
   await expect(coordinator.withLease(scope, (tx, current) => prepareFormalVerificationInput(tx, current.task, scope, verificationProfile)))
