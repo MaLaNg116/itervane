@@ -10,4 +10,6 @@
 
 固定源码的 138 项 PostgreSQL 集成通过，源码指纹为 `fca38c00e90900ceeb3d8686a8ceb8f387754a47fc4f54c16bd1a66a55089b6a`。 [PR #44](https://github.com/MaLaNg116/itervane/pull/44) · [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44919348867)
 
+托管 OCI 路径的源码指纹一致。实际 Worker 取得第二代候选的 79,042,560 字节，SHA-256 为 `b808368bb3475a6646cf8413446b21fc47bcf3e0cc26b0ddcc8c9e5a123533fc`。候选指纹、批准操作、独立存储核对一致。错误 Runner、错误长度和回调拒绝通过，Worker 与宿主暂存均为空。
+
 C2 使用已核对归档导入受控 Registry。C3 与 C4 分别完成正式执行权认领和 Komodo 派发。
