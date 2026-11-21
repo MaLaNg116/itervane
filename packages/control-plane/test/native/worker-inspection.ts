@@ -211,6 +211,7 @@ async function probe() {
   let api: ReturnType<typeof createApi> | undefined;
   let worker: Awaited<ReturnType<typeof startWorker>> | undefined;
   let auditProvider: Awaited<ReturnType<typeof auditProtocolFixture>> | undefined;
+  let releaseRegistry: Awaited<ReturnType<typeof temporaryRegistry>> | undefined;
   const client = new Client({ name: 'itervane-native-worker', version: '0.0.0' });
   try {
     const db = database = await databaseFixture(postgres.url);
@@ -459,8 +460,10 @@ async function probe() {
         phase = 'standard_formal_release_candidate';
         const application = applicationDtoSchema.parse(await request(`/v1/projects/${project.id}/applications`, { name: 'Standard release fixture' }));
         const environment = environmentDtoSchema.parse(await request(`/v1/projects/${project.id}/environments`, { name: 'Protected sample', applicationId: application.id }));
+        const registry = releaseRegistry = await temporaryRegistry();
         const target = await registerReleaseTarget(db.storage, {
           environmentId: environment.id, deploymentId: 'a'.repeat(24), serverId: 'b'.repeat(24), imageRepository: 'testing/standard',
+          registryOrigin: registry.origin,
           verificationProfileSha256: verificationProfileFingerprint(automaticProfile), runtimeConfigSha256: sha256('native candidate fixture'),
           rolloutCheckSha256: sha256('native rollout fixture'), recoveryPlanSha256: sha256('native previous release fixture'),
         });
@@ -492,18 +495,14 @@ async function probe() {
         const [genericWakeup] = (await db.admin.query('SELECT wakeup_job_id FROM itervane.task_runs WHERE id=$1', [current.runId])).rows;
         equal(genericWakeup?.wakeup_job_id, null);
         phase = 'standard_formal_release_archive_transport';
-        const registry = await temporaryRegistry();
-        let transferred;
-        try {
-          transferred = await runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
-            'verification', ['read-approved-archive', operationId, registry.origin, join(dirname(bundle), 'release-tools/materialize_oci.py')]);
-          const { registry: imported, ...transport } = transferred;
-          const { archive, manifestDigest, configDigest } = candidate.manifest.image;
-          deepStrictEqual(transport, { operationId, fingerprint: candidate.fingerprint, archiveSha256: archive.sha256,
-            bytes: archive.bytes, wrongRunnerDenied: true, wrongSizeDenied: true, revokedDenied: true, stagedFilesRemaining: false });
-          deepStrictEqual(imported, { registryOrigin: registry.origin, repository: 'testing/standard',
-            reference: `${new URL(registry.origin).host}/testing/standard@${manifestDigest}`, archive, manifestDigest, configDigest });
-        } finally { await registry.close(); }
+        const transferred = await runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+          'verification', ['read-approved-archive', operationId, registry.origin, join(dirname(bundle), 'release-tools/materialize_oci.py')]);
+        const { registry: imported, ...transport } = transferred;
+        const { archive, manifestDigest, configDigest } = candidate.manifest.image;
+        deepStrictEqual(transport, { operationId, fingerprint: candidate.fingerprint, archiveSha256: archive.sha256,
+          bytes: archive.bytes, wrongRunnerDenied: true, wrongSizeDenied: true, revokedDenied: true, stagedFilesRemaining: false });
+        deepStrictEqual(imported, { registryOrigin: registry.origin, repository: 'testing/standard',
+          reference: `${new URL(registry.origin).host}/testing/standard@${manifestDigest}`, archive, manifestDigest, configDigest });
         await assertDrained(controllerUid, staging);
         retry = { before, after, retrySha256, generation: handoff.generation, candidate, archiveTransport: transferred,
           approval: { operationId, decisionVersion: confirmed.decisionVersion } };
@@ -813,7 +812,7 @@ async function probe() {
       verification: { template: templateRescan, npm: npmRescan, original: originalRescan },
     };
   } finally {
-    try { await worker?.stop('TERM'); }
+    try { await Promise.all([worker?.stop('TERM'), releaseRegistry?.close()]); }
     finally {
       await auditProvider?.close(); await client.close(); await api?.close(); await identity?.close(); await database?.close(); await postgres.close();
     }

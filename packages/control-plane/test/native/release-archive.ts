@@ -19,10 +19,10 @@ export async function readApprovedArchive(databaseUrl: string, address: Qualifie
     // The formal release consumer will additionally reserve and validate its own execution fence.
     async function approval() {
       const { rows: [row] } = await database.pool.query<{
-        candidate: unknown; fingerprint: string; archive: unknown; result_sha: string; repository: unknown;
+        candidate: unknown; fingerprint: string; archive: unknown; result_sha: string; target: unknown;
       }>(`
         SELECT c.document AS candidate, c.fingerprint, v.document->'archiveVerification' AS archive, v.sha256 AS result_sha,
-          target.document->>'imageRepository' AS repository
+          target.document AS target
         FROM itervane.release_operations o
         JOIN itervane.release_candidates c ON c.id=o.candidate_id AND c.environment_id=o.environment_id
         JOIN itervane.tasks t ON t.id=c.task_id AND t.project_id=c.project_id AND t.requested_by=c.requested_by
@@ -45,13 +45,16 @@ export async function readApprovedArchive(databaseUrl: string, address: Qualifie
       equal(sha256(JSON.stringify(candidate)), row.fingerprint);
       equal(candidate.image.runnerImageSha256, proof.runnerImageSha256);
       deepStrictEqual(candidate.image.archive, proof.archive);
+      const mapping = formalReleaseTargetSchema.parse(row.target);
+      equal(sha256(JSON.stringify(mapping)), candidate.target.mappingSha256);
+      equal(mapping.registryOrigin, registry.origin);
       const { archive, manifestDigest, configDigest } = candidate.image;
       return { fingerprint: row.fingerprint, proof, image: { archive, manifestDigest, configDigest },
-        repository: formalReleaseTargetSchema.shape.imageRepository.parse(row.repository) };
+        target: { imageRepository: mapping.imageRepository, registryOrigin: registry.origin } };
     }
 
     const approved = await approval();
-    const { fingerprint, proof, image, repository } = approved;
+    const { fingerprint, proof, image, target } = approved;
     const runner = new QualifiedInspectionClient(address);
     const originalTmp = process.env.TMPDIR;
     const staging = await mkdtemp(join(tmpdir(), 'itervane-archive-fixture-'));
@@ -92,10 +95,12 @@ export async function readApprovedArchive(databaseUrl: string, address: Qualifie
       deepStrictEqual(await readdir(staging), []);
       const publisher = new ReleaseRegistryPublisher({ origin: registry.origin }, { materializer: registry.materializer, skopeo: '/usr/bin/skopeo' });
       const imported = await runner.withRetainedArchive(proof, authorize, async path => {
-        await rejects(publisher.publish(repository, { ...image, configDigest: `sha256:${sha256('different configuration')}` },
+        await rejects(publisher.publish({ ...target, registryOrigin: 'https://other-registry.invalid' }, image, path, unreachable),
+          /release_registry_drift/);
+        await rejects(publisher.publish(target, { ...image, configDigest: `sha256:${sha256('different configuration')}` },
           path, authorize), /registry_tool_failed/);
-        const proof = await publisher.publish(repository, image, path, authorize);
-        deepStrictEqual(await publisher.publish(repository, image, path, authorize), proof);
+        const proof = await publisher.publish(target, image, path, authorize);
+        deepStrictEqual(await publisher.publish(target, image, path, authorize), proof);
         return proof;
       });
       deepStrictEqual(await readdir(staging), []);

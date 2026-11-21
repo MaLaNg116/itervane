@@ -25,3 +25,13 @@
 在与发布 Worker 相同的非 root 模式下，Skopeo 1.13.3 直接打开 `oci-archive:` 会尝试恢复 tar 记录的属主。先在私有目录内按固定文件名写入 OCI layout，重新验证归档 SHA-256、成员边界、manifest、配置和层，随后将目录交给 Skopeo。内容固定后使用 `--preserve-digests` 向 `repository@sha256:…` 导入。已在临时 Distribution 3.1.2 核对摘要写入以及 manifest 和配置原始字节。 [Skopeo copy](https://github.com/containers/skopeo/blob/main/docs/skopeo-copy.1.md) · [OCI Distribution 规格](https://github.com/opencontainers/distribution-spec/blob/main/spec.md)
 
 Registry 来源由安装维护者配置，镜像仓库名沿用任务目标登记。参考组合支持 HTTPS 与可选的 Basic 服务账号。本机匿名测试使用显式回环地址。在执行权核对后进行一次导入，随后独立读取固定 digest 下的 manifest 和 config，核对标头、原始字节与候选。拷贝进程异常时也先读 Registry 的可见状态。正式消费者接线时还需把实际 Registry 来源与已批准的目标版本绑定。
+
+## C3 执行权分批
+
+| 批次 | 交付 | 验收 |
+| --- | --- | --- |
+| C3-A Registry 来源绑定 | 安装登记将规范化的 Registry 来源与镜像仓库一同纳入目标版本摘要。导入器先核对 Worker 配置与批准目标的来源。 | 旧记录仍可核验指纹，补登来源或更换实际 Registry 会递增版本并使旧候选失效。同一来源的等价格式可重放。托管 OCI 从实际登记的来源导入。 |
+| C3-B 发布队列认领 | 专用消费者在全局执行槽及环境锁内重读候选、授权版本、目标版本与数据库时间，为同一操作分配 fence。 | 真实 PostgreSQL 验证并发、过期、撤权和错配置拒绝，普通源码队列不会接手发布中任务。 |
+| C3-C 发布步骤与恢复 | 保存归档交接及 Registry 导入的准备、确认和待核对记录，过期后用同一操作重建上下文。 | Worker 中断后先读实际 Registry 状态，确认同摘要后继续。环境锁在疑义消除前保留，既有决定和轨迹可查询。 |
+
+历史登记保留原 JSON 形状及指纹。正式导入要求目标登记已包含来源且与 Worker 的地址一致，登记变更继续经过环境锁。候选通过现有目标版本和摘要绑定完整登记，门户和外部 MCP 继续使用有权限的目标展示字段。
