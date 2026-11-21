@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+[[ $# -ge 1 && $# -le 3 ]]
 
 work=$(realpath -- "$1")
 image_base='https://cloud-images.ubuntu.com/releases/noble/release-20261017'
@@ -13,12 +14,20 @@ guest_job="$recipe_dir/../../packages/runner/host/guest_job.py"
 downloads="$work/downloads"
 mkdir -- "$downloads"
 extra=()
-if [[ $# -eq 2 ]]; then
+if [[ $# -ge 2 ]]; then
   inputs=$(realpath -- "$2")
   test "$(basename -- "$inputs")" = itervane-inspection
   test -f "$inputs/inputs.json"
   test -f "$inputs/cache/db/trivy.db"
   extra=(--mkdir /usr/local/libexec --copy-in "$inputs:/usr/local/libexec")
+fi
+if [[ $# -eq 3 ]]; then
+  build_inputs=$(realpath -- "$3")
+  test "$(basename -- "$build_inputs")" = itervane-build-inputs
+  test -f "$build_inputs/profile.json"
+  test -f "$build_inputs/npm/bin/npm-cli.js"
+  extra+=(--copy-in "$build_inputs:/usr/local/libexec"
+    --upload "$recipe_dir/../../packages/runner/host/build_guest.py:/var/tmp/build_guest.py")
 fi
 
 download() {
