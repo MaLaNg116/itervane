@@ -20,4 +20,6 @@
 
 本机复跑角色代码的源码指纹为 `9f6f3e09efef4ecf759ff0f6e30db22be35d5aedd720eb45ba3f021fab216a1d`。自动 Worker 流转与发布资格分别进入后续验收。
 
+修正版本 `767e96fa35fe02cb2825198dc798b297da48d3df` 在托管 KVM 上再次产生健康回执 `4fb2adb5cfafe76ccde4a0239a4a1d1cfd0d5cfe0cc502e83dff630c06a3ebf4` 与 503 回执 `0ca90ab94dd72cae698ac8bc3ba2cfc9d2770c1393f907208606e56ffce6c017`。本机同源码指纹模型对照再次通过。英文八轮四次观察，中文六轮三次观察，复验意见和清理证据均保留。 [同版本原生回执](https://github.com/MaLaNg116/itervane/actions/runs/44902685245/job/136841783434)
+
 D-C 接入 Worker 状态流转和受控返修，D-D 接入双语门户和 MCP。
