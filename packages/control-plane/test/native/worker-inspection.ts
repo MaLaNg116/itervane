@@ -902,7 +902,8 @@ async function probe() {
         };
       };
       if (protectedRun) {
-        if (!faultRun) return runProtectedCase();
+        // Keep the API, MCP session, and database open until this case settles.
+        if (!faultRun) return await runProtectedCase();
         const unhealthy = await runProtectedCase('health');
         await closeReleaseFixtures();
         const identity = await runProtectedCase('identity');
