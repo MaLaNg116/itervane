@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { formalRepairResultSchema, formalVerificationInputSchema, type FormalVerificationInput, type VerificationProfile } from '@itervane/contracts';
-import { sha256 } from '@itervane/runner';
+import { sha256, type canonicalVerificationCommand } from '@itervane/runner';
 import { formalRepairResults, formalRepairRuntime, formalVerificationInputs } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
@@ -11,7 +11,9 @@ import { repairBasis } from './repair-execution.js';
 
 type Basis = Awaited<ReturnType<typeof repairBasis>>;
 
-async function verificationSubject(tx: Transaction, { input, scan }: Basis): Promise<FormalVerificationInput['subject']> {
+type Material = { subject: FormalVerificationInput['subject']; repair: ReturnType<typeof canonicalVerificationCommand>['repair'] };
+
+async function verificationMaterial(tx: Transaction, { input, scan }: Basis): Promise<Material> {
   const { runId, taskId, projectId, generation, locale, source, inspection, audit, findingIds } = input.document;
   if (inspectionCoverage(scan) !== 'complete') throw new DomainError('unavailable');
   const hasFindings = scan.snapshot.reports.some(report => report.findings.length !== 0);
@@ -20,7 +22,7 @@ async function verificationSubject(tx: Transaction, { input, scan }: Basis): Pro
     .where(eq(formalRepairResults.runId, runId));
   if (!hasFindings) {
     if (findingIds.length || published) throw new Error('verification_original_binding');
-    return { kind: 'original', manifestSha256: inspection.snapshotSha256 };
+    return { subject: { kind: 'original', manifestSha256: inspection.snapshotSha256 }, repair: null };
   }
   if (!findingIds.length || !published?.result.requestId) throw new DomainError('unavailable');
   const { result: stored, checkpointId } = published;
@@ -40,14 +42,17 @@ async function verificationSubject(tx: Transaction, { input, scan }: Basis): Pro
     throw new Error('verification_repair_source_binding');
   }
   const { operationId, receiptSha256, manifestSha256, patchSha256 } = result.candidate;
-  return { kind: 'repair', operationId, requestId: published.result.requestId, inputSha256: result.inputSha256,
-    resultSha256: stored.sha256, checkpointId, receiptSha256, manifestSha256, patchSha256, commandSha256: receipt.scope.commandSha256 };
+  return {
+    subject: { kind: 'repair', operationId, requestId: published.result.requestId, inputSha256: result.inputSha256,
+      resultSha256: stored.sha256, checkpointId, receiptSha256, manifestSha256, patchSha256, commandSha256: receipt.scope.commandSha256 },
+    repair: { workspace: command.workspace, patch: command.patch },
+  };
 }
 
 // The Worker supplies the trusted profile and holds the current authorized lease in this transaction.
 export async function prepareFormalVerificationInput(tx: Transaction, task: TaskRow, scope: ExecutionScope, profile: VerificationProfile) {
   const basis = await repairBasis(tx, task, scope);
-  const subject = await verificationSubject(tx, basis);
+  const { subject, repair } = await verificationMaterial(tx, basis);
   const { findingIds: _findingIds, ...base } = basis.input.document;
   const document = formalVerificationInputSchema.parse({ ...base, profile, subject });
   const hash = sha256(JSON.stringify(document));
@@ -60,5 +65,5 @@ export async function prepareFormalVerificationInput(tx: Transaction, task: Task
     await tx.insert(formalVerificationInputs).values({ runId: scope.runId, preparedFence: scope.fence,
       workerId: scope.workerId, sha256: hash, document });
   }
-  return { sha256: hash, document };
+  return { sha256: hash, document, repair, origin: basis.origin, scan: basis.scan };
 }

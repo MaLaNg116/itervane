@@ -142,6 +142,16 @@ export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificatio
   }
 }
 
+export function prepareQualifiedVerificationRequest(coordinates: VerificationCoordinates, command: VerificationCommand) {
+  const { taskId, runId, projectId, generation, source, profile, inspection, subject } = command.input;
+  return qualifiedVerificationRequestSchema.parse({
+    ...coordinates, version: 1, operation: 'verify_source', taskId, runId, projectId, generation, ...source,
+    verificationInputSha256: command.inputSha256, baseSnapshotSha256: inspection.snapshotSha256,
+    targetManifestSha256: subject.manifestSha256, runnerImageSha256: profile.runnerImageSha256, scannerInputsSha256: profile.scannerInputsSha256,
+    commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
+  });
+}
+
 function requireRepairSource(receipt: RepairReceipt, request: RepairRequest, imageSha256: string) {
   const { origin, ...scope } = request;
   const { snapshot } = receipt;
@@ -279,16 +289,8 @@ export class QualifiedInspectionClient {
   async verify(coordinates: VerificationCoordinates, input: FormalVerificationInput, repair: VerificationCommand['repair'],
     authorize: () => Promise<void>, signal?: AbortSignal): Promise<QualifiedVerificationResponse> {
     const command = canonicalVerificationCommand({ input, repair });
-    const frozen = command.input;
-    const { runnerImageSha256, scannerInputsSha256 } = frozen.profile;
-    if (runnerImageSha256 !== this.imageSha256) throw new Error('runner_verification_image_binding');
-    const request = qualifiedVerificationRequestSchema.parse({
-      ...coordinates, version: 1, operation: 'verify_source',
-      taskId: frozen.taskId, runId: frozen.runId, projectId: frozen.projectId, generation: frozen.generation, ...frozen.source,
-      verificationInputSha256: command.inputSha256, baseSnapshotSha256: frozen.inspection.snapshotSha256,
-      targetManifestSha256: frozen.subject.manifestSha256, runnerImageSha256, scannerInputsSha256,
-      commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
-    });
+    const request = prepareQualifiedVerificationRequest(coordinates, command);
+    if (request.runnerImageSha256 !== this.imageSha256) throw new Error('runner_verification_image_binding');
     return this.execute(request, authorize, signal, line => {
       const response = qualifiedVerificationResponseSchema.parse(JSON.parse(line));
       if (response.kind === 'verification_receipt') verifyQualifiedVerificationReceipt(response, request, command);
