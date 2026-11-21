@@ -189,7 +189,8 @@ jobs:
           report=.reports/p0/runner-protected-release.json
           if [[ "$NATIVE_SCENARIO" == protected-release-drift ]]; then
             jq -e '.drift.target.reason == "release_target_changed" and .drift.archive.reason == "release_archive_unavailable" and
-              .drift.target.externalSteps == 0 and .drift.archive.externalSteps == 0 and .drift.originalArchiveRestored == true' "$report" >/dev/null
+              .drift.target.externalSteps == 0 and .drift.archive.externalSteps == 0 and .drift.archive.archiveReadPrepared == true and
+              .drift.originalArchiveRestored == true' "$report" >/dev/null
             exit 0
           fi
           if [[ "$NATIVE_SCENARIO" == protected-release-faults ]]; then
