@@ -204,12 +204,13 @@ async function verify() {
 }
 
 try {
-  const [action, operationId, ...extra] = process.argv.slice(2);
+  const [action, operationId, origin, materializer, ...extra] = process.argv.slice(2);
   if (action === 'read-approved-archive') {
-    phase = 'archive_transfer';
+    phase = 'archive_registry_transfer';
     equal(extra.length, 0);
+    ok(origin && materializer);
     const { databaseUrl, runner } = fixtureConfig();
-    console.log(JSON.stringify(await readApprovedArchive(databaseUrl, runner, operationId)));
+    console.log(JSON.stringify(await readApprovedArchive(databaseUrl, runner, operationId, { origin, materializer })));
   } else console.log(JSON.stringify(await verify()));
 }
 catch { console.error(`verification_fixture_phase_${phase}`); process.exitCode = 1; }

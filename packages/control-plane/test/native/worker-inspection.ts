@@ -3,6 +3,7 @@ import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -28,6 +29,7 @@ import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../v
 import { temporaryPostgres } from '../../../verification/src/postgres-fixture.js';
 import { sourceFingerprint } from '../../../verification/src/report.js';
 import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from './audit-provider.js';
+import { temporaryRegistry } from './registry-fixture.js';
 
 const execute = promisify(execFile);
 const commit = '9167604c888416d7b6518e1c76485d7308cffb5c';
@@ -490,10 +492,18 @@ async function probe() {
         const [genericWakeup] = (await db.admin.query('SELECT wakeup_job_id FROM itervane.task_runs WHERE id=$1', [current.runId])).rows;
         equal(genericWakeup?.wakeup_job_id, null);
         phase = 'standard_formal_release_archive_transport';
-        const transferred = await runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
-          'verification', ['read-approved-archive', operationId]);
-        deepStrictEqual(transferred, { operationId, fingerprint: candidate.fingerprint, archiveSha256: candidate.manifest.image.archive.sha256,
-          bytes: candidate.manifest.image.archive.bytes, wrongRunnerDenied: true, wrongSizeDenied: true, revokedDenied: true, stagedFilesRemaining: false });
+        const registry = await temporaryRegistry();
+        let transferred;
+        try {
+          transferred = await runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+            'verification', ['read-approved-archive', operationId, registry.origin, join(dirname(bundle), 'release-tools/materialize_oci.py')]);
+          const { registry: imported, ...transport } = transferred;
+          const { archive, manifestDigest, configDigest } = candidate.manifest.image;
+          deepStrictEqual(transport, { operationId, fingerprint: candidate.fingerprint, archiveSha256: archive.sha256,
+            bytes: archive.bytes, wrongRunnerDenied: true, wrongSizeDenied: true, revokedDenied: true, stagedFilesRemaining: false });
+          deepStrictEqual(imported, { registryOrigin: registry.origin, repository: 'testing/standard',
+            reference: `${new URL(registry.origin).host}/testing/standard@${manifestDigest}`, archive, manifestDigest, configDigest });
+        } finally { await registry.close(); }
         await assertDrained(controllerUid, staging);
         retry = { before, after, retrySha256, generation: handoff.generation, candidate, archiveTransport: transferred,
           approval: { operationId, decisionVersion: confirmed.decisionVersion } };

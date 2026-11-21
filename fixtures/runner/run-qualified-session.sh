@@ -155,6 +155,10 @@ pnpm exec esbuild packages/control-plane/test/native/worker-verification.ts --bu
   '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
   --outfile=.reports/p0/verification-worker.mjs
 sudo -n install -m 0444 .reports/p0/verification-worker.mjs "$shared/verification-worker.mjs"
+if [[ "$scenario" == standard-oci ]]; then
+  sudo -n install -d -m 0755 "$shared/release-tools"
+  sudo -n install -m 0444 packages/runner/host/{materialize_oci,oci_layout,oci_artifacts,source_wire,guest_job}.py "$shared/release-tools/"
+fi
 extra=()
 report="$reports/runner-worker-inspection.json"
 if [[ "$scenario" != regression ]]; then
