@@ -662,20 +662,23 @@ it('recovers an uncertain rescan only on the original idle Runner and retains th
   expect(verify).toHaveBeenCalledTimes(2);
 });
 
-it('requires the standard build proof to match the frozen profile and snapshot in the lease transaction', async () => {
+it.each(['build', 'baseline'] as const)('binds the standard %s proof to the frozen candidate in the lease transaction', async stage => {
   const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(), auditModel: auditModel() });
   try { expect(await worker.tick()).toBe(true); } finally { await worker.close(); }
   const scope = await claimAfterAudit();
   const [inspection] = await database.storage.db.select().from(inspectionAttempts);
   const original = qualifiedInspectionResponseSchema.parse(inspection?.receipt);
   if (original.kind !== 'receipt') throw new Error('Missing original inspection');
-  const profile = { ...verificationProfile, buildProfileSha256: sha256('protected build profile') };
+  const profile = { ...verificationProfile, buildProfileSha256: sha256('protected build profile'),
+    ...(stage === 'baseline' ? { runStandardBaseline: true as const } : {}),
+  };
   const verify = vi.fn<RescanRunner['verify']>(async (coordinates, input, repair, authorize) => {
     await authorize();
     const command = canonicalVerificationCommand({ input, repair });
     const request = prepareQualifiedVerificationRequest(coordinates, command);
     const { origin: _origin, ...bound } = request;
     const domainId = randomUUID();
+    const dist = { sha256: sha256('measured build'), files: 3, bytes: 220 };
     const receipt: QualifiedVerificationReceipt = {
       kind: 'verification_receipt', scope: bound, domainId, commitSha256: original.commitSha256, imageSha256,
       originSha256: original.originSha256, cleanupConfirmed: true, sessionVerified: true,
@@ -686,23 +689,35 @@ it('requires the standard build proof to match the frozen profile and snapshot i
           status: 'built', version: 1, runId: domainId, buildProfileSha256: profile.buildProfileSha256,
           verificationInputSha256: bound.verificationInputSha256, baselineSha256: profile.baselineSha256,
           subjectManifestSha256: input.subject.manifestSha256, projectionSha256: sha256('staged projection'),
-          isolationVerified: true, dist: { sha256: sha256('measured build'), files: 3, bytes: 220 },
+          isolationVerified: true, dist,
+          ...(stage === 'baseline' ? { baseline: {
+            version: 1 as const, status: 'passed' as const, appExited: true as const,
+            runtimeInputsSha256: sha256('runtime inputs'), baselineSha256: profile.baselineSha256, distSha256: dist.sha256,
+            checks: (['health', 'version', 'synthetic_data', 'page', 'compiled_asset'] as const).map(id =>
+              ({ id, status: 'passed' as const, code: null, statusCode: 200 })),
+          } } : {}),
         },
       },
     };
     const forged = structuredClone(receipt);
-    forged.snapshot.build!.baselineSha256 = sha256('changed protected baseline');
-    expect(() => verifyQualifiedVerificationReceipt(forged, request, command)).toThrow('runner_standard_build_binding');
+    const build = forged.snapshot.build;
+    if (build?.status !== 'built') throw new Error('Missing build fixture');
+    if (build.baseline) build.baseline.distSha256 = sha256('changed distribution');
+    else build.baselineSha256 = sha256('changed protected baseline');
+    expect(() => verifyQualifiedVerificationReceipt(forged, request, command)).toThrow(`runner_standard_${stage}_binding`);
     await expect(database.storage.db.update(formalRescanAttempts).set({
       state: 'recorded', settledFence: scope.fence, settledWorkerId: scope.workerId, settledAt: new Date(),
       receipt: forged, receiptSha256: sha256(JSON.stringify(forged)),
     }).where(eq(formalRescanAttempts.requestId, bound.requestId))).rejects
-      .toMatchObject({ cause: { code: '23514', message: 'standard_build_evidence_binding' } });
+      .toMatchObject({ cause: { code: '23514', message: `standard_${stage}_evidence_binding` } });
     return receipt;
   });
   const rescan = () => runFormalRescan(coordinator, scope, profile, { observe: async () => idleRepairRunner(), verify });
   const result = await rescan();
   expect(result).toMatchObject({ kind: 'scanned', receipt: { snapshot: { build: { status: 'built', isolationVerified: true } } } });
+  if (stage === 'baseline') {
+    expect(result).toMatchObject({ receipt: { snapshot: { build: { baseline: { status: 'passed', appExited: true } } } } });
+  }
   expect(await rescan()).toEqual(result);
   expect(verify).toHaveBeenCalledTimes(1);
 });

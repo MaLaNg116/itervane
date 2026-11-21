@@ -64,14 +64,18 @@ def dispatch():
     return request
 
 
-def verify_boundary():
-    account = pwd.getpwnam(ACCOUNT)
+def verify_identity(account_name):
+    account = pwd.getpwnam(account_name)
     if not os.getuid() == os.geteuid() == account.pw_uid > 0:
         raise ValueError("unexpected build identity")
     status = Path("/proc/self/status").read_text(encoding="ascii")
     if "NoNewPrivs:\t1\n" not in status or "CapEff:\t0000000000000000\n" not in status:
         raise ValueError("unexpected build privilege")
-    for path in (SOURCE, TOOLS):
+
+
+def verify_boundary(account_name=ACCOUNT, readonly=(SOURCE, TOOLS)):
+    verify_identity(account_name)
+    for path in readonly:
         if not os.statvfs(path).f_flag & os.ST_RDONLY:
             raise ValueError("mutable build input")
     for family in (socket.AF_INET, socket.AF_INET6):
@@ -93,7 +97,7 @@ def verify_boundary():
         raise ValueError("protected path still available")
 
 
-def measured_tree(root, max_files, max_bytes, max_file, *, artifact=False):
+def measured_tree(root, max_files, max_bytes, max_file, *, artifact=False, copy_into=None):
     entries = []
     byte_count = 0
     visited = 0
@@ -122,7 +126,18 @@ def measured_tree(root, max_files, max_bytes, max_file, *, artifact=False):
                     checked = os.fstat(file.fileno())
                     if (checked.st_ino, checked.st_dev, checked.st_size) != (info.st_ino, info.st_dev, info.st_size):
                         raise ValueError("tree entry changed")
-                    digest = hashlib.file_digest(file, "sha256").hexdigest()
+                    if copy_into is None:
+                        digest = hashlib.file_digest(file, "sha256").hexdigest()
+                    else:
+                        data = file.read(info.st_size + 1)
+                        if len(data) != info.st_size:
+                            raise ValueError("tree entry changed")
+                        digest = hashlib.sha256(data).hexdigest()
+                        target = copy_into / path
+                        target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+                        with target.open("xb") as copy:
+                            copy.write(data)
+                            os.fchmod(copy.fileno(), 0o444)
                 byte_count += info.st_size
                 entries.append({"path": path, "sha256": digest, "bytes": info.st_size})
 
@@ -132,6 +147,26 @@ def measured_tree(root, max_files, max_bytes, max_file, *, artifact=False):
             item["path"] == "index.html" and item["bytes"] > 0 for item in entries))):
         raise ValueError("empty build output")
     return {"sha256": hashlib.sha256(canonical(entries)).hexdigest(), "files": len(entries), "bytes": byte_count}
+
+
+def copy_writable(source, target):
+    shutil.copytree(source, target, symlinks=True, copy_function=shutil.copyfile)
+    for directory, _, _ in os.walk(target):
+        os.chmod(directory, 0o700)
+
+
+def standard_env(work):
+    return {"PATH": f"{TOOLS}:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": str(work), "CI": "true", "RAYON_NUM_THREADS": "2"}
+
+
+def install_dependencies(project, cache, config, *, production=False):
+    npm_args = ["--omit=dev"] if production else []
+    return subprocess.run(
+        [NODE, TOOLS / "npm/bin/npm-cli.js", "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+         "--no-update-notifier", "--userconfig=/dev/null", f"--globalconfig={config}", f"--cache={cache}", *npm_args],
+        cwd=project, env=standard_env(config.parent), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, check=False, timeout=25,
+    ).returncode
 
 
 def prepare(request):
@@ -158,11 +193,9 @@ def prepare(request):
         if measured_tree(root, 5000, 32 * 1024 * 1024, 2 * 1024 * 1024)["sha256"] != request["projectionSha256"]:
             raise ValueError("build projection changed")
     project, cache = WORK / "project", WORK / "cache"
-    for origin, target in ((SOURCE / "project", project), (TOOLS / "npm-cache", cache)):
-        shutil.copytree(origin, target, symlinks=True, copy_function=shutil.copyfile)
-        # The staging mounts stay read-only. The installer owns only this copy.
-        for directory, _, _ in os.walk(target):
-            os.chmod(directory, 0o700)
+    # The staging mounts stay read-only. The installer owns only this copy.
+    copy_writable(SOURCE / "project", project)
+    copy_writable(TOOLS / "npm-cache", cache)
     return project, cache
 
 
@@ -178,16 +211,10 @@ def run():
     except (OSError, KeyError, TypeError, ValueError):
         return 79
 
-    env = {"PATH": f"{TOOLS}:/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": str(WORK), "CI": "true", "RAYON_NUM_THREADS": "2"}
-    options = {"cwd": project, "env": env, "stdin": subprocess.DEVNULL,
+    options = {"cwd": project, "env": standard_env(WORK), "stdin": subprocess.DEVNULL,
                "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "check": False}
     try:
-        installed = subprocess.run(
-            [NODE, TOOLS / "npm/bin/npm-cli.js", "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
-             "--no-update-notifier", "--userconfig=/dev/null", f"--globalconfig={config}", f"--cache={cache}"],
-            timeout=25, **options,
-        )
-        if installed.returncode != 0:
+        if install_dependencies(project, cache, config) != 0:
             return 80
         bundled = subprocess.run(
             [NODE, project / "node_modules/vite/bin/vite.js", "build", "--config", TOOLS / "vite.config.mjs",

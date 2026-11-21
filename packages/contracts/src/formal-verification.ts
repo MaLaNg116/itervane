@@ -10,7 +10,8 @@ export const verificationProfileSchema = z.strictObject({
   scannerInputsSha256: sha256Schema,
   runnerImageSha256: sha256Schema,
   buildProfileSha256: sha256Schema.optional(),
-});
+  runStandardBaseline: z.literal(true).optional(),
+}).refine(profile => !profile.runStandardBaseline || Boolean(profile.buildProfileSha256));
 export type VerificationProfile = z.infer<typeof verificationProfileSchema>;
 
 const subjectSchema = z.discriminatedUnion('kind', [

@@ -32,3 +32,15 @@ class BuildOutputTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         measured_tree(fd, 2, 20, 10, artifact=True)
                 link.unlink()
+
+    def test_materialized_artifacts_match_the_hash_of_the_copied_bytes(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work)
+            source, target = root / "dist", root / "sealed"
+            (source / "assets").mkdir(parents=True)
+            (source / "index.html").write_bytes(b"page")
+            (source / "assets" / "main.js").write_bytes(b"bundle")
+            with directory_fd(source) as fd:
+                expected = measured_tree(fd, 2, 10, 6, artifact=True, copy_into=target)
+            with directory_fd(target) as fd:
+                self.assertEqual(measured_tree(fd, 2, 10, 6, artifact=True), expected)

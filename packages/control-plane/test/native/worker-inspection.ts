@@ -29,6 +29,7 @@ const repairFixtureCommit = 'f41a940ffe4ec24221b873e1cd74b8ec2125873e';
 const cleanVerificationCommit = '49799e18f4f63cf22767a9cd8054cab979b9b6d2';
 const standardBuildCommit = '3a719ca44f306d30cdf2d27e9a6d3b954ed656f0';
 const standardLockDriftCommit = '03e5d18a27d23960f040c0d5d70afefac15ec46e';
+const standardHealthRegressionCommit = '1eac5c8776c6e81613cfb5adf6edd2cd6b163ba3';
 const origin = 'https://github.com/MaLaNg116/itervane.git';
 const publicUrl = 'https://itervane.example';
 const controllerAccount = 'itervane-probe';
@@ -259,7 +260,8 @@ async function probe() {
 
     if (build) {
       const audit = auditProvider = await auditProtocolFixture();
-      const buildFixture = async (revision: string, outcome: 'built' | 'profile_mismatch' | 'offline_install') => {
+      const buildFixture = async (revision: string, outcome: 'built' | 'profile_mismatch' | 'offline_install',
+        baselineOutcome?: 'passed' | 'failed') => {
         phase = `standard_build_audit_${outcome}`;
         worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, audit.baseURL);
         const task = await start('Verify the standard build from this fixed source', revision);
@@ -271,8 +273,9 @@ async function probe() {
           throw new Error('standard_build_findings');
         }
         await worker.stop('TERM'); worker = undefined;
-        phase = `standard_build_execution_${outcome}`;
-        const fact = await rescanFixture(task, null, [build.profile, build.baseline, outcome]);
+        phase = baselineOutcome ? `standard_baseline_${baselineOutcome}` : `standard_build_execution_${outcome}`;
+        const fact: Record<string, unknown> = await rescanFixture(task, null, [build.profile, build.baseline, outcome,
+          ...(baselineOutcome ? [baselineOutcome] : [])]);
         const evidence = qualifiedStandardBuildProofSchema.parse(fact.build);
         equal(evidence.baselineSha256, build.baseline);
         equal(evidence.subjectManifestSha256, reviewed.result.snapshotSha256);
@@ -285,7 +288,7 @@ async function probe() {
         equal(missing.build.status, 'failed');
         return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, missing, stagedFilesRemaining: false };
       }
-      const built = await buildFixture(standardBuildCommit, 'built');
+      const built = await buildFixture(standardBuildCommit, 'built', 'passed');
       equal(built.build.status, 'built');
       if (built.build.status !== 'built') throw new Error('standard_build_output_missing');
       const paths = ['index.html', 'package-lock.json', 'package.json', 'server/app.mjs', 'server/index.mjs', 'src/main.jsx', 'src/style.css'];
@@ -295,9 +298,22 @@ async function probe() {
       });
       equal(built.build.projectionSha256, sha256(JSON.stringify(projection)));
       ok(built.build.dist.files >= 2 && built.build.dist.bytes > 0);
+      const passing = built.build.baseline;
+      ok(passing?.status === 'passed');
+      equal(passing.appExited, true);
+      equal(passing.distSha256, built.build.dist.sha256);
+      const healthRegression = await buildFixture(standardHealthRegressionCommit, 'built', 'failed');
+      ok(healthRegression.build.status === 'built' && healthRegression.build.baseline?.status === 'failed');
+      const failed = healthRegression.build.baseline;
+      equal(failed.appExited, true);
+      equal(failed.distSha256, passing.distSha256);
+      notEqual(failed.runtimeInputsSha256, passing.runtimeInputsSha256);
+      deepStrictEqual(failed.checks[0], { id: 'health', status: 'failed', code: 'unexpected_status', statusCode: 503 });
+      ok(failed.checks.slice(1).every(check => check.status === 'passed'));
       const drift = await buildFixture(standardLockDriftCommit, 'profile_mismatch');
       equal(drift.build.status, 'blocked');
-      return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, built, drift, stagedFilesRemaining: false };
+      return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
+        built, healthRegression, drift, stagedFilesRemaining: false };
     }
 
     phase = 'scan_and_shared_reads';

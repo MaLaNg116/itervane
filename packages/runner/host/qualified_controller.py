@@ -42,6 +42,7 @@ VERIFY_DIGESTS = ("verificationInputSha256", "baseSnapshotSha256", "targetManife
                   "runnerImageSha256", "scannerInputsSha256", "commandSha256")
 VERIFY_FIELDS = (FIELDS - {"planSha256"}) | {"operation", "commandBytes", *VERIFY_DIGESTS}
 BUILD_PROFILE = "buildProfileSha256"
+RUN_BASELINE = "runStandardBaseline"
 PEER = struct.Struct("3i")
 
 
@@ -75,6 +76,10 @@ def parse_request(line):
     fields = VERIFY_FIELDS if verification else REPAIR_FIELDS if repair else FIELDS
     if build:
         fields = fields | {BUILD_PROFILE}
+        if RUN_BASELINE in data:
+            if data[RUN_BASELINE] is not True:
+                raise ValueError("invalid baseline request")
+            fields = fields | {RUN_BASELINE}
     if data.keys() != fields or type(data["version"]) is not int or data["version"] != 1:
         raise ValueError("invalid request fields")
     if not all(is_v4(data[name]) for name in IDS) or (repair and not is_v4(data["operationId"])):
@@ -134,6 +139,7 @@ def require_verification_command(command, request):
         or inspection.get("snapshotSha256") != request["baseSnapshotSha256"]
         or subject.get("manifestSha256") != request["targetManifestSha256"]
         or profile.get(BUILD_PROFILE) != request.get(BUILD_PROFILE)
+        or profile.get(RUN_BASELINE) != request.get(RUN_BASELINE)
         or any(profile.get(key) != request[key] for key in ("runnerImageSha256", "scannerInputsSha256"))):
         raise ValueError("verification command evidence mismatch")
     repair = command["repair"]
@@ -252,12 +258,19 @@ def build_proof_matches(request, snapshot):
     if BUILD_PROFILE not in request:
         return "build" not in snapshot
     proof = snapshot.get("build")
-    return (
+    if not (
         isinstance(proof, dict) and proof.get(BUILD_PROFILE) == request[BUILD_PROFILE]
         and proof.get("runId") == snapshot.get("runId")
         and proof.get("verificationInputSha256") == request["verificationInputSha256"]
         and proof.get("subjectManifestSha256") == request["targetManifestSha256"]
-    )
+    ):
+        return False
+    if RUN_BASELINE not in request or proof.get("status") != "built":
+        return "baseline" not in proof
+    baseline, dist = proof.get("baseline"), proof.get("dist")
+    return (isinstance(baseline, dict) and isinstance(dist, dict)
+            and baseline.get("baselineSha256") == proof.get("baselineSha256")
+            and baseline.get("distSha256") == dist.get("sha256"))
 
 
 def verification_proof_matches(request, snapshot, image_sha256):
@@ -315,7 +328,7 @@ def response_for(request, result):
 
 
 def serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping,
-                     enable_repair=False, enable_verification=False, enable_standard_build=False):
+                     enable_repair=False, enable_verification=False, enable_standard_build=False, enable_baseline=False):
     connection.settimeout(HANDSHAKE_SECONDS)
     _, uid, _ = PEER.unpack(connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, PEER.size))
     if uid != worker_uid:
@@ -330,7 +343,8 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
     repair = request.get("operation") in REPAIR_OPERATIONS
     verification = request.get("operation") == VERIFY_SOURCE
     if (request["workspaceSha256"] != fingerprint or (repair and not enable_repair)
-        or (verification and not enable_verification) or (BUILD_PROFILE in request and not enable_standard_build)):
+        or (verification and not enable_verification) or (BUILD_PROFILE in request and not enable_standard_build)
+        or (RUN_BASELINE in request and not enable_baseline)):
         return rejected("not_ready", request["requestId"])
     origin = origins.get(request["origin"])
     if origin is None:
@@ -364,7 +378,7 @@ def socket_parent(path):
 
 
 def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping, enable_repair, enable_verification,
-               enable_standard_build):
+               enable_standard_build, enable_baseline):
     socket_parent(path)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(os.fspath(path))
@@ -380,7 +394,7 @@ def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping
                 with connection:
                     try:
                         result = serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping,
-                                                  enable_repair, enable_verification, enable_standard_build)
+                                                  enable_repair, enable_verification, enable_standard_build, enable_baseline)
                         encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
                         limit = MAX_VERIFICATION_RECEIPT if result["kind"] == "verification_receipt" else MAX_QUALIFIED_RECEIPT
                         if len(encoded) > limit + 8192:
@@ -416,7 +430,8 @@ def main():
         digest, name = sys.argv[4:6]
         allowed = sys.argv[6:]
         features = set()
-        while allowed and allowed[0] in ("--enable-repair", "--enable-verification", "--enable-standard-build"):
+        while allowed and allowed[0] in ("--enable-repair", "--enable-verification", "--enable-standard-build",
+                                        "--enable-standard-baseline"):
             flag = allowed.pop(0)
             if flag in features:
                 raise ValueError("duplicate capability")
@@ -455,7 +470,8 @@ def main():
             return probe(libvirt, libvirt_qemu, root, image, digest, cancelled, "inspect", True, source_override=job)
 
         run_server(path, worker_uid, origins, fingerprint, observe, launch, stopped,
-                   "--enable-repair" in features, "--enable-verification" in features, "--enable-standard-build" in features)
+                   "--enable-repair" in features, "--enable-verification" in features, "--enable-standard-build" in features,
+                   "--enable-standard-baseline" in features)
     except (ImportError, OSError, ValueError, Rejected, SessionRejected, SourceRejected):
         print("Qualified inspection controller could not start.", file=sys.stderr)
         return 1

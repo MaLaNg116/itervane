@@ -16,7 +16,8 @@ digest=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1])
 node=$(command -v node)
 case "$scenario" in
   regression) features=(--enable-repair --enable-verification) ;;
-  standard-build|standard-build-missing-cache) features=(--enable-verification --enable-standard-build) ;;
+  standard-build) features=(--enable-verification --enable-standard-build --enable-standard-baseline) ;;
+  standard-build-missing-cache) features=(--enable-verification --enable-standard-build) ;;
   *) exit 1 ;;
 esac
 
