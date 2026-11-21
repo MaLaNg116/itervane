@@ -460,7 +460,7 @@ export const releaseOperations = domain.table('release_operations', {
   uniqueIndex('release_operation_environment_hold').on(t.environmentId).where(sql`${t.state} IN ('dispatching', 'reconciling')`),
   check('release_operation_single_approval', sql`${t.approvalVersion} = 1`),
   check('release_operation_state', sql`${t.state} IN ('queued', 'dispatching', 'reconciling', 'verified_fixture', 'blocked')`),
-  check('release_operation_wakeup_queued', sql`${t.wakeupJobId} IS NULL OR ${t.state} = 'queued'`),
+  check('release_operation_wakeup_recoverable', sql`${t.wakeupJobId} IS NULL OR ${t.state} IN ('queued', 'reconciling')`),
   check('release_operation_observation', sql`(
     (${t.state} <> 'verified_fixture' AND ${t.observation} IS NULL) OR
     (${t.state} = 'verified_fixture' AND ${t.observation}->>'origin' = 'trusted_fixture'

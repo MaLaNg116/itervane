@@ -150,7 +150,7 @@ export class FormalReleaseCoordinator {
         .where(and(eq(releaseOperations.environmentId, operation.environmentId), inArray(releaseOperations.state, ['dispatching', 'reconciling'])))
         .limit(1);
       if (slot.taskId || hold) {
-        await renewFormalWakeup(tx, database, operation.id, true);
+        await renewFormalWakeup(tx, database, operation.id, { delaySeconds: 1 });
         return null;
       }
       const releaseDecision = decisionBinding(binding);

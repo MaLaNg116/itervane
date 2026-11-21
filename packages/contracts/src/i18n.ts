@@ -44,6 +44,7 @@ export const en = {
   'task.release_archive_confirmed': 'The approved OCI archive bytes were verified.',
   'task.release_registry_prepared': 'The registry import intent was recorded for the approved image.',
   'task.release_registry_uncertain': 'The registry import still requires independent verification.',
+  'task.release_registry_recovered': 'The registry import will be checked under a new lease while the environment remains reserved.',
   'task.release_registry_confirmed': 'The approved image was independently verified in the registry.',
   'task.release_requeued': 'The release returned to the queue before a downstream change.',
   'task.release_rejected': 'The owner rejected this release candidate.',
@@ -155,6 +156,7 @@ export const zhCN: Record<MessageKey, string> = {
   'task.release_archive_confirmed': '获批 OCI 归档的实际字节已核验。',
   'task.release_registry_prepared': '获批镜像的 Registry 导入意图已记录。',
   'task.release_registry_uncertain': 'Registry 导入结果仍需独立核对。',
+  'task.release_registry_recovered': '目标环境仍由该发布占用，Registry 导入将使用新租约核对。',
   'task.release_registry_confirmed': '已从 Registry 独立核对获批镜像。',
   'task.release_requeued': '发布操作在下游变更前已返回队列。',
   'task.release_rejected': '所有者已拒绝此发布候选。',
@@ -230,7 +232,8 @@ export const taskEventTypes = ['task.accepted', 'task.cancelled', 'task.started'
   'task.repair_recorded', 'task.repair_deferred', 'task.repair_resumed', 'task.verification_recorded', 'task.verification_paused',
   'task.repair_retry_queued', 'task.release_candidate_frozen', 'task.release_confirmed', 'task.release_claimed', 'task.release_blocked', 'task.release_requeued',
   'task.release_rejected', 'task.release_revoked', 'task.release_archive_prepared', 'task.release_archive_confirmed',
-  'task.release_registry_prepared', 'task.release_registry_uncertain', 'task.release_registry_confirmed'] as const;
+  'task.release_registry_prepared', 'task.release_registry_uncertain', 'task.release_registry_recovered',
+  'task.release_registry_confirmed'] as const;
 
 export const eventReasonMessages = {
   runner_unavailable: 'tool.runner_unavailable', lease_expired: 'reason.lease_expired', expired_cancel: 'reason.expired_cancel',

@@ -232,6 +232,13 @@
       "when": 1795280233171,
       "tag": "0032_formal_release_steps",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1795281246982,
+      "tag": "0033_formal_release_registry_recovery",
+      "breakpoints": true
     }
   ]
 }

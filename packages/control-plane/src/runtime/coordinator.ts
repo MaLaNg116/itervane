@@ -7,7 +7,7 @@ import { requireProjectAccess, requireStoredActor, type Transaction } from '../s
 import { DomainError } from '../service/errors.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, enqueue, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope, type TaskRow } from './authority.js';
-import { recoverClaimedRelease } from './release-queue.js';
+import { recoverClaimedRelease, recoverRegistryLease } from './release-queue.js';
 
 type Current = { task: TaskRow; runtime: typeof runRuntime.$inferSelect };
 
@@ -44,8 +44,10 @@ export class ExecutionCoordinator {
     if (task && slot.runId) {
       const [runtime] = await tx.select({ reason: runRuntime.reason }).from(runRuntime).where(eq(runRuntime.runId, slot.runId));
       if (runtime?.reason?.startsWith('release_')) {
-        if (runtime.reason !== 'release_claimed') throw new ExecutionLost();
-        await recoverClaimedRelease(tx, this.database, task, slot.runId, workerId, true);
+        if (runtime.reason === 'release_claimed') await recoverClaimedRelease(tx, this.database, task, slot.runId, workerId, true);
+        else if (['release_registry_prepared', 'release_registry_reconciling', 'release_registry_verified'].includes(runtime.reason)) {
+          await recoverRegistryLease(tx, this.database, task, slot.runId, workerId);
+        } else throw new ExecutionLost();
       } else if (task.state === 'cancel_requested') await appendEvent(tx, task, 'task.cancelled', 'cancelled', { workerId, reason: 'expired_cancel' });
       else if (task.state === 'running') {
         const next = await appendEvent(tx, task, 'task.recovered', 'queued', { workerId, reason: 'lease_expired' });
