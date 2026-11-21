@@ -14,7 +14,7 @@ import {
   formalRepairRetrySchema, formalVerificationInputSchema, formalVerificationResultSchema, qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
   repositoryDtoSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sha256Schema, sourceInspectionDtoSchema,
   qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
-  taskDtoSchema, taskEventDtoSchema, translate, type FormalAuditResult, type Locale, type StandardVerificationProfile,
+  taskDtoSchema, taskEventDtoSchema, translate, type FormalAuditResult, type Locale, type NpmUpgradeApproval, type StandardVerificationProfile,
 } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
@@ -30,6 +30,7 @@ import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../v
 import { temporaryPostgres } from '../../../verification/src/postgres-fixture.js';
 import { sourceFingerprint } from '../../../verification/src/report.js';
 import { openNativeReleaseKomodo } from '../../../verification/src/native/komodo-probe.js';
+import { npmReleaseApproval, standardNpmReleaseFiles } from '../../../verification/src/native/npm-release-fixture.js';
 import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from './audit-provider.js';
 import { proveKnownKomodoRecovery, proveUnknownKomodoDispatch } from './komodo-release-proof.js';
 import type { KomodoInterruption, runKomodoReleaseFixture } from './komodo-release-worker.js';
@@ -45,6 +46,7 @@ const standardBuildCommit = '3a719ca44f306d30cdf2d27e9a6d3b954ed656f0';
 const standardLockDriftCommit = '03e5d18a27d23960f040c0d5d70afefac15ec46e';
 const standardHealthRegressionCommit = '1eac5c8776c6e81613cfb5adf6edd2cd6b163ba3';
 const repairRetryCommit = '39e9b7f34fdd01ec55fe4dda5358ffce5d68cbf8';
+const dependencyReleaseCommit = '37ac62431fd9bf7b2a6c0f4b3f15d5d5f1f030b8';
 const origin = 'https://github.com/MaLaNg116/itervane.git';
 const publicUrl = 'https://itervane.example';
 const standardRuntimePort = 38171; // The port sealed in the OCI runtime plan by runtime_guest.py.
@@ -95,12 +97,13 @@ function sourceWorkerEnvironment(socket: string, controllerUid: string, image: s
 }
 
 function startWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string,
-  auditURL?: string, verification?: StandardVerificationProfile, repair = false) {
+  auditURL?: string, verification?: StandardVerificationProfile, repair: boolean | NpmUpgradeApproval = false) {
   return startScopedWorker(bundle, [...sourceWorkerEnvironment(socket, controllerUid, image),
     ...(auditURL ? ['ITERVANE_AUDIT_MODEL_PROVIDER=anthropic', `ANTHROPIC_BASE_URL=${auditURL}`,
       `ANTHROPIC_MODEL=${auditFixtureModel}`, `ANTHROPIC_API_KEY=${auditFixtureKey}`] : []),
     ...(verification ? [`ITERVANE_VERIFICATION_PROFILE=${JSON.stringify(verification)}`] : []),
     ...(repair ? ['ITERVANE_FORMAL_REPAIR=1'] : []),
+    ...(typeof repair === 'object' ? [`ITERVANE_NPM_REPAIR_APPROVALS=${JSON.stringify([repair])}`] : []),
     'ITERVANE_WORKER_POLL_MS=100'], { DATABASE_URL: databaseUrl });
 }
 
@@ -253,7 +256,8 @@ async function watchGuest(controllerUid: string) {
 async function probe() {
   const [bundle, socket, controllerUid, imageSha256, staging, repairBundle, verificationBundle, ...extra] = process.argv.slice(2);
   const [buildMode, buildProfile, baseline, oci] = extra;
-  const protectedRun = buildMode === 'protected-release';
+  const dependencyRun = buildMode === 'protected-release-npm';
+  const protectedRun = buildMode === 'protected-release' || dependencyRun;
   const ociRun = buildMode === 'standard-oci' || protectedRun;
   const buildRun = buildMode === 'standard-build' || buildMode === 'standard-build-missing-cache' || ociRun;
   if (process.platform !== 'linux' || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted' || process.env.DATABASE_URL
@@ -346,7 +350,7 @@ async function probe() {
     };
 
     if (build) {
-      const audit = auditProvider = await auditProtocolFixture({ repairRetry: ociRun });
+      const audit = auditProvider = await auditProtocolFixture({ repairRetry: ociRun && !dependencyRun, dependencyRepair: dependencyRun });
       const automaticProfile = build.oci ? standardVerificationProfileSchema.parse({
         id: 'isolated-rescan-fixture', baselineSha256: build.baseline, policySha256: sha256(JSON.stringify(scannerProfiles)),
         scannerInputsSha256: JSON.parse(readFileSync('.reports/p0/kvm-inspection-inputs.json', 'utf8')).inputsSha256,
@@ -458,12 +462,43 @@ async function probe() {
         match(lifecycle.find(event => event.type === 'task.repair_retry_queued')!.message, /返修/);
         return { current, before, after, retrySha256, generation: handoff.generation };
       };
+      const dependencyFixture = async (profile: StandardVerificationProfile) => {
+        phase = 'protected_npm_audit_repair';
+        worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, audit.baseURL, profile, npmReleaseApproval);
+        const task = await start('Verify and release the scoped npm dependency repair', dependencyReleaseCommit, 'en');
+        await poll(async () => {
+          const [row] = (await db.admin.query(`SELECT t.state, r.reason FROM itervane.tasks t
+            JOIN itervane.task_runs run ON run.task_id=t.id AND run.generation=t.generation
+            JOIN itervane.run_runtime r ON r.run_id=run.id WHERE t.id=$1`, [task.id])).rows;
+          if (row?.state === 'waiting_input' && row.reason === 'verification_observed') return true;
+          if (row && ['waiting_input', 'needs_human', 'failed', 'cancelled', 'reconciling'].includes(row.state)) {
+            if (typeof row.reason === 'string' && /^[a-z_]{1,58}$/.test(row.reason)) phase = `protected_npm_${row.reason}`;
+            throw new Error('npm_fixture_stopped');
+          }
+        }, 720_000, 'protected_npm_evidence');
+        const current = taskDtoSchema.parse(await request(`/v1/tasks/${task.id}`));
+        equal(current.runId, task.runId);
+        await worker.stop('TERM'); worker = undefined;
+        phase = 'protected_npm_receipts';
+        const after = await recordedVerification(current, false, 'repair');
+        deepStrictEqual(after.totals, { introduced: 0, resolved: 1, remaining: 0 });
+        equal(after.commit, dependencyReleaseCommit);
+        const repair = formalRepairDtoSchema.parse(await request(`/v1/tasks/${current.id}/repair`));
+        ok(repair.status === 'recorded' && repair.result.status === 'candidate_ready');
+        const sealed = standardNpmReleaseFiles('approved');
+        deepStrictEqual(repair.result.candidate.changes.map(change => [change.path, change.afterSha256]), [
+          ['package-lock.json', sha256(sealed.lock)], ['package.json', sha256(sealed.manifest)],
+        ]);
+        equal(repair.result.candidate.patchSha256, after.patchSha256);
+        equal(repair.result.candidate.manifestSha256, after.targetManifestSha256);
+        return { current, after, generation: repair.result.generation, dependencyPatchSha256: repair.result.candidate.patchSha256 };
+      };
       if (protectedRun) {
         ok(automaticProfile);
         const proxyDir = process.env.ITERVANE_NATIVE_RELEASE_PROXIES;
         ok(proxyDir && proxyDir.startsWith('/') && proxyDir.endsWith('/itervane-release-proxies'));
-        const retry = await repairRetryFixture(automaticProfile);
-        const { current, after } = retry;
+        const verifiedRepair = dependencyRun ? await dependencyFixture(automaticProfile) : await repairRetryFixture(automaticProfile);
+        const { current, after, generation } = verifiedRepair;
         const built = qualifiedStandardBuildProofSchema.parse(after.build);
         ok(built.status === 'built' && built.baseline?.status === 'passed' && built.baseline.image?.status === 'scanned');
         const image = built.baseline.image;
@@ -495,7 +530,7 @@ async function probe() {
         equal(candidate.status, 'pending');
         equal(candidate.manifest.taskId, current.id);
         equal(candidate.manifest.runId, current.runId);
-        equal(candidate.manifest.generation, retry.generation);
+        equal(candidate.manifest.generation, generation);
         equal(candidate.manifest.verification.resultSha256, after.verificationResultSha256);
         equal(candidate.manifest.image.manifestDigest, image.manifestDigest);
         equal(candidate.manifest.image.configDigest, image.configDigest);
@@ -599,12 +634,15 @@ async function probe() {
         } finally { await englishClient.close(); }
         return {
           sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
-          retry: { before: retry.before, after, retrySha256: retry.retrySha256, generation: retry.generation },
+          ...('before' in verifiedRepair
+            ? { retry: { before: verifiedRepair.before, after, retrySha256: verifiedRepair.retrySha256, generation } }
+            : { dependency: { after, generation, advisoryId: npmReleaseApproval.advisoryId, patchSha256: verifiedRepair.dependencyPatchSha256 } }),
           release: { taskId: current.id, runId: current.runId, candidateId: candidate.id, operationId, fingerprint: candidate.fingerprint,
             decisionVersion: proof.decisionVersion, manifestDigest: proof.manifestDigest, configDigest: proof.runtime.configDigest,
             version: proof.runtime.version, updateId: proof.update.updateId, healthStatus: proof.runtime.healthStatus,
             anonymousStatus: proof.runtime.anonymousStatus, approvalDeniedWithoutPortal: true, httpMcpAgreement: true,
             model: 'scripted_anthropic_fixture', controlPlaneIdentity: 'signed_oidc_fixture', ingressIdentity: 'native_keycloak',
+            repairCategory: dependencyRun ? 'npm_dependency' : 'synthetic_secret',
             stagedFilesRemaining: false },
         };
       }

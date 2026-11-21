@@ -12,3 +12,5 @@
 首轮托管任务进入正式上线核验，因健康检查失败转入人工处理。入口夹具使用默认应用端口 3000，OCI 运行计划写入端口 38171。`1951f4d` 将登记的入口与实际 OCI 端口对齐。 [首轮记录](https://github.com/MaLaNg116/itervane/actions/runs/44956661850/job/137006171176) · [OCI 构建端口](https://github.com/MaLaNg116/itervane/blob/1951f4d/packages/runner/host/runtime_guest.py#L31)
 
 修正后的同一任务发布已通过。PostgreSQL 17.12 证据记录两代候选、首轮复验失败、返修改变补丁、最后一项发现清零。正式安装 Worker 使用同一操作完成镜像导入和原生部署，真实受保护入口的健康状态为 200、匿名状态为 401。审批身份限制、镜像匹配、两种语言的 HTTP/MCP 对照、工作区清理及独立归档摘要均通过。报告源码指纹 `7feb2439d4f68a978c617ce959c2b0799c47a5dca196cab0485fc30165438a61`。 [真实 KVM 发布证据](https://github.com/MaLaNg116/itervane/actions/runs/44957996813/job/137010357391)
+
+审查核对了 MCP 与门户两种身份、归档到真实运行镜像的绑定、入口配置和回环资源清理。五组托管 KVM 通过，回归与 OCI 报告的源码指纹和发布证据一致。最终审查版本 `ccdc9ef919b30aa28c37e005fb91334b97713295` 与托管验收代码一致，六项常规检查通过，已合入 `f13ec0c06f4990db425d8cccb13b867d11691b27`。 [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44957996813) · [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44959539538) · [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44959535503)
