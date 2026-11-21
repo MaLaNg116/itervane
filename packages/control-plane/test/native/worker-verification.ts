@@ -1,0 +1,112 @@
+import { deepStrictEqual, equal, ok } from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { idSchema, qualifiedInspectionResponseSchema, sha256Schema } from '@itervane/contracts';
+import { QualifiedInspectionClient, scannerProfiles, sha256 } from '@itervane/runner';
+import { eq } from 'drizzle-orm';
+import { workerConfig } from '../../src/config.js';
+import { openDatabase, queueName } from '../../src/persistence/database.js';
+import { formalRescanAttempts } from '../../src/persistence/schema.js';
+import { clearSlot } from '../../src/runtime/authority.js';
+import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
+import { runFormalRescan } from '../../src/runtime/formal-rescan.js';
+import { currentInspectionAttempt } from '../../src/service/inspection-evidence.js';
+
+let phase = 'config';
+
+async function verify() {
+  const [taskId, runId, expected, ...extra] = process.argv.slice(2);
+  const config = workerConfig();
+  if (process.platform !== 'linux' || !process.getuid?.() || !config.runner || extra.length
+      || !/^\/itervane_test_[a-f0-9]{12}$/.test(new URL(config.databaseUrl).pathname)) throw new Error('verification_fixture_config');
+  const target = { taskId: idSchema.parse(taskId), runId: idSchema.parse(runId) };
+  const findingId = expected === 'original' ? null : sha256Schema.parse(expected);
+  phase = 'claim';
+  const database = await openDatabase(config.databaseUrl);
+  let heartbeat: NodeJS.Timeout | undefined;
+  try {
+    const workerId = randomUUID();
+    const coordinator = new ExecutionCoordinator(database, { leaseSeconds: config.leaseSeconds });
+    await coordinator.reconcile(workerId);
+    const [job] = await database.boss.fetch(queueName);
+    ok(job);
+    const scope = await coordinator.claim(job, workerId);
+    ok(scope);
+    equal(scope.taskId, target.taskId);
+    equal(scope.runId, target.runId);
+
+    const abort = new AbortController();
+    heartbeat = setInterval(() => {
+      void coordinator.heartbeat(scope).then(live => { if (!live) abort.abort(); }, () => abort.abort());
+    }, Math.floor(config.leaseSeconds * 1_000 / 3));
+    phase = 'profile';
+    const original = await coordinator.withLease(scope, async tx => {
+      const attempt = await currentInspectionAttempt(tx, scope.runId);
+      equal(attempt?.state, 'recorded');
+      const receipt = qualifiedInspectionResponseSchema.parse(attempt?.receipt);
+      if (receipt.kind !== 'receipt') throw new Error('verification_fixture_inspection');
+      return receipt;
+    });
+    const profile = { id: 'isolated-rescan-fixture', baselineSha256: sha256('reserved for protected baseline'),
+      policySha256: sha256(JSON.stringify(scannerProfiles)), scannerInputsSha256: original.snapshot.inputsSha256,
+      runnerImageSha256: config.runner.imageSha256,
+    };
+    const runner = new QualifiedInspectionClient(config.runner);
+    let dispatches = 0;
+    const rescan = () => runFormalRescan(coordinator, scope, profile, {
+      observe: signal => runner.observe(signal),
+      verify(...args) { dispatches += 1; return runner.verify(...args); },
+    }, abort.signal);
+
+    phase = 'scan';
+    const result = await rescan();
+    if (result.kind === 'rejected') {
+      phase = `scan_${result.code}`;
+      throw new Error('verification_fixture_scan');
+    }
+    const { receipt, comparison } = result;
+    const { snapshot } = receipt;
+    phase = 'evidence';
+    equal(receipt.scope.runId, scope.runId);
+    equal(receipt.scope.fence, scope.fence);
+    equal(receipt.scope.baseSnapshotSha256, original.snapshot.manifestSha256);
+    equal(receipt.scope.commit, original.scope.commit);
+    equal(receipt.cleanupConfirmed, true);
+    ok(receipt.domainId !== original.domainId);
+    ok(comparison.status === 'compared');
+    equal(comparison.totals.introduced, 0);
+    if (findingId) {
+      ok(snapshot.target);
+      ok(comparison.groups.some(group => group.beforeIds.includes(findingId) && group.afterIds.length === 0));
+    } else {
+      equal(snapshot.target, null);
+      deepStrictEqual(comparison.totals, { introduced: 0, resolved: 0, remaining: 0 });
+    }
+
+    phase = 'replay';
+    deepStrictEqual(await rescan(), result);
+    equal(dispatches, 1);
+    const [stored, ...duplicates] = await database.db.select().from(formalRescanAttempts).where(eq(formalRescanAttempts.runId, scope.runId));
+    equal(duplicates.length, 0);
+    ok(stored?.state === 'recorded');
+    equal(stored.fence, scope.fence);
+    equal(stored.inputSha256, receipt.scope.verificationInputSha256);
+    equal(stored.receiptSha256, sha256(JSON.stringify(receipt)));
+    // The fixture leaves the slot only after the authenticated cleanup receipt.
+    clearInterval(heartbeat);
+    await coordinator.withLease(scope, tx => clearSlot(tx));
+    return {
+      domainId: receipt.domainId, commit: receipt.scope.commit, inputSha256: stored.inputSha256, receiptSha256: stored.receiptSha256,
+      commandSha256: receipt.scope.commandSha256, baseSnapshotSha256: snapshot.manifestSha256,
+      targetManifestSha256: receipt.scope.targetManifestSha256, patchSha256: snapshot.target?.patchSha256 ?? null,
+      originalReportsSha256: sha256(JSON.stringify(snapshot.reports)),
+      targetReportsSha256: snapshot.target && sha256(JSON.stringify(snapshot.target.reports)),
+      totals: comparison.totals, dispatches, cleanupConfirmed: true,
+    };
+  } finally {
+    clearInterval(heartbeat);
+    await database.close();
+  }
+}
+
+try { console.log(JSON.stringify(await verify())); }
+catch { console.error(`verification_fixture_phase_${phase}`); process.exitCode = 1; }
