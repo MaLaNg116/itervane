@@ -199,12 +199,25 @@ async function claimAfterAudit() {
   return claim();
 }
 
+async function processAdmittedTestTask(worker: DurableWorker) {
+  const deadline = performance.now() + 5_000;
+  do {
+    if (await worker.tick()) return;
+    await delay(40);
+  } while (performance.now() < deadline);
+  throw new Error('The admitted test task did not receive a wakeup');
+}
+
 async function repairReady() {
   const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(fixtureFindingPath), auditModel: auditModel() });
-  try { await worker.tick(); } finally { await worker.close(); }
+  try { await processAdmittedTestTask(worker); } finally { await worker.close(); }
   const [inspection] = await database.storage.db.select().from(inspectionAttempts);
   const [repair] = await database.storage.db.select().from(formalRepairInputs);
-  if (!inspection?.receipt || !repair?.document.findingIds.length) throw new Error('Missing repair fixture basis');
+  if (!inspection?.receipt || !repair?.document.findingIds.length) {
+    const { rows: [runtime] } = await database.admin.query<{ reason: string }>(
+      'SELECT reason FROM itervane.run_runtime WHERE run_id=$1', [task.runId]);
+    throw new Error(`Missing repair fixture basis (${runtime?.reason ?? 'no phase'})`);
+  }
   const original = 'Public sample\n';
   const patch: RepairPatch = {
     version: 1, baseSnapshotSha256: repair.document.inspection.snapshotSha256,
@@ -1303,7 +1316,7 @@ async function queuedFormalRelease(options: { separateRequester?: boolean; expir
       verifyArchive: async archive => ({ kind: 'archive_verified', version: 1, runnerImageSha256: imageSha256, archive }),
     } },
   });
-  try { expect(await worker.tick()).toBe(true); } finally { await worker.close(); }
+  try { await processAdmittedTestTask(worker); } finally { await worker.close(); }
   const application = await resources.createApplication(identity, task.projectId, { name: 'Claim sample' });
   const environment = await resources.createEnvironment(identity, task.projectId, { applicationId: application.id, name: 'Protected sample' });
   const target = { environmentId: environment.id, deploymentId: 'a'.repeat(24), serverId: 'b'.repeat(24),
