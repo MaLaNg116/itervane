@@ -11,3 +11,5 @@
 C3-B 接入全局执行槽和正式队列认领。登记变更使用现有目标锁，待派发操作还需要重验授权版本、有效期和证据。
 
 在 #45 合入后的 `main` 上核对托管版本 `32a9ae659afb86a6ef4977bbdfb8b20c3228a178`，运行代码一致。托管 OCI 验收已通过，冻结目标来源、批准操作、归档、镜像及配置摘要均与真实 Registry 回读一致，独立制品记录确认暂存清理。 [基于 main 的 #46](https://github.com/MaLaNg116/itervane/pull/46) · [托管验收](https://github.com/MaLaNg116/itervane/actions/runs/44922298771)
+
+四组托管验收和常规 CI 均通过。已审查版本 `d92b31d2871b543b27c5a172c563179e5e930270` 已合入 `main`。 [合并提交](https://github.com/MaLaNg116/itervane/commit/000ad7425c3dfd71d70378af81439cb968476418)
