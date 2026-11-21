@@ -14,7 +14,7 @@
 
 - TypeScript 检查、基线探针语法检查、Bash 脚本语法检查和 50 项 Runner 宿主测试通过。
 - 119 项 PostgreSQL 集成通过，包含构建和基线回执的错绑拒绝与匹配回执的持久化重读。托管 [Verification](https://github.com/MaLaNg116/itervane/actions/runs/44894586749) 完成确定性测试、门户和扫描器三组检查。
-- [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44894586700) 的标准构建和缺包对照均已通过，使用提交 `1b9e0fff43659f970278cd0cdee489af59c321ba`。下载的回执与本地归档源码指纹 `7bb5eb2df45c352846fddf691f2b29957a5dbde3670f415f739cdd289e48dd26` 一致。原有 Runner 全量回归仍在进行。
+- [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44894586700) 的标准构建、缺包对照和原有 Runner 回归均已通过，使用提交 `1b9e0fff43659f970278cd0cdee489af59c321ba`。下载的回执与本地归档源码指纹 `7bb5eb2df45c352846fddf691f2b29957a5dbde3670f415f739cdd289e48dd26` 一致，确认原稿与两种修复候选全部清理。已通过 `50e8668dae400379146bbcf7e1abdcf1d82a0aec` 合入 main。
 
 | 固定候选 | 观察 | 持久化回执 SHA-256 |
 | --- | --- | --- |

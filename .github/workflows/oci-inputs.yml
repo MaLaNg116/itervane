@@ -1,0 +1,47 @@
+name: OCI Inputs
+
+on:
+  push:
+    branches: [main, 'feat/**']
+    paths:
+      - '.github/workflows/oci-inputs.yml'
+      - 'packages/runner/host/oci_layout.py'
+      - 'packages/runner/host/test_oci_layout.py'
+      - 'scripts/prepare-runner-oci-inputs.sh'
+      - 'fixtures/runner/verify-oci-inputs.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sealed-inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install the OCI copy tool
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends skopeo
+      - name: Verify pinned inputs and repeat OCI construction
+        shell: bash
+        run: |
+          mkdir -p .reports/p0
+          /usr/bin/python3 -B -m unittest discover -s packages/runner/host -p 'test_oci_layout.py'
+          inputs="$RUNNER_TEMP/itervane-oci-inputs"
+          bash scripts/prepare-runner-oci-inputs.sh "$inputs" > .reports/p0/oci-inputs.json
+          digest=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ociInputsSha256"])' .reports/p0/oci-inputs.json)
+          bash fixtures/runner/verify-oci-inputs.sh "$inputs" "$digest" > .reports/p0/oci-fixture.json
+          git rev-parse HEAD > .reports/p0/oci-code-version.txt
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: oci-inputs-evidence
+          path: |
+            .reports/p0/oci-inputs.json
+            .reports/p0/oci-fixture.json
+            .reports/p0/oci-code-version.txt
+          if-no-files-found: error
+          retention-days: 14
