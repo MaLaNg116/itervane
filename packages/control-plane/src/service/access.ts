@@ -30,12 +30,12 @@ export async function requireStoredActor(tx: Transaction, principalId: string): 
 export async function requireProjectAccess(tx: Transaction, actor: Actor, projectId: string, write = false) {
   const [project] = await tx.select().from(projects).where(eq(projects.id, projectId)).for('share');
   if (!project) throw new DomainError('not_found');
-  if (actor.workspaceGrantId && project.workspaceId === actor.workspaceId) return { project, grantId: actor.workspaceGrantId };
+  if (actor.workspaceGrantId && project.workspaceId === actor.workspaceId) return { project, grantId: actor.workspaceGrantId, role: 'owner' };
   const [member] = await tx.select().from(projectMembers)
     .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.principalId, actor.principalId))).for('share');
   if (!member) throw new DomainError('not_found');
   if (write && member.role !== 'maintainer') throw new DomainError('forbidden');
-  return { project, grantId: member.grantId };
+  return { project, grantId: member.grantId, role: member.role };
 }
 
 export async function requireProject(tx: Transaction, actor: Actor, projectId: string, write = false) {

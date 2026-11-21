@@ -1,16 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import {
-  formalReleaseCandidateDtoSchema, formalReleaseManifestSchema, freezeFormalReleaseSchema, idSchema, releaseDecisionInputSchema,
-  standardVerificationProfileSchema, translate, type FormalReleaseManifest, type Locale,
+  formalReleaseCandidateDtoSchema, formalReleaseManifestSchema, formalReleaseViewSchema, freezeFormalReleaseSchema, idSchema, releaseDecisionInputSchema,
+  standardVerificationProfileSchema, translate, type FormalReleaseCandidateDto, type FormalReleaseManifest, type FormalReleaseTarget,
+  type FormalVerificationResult, type Locale, type ReleaseDecision,
 } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import { formalReleaseQueue, type Database } from '../persistence/database.js';
-import { environments, formalReleaseTargets, releaseCandidates, releaseDecisions, releaseOperations, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
+import { applications, environments, formalReleaseTargets, formalVerificationInputs, formalVerificationResults, releaseCandidates,
+  releaseDecisions, releaseOperations, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { appendEvent, type TaskRow } from '../runtime/authority.js';
 import { blockQueuedRelease, enqueueReleaseOperation } from '../runtime/release-queue.js';
-import { requireActor, requireProject, requireStoredActor, type Transaction } from './access.js';
+import { requireActor, requireProject, requireProjectAccess, requireStoredActor, type Actor, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 import { readReleaseTarget } from './release-targets.js';
 import { databaseNow } from './releases.js';
@@ -24,8 +26,40 @@ async function visibleTask(tx: Transaction, identity: VerifiedIdentity, taskId: 
   const actor = await requireActor(tx, identity);
   const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId)).for(write ? 'update' : 'share');
   if (!task) throw new DomainError('not_found');
-  const project = await requireProject(tx, actor, task.projectId, write);
-  return { actor, task, project };
+  const { project, role } = await requireProjectAccess(tx, actor, task.projectId, write);
+  return { actor, task, project, role };
+}
+
+async function currentRun(tx: Transaction, task: TaskRow) {
+  return (await tx.select({ runId: taskRuns.id, generation: taskRuns.generation, state: taskRuns.state, reason: runRuntime.reason })
+    .from(taskRuns).innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id))
+    .where(and(eq(taskRuns.taskId, task.id), eq(taskRuns.generation, task.generation))))[0];
+}
+
+function canPrepare(task: TaskRow, run: NonNullable<Awaited<ReturnType<typeof currentRun>>>) {
+  return run.state === task.state && ((task.state === 'waiting_input' && run.reason === 'verification_observed')
+    || (task.state === 'waiting_approval' && run.reason === 'release_candidate_ready'));
+}
+
+function releaseEvidence(result: FormalVerificationResult, rawProfile: unknown, mapping: FormalReleaseTarget) {
+  const profile = standardVerificationProfileSchema.safeParse(rawProfile);
+  const { source, build, baseline, image } = result.evidence;
+  if (!profile.success || sha256(JSON.stringify(profile.data)) !== mapping.verificationProfileSha256
+      || result.review?.outcome !== 'observed' || !result.archiveVerification
+      || source.status !== 'compared' || source.introduced !== 0 || source.remaining !== 0
+      || build.status !== 'built' || baseline.status !== 'passed' || image.status !== 'scanned'
+      || mapping.blockImageSeverities.some(severity => image.findings[severity] > 0)) return null;
+  return { source, build, baseline, image, archiveVerification: result.archiveVerification };
+}
+
+async function requesterCanWrite(tx: Transaction, task: TaskRow) {
+  try {
+    await requireProject(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
+    return true;
+  } catch (error) {
+    if (error instanceof DomainError && (error.code === 'not_found' || error.code === 'forbidden')) return false;
+    throw error;
+  }
 }
 
 async function latestCandidate(tx: Transaction, taskId: string) {
@@ -86,8 +120,30 @@ async function assessCandidate(tx: Transaction, task: TaskRow, row: Candidate, m
   return { status, history, operation, active, now };
 }
 
+async function readLatestFormalCandidate(tx: Transaction, task: TaskRow, locale: Locale) {
+  const row = await latestCandidate(tx, task.id);
+  if (row?.document.origin !== 'formal_verification') return null;
+  const manifest = readCandidate(row);
+  const assessment = await assessCandidate(tx, task, row, manifest);
+  return { ...assessment, view: present(row, manifest, assessment.status, locale, assessment.history, assessment.operation?.id) };
+}
+
+function queuedConfirmation({ active, history, operation }: Awaited<ReturnType<typeof assessCandidate>>) {
+  return active && history.at(-1)?.action === 'confirm' && operation?.state === 'queued' ? operation : null;
+}
+
+const targetDisplay = {
+  applicationId: applications.id, applicationName: applications.name,
+  environmentId: environments.id, environmentName: environments.name,
+};
+
 export class FormalReleaseService {
   constructor(private readonly database: Database, private readonly humanClientId?: string) {}
+
+  private canDecide(identity: VerifiedIdentity, actor: Actor, workspaceId: string): actor is Actor & { workspaceGrantId: string } {
+    return !!this.humanClientId && this.humanClientId !== 'signed-access-token' && identity.clientId === this.humanClientId
+      && actor.workspaceId === workspaceId && actor.workspaceGrantId !== null;
+  }
 
   async freeze(identity: VerifiedIdentity, taskId: string, raw: unknown, locale: Locale) {
     parseInput(idSchema, taskId);
@@ -95,11 +151,8 @@ export class FormalReleaseService {
     return this.database.db.transaction(async tx => {
       const { actor, task } = await visibleTask(tx, identity, taskId, true);
       await requireProject(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
-      const [run] = await tx.select({ runId: taskRuns.id, generation: taskRuns.generation, state: taskRuns.state, reason: runRuntime.reason })
-        .from(taskRuns).innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id))
-        .where(and(eq(taskRuns.taskId, task.id), eq(taskRuns.generation, task.generation)));
-      if (!run || run.state !== task.state || !((task.state === 'waiting_input' && run.reason === 'verification_observed')
-          || (task.state === 'waiting_approval' && run.reason === 'release_candidate_ready'))) throw new DomainError('unsupported_state');
+      const run = await currentRun(tx, task);
+      if (!run || !canPrepare(task, run)) throw new DomainError('unsupported_state');
 
       const [environment] = await tx.select({ id: environments.id }).from(environments).where(and(eq(environments.id, environmentId),
         eq(environments.projectId, task.projectId))).for('share');
@@ -110,14 +163,10 @@ export class FormalReleaseService {
       const mapping = readReleaseTarget(target);
       const verification = await readPublishedVerification(tx, task, run);
       if (!verification) throw new DomainError('unsupported_state');
-      const { row, input, result, evidence } = verification;
-      const { source, build, baseline, image } = evidence;
-      const profile = standardVerificationProfileSchema.safeParse(input.profile);
-      if (!profile.success || sha256(JSON.stringify(profile.data)) !== mapping.verificationProfileSha256
-          || result.review?.outcome !== 'observed' || !result.archiveVerification
-          || source.status !== 'compared' || source.introduced !== 0 || source.remaining !== 0
-          || build.status !== 'built' || baseline.status !== 'passed' || image.status !== 'scanned'
-          || mapping.blockImageSeverities.some(severity => image.findings[severity] > 0)) throw new DomainError('unsupported_state');
+      const { row, input, result } = verification;
+      const evidence = releaseEvidence(result, input.profile, mapping);
+      if (!evidence) throw new DomainError('unsupported_state');
+      const { source, build, baseline, image, archiveVerification } = evidence;
 
       const previous = await latestCandidate(tx, taskId);
       const now = await databaseNow(tx);
@@ -135,8 +184,8 @@ export class FormalReleaseService {
           catalogSha256: input.catalogSha256, profileSha256: mapping.verificationProfileSha256, buildSha256: build.distSha256,
           baselineSha256: baseline.baselineSha256, source: { introduced: source.introduced, resolved: source.resolved, remaining: source.remaining },
         },
-        image: { manifestDigest: image.manifestDigest, configDigest: image.configDigest, archive: result.archiveVerification.archive,
-          runnerImageSha256: result.archiveVerification.runnerImageSha256, scanReportSha256: image.scanReportSha256,
+        image: { manifestDigest: image.manifestDigest, configDigest: image.configDigest, archive: archiveVerification.archive,
+          runnerImageSha256: archiveVerification.runnerImageSha256, scanReportSha256: image.scanReportSha256,
           scanPolicySha256: image.scanPolicySha256, findings: image.findings,
         },
         runtimeConfigSha256: mapping.runtimeConfigSha256, rolloutCheckSha256: mapping.rolloutCheckSha256, recoveryPlanSha256: mapping.recoveryPlanSha256,
@@ -170,12 +219,62 @@ export class FormalReleaseService {
     parseInput(idSchema, taskId);
     return this.database.db.transaction(async tx => {
       const { task } = await visibleTask(tx, identity, taskId);
-      const row = await latestCandidate(tx, taskId);
-      if (row?.document.origin !== 'formal_verification') throw new DomainError('not_found');
-      const manifest = readCandidate(row);
-      const { status, history, operation, now } = await assessCandidate(tx, task, row, manifest);
-      if (identity.expiresAt * 1000 <= now.getTime()) throw new DomainError('unauthenticated');
-      return present(row, manifest, status, locale, history, operation?.id);
+      const candidate = await readLatestFormalCandidate(tx, task, locale);
+      if (!candidate) throw new DomainError('not_found');
+      if (identity.expiresAt * 1000 <= candidate.now.getTime()) throw new DomainError('unauthenticated');
+      return candidate.view;
+    });
+  }
+
+  async getView(identity: VerifiedIdentity, taskId: string, locale: Locale) {
+    parseInput(idSchema, taskId);
+    return this.database.db.transaction(async tx => {
+      const { actor, task, project, role } = await visibleTask(tx, identity, taskId);
+      const run = await currentRun(tx, task);
+      if (!run) throw new DomainError('not_found');
+      const assessment = await readLatestFormalCandidate(tx, task, locale);
+      const candidate = assessment?.view ?? null;
+      const target = candidate?.manifest.target;
+      const [candidateTarget] = target ? await tx.select(targetDisplay).from(environments)
+        .innerJoin(applications, eq(applications.id, environments.applicationId))
+        .where(and(eq(environments.id, target.environmentId), eq(environments.projectId, task.projectId),
+          eq(applications.id, target.applicationId))) : [];
+      const mayPrepare = (role === 'owner' || role === 'maintainer') && canPrepare(task, run);
+      const mayDecide = assessment !== null && this.canDecide(identity, actor, project.workspaceId);
+      const requesterAuthorized = (mayPrepare || (mayDecide && candidate?.status === 'pending')) && await requesterCanWrite(tx, task);
+      const actions: ReleaseDecision[] = [];
+      if (mayDecide && candidate?.status === 'pending') {
+        if (requesterAuthorized) actions.push('confirm');
+        actions.push('reject');
+      }
+      if (mayDecide && assessment && queuedConfirmation(assessment)) actions.push('revoke');
+      const availableTargets = mayPrepare && requesterAuthorized ? await this.availableTargets(tx, task, run.runId, candidate) : [];
+      if (identity.expiresAt * 1000 <= (await databaseNow(tx)).getTime()) throw new DomainError('unauthenticated');
+      return formalReleaseViewSchema.parse({
+        taskId, runId: run.runId, taskVersion: task.version, candidate, candidateTarget: candidateTarget ?? null, availableTargets, actions,
+      });
+    });
+  }
+
+  private async availableTargets(tx: Transaction, task: TaskRow, runId: string, candidate: FormalReleaseCandidateDto | null) {
+    // The immutable result is bounded. A preparation command still rereads and binds the full Runner receipt.
+    const [proof] = await tx.select({ result: formalVerificationResults.document, createdAt: formalVerificationResults.createdAt,
+      profile: sql<unknown>`${formalVerificationInputs.document}->'profile'` }).from(formalVerificationResults)
+      .innerJoin(formalVerificationInputs, eq(formalVerificationInputs.runId, formalVerificationResults.runId))
+      .where(eq(formalVerificationResults.runId, runId));
+    if (!proof?.result.archiveVerification) return [];
+    const targets = await tx.select({ display: targetDisplay, row: formalReleaseTargets }).from(formalReleaseTargets)
+      .innerJoin(environments, eq(environments.id, formalReleaseTargets.environmentId))
+      .innerJoin(applications, eq(applications.id, formalReleaseTargets.applicationId))
+      .where(eq(formalReleaseTargets.projectId, task.projectId)).orderBy(asc(applications.name), asc(environments.name));
+    const now = (await databaseNow(tx)).getTime();
+    return targets.flatMap(({ display, row }) => {
+      const mapping = readReleaseTarget(row);
+      const alreadyPending = candidate?.status === 'pending' && candidate.manifest.target.environmentId === row.environmentId
+        && candidate.manifest.target.revision === row.revision;
+      if (alreadyPending || proof.createdAt.getTime() + mapping.verificationMaxAgeSeconds * 1000 <= now
+          || !releaseEvidence(proof.result, proof.profile, mapping)) return [];
+      return [{ ...display, revision: row.revision }];
     });
   }
 
@@ -186,11 +285,11 @@ export class FormalReleaseService {
       const [row] = await tx.select().from(releaseCandidates).where(eq(releaseCandidates.id, candidateId));
       if (row?.document.origin !== 'formal_verification') throw new DomainError('not_found');
       const { actor, task, project } = await visibleTask(tx, identity, row.taskId, true);
-      if (!this.humanClientId || this.humanClientId === 'signed-access-token' || identity.clientId !== this.humanClientId
-          || actor.workspaceId !== project.workspaceId || !actor.workspaceGrantId) throw new DomainError('forbidden');
+      if (!this.canDecide(identity, actor, project.workspaceId)) throw new DomainError('forbidden');
       if (row.fingerprint !== input.fingerprint) throw new DomainError('version_conflict');
       const manifest = readCandidate(row);
-      const { status, history, operation, active, now } = await assessCandidate(tx, task, row, manifest);
+      const assessment = await assessCandidate(tx, task, row, manifest);
+      const { status, history, operation, now } = assessment;
       if (identity.expiresAt * 1000 <= now.getTime()) throw new DomainError('unauthenticated');
       const duplicate = history.find(item => item.actorId === actor.principalId && item.idempotencyKey === input.idempotencyKey);
       if (duplicate) {
@@ -200,8 +299,8 @@ export class FormalReleaseService {
       const version = history.at(-1)?.version ?? 0;
       if (input.expectedVersion !== version) throw new DomainError('version_conflict');
       if (input.action === 'revoke') {
-        if (!active || history.at(-1)?.action !== 'confirm' || operation?.state !== 'queued'
-            || !await blockQueuedRelease(tx, this.database, operation.id, now)) throw new DomainError('unsupported_state');
+        const queued = queuedConfirmation(assessment);
+        if (!queued || !await blockQueuedRelease(tx, this.database, queued.id, now)) throw new DomainError('unsupported_state');
       } else if (status !== 'pending') throw new DomainError('unsupported_state');
 
       if (input.action === 'confirm') {

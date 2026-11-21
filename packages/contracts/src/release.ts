@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { applicationDtoSchema, environmentDtoSchema } from './control-plane.js';
 import { verificationComparisonCountsSchema, verificationImageFindingCountsSchema } from './formal-verification-evidence.js';
 import { sha256Schema } from './inspection.js';
 import { localeSchema } from './i18n.js';
@@ -100,6 +101,21 @@ export const formalReleaseCandidateDtoSchema = z.strictObject({
   status: releaseCandidateStatusSchema, decisionVersion: version, decisions: releaseDecisionDtoSchema.array().max(2),
   operationId: idSchema.nullable(), locale: localeSchema, message: z.string().min(1).max(320),
 });
+const releaseTargetDisplaySchema = z.strictObject({
+  applicationId: idSchema, applicationName: applicationDtoSchema.shape.name,
+  environmentId: idSchema, environmentName: environmentDtoSchema.shape.name,
+});
+export const formalReleaseViewSchema = z.strictObject({
+  taskId: idSchema, runId: idSchema, taskVersion: version.min(1),
+  candidate: formalReleaseCandidateDtoSchema.nullable(),
+  candidateTarget: releaseTargetDisplaySchema.nullable(),
+  availableTargets: releaseTargetDisplaySchema.extend({ revision: version.min(1) }).array(),
+  actions: releaseDecisionSchema.array().max(2),
+});
+export const formalReleaseDecisionResultSchema = z.strictObject({ candidate: formalReleaseCandidateDtoSchema, replayed: z.boolean() });
+export type FormalReleaseCandidateDto = z.infer<typeof formalReleaseCandidateDtoSchema>;
+export type FormalReleaseView = z.infer<typeof formalReleaseViewSchema>;
+
 export const releaseCandidateDtoSchema = z.object({
   id: idSchema, fingerprint: sha256Schema, requestedBy: idSchema, createdAt: timestamp,
   origin: z.literal('trusted_fixture'), releaseEligible: z.literal(false),

@@ -9,7 +9,7 @@ import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { createFormalVerification } from '@itervane/agent';
 import { apiErrorSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
-  formalReleaseCandidateDtoSchema, formalRepairRetryContextSchema, verificationViewSchema,
+  formalReleaseCandidateDtoSchema, formalReleaseViewSchema, formalRepairRetryContextSchema, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
@@ -1037,11 +1037,19 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
   const api = createApi(database.storage, { ...issuer.config, portalClientId }, { logger: false });
   const url = `/v1/tasks/${task.id}/release-candidate`;
   const headers = { authorization: `Bearer ${await issuer.token()}`, 'Accept-Language': 'zh-CN' };
+  const portalHeaders = { ...headers, authorization: `Bearer ${await issuer.token('owner', { azp: portalClientId })}` };
+  const viewUrl = `/v1/tasks/${task.id}/release`;
+  async function view(as = portalHeaders) {
+    const response = await api.inject({ url: viewUrl, headers: as });
+    expect(response.statusCode).toBe(200);
+    return formalReleaseViewSchema.parse(response.json());
+  }
   const payload = { environmentId: environment.id, expectedVersion: current.version };
   const freeze = (body = payload) => api.inject({ method: 'POST', url, payload: body, headers });
   try {
     if (!eligible) {
       expect((await freeze()).statusCode).toBe(409);
+      expect(await view()).toMatchObject({ candidate: null, candidateTarget: null, availableTargets: [], actions: [] });
       expect(await database.storage.db.select().from(releaseCandidates)).toEqual([]);
       return;
     }
@@ -1050,6 +1058,10 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
     await expect(registerReleaseTarget(database.storage, { ...target, environmentId: otherEnvironment.id }))
       .rejects.toMatchObject({ cause: { code: '23505' } });
     await registerReleaseTarget(database.storage, { ...target, environmentId: otherEnvironment.id, deploymentId: 'c'.repeat(24) });
+    const display = { environmentId: environment.id, applicationId: environment.applicationId,
+      environmentName: environment.name, applicationName: 'Release sample' };
+    expect(await view()).toEqual({ taskId: task.id, runId: current.runId, taskVersion: current.version,
+      candidate: null, candidateTarget: null, availableTargets: [{ ...display, revision: 1 }], actions: [] });
     expect((await freeze({ ...payload, environmentId: otherEnvironment.id })).statusCode).toBe(404);
     expect((await freeze({ ...payload, expectedVersion: current.version + 1 })).statusCode).toBe(409);
 
@@ -1071,6 +1083,9 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
     const [proof] = await database.storage.db.select().from(formalVerificationResults);
     expect(candidate.manifest.verification).toMatchObject({ inputSha256: proof?.inputSha256, resultSha256: proof?.sha256, receiptSha256: proof?.receiptSha256 });
     expect(candidate.manifest.image.archive).toEqual(proof?.document.archiveVerification?.archive);
+    expect(await view()).toEqual({ taskId: task.id, runId: current.runId, taskVersion: current.version + 1,
+      candidate, candidateTarget: display, availableTargets: [], actions: ['confirm', 'reject'] });
+    expect((await view(headers)).actions).toEqual([]);
     const [stored] = await database.storage.db.select().from(releaseCandidates);
     const substitute = { ...candidate.manifest, evidenceVersion: 2, image: { ...candidate.manifest.image,
       archive: { ...candidate.manifest.image.archive, bytes: candidate.manifest.image.archive.bytes + 1 },
@@ -1087,14 +1102,20 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
       message: 'The release candidate is awaiting a human decision.',
     });
     expect((await api.inject({ method: 'POST', url, headers: viewerHeaders, payload })).statusCode).toBe(403);
+    expect(await view(viewerHeaders)).toMatchObject({ candidate: { id: candidate.id, locale: 'en' },
+      candidateTarget: display, actions: [], availableTargets: [] });
     await database.admin.query('DELETE FROM itervane.project_members WHERE principal_id=$1', [viewer]);
     expect((await api.inject({ url, headers: viewerHeaders })).statusCode).toBe(404);
+    expect((await api.inject({ url: viewUrl, headers: viewerHeaders })).statusCode).toBe(404);
 
     expect(await registerReleaseTarget(database.storage, { ...target, blockImageSeverities: ['critical', 'medium'] })).toMatchObject({ revision: 2 });
     expect((await api.inject({ url, headers })).json()).toMatchObject({ id: candidate.id, status: 'evidence_changed' });
+    expect(await view()).toMatchObject({ candidate: { id: candidate.id, status: 'evidence_changed', manifest: { target: { revision: 1 } } },
+      candidateTarget: display, availableTargets: [], actions: [] });
     expect((await freeze({ ...payload, expectedVersion: current.version + 1 })).statusCode).toBe(409);
     expect(await registerReleaseTarget(database.storage, target)).toMatchObject({ revision: 3, fingerprint: registered.fingerprint });
     expect((await api.inject({ url, headers })).json()).toMatchObject({ id: candidate.id, status: 'evidence_changed' });
+    expect(await view()).toMatchObject({ availableTargets: [{ ...display, revision: 3 }], actions: [] });
     const next = await freeze({ ...payload, expectedVersion: current.version + 1 });
     expect(next.statusCode).toBe(201);
     const replacement = formalReleaseCandidateDtoSchema.parse(next.json());
@@ -1146,6 +1167,9 @@ async function assertReleaseApproval(api: ReturnType<typeof createApi>, current:
   const tasks = new TaskService(database.storage);
   const queued = await tasks.get(identity, task.id);
   expect(queued.state).toBe('queued');
+  const viewUrl = `/v1/tasks/${task.id}/release`;
+  expect(formalReleaseViewSchema.parse((await api.inject({ url: viewUrl, headers })).json()))
+    .toMatchObject({ taskVersion: queued.version, candidate: approved, availableTargets: [], actions: ['revoke'] });
   await coordinator.reconcile(randomUUID());
   expect((await database.storage.db.select().from(taskRuns).where(eq(taskRuns.id, queued.runId)))[0]?.wakeupJobId).toBeNull();
 
@@ -1158,6 +1182,8 @@ async function assertReleaseApproval(api: ReturnType<typeof createApi>, current:
     } });
     expect(revoke.statusCode).toBe(200);
     expect(revoke.json()).toMatchObject({ candidate: { status: 'revoked', decisionVersion: 2 } });
+    expect(formalReleaseViewSchema.parse((await api.inject({ url: viewUrl, headers })).json()))
+      .toMatchObject({ candidate: { status: 'revoked' }, actions: [] });
   } else {
     expect(await tasks.cancel(identity, task.id, { expectedVersion: queued.version })).toMatchObject({ state: 'cancelled' });
     expect((await confirm()).json()).toMatchObject({ replayed: true, candidate: { status: 'task_changed' } });
