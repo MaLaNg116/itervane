@@ -11,3 +11,5 @@
 后续在合格客体内完成离线安装、受保护测试、构建与最终镜像扫描。缓存兼容性需要在固定客体版本复验。
 
 `0fd42fe` 复用了修复模块已有的 registry 路径与 SHA-512 校验规则。复跑 156 项 Linux 单元和实际预取均通过，锁摘要、91 份制品和总字节一致。 [固定复跑版本](https://github.com/MaLaNg116/itervane/commit/0fd42fefceeff04dd31d8f086f140b47c8b27691) · [交付 PR](https://github.com/MaLaNg116/itervane/pull/26)
+
+合入前下载并核对该版本的托管 KVM 回归。源码指纹与本地固定提交一致，三条独立复扫仍有相应回执与清理证据。准备脚本的缓存记录和真实执行回归分别保留，C2 会在客体内验收缓存安装与构建。 [托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44887439228)
