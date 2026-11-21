@@ -61,11 +61,23 @@ jobs:
         run: |
           work="$RUNNER_TEMP/itervane-ingress"
           node --import tsx fixtures/ingress/probe.mjs "$work/traefik" "$work/oauth2-proxy"
+      - name: Verify that application containers cannot bypass the protected ingress
+        run: |
+          work="$RUNNER_TEMP/itervane-ingress"
+          bash fixtures/ingress/reference/probe-network.sh "$work/traefik"
       - name: Retain sanitized ingress evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: protected-ingress-evidence
           path: .reports/p0/protected-ingress.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Retain sanitized network isolation evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: protected-ingress-network-evidence
+          path: .reports/p0/protected-ingress-network.json
           if-no-files-found: ignore
           retention-days: 14
