@@ -12,6 +12,7 @@ export * from './npm-repair.js';
 export * from './qualified-inspection.js';
 export * from './qualified-repair.js';
 export * from './qualified-standard-baseline.js';
+export * from './qualified-standard-image.js';
 export * from './qualified-standard-build.js';
 export * from './qualified-verification.js';
 export * from './preaudit.js';

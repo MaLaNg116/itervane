@@ -43,6 +43,7 @@ VERIFY_DIGESTS = ("verificationInputSha256", "baseSnapshotSha256", "targetManife
 VERIFY_FIELDS = (FIELDS - {"planSha256"}) | {"operation", "commandBytes", *VERIFY_DIGESTS}
 BUILD_PROFILE = "buildProfileSha256"
 RUN_BASELINE = "runStandardBaseline"
+OCI_INPUTS = "ociInputsSha256"
 PEER = struct.Struct("3i")
 
 
@@ -80,6 +81,8 @@ def parse_request(line):
             if data[RUN_BASELINE] is not True:
                 raise ValueError("invalid baseline request")
             fields = fields | {RUN_BASELINE}
+            if OCI_INPUTS in data:
+                fields = fields | {OCI_INPUTS}
     if data.keys() != fields or type(data["version"]) is not int or data["version"] != 1:
         raise ValueError("invalid request fields")
     if not all(is_v4(data[name]) for name in IDS) or (repair and not is_v4(data["operationId"])):
@@ -89,6 +92,8 @@ def parse_request(line):
     digests = VERIFY_DIGESTS if verification else REPAIR_DIGESTS if repair else ("planSha256",)
     if build:
         digests += (BUILD_PROFILE,)
+    if OCI_INPUTS in fields:
+        digests += (OCI_INPUTS,)
     patterns = {name: IMAGE_DIGEST for name in (*digests, "workspaceSha256")}
     patterns["commit"] = COMMIT
     for name, pattern in patterns.items():
@@ -140,6 +145,7 @@ def require_verification_command(command, request):
         or subject.get("manifestSha256") != request["targetManifestSha256"]
         or profile.get(BUILD_PROFILE) != request.get(BUILD_PROFILE)
         or profile.get(RUN_BASELINE) != request.get(RUN_BASELINE)
+        or profile.get(OCI_INPUTS) != request.get(OCI_INPUTS)
         or any(profile.get(key) != request[key] for key in ("runnerImageSha256", "scannerInputsSha256"))):
         raise ValueError("verification command evidence mismatch")
     repair = command["repair"]
@@ -268,9 +274,15 @@ def build_proof_matches(request, snapshot):
     if RUN_BASELINE not in request or proof.get("status") != "built":
         return "baseline" not in proof
     baseline, dist = proof.get("baseline"), proof.get("dist")
-    return (isinstance(baseline, dict) and isinstance(dist, dict)
+    if not (isinstance(baseline, dict) and isinstance(dist, dict)
             and baseline.get("baselineSha256") == proof.get("baselineSha256")
-            and baseline.get("distSha256") == dist.get("sha256"))
+            and baseline.get("distSha256") == dist.get("sha256")):
+        return False
+    if OCI_INPUTS not in request or baseline.get("status") != "passed":
+        return "image" not in baseline
+    image = baseline.get("image")
+    return (isinstance(image, dict) and image.get(OCI_INPUTS) == request[OCI_INPUTS]
+            and image.get("runtimeInputsSha256") == baseline.get("runtimeInputsSha256"))
 
 
 def verification_proof_matches(request, snapshot, image_sha256):
@@ -328,7 +340,8 @@ def response_for(request, result):
 
 
 def serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping,
-                     enable_repair=False, enable_verification=False, enable_standard_build=False, enable_baseline=False):
+                     enable_repair=False, enable_verification=False, enable_standard_build=False, enable_baseline=False,
+                     enable_oci=False):
     connection.settimeout(HANDSHAKE_SECONDS)
     _, uid, _ = PEER.unpack(connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, PEER.size))
     if uid != worker_uid:
@@ -344,7 +357,7 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
     verification = request.get("operation") == VERIFY_SOURCE
     if (request["workspaceSha256"] != fingerprint or (repair and not enable_repair)
         or (verification and not enable_verification) or (BUILD_PROFILE in request and not enable_standard_build)
-        or (RUN_BASELINE in request and not enable_baseline)):
+        or (RUN_BASELINE in request and not enable_baseline) or (OCI_INPUTS in request and not enable_oci)):
         return rejected("not_ready", request["requestId"])
     origin = origins.get(request["origin"])
     if origin is None:
@@ -378,7 +391,7 @@ def socket_parent(path):
 
 
 def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping, enable_repair, enable_verification,
-               enable_standard_build, enable_baseline):
+               enable_standard_build, enable_baseline, enable_oci):
     socket_parent(path)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(os.fspath(path))
@@ -394,7 +407,8 @@ def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping
                 with connection:
                     try:
                         result = serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping,
-                                                  enable_repair, enable_verification, enable_standard_build, enable_baseline)
+                                                  enable_repair, enable_verification, enable_standard_build, enable_baseline,
+                                                  enable_oci)
                         encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
                         limit = MAX_VERIFICATION_RECEIPT if result["kind"] == "verification_receipt" else MAX_QUALIFIED_RECEIPT
                         if len(encoded) > limit + 8192:
@@ -431,7 +445,7 @@ def main():
         allowed = sys.argv[6:]
         features = set()
         while allowed and allowed[0] in ("--enable-repair", "--enable-verification", "--enable-standard-build",
-                                        "--enable-standard-baseline"):
+                                        "--enable-standard-baseline", "--enable-standard-oci"):
             flag = allowed.pop(0)
             if flag in features:
                 raise ValueError("duplicate capability")
@@ -471,7 +485,7 @@ def main():
 
         run_server(path, worker_uid, origins, fingerprint, observe, launch, stopped,
                    "--enable-repair" in features, "--enable-verification" in features, "--enable-standard-build" in features,
-                   "--enable-standard-baseline" in features)
+                   "--enable-standard-baseline" in features, "--enable-standard-oci" in features)
     except (ImportError, OSError, ValueError, Rejected, SessionRejected, SourceRejected):
         print("Qualified inspection controller could not start.", file=sys.stderr)
         return 1
