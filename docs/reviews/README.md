@@ -49,6 +49,7 @@
 | 043 | P2-E-B3 外部 MCP 发布申请和目标查询 | [#43](https://github.com/MaLaNg116/itervane/pull/43)，已合入 main | [MCP 发布申请导读](p2-e-mcp-release-request.md) | TypeScript、138 项真实 PostgreSQL、常规 CI 和[四组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44917917440)通过 |
 | 044 | P2-E-C1 受保护的发布制品传输 | [#44](https://github.com/MaLaNg116/itervane/pull/44)，已合入 main | [归档传输导读](p2-e-release-archive-transfer.md) | 68 项宿主、163 项单元、138 项 PostgreSQL、七项 Unix socket 专项和[四组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44919348867)通过 |
 | 045 | P2-E-C2 按不可变摘要导入并回读 Registry | [#45](https://github.com/MaLaNg116/itervane/pull/45)，基于已合入 #44 的 main | [Registry 导入导读](p2-e-verified-registry-import.md) | 70 项宿主、163 项单元、138 项 PostgreSQL 及 Distribution 3.1.2 的回环与 TLS Basic 专项通过，[托管验收](https://github.com/MaLaNg116/itervane/actions/runs/44921453641)进行中 |
+| 046 | P2-E-C3-A Registry 来源与审批目标版本绑定 | [#46](https://github.com/MaLaNg116/itervane/pull/46)，依赖 #45 | [来源绑定导读](p2-e-release-registry-binding.md) | 163 项单元和真实 Registry 来源核对通过，PostgreSQL 旧检查点续跑用例正在复跑，[托管验收](https://github.com/MaLaNg116/itervane/actions/runs/44922298771)进行中 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
