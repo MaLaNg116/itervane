@@ -3,6 +3,7 @@ import { createConnection, type Socket } from 'node:net';
 import { dirname, isAbsolute } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  npmRegistryTarball, npmRepairPaths,
   qualifiedInspectionRequestSchema, qualifiedInspectionResponseSchema, qualifiedInspectionStatusSchema, qualifiedRunnerRejectionSchema,
   qualifiedRepairObservationRequestSchema, qualifiedRepairObservationResponseSchema,
   qualifiedRepairRequestSchema, qualifiedRepairResponseSchema, sha256Schema,
@@ -143,6 +144,22 @@ export function verifyQualifiedRepairObservation(receipt: QualifiedRepairObserva
         return target.findingId !== findingId || target.path !== path || target.scanner !== scanner || target.line !== line
           || protectedRepairPath(path, command.workspace.protectedPaths) !== (status === 'protected');
       })) throw new Error('runner_repair_observation_binding');
+  for (const { findingId, path, npm } of observation.targets) {
+    if (!npm) continue;
+    const scope = command.workspace.npmRepairs?.find(entry => entry.findingId === findingId);
+    if (!scope) throw new Error('runner_repair_npm_binding');
+    const paths = npmRepairPaths(scope.lockPath);
+    const { name, installedVersion, fixedVersion, integrity } = scope.approval;
+    if (!paths.some(expected => expected === path) || npm.name !== name || npm.installedVersion !== installedVersion
+      || npm.fixedVersion !== fixedVersion || !paths.every(expected => observation.targets.some(peer => peer.findingId === findingId
+        && peer.path === expected && peer.npm))) throw new Error('runner_repair_npm_binding');
+    const version = JSON.stringify(fixedVersion);
+    const replacements = npm.edits.map(edit =>
+      edit.startByte === edit.endByte && edit.replacement === `, "integrity": ${JSON.stringify(integrity)}` ? JSON.stringify(integrity) : edit.replacement);
+    const permitted = path === scope.lockPath
+      ? [version, version, JSON.stringify(npmRegistryTarball(name, fixedVersion)), JSON.stringify(integrity)] : [version];
+    if (JSON.stringify(replacements.sort()) !== JSON.stringify(permitted.sort())) throw new Error('runner_repair_npm_binding');
+  }
 }
 
 export class QualifiedInspectionClient {

@@ -1,5 +1,6 @@
 import { join } from 'node:path';
-import { qualifiedGuestRepairObservationSchema, repairCommandByteLimit, type RepairTarget } from '@itervane/contracts';
+import { npmRepairPaths, qualifiedGuestRepairObservationSchema, repairCommandByteLimit, type RepairTarget } from '@itervane/contracts';
+import { npmRepairPair } from './npm-repair.js';
 import { readRepairSource, repairText } from './guest-repair-source.js';
 import { readBoundedFile } from './guest-snapshot.js';
 import { sha256 } from './profiles.js';
@@ -43,6 +44,13 @@ export function observeQualifiedRepairTargets(source: string) {
       || workspace.baseSnapshotSha256 !== proof.manifestSha256) throw new Error('repair-base');
   const content = new Map(fixed.files.map(file => [file.path, file.content]));
   const metadata = new Map(fixed.manifest.files.map(file => [file.path, { sha256: file.sha256, bytes: file.bytes }]));
+  const npm = new Map((workspace.npmRepairs ?? []).flatMap(scope => {
+    const paths = npmRepairPaths(scope.lockPath);
+    if (!paths.every(path => !protectedRepairPath(path, workspace.protectedPaths)
+      && command.targets.some(target => target.findingId === scope.findingId && target.path === path && target.scanner === 'trivy'))) return [];
+    const pair = npmRepairPair(content, scope);
+    return pair ? [[scope.findingId, { pair, approval: scope.approval }] as const] : [];
+  }));
   const targets = command.targets.map(target => {
     const base = { ...target, range: null, file: null, templates: [] };
     if (protectedRepairPath(target.path, workspace.protectedPaths)) return { ...base, status: 'protected' };
@@ -53,6 +61,12 @@ export function observeQualifiedRepairTargets(source: string) {
     if (text === null) return { ...base, file, status: 'binary' };
     const range = observedLine(value, target.line);
     const templates = range ? templateHints(target, text, range, value.subarray(range.startByte, range.endByte)) : [];
+    const dependency = npm.get(target.findingId);
+    const edits = dependency?.pair.find(entry => entry.path === target.path)?.edits;
+    if (dependency && edits) {
+      const { name, installedVersion, fixedVersion } = dependency.approval;
+      return { ...base, file, range, templates, status: 'text', npm: { name, installedVersion, fixedVersion, edits } };
+    }
     return { ...base, file, range, templates, status: 'text' };
   });
   const observation = {

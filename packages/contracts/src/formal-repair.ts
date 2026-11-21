@@ -2,7 +2,9 @@ import { z } from 'zod';
 import { auditFindingsPerScan, auditModelProtocolSchema, formalAuditInputSchema } from './formal-audit.js';
 import { localeSchema } from './i18n.js';
 import { sha256Schema, sourceContentLimits } from './inspection.js';
+import { npmRepairScopesSchema } from './npm-repair.js';
 import { idSchema, sourceRefSchema } from './primitives.js';
+import { npmPackageNameSchema, npmStableVersionSchema } from './qualified-inspection.js';
 
 export const formalRepairInputSchema = formalAuditInputSchema.pick({
   version: true, taskId: true, projectId: true, runId: true, generation: true,
@@ -27,6 +29,7 @@ export const repairWorkspaceSchema = z.strictObject({
   source: sourceRefSchema, baseSnapshotSha256: sha256Schema,
   editablePaths: z.array(pathSchema).min(1).max(repairPatchLimits.files).refine(uniquePaths),
   protectedPaths: z.array(pathSchema).max(sourceContentLimits.maxFiles).refine(uniquePaths),
+  npmRepairs: npmRepairScopesSchema.optional(),
 });
 export type RepairWorkspace = z.infer<typeof repairWorkspaceSchema>;
 
@@ -35,12 +38,16 @@ const repairEditSchema = z.strictObject({
   replacement: z.string().max(repairPatchLimits.replacementBytes).refine(value =>
     value.isWellFormed() && bytes(value) <= repairPatchLimits.replacementBytes && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)),
 }).refine(edit => edit.startByte < edit.endByte || (edit.startByte === edit.endByte && edit.replacement.length > 0));
+function orderedEdits(edits: readonly z.infer<typeof repairEditSchema>[]) {
+  return edits.every((edit, index) => {
+    const previous = edits[index - 1];
+    return !previous || (edit.startByte >= previous.endByte && edit.startByte > previous.startByte);
+  });
+}
 const repairFilePatchSchema = z.strictObject({
-  path: pathSchema, beforeSha256: sha256Schema, edits: z.array(repairEditSchema).min(1).max(repairPatchLimits.editsPerFile),
-}).refine(file => file.edits.every((edit, index) => {
-  const previous = file.edits[index - 1];
-  return !previous || (edit.startByte >= previous.endByte && edit.startByte > previous.startByte);
-}), 'Edits must be ordered and disjoint');
+  path: pathSchema, beforeSha256: sha256Schema,
+  edits: z.array(repairEditSchema).min(1).max(repairPatchLimits.editsPerFile).refine(orderedEdits, 'Edits must be ordered and disjoint'),
+});
 export const repairPatchSchema = z.strictObject({
   version: z.literal(1), baseSnapshotSha256: sha256Schema,
   files: z.array(repairFilePatchSchema).min(1).max(repairPatchLimits.files),
@@ -68,7 +75,13 @@ const repairTargetObservationSchema = repairTargetSchema.extend({
   status: z.enum(['text', 'binary', 'protected', 'missing']),
   file: observedFileSchema.nullable(), range: observedRangeSchema.nullable(),
   templates: z.array(repairTemplateIdSchema).max(1),
+  npm: z.strictObject({
+    name: npmPackageNameSchema, installedVersion: npmStableVersionSchema, fixedVersion: npmStableVersionSchema,
+    edits: z.array(repairEditSchema).min(1).max(4).refine(orderedEdits),
+  }).optional(),
 }).refine(target => {
+  if (target.npm && (target.scanner !== 'trivy' || target.status !== 'text' || !target.file || target.line !== null
+    || target.npm.edits.some(edit => edit.endByte > target.file!.bytes))) return false;
   if (target.status === 'protected' || target.status === 'missing') return !target.file && !target.range && !target.templates.length;
   if (!target.file) return false;
   if (target.range && (target.status !== 'text' || target.line === null || target.range.endByte > target.file.bytes)) return false;

@@ -8,6 +8,7 @@ import { readBoundedFile, readGuestSnapshotData } from './guest-snapshot.js';
 import { sha256, sourceLimits } from './profiles.js';
 import { canonicalRepairCommand, protectedRepairPath } from './repair-command.js';
 import { readRepairSource, repairText } from './guest-repair-source.js';
+import { requireNpmRepairPatch } from './npm-repair.js';
 
 const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 type RepairCommand = ReturnType<typeof canonicalRepairCommand>;
@@ -37,6 +38,7 @@ function prepareCandidate({ manifest: base, files }: ReturnType<typeof readGuest
   const editable = new Set(workspace.editablePaths);
   const contents = new Map(files.map(file => [file.path, file.content]));
   const metadata = new Map(base.files.map(file => [file.path, file]));
+  requireNpmRepairPatch(contents, patch.files, workspace.npmRepairs ?? []);
   const changes: { path: string; beforeSha256: string; afterSha256: string; beforeBytes: number; afterBytes: number; edits: number }[] = [];
   let totalBytes = base.totalBytes;
   for (const { path, beforeSha256, edits } of patch.files) {

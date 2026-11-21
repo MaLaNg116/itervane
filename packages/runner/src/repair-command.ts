@@ -1,8 +1,13 @@
-import { repairCommandByteLimit, repairObservationCommandSchema, repairPatchSchema, repairWorkspaceSchema } from '@itervane/contracts';
+import { repairCommandByteLimit, repairObservationCommandSchema, repairPatchSchema, repairWorkspaceSchema, type NpmRepairScope } from '@itervane/contracts';
 import { sha256 } from './profiles.js';
 import { sourcePath } from './snapshot.js';
 
 const byPath = (left: string, right: string) => Buffer.compare(Buffer.from(left), Buffer.from(right));
+
+function canonicalNpmRepairs(scopes?: readonly NpmRepairScope[]) {
+  return scopes?.map(scope => ({ ...scope, lockPath: sourcePath(scope.lockPath) }))
+    .sort((left, right) => byPath(left.lockPath, right.lockPath) || left.findingId.localeCompare(right.findingId));
+}
 
 export function protectedRepairPath(path: string, protectedPaths: readonly string[]) {
   const folded = path.toLowerCase();
@@ -14,8 +19,9 @@ export function protectedRepairPath(path: string, protectedPaths: readonly strin
 
 export function canonicalRepairCommand(rawWorkspace: unknown, rawPatch: unknown) {
   const input = repairWorkspaceSchema.parse(rawWorkspace);
+  const npmRepairs = canonicalNpmRepairs(input.npmRepairs);
   const workspace = { ...input, editablePaths: input.editablePaths.map(sourcePath).sort(byPath),
-    protectedPaths: input.protectedPaths.map(sourcePath).sort(byPath) };
+    protectedPaths: input.protectedPaths.map(sourcePath).sort(byPath), ...(npmRepairs ? { npmRepairs } : {}) };
   const proposal = repairPatchSchema.parse(rawPatch);
   const patch = { ...proposal, files: proposal.files.map(file => ({ ...file, path: sourcePath(file.path) }))
     .sort((left, right) => byPath(left.path, right.path)) };
@@ -27,7 +33,9 @@ export function canonicalRepairCommand(rawWorkspace: unknown, rawPatch: unknown)
 
 export function canonicalRepairObservation(raw: unknown) {
   const data = repairObservationCommandSchema.parse(raw);
-  const workspace = { ...data.workspace, protectedPaths: data.workspace.protectedPaths.map(sourcePath).sort(byPath) };
+  const npmRepairs = canonicalNpmRepairs(data.workspace.npmRepairs);
+  const workspace = { ...data.workspace, protectedPaths: data.workspace.protectedPaths.map(sourcePath).sort(byPath),
+    ...(npmRepairs ? { npmRepairs } : {}) };
   const targets = data.targets.map(target => ({ ...target, path: sourcePath(target.path) }))
     .sort((left, right) => left.findingId.localeCompare(right.findingId) || byPath(left.path, right.path));
   const bytes = Buffer.from(JSON.stringify({ workspace, targets }));
