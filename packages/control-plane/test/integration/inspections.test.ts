@@ -1061,7 +1061,7 @@ async function assertFormalCandidate(eligible: boolean) {
     expect(responses.map(response => response.statusCode).sort()).toEqual([200, 201]);
     const candidate = formalReleaseCandidateDtoSchema.parse(responses[0]!.json());
     expect(responses[1]!.json()).toEqual(candidate);
-    expect(candidate).toMatchObject({ locale: 'zh-CN', status: 'pending', manifest: {
+    expect(candidate).toMatchObject({ locale: 'zh-CN', status: 'pending', message: '发布候选已冻结，等待人工决定。', manifest: {
       source: task.source, target: { applicationId: environment.applicationId, environmentId: environment.id, revision: 1, mappingSha256: registered.fingerprint },
       diffSha256: null, runId: current.runId, image: { runnerImageSha256: imageSha256, findings: { medium: 1 } },
     } });
@@ -1080,7 +1080,9 @@ async function assertFormalCandidate(eligible: boolean) {
     await database.admin.query('INSERT INTO itervane.principals(id,issuer,subject) VALUES($1,$2,$3)', [viewer, issuer.config.issuer, 'release-viewer']);
     await database.admin.query("INSERT INTO itervane.project_members(project_id,principal_id,role) VALUES($1,$2,'viewer')", [task.projectId, viewer]);
     const viewerHeaders = { authorization: `Bearer ${await issuer.token('release-viewer')}`, 'Accept-Language': 'en' };
-    expect((await api.inject({ url, headers: viewerHeaders })).json()).toMatchObject({ id: candidate.id, locale: 'en', status: 'pending' });
+    expect((await api.inject({ url, headers: viewerHeaders })).json()).toMatchObject({ id: candidate.id, locale: 'en', status: 'pending',
+      message: 'The release candidate is awaiting a human decision.',
+    });
     expect((await api.inject({ method: 'POST', url, headers: viewerHeaders, payload })).statusCode).toBe(403);
     await database.admin.query('DELETE FROM itervane.project_members WHERE principal_id=$1', [viewer]);
     expect((await api.inject({ url, headers: viewerHeaders })).statusCode).toBe(404);

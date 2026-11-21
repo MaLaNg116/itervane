@@ -43,7 +43,8 @@ function readCandidate(row: Candidate) {
 
 function present(row: Candidate, manifest: FormalReleaseManifest, status: CandidateStatus, locale: Locale) {
   return formalReleaseCandidateDtoSchema.parse({ id: row.id, fingerprint: row.fingerprint, manifest, status, locale,
-    createdAt: row.createdAt.toISOString(), message: translate(locale, `release.${status}`),
+    createdAt: row.createdAt.toISOString(),
+    message: translate(locale, status === 'pending' ? 'task.release_candidate_frozen' : `release.${status}`),
   });
 }
 
