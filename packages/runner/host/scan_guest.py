@@ -20,7 +20,11 @@ def verify_boundary():
     status = Path("/proc/self/status").read_text(encoding="ascii")
     if "NoNewPrivs:\t1\n" not in status:
         raise RuntimeError()
-    for path in (SOURCE / "worktree", SOURCE / "npm", TOOLS / "policy", TOOLS / "cache"):
+    readonly = [SOURCE / "worktree", SOURCE / "npm", TOOLS / "policy", TOOLS / "cache"]
+    candidate = SOURCE.with_name("candidate")
+    if candidate.exists() or candidate.is_symlink():
+        readonly.extend((candidate / "worktree", candidate / "npm"))
+    for path in readonly:
         if not os.statvfs(path).f_flag & os.ST_RDONLY:
             raise RuntimeError()
     for family in (socket.AF_INET, socket.AF_INET6):

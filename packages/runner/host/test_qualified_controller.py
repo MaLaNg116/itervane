@@ -34,6 +34,22 @@ def repair_request():
             "baseSnapshotSha256": "e" * 64}
 
 
+def verification_request():
+    data = request()
+    del data["planSha256"]
+    profile = {"runnerImageSha256": "d" * 64, "scannerInputsSha256": "e" * 64}
+    manifest = "f" * 64
+    frozen = {key: data[key] for key in ("version", "taskId", "runId", "projectId", "generation")}
+    frozen.update({
+        "source": {key: data[key] for key in ("repositoryId", "commit")}, "profile": profile,
+        "inspection": {"snapshotSha256": manifest}, "subject": {"kind": "original", "manifestSha256": manifest},
+    })
+    return {
+        **data, "operation": controller.VERIFY_SOURCE, **profile,
+        "baseSnapshotSha256": manifest, "targetManifestSha256": manifest,
+    }, frozen
+
+
 class ControllerTest(unittest.TestCase):
     def test_member_and_exact_origin_are_required_before_launch(self):
         launch = Mock()
@@ -122,6 +138,48 @@ class ControllerTest(unittest.TestCase):
         result = Result("cleanup_unproven", runId=str(uuid.uuid4()))
         reply = controller.response_for(data, result)
         self.assertEqual(reply, controller.rejected("cleanup_unproven", data["requestId"], "unknown", result.runId))
+
+    def test_verification_requires_its_own_enablement_and_frozen_evidence(self):
+        data, original = verification_request()
+        altered = {**original, "taskId": str(uuid.uuid4())}
+        launch = Mock(return_value=Result("config_required"))
+        for enabled, pulse, frozen, code in (
+            (False, b"", original, "not_ready"),
+            (True, b"C", original, "lease_lost"),
+            (True, b"K", altered, "invalid_request"),
+            (True, b"K", original, "not_ready"),
+        ):
+            body = json.dumps({"input": frozen, "repair": None}, separators=(",", ":")).encode()
+            header = {**data, "verificationInputSha256": controller.json_digest(frozen),
+                      "commandSha256": hashlib.sha256(body).hexdigest(), "commandBytes": len(body)}
+            server, client = socket.socketpair()
+            with self.subTest(enabled=enabled, code=code), server, client, ThreadPoolExecutor(max_workers=1) as pool:
+                client.settimeout(1)
+                with patch.object(controller, "PULSE_SECONDS", 0.05):
+                    future = pool.submit(controller.serve_connection, server, os.getuid(), {ORIGIN: ORIGIN}, WORKSPACE,
+                                         Mock(), launch, lambda: False, True, enabled)
+                    client.sendall(json.dumps(header).encode() + b"\n")
+                    if enabled:
+                        with client.makefile("rb", buffering=0) as reader:
+                            self.assertEqual(reader.readline(len(controller.READY)), controller.READY)
+                        client.sendall(pulse + (body if pulse == b"K" else b""))
+                    self.assertEqual(future.result(timeout=2), controller.rejected(code, data["requestId"]))
+        launch.assert_called_once()
+
+    def test_verification_receipt_requires_matching_target_and_scanning_inputs(self):
+        data, frozen = verification_request()
+        data.update(verificationInputSha256=controller.json_digest(frozen), commandSha256="a" * 64, commandBytes=1)
+        domain = str(uuid.uuid4())
+        proof = {"manifestSha256": data["baseSnapshotSha256"], "inputsSha256": data["scannerInputsSha256"],
+                 "verificationInputSha256": data["verificationInputSha256"], "commandSha256": data["commandSha256"], "target": None}
+        origin = SimpleNamespace(originSha256="a" * 64, commitSha256="b" * 64)
+        options = {"runId": domain, "cleanupConfirmed": True, "sessionVerified": True,
+                   "source": origin, "imageSha256": data["runnerImageSha256"]}
+        reply = controller.response_for(data, Result("inspection_passed", inspection=proof, **options))
+        self.assertEqual(reply["kind"], "verification_receipt")
+        for changed in ({"target": {"manifestSha256": "a" * 64}}, {"inputsSha256": "b" * 64}):
+            result = Result("inspection_passed", inspection={**proof, **changed}, **options)
+            self.assertEqual(controller.response_for(data, result), controller.rejected("job_failed", data["requestId"], "confirmed", domain))
 
     def test_repair_requires_enablement_current_pulse_and_exact_command_before_launch(self):
         data = repair_request()

@@ -11,7 +11,8 @@ from native_job import JobRejected, open_channel, stream_io
 from source_gateway import RegisteredOrigin, SourceGateway, SourceRejected
 from source_wire import (
     CLOSED, GUEST_ERRORS, GUEST_REPAIR_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_QUALIFIED_RECEIPT,
-    MAX_REPAIR_COMMAND, MAX_REPAIR_RECEIPT, MAX_REQUEST_BYTES, QUALIFIED_START, RECEIPT, SOURCE_PORT, START, SourceWire,
+    MAX_REPAIR_COMMAND, MAX_REPAIR_RECEIPT, MAX_REQUEST_BYTES, MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT,
+    QUALIFIED_START, RECEIPT, SOURCE_PORT, START, SourceWire,
 )
 
 
@@ -37,17 +38,22 @@ class SourceEvidence:
 class SourceProbe:
     port = SOURCE_PORT
 
-    def __init__(self, gateway, inspect=False, repository_id=None, repair_command=None, repair_observation=False):
+    def __init__(self, gateway, inspect=False, repository_id=None, repair_command=None, repair_observation=False,
+                 verification_command=None):
         if repair_command is not None and (repository_id is None or not 0 < len(repair_command) <= MAX_REPAIR_COMMAND):
             raise ValueError("invalid repair command")
         if repair_observation and repair_command is None:
             raise ValueError("missing repair observation command")
+        if verification_command is not None and (repository_id is None or repair_command is not None
+            or not 0 < len(verification_command) <= MAX_VERIFICATION_COMMAND):
+            raise ValueError("invalid verification command")
         self.gateway = gateway
         self.evidence = None
         self.inspect = inspect or repository_id is not None
         self.repository_id = repository_id
         self.repair_command = repair_command
         self.repair_observation = repair_observation
+        self.verification_command = verification_command
         self.inspection = None
         self.repair = None
         self.scan_deadline = None
@@ -71,7 +77,8 @@ class SourceProbe:
         if self.repository_id is None:
             wire.send(b"A" if self.inspect else b"S", START.pack(identity, commit))
         else:
-            start = b"L" if self.repair_observation else b"R" if self.repair_command is not None else b"F"
+            start = (b"V" if self.verification_command is not None else b"L" if self.repair_observation
+                     else b"R" if self.repair_command is not None else b"F")
             wire.send(start, QUALIFIED_START.pack(identity, commit, uuid.UUID(self.repository_id).bytes))
         self.phase = "source-fetch"
         while True:
@@ -108,6 +115,15 @@ class SourceProbe:
             hashlib.sha256(origin).hexdigest(), actual.hex(), tree.hex(), digest.hex(), count,
             gateway.requests, gateway.transferred,
         )
+        if self.verification_command is not None:
+            self.phase = "verification-results"
+            self.scan_deadline = time.monotonic() + INSPECTION_SECONDS
+            wire.send(b"W", self.verification_command)
+            proof = self.read_proof(wire, run_id, b"Y", MAX_VERIFICATION_RECEIPT)
+            if proof.get("commandSha256") != hashlib.sha256(self.verification_command).hexdigest():
+                raise ProtocolError("invalid verification command digest")
+            self.inspection = proof
+            return "inspection_passed"
         if self.repair_command is not None:
             self.phase = "repair-results"
             self.scan_deadline = time.monotonic() + INSPECTION_SECONDS
