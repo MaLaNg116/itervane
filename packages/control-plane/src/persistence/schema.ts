@@ -512,3 +512,20 @@ export const formalReleaseSteps = domain.table('formal_release_steps', {
       ))
   ) IS TRUE`),
 ]);
+
+export const formalReleaseRolloutAttempts = domain.table('formal_release_rollout_attempts', {
+  operationId: uuid('operation_id').notNull().references(() => releaseOperations.id),
+  fence: integer('fence').notNull(),
+  workerId: uuid('worker_id').notNull(),
+  state: text('state').$type<'observing' | 'expired' | 'manual_review'>().notNull().default('observing'),
+  leaseUntil: timestamp('lease_until', { withTimezone: true }).notNull(),
+  createdAt: createdAt(),
+}, t => [
+  primaryKey({ columns: [t.operationId, t.fence] }),
+  uniqueIndex('one_formal_rollout_observer').on(sql`(1)`).where(sql`${t.state} = 'observing'`),
+  check('formal_rollout_fence', sql`${t.fence} BETWEEN 1 AND 3`),
+  check('formal_rollout_state', sql`(${t.state} = 'observing' OR (${t.state} = 'expired' AND ${t.fence} < 3)
+    OR (${t.state} = 'manual_review' AND ${t.fence} = 3))`),
+  check('formal_rollout_lease', sql`${t.leaseUntil} > ${t.createdAt}
+    AND ${t.leaseUntil} <= ${t.createdAt} + interval '45 seconds'`),
+]);
