@@ -71,3 +71,20 @@ it('requires explicit formal repair, a qualified Runner, a configured model and 
   expect(workerConfig({ ...enabled, ITERVANE_REPAIR_PROTECTED_PATHS: '["platform-tests",".GitHub"]' }).repairProtectedPaths)
     .toEqual(['.github', '.itervane', 'platform-tests']);
 });
+
+it('loads reviewed npm upgrades only when formal repair is enabled and rejects ambiguous or invalid entries', () => {
+  const entry = { advisoryId: 'CVE-2021-23337', name: 'lodash', installedVersion: '4.17.20', fixedVersion: '4.17.21',
+    integrity: `sha512-${'A'.repeat(86)}==` };
+  const environment = { ...configured, ITERVANE_RUNNER_SOCKET: '/run/itervane/inspection.sock',
+    ITERVANE_RUNNER_UID: '1234', ITERVANE_RUNNER_IMAGE_SHA256: 'a'.repeat(64), ITERVANE_AUDIT_MODEL_PROVIDER: 'anthropic',
+    ANTHROPIC_BASE_URL: 'http://localhost:4312', ANTHROPIC_API_KEY: 'test-credential', ANTHROPIC_MODEL: 'fixture' };
+  const enabled = { ...environment, ITERVANE_FORMAL_REPAIR: '1' };
+  expect(workerConfig(environment).npmRepairApprovals).toEqual([]);
+  expect(workerConfig(enabled).npmRepairApprovals).toEqual([]);
+  expect(workerConfig({ ...enabled, ITERVANE_NPM_REPAIR_APPROVALS: JSON.stringify([entry]) }).npmRepairApprovals).toEqual([entry]);
+  expect(workerConfig({ ...environment, ITERVANE_NPM_REPAIR_APPROVALS: JSON.stringify([entry]) }).npmRepairApprovals).toEqual([]);
+  for (const entries of [[entry, { ...entry, fixedVersion: '4.17.22' }], [{ ...entry, integrity: 'sha512-invalid' }],
+    [{ ...entry, fixedVersion: entry.installedVersion }]]) {
+    expect(() => workerConfig({ ...enabled, ITERVANE_NPM_REPAIR_APPROVALS: JSON.stringify(entries) })).toThrow();
+  }
+});

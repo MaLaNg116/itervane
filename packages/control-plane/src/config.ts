@@ -1,6 +1,6 @@
 import { posix } from 'node:path';
 import { z } from 'zod';
-import { auditModelProtocolSchema, sha256Schema } from '@itervane/contracts';
+import { auditModelProtocolSchema, npmUpgradeApprovalsSchema, sha256Schema } from '@itervane/contracts';
 import { safeEndpoint } from '@itervane/model';
 import { sourcePath } from '@itervane/runner';
 import { validateIdentityConfig } from './auth/identity.js';
@@ -45,14 +45,15 @@ export function workerConfig(env: NodeJS.ProcessEnv = process.env) {
     ? z.array(z.string()).max(62).parse(JSON.parse(env.ITERVANE_REPAIR_PROTECTED_PATHS ?? '[]')) : [];
   const repairProtectedPaths = repairEnabled
     ? [...new Set(['.github', '.itervane', ...additionalProtections].map(path => sourcePath(path).toLowerCase()))] : undefined;
-  if (selected === undefined) return { ...worker, runner, auditModel: undefined, repairProtectedPaths };
+  const npmRepairApprovals = repairEnabled ? npmUpgradeApprovalsSchema.parse(JSON.parse(env.ITERVANE_NPM_REPAIR_APPROVALS ?? '[]')) : [];
+  if (selected === undefined) return { ...worker, runner, auditModel: undefined, repairProtectedPaths, npmRepairApprovals };
   const protocol = auditModelProtocolSchema.parse(selected);
   const prefix = protocol === 'anthropic' ? 'ANTHROPIC' : 'OPENAI';
   const modelConfig = z.strictObject({ apiKey: z.string().min(1).max(4096), model: z.string().trim().min(1).max(240),
     baseURL: z.string().min(1).max(2048).transform(safeEndpoint) }).parse({
     apiKey: env[`${prefix}_API_KEY`], model: env[`${prefix}_MODEL`], baseURL: env[`${prefix}_BASE_URL`],
   });
-  return { ...worker, runner, auditModel: { protocol, ...modelConfig }, repairProtectedPaths };
+  return { ...worker, runner, auditModel: { protocol, ...modelConfig }, repairProtectedPaths, npmRepairApprovals };
 }
 
 export function migrationConfig(env: NodeJS.ProcessEnv = process.env) {

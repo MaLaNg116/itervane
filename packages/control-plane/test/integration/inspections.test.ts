@@ -9,9 +9,10 @@ import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, type QualifiedInspectionReceipt,
-  type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt, type RepairPatch } from '@itervane/contracts';
+  type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt, type RepairPatch } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
 import { canonicalRepairCommand, canonicalRepairObservation, scannerProfiles, sha256 } from '@itervane/runner';
+import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../verification/src/agent/npm-repair-fixture.js';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { queueName } from '../../src/persistence/database.js';
@@ -105,10 +106,15 @@ it('enforces current project permission for both preparing and reading the plan'
   expect((await database.admin.query('SELECT * FROM itervane.inspection_plans')).rowCount).toBe(0);
 });
 
-function testReceipt(request: QualifiedInspectionRequest, partial = false, findingPath?: string) {
+function testReceipt(request: QualifiedInspectionRequest, partial = false, findingPath?: string, approval?: NpmUpgradeApproval) {
   const { origin, ...scope } = request;
   const domainId = randomUUID();
   const manifestSha256 = 'b'.repeat(64);
+  const npmFinding = approval && {
+    id: sha256(JSON.stringify(['trivy', manifestSha256, approval.advisoryId, npmFixturePaths.lock, null, approval.name, approval.installedVersion])),
+    severity: 'high', ruleId: approval.advisoryId, path: npmFixturePaths.lock, line: null,
+    npm: { name: approval.name, installedVersion: approval.installedVersion, fixedVersions: [approval.fixedVersion] },
+  };
   const receipt = qualifiedInspectionResponseSchema.parse({
     kind: 'receipt', scope, domainId, imageSha256, originSha256: sha256(origin), commitSha256: 'c'.repeat(64),
     cleanupConfirmed: true, sessionVerified: true,
@@ -119,7 +125,7 @@ function testReceipt(request: QualifiedInspectionRequest, partial = false, findi
         findings: scanner === 'gitleaks' && findingPath ? [{
           id: sha256(JSON.stringify([scanner, manifestSha256, 'fixture-pattern', findingPath, 3])),
           severity: 'unknown', ruleId: 'fixture-pattern', path: findingPath, line: 3,
-        }] : [],
+        }] : scanner === 'trivy' && npmFinding ? [npmFinding] : [],
         status: partial && scanner === 'trivy' ? 'unsupported' : 'completed',
         reason: partial && scanner === 'trivy' ? 'missing_inventory' : null,
         database: scanner === 'trivy' && !partial ? { sha256: 'f'.repeat(64), updatedAt: new Date().toISOString() } : null,
@@ -180,15 +186,20 @@ async function repairReady() {
 }
 
 function repairReceipt(scan: QualifiedInspectionReceipt, request: Parameters<RepairRunner['repair']>[0],
-  workspace: Parameters<RepairRunner['repair']>[1], patch: RepairPatch, original: string): QualifiedRepairReceipt {
+  workspace: Parameters<RepairRunner['repair']>[1], patch: RepairPatch, original: string | Readonly<Record<string, string>>): QualifiedRepairReceipt {
   const command = canonicalRepairCommand(workspace, patch);
   const { origin: registered, ...scope } = qualifiedRepairRequestSchema.parse({ ...request, operation: 'apply_repair',
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length });
   const domainId = randomUUID();
-  const file = patch.files[0]!;
-  const edit = file.edits[0]!;
-  const bytes = Buffer.from(original);
-  const modified = Buffer.concat([bytes.subarray(0, edit.startByte), Buffer.from(edit.replacement), bytes.subarray(edit.endByte)]);
+  const changes = patch.files.map(file => {
+    const bytes = Buffer.from(typeof original === 'string' ? original : original[file.path]!);
+    let modified = bytes;
+    for (const edit of file.edits.toReversed()) {
+      modified = Buffer.concat([modified.subarray(0, edit.startByte), Buffer.from(edit.replacement), modified.subarray(edit.endByte)]);
+    }
+    return { path: file.path, beforeSha256: file.beforeSha256, afterSha256: sha256(modified), beforeBytes: bytes.length,
+      afterBytes: modified.length, edits: file.edits.length };
+  });
   return {
     kind: 'repair_receipt', scope, domainId, imageSha256, originSha256: sha256(registered), commitSha256: scan.commitSha256,
     cleanupConfirmed: true, sessionVerified: true,
@@ -197,9 +208,7 @@ function repairReceipt(scan: QualifiedInspectionReceipt, request: Parameters<Rep
       manifestSha256: scope.baseSnapshotSha256, commandSha256: scope.commandSha256, readOnly: true, offline: true,
       candidate: { version: 1, operationId: scope.operationId, repairInputSha256: scope.repairInputSha256,
         baseSnapshotSha256: scope.baseSnapshotSha256, workspaceSha256: command.workspaceSha256, patchSha256: command.patchSha256,
-        candidateManifestSha256: sha256(Buffer.concat([modified, Buffer.from(' candidate')])),
-        changes: [{ path: file.path, beforeSha256: file.beforeSha256, afterSha256: sha256(modified), beforeBytes: Buffer.byteLength(original),
-          afterBytes: Buffer.byteLength(modified), edits: file.edits.length }] },
+        candidateManifestSha256: sha256(JSON.stringify(changes)), changes },
     },
   };
 }
@@ -251,6 +260,67 @@ it('observes only published audit targets while the current project grant surviv
   await expect(observeFormalRepairTargets(coordinator, scope, proposal.findingIds, options)).rejects.toMatchObject({ code: 'not_found' });
   expect(blockedPulse).toBe(true);
   expect(observeRepair).toHaveBeenCalledTimes(2);
+});
+
+it('binds a reviewed npm pair to the recorded scan and prevents partial edits, policy substitution and replay after revocation', async () => {
+  const runner = inspectionRunner(async (request, authorize) => {
+    await authorize();
+    return testReceipt(request, false, undefined, npmFixtureApproval);
+  });
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner, auditModel: auditModel() });
+  try { await worker.tick(); } finally { await worker.close(); }
+  const [inspection] = await database.storage.db.select().from(inspectionAttempts);
+  const [input] = await database.storage.db.select().from(formalRepairInputs);
+  if (!input || !inspection?.receipt) throw new Error('Missing npm fixture audit');
+  const scan = inspection.receipt;
+  const scope = await claimAfterAudit();
+  const [findingId] = input.document.findingIds;
+  expect(findingId).toBe(scan.snapshot.reports.find(report => report.scanner === 'trivy')?.findings[0]?.id);
+  const files = npmFixtureFiles();
+  const originals = Object.fromEntries(files.map(({ path, original }) => [path, original]));
+  const patch = { version: 1 as const, baseSnapshotSha256: input.document.inspection.snapshotSha256,
+    files: files.map(({ path, original, edits }) => ({ path, beforeSha256: sha256(original), edits })) };
+  const proposal = { callKeySha256: sha256('npm repair'), findingIds: [findingId!], patch };
+  const pair = [{ findingId, lockPath: npmFixturePaths.lock, approval: npmFixtureApproval }];
+  const repair = vi.fn<RepairRunner['repair']>(async (request, workspace, appliedPatch, authorize) => {
+    await authorize();
+    expect(workspace.npmRepairs).toEqual(pair);
+    return repairReceipt(scan, request, workspace, appliedPatch, originals);
+  });
+  const observeRepair = vi.fn<RepairObservationRunner['observeRepair']>(async (request, workspace, targets, authorize) => {
+    await authorize();
+    const receipt = repairObservationReceipt(scan, request, workspace, targets, '');
+    expect(workspace.npmRepairs).toEqual(pair);
+    for (const target of receipt.snapshot.observation.targets) {
+      const file = files.find(entry => entry.path === target.path)!;
+      const { name, installedVersion, fixedVersion } = npmFixtureApproval;
+      target.file = { sha256: sha256(file.original), bytes: Buffer.byteLength(file.original) };
+      target.npm = { name, installedVersion, fixedVersion, edits: file.edits };
+    }
+    return receipt;
+  });
+  const options = { runner: { observe: async () => idleRepairRunner(), repair, observeRepair }, protectedPaths: [], npmApprovals: [npmFixtureApproval] };
+  const execution = new FormalRepairExecution(coordinator, options);
+  const unapproved = new FormalRepairExecution(coordinator, { ...options, npmApprovals: [] });
+  const stale = new FormalRepairExecution(coordinator, { ...options, npmApprovals: [{ ...npmFixtureApproval, fixedVersion: '4.17.22' }] });
+  const protectedExecution = new FormalRepairExecution(coordinator, { ...options, protectedPaths: [npmFixturePaths.manifest] });
+  await expect(unapproved.apply(scope, proposal)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(stale.apply(scope, proposal)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(protectedExecution.apply(scope, proposal)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(execution.apply(scope, { ...proposal, patch: { ...patch, files: patch.files.slice(0, 1) } })).rejects.toMatchObject({ code: 'forbidden' });
+  expect(repair).not.toHaveBeenCalled();
+  expect(await database.storage.db.select().from(formalRepairOperations)).toEqual([]);
+  await expect(observeFormalRepairTargets(coordinator, scope, proposal.findingIds, options)).resolves.toMatchObject({ kind: 'repair_observation' });
+  const applied = await execution.apply(scope, proposal);
+  expect(applied).toMatchObject({ kind: 'repair_receipt', snapshot: { candidate: { changes: files.map(({ path, expected }) =>
+    ({ path, afterSha256: sha256(expected) })) } } });
+  expect(await execution.apply(scope, proposal)).toEqual(applied);
+  const altered = new FormalRepairExecution(coordinator, { ...options, npmApprovals: [{ ...npmFixtureApproval, integrity: `sha512-${'A'.repeat(86)}==` }] });
+  await expect(altered.apply(scope, proposal)).rejects.toMatchObject({ code: 'idempotency_conflict' });
+  await expect(unapproved.apply(scope, proposal)).rejects.toMatchObject({ code: 'forbidden' });
+  expect(repair).toHaveBeenCalledTimes(1);
+  const [stored] = await database.storage.db.select().from(formalRepairOperations);
+  expect(JSON.parse(stored!.command)).toMatchObject({ workspace: { npmRepairs: pair } });
 });
 
 it('uses the recorded mutation after a new worker claims a reserved repair whose checkpoint result was lost', async () => {

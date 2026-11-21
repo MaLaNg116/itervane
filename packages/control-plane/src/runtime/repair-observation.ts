@@ -10,7 +10,7 @@ import { formalRepairInputs, repositories } from '../persistence/schema.js';
 import { DomainError, parseInput } from '../service/errors.js';
 import { ExecutionLost, type ExecutionScope } from './authority.js';
 import type { ExecutionCoordinator } from './coordinator.js';
-import { repairBasis, repairTargets } from './repair-execution.js';
+import { repairBasis, repairTargets, type RepairPolicy } from './repair-execution.js';
 
 const findingsSchema = z.array(sha256Schema).min(1).max(repairPatchLimits.files)
   .refine(ids => new Set(ids).size === ids.length);
@@ -18,17 +18,18 @@ export type RepairObservationRunner = Pick<QualifiedInspectionClient, 'observe' 
 
 /** Read the exact targets of the published audit while the current repair execution lease holds. */
 export async function observeFormalRepairTargets(coordinator: ExecutionCoordinator, scope: ExecutionScope,
-  rawFindingIds: readonly string[], options: { runner: RepairObservationRunner; protectedPaths: readonly string[] },
+  rawFindingIds: readonly string[], options: RepairPolicy & { runner: RepairObservationRunner },
   signal?: AbortSignal): Promise<QualifiedRepairObservationResponse> {
   signal?.throwIfAborted();
   const findingIds = parseInput(findingsSchema, rawFindingIds);
   const { input, scan, origin } = await coordinator.withLease(scope, (tx, { task }) => repairBasis(tx, task, scope));
   if (findingIds.some(id => !input.document.findingIds.includes(id))) throw new DomainError('forbidden');
-  const targets = parseInput(repairTargetsSchema, repairTargets(scan, findingIds));
+  const { targets: found, npmRepairs } = repairTargets(scan, findingIds, options.npmApprovals);
+  const targets = parseInput(repairTargetsSchema, found);
   const { taskId, runId, projectId, generation, source } = input.document;
   const baseSnapshotSha256 = input.document.inspection.snapshotSha256;
   const workspace = { version: 1 as const, operationId: randomUUID(), repairInputSha256: input.sha256,
-    source, baseSnapshotSha256, protectedPaths: options.protectedPaths.slice() };
+    source, baseSnapshotSha256, protectedPaths: options.protectedPaths.slice(), ...(npmRepairs.length ? { npmRepairs } : {}) };
   const command = canonicalRepairObservation({ workspace, targets });
   const status = qualifiedInspectionStatusSchema.safeParse(await options.runner.observe(signal).catch(() => null)).data;
   signal?.throwIfAborted();

@@ -12,7 +12,9 @@ try {
   const database = await openDatabase(config.databaseUrl);
   const worker = new DurableWorker(database, config.databaseUrl, { leaseSeconds: config.leaseSeconds,
     ...(runner ? { runner } : {}), ...(auditModel ? { auditModel } : {}),
-    ...(runner && config.repairProtectedPaths ? { repair: { runner, protectedPaths: config.repairProtectedPaths } } : {}),
+    ...(runner && config.repairProtectedPaths ? { repair: { runner, protectedPaths: config.repairProtectedPaths,
+      npmApprovals: config.npmRepairApprovals,
+    } } : {}),
   });
   const controller = new AbortController();
   const stop = () => { controller.abort(); void worker.close().catch(() => undefined); };

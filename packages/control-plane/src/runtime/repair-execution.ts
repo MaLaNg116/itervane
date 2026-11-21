@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq, ne, sql } from 'drizzle-orm';
 import {
+  isNpmRepairArtifact, npmRepairPaths, type NpmRepairScope, type NpmUpgradeApproval,
   qualifiedInspectionStatusSchema, qualifiedRepairRequestSchema, qualifiedRepairResponseSchema, repairPatchSchema, sha256Schema,
   type QualifiedInspectionReceipt, type QualifiedInspectionStatus, type QualifiedRepairRequest, type QualifiedRepairResponse, type RepairPatch,
   type RepairTarget,
@@ -16,6 +17,7 @@ import { ExecutionLost, type ExecutionScope, type TaskRow } from './authority.js
 import type { ExecutionCoordinator } from './coordinator.js';
 
 export type RepairRunner = Pick<QualifiedInspectionClient, 'observe' | 'repair'>;
+export type RepairPolicy = { protectedPaths: readonly string[]; npmApprovals?: readonly NpmUpgradeApproval[] };
 type Command = ReturnType<typeof canonicalRepairCommand>;
 type Attempt = typeof formalRepairAttempts.$inferSelect;
 type Outcome = Extract<QualifiedRepairResponse, { kind: 'rejected' }>;
@@ -62,17 +64,26 @@ export async function repairBasis(tx: Transaction, task: TaskRow, scope: Executi
   return { input, scan: scan.receipt, origin: repo.origin };
 }
 
-export function repairTargets(scan: QualifiedInspectionReceipt, findingIds: readonly string[]) {
+export function repairTargets(scan: QualifiedInspectionReceipt, findingIds: readonly string[], approvals: readonly NpmUpgradeApproval[] = []) {
   const findings = new Map(scan.snapshot.reports.flatMap(report =>
-    report.findings.map(({ id, path, line }) => [id, { findingId: id, path, line, scanner: report.scanner }] as const)));
-  return findingIds.flatMap((id): RepairTarget[] => {
+    report.findings.map(finding => [finding.id, { ...finding, scanner: report.scanner }] as const)));
+  const npmRepairs: NpmRepairScope[] = [];
+  const targets = findingIds.flatMap((id): RepairTarget[] => {
     const entry = findings.get(id);
     if (!entry) throw new Error('repair_finding_binding');
-    if (entry.scanner === 'trivy' && /(?:^|\/)package-lock\.json$/.test(entry.path)) {
-      return [entry, { ...entry, path: entry.path.replace(/package-lock\.json$/, 'package.json'), line: null }];
+    const { path, line, scanner, ruleId, npm } = entry;
+    const target = { findingId: id, path, line, scanner };
+    if (scanner === 'trivy' && /(?:^|\/)package-lock\.json$/.test(path)) {
+      if (npm) {
+        const matched = approvals.filter(item => item.advisoryId === ruleId && item.name === npm.name
+          && item.installedVersion === npm.installedVersion && npm.fixedVersions.includes(item.fixedVersion));
+        if (matched.length === 1) npmRepairs.push({ findingId: id, lockPath: path, approval: matched[0]! });
+      }
+      return npmRepairPaths(path).map(targetPath => ({ ...target, path: targetPath }));
     }
-    return [entry];
+    return [target];
   });
+  return { targets, npmRepairs };
 }
 
 function dispatchFor(basis: Awaited<ReturnType<typeof repairBasis>>, attempt: Attempt, command: Command): Dispatch {
@@ -113,10 +124,12 @@ async function settle(tx: Transaction, scope: ExecutionScope, attempt: Attempt, 
 
 export class FormalRepairExecution {
   private readonly protectedPaths: readonly string[];
+  private readonly npmApprovals: readonly NpmUpgradeApproval[];
   private readonly runner: RepairRunner | undefined;
 
-  constructor(private readonly coordinator: ExecutionCoordinator, options: { runner?: RepairRunner; protectedPaths: readonly string[] }) {
+  constructor(private readonly coordinator: ExecutionCoordinator, options: RepairPolicy & { runner?: RepairRunner }) {
     this.protectedPaths = options.protectedPaths.map(sourcePath);
+    this.npmApprovals = structuredClone(options.npmApprovals ?? []);
     this.runner = options.runner;
   }
 
@@ -153,14 +166,21 @@ export class FormalRepairExecution {
     const { callKeySha256, findingIds, patch } = proposal;
     if (patch.baseSnapshotSha256 !== input.document.inspection.snapshotSha256) throw new DomainError('conflict');
     if (findingIds.some(id => !input.document.findingIds.includes(id))) throw new DomainError('forbidden');
-    const allowed = new Set(repairTargets(scan, findingIds).map(target => target.path));
+    const { targets, npmRepairs } = repairTargets(scan, findingIds, this.npmApprovals);
+    const allowed = new Set(targets.map(target => target.path));
     const paths = patch.files.map(file => file.path);
     if (paths.some(path => !allowed.has(path) || protectedRepairPath(path, this.protectedPaths))) throw new DomainError('forbidden');
+    const approved = new Set(npmRepairs.map(entry => entry.findingId));
+    if (targets.some(target => target.scanner === 'trivy' && !approved.has(target.findingId))) throw new DomainError('forbidden');
+    const pairPaths = new Set(npmRepairs.flatMap(entry => npmRepairPaths(entry.lockPath)));
+    if (pairPaths.size !== npmRepairs.length * 2 || [...pairPaths].some(path => !paths.includes(path))
+        || paths.some(path => isNpmRepairArtifact(path) && !pairPaths.has(path))) throw new DomainError('forbidden');
     const existing = await existingOperation(tx, scope.runId, callKeySha256);
     const operationId = existing?.operationId ?? randomUUID();
     const command = canonicalRepairCommand({
       version: 1, operationId, repairInputSha256: input.sha256, source: input.document.source,
       baseSnapshotSha256: input.document.inspection.snapshotSha256, editablePaths: paths, protectedPaths: this.protectedPaths,
+      ...(npmRepairs.length ? { npmRepairs } : {}),
     }, patch);
     const serialized = command.bytes.toString('utf8');
     if (existing && (existing.inputSha256 !== input.sha256 || existing.command !== serialized

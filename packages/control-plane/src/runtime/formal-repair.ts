@@ -6,10 +6,10 @@ import type { ExecutionScope } from './authority.js';
 import { GuardedCheckpointer } from './checkpointer.js';
 import type { ExecutionCoordinator } from './coordinator.js';
 import type { AuditModel } from './formal-audit.js';
-import { FormalRepairExecution, type RepairRunner } from './repair-execution.js';
+import { FormalRepairExecution, type RepairPolicy, type RepairRunner } from './repair-execution.js';
 import { observeFormalRepairTargets, type RepairObservationRunner } from './repair-observation.js';
 
-export type FormalRepairOptions = { runner: RepairRunner & RepairObservationRunner; protectedPaths: readonly string[] };
+export type FormalRepairOptions = RepairPolicy & { runner: RepairRunner & RepairObservationRunner };
 
 export async function runFormalRepair(coordinator: ExecutionCoordinator, scope: ExecutionScope, saver: PostgresSaver,
   model: AuditModel, options: FormalRepairOptions, signal: AbortSignal) {
