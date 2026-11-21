@@ -73,10 +73,18 @@ async function verify() {
     equal(receipt.cleanupConfirmed, true);
     ok(receipt.domainId !== original.domainId);
     ok(comparison.status === 'compared');
-    equal(comparison.totals.introduced, 0);
+    const findingKey = (group: typeof comparison.groups[number]) =>
+      JSON.stringify([group.scanner, group.path, group.ruleId, group.dependency?.name ?? null]);
+    const before = new Set(comparison.groups.filter(group => group.beforeIds.length).map(findingKey));
+    const after = new Set(comparison.groups.filter(group => group.afterIds.length).map(findingKey));
+    const newFindingGroups = [...after].filter(key => !before.has(key)).length;
+    equal(newFindingGroups, 0);
+    const targetFinding = findingId && comparison.groups.find(group => group.beforeIds.includes(findingId));
     if (findingId) {
       ok(snapshot.target);
-      ok(comparison.groups.some(group => group.beforeIds.includes(findingId) && group.afterIds.length === 0));
+      // An advisory on the replacement version still applies to the same target.
+      ok(targetFinding);
+      equal(after.has(findingKey(targetFinding)), false);
     } else {
       equal(snapshot.target, null);
       deepStrictEqual(comparison.totals, { introduced: 0, resolved: 0, remaining: 0 });
@@ -100,7 +108,8 @@ async function verify() {
       targetManifestSha256: receipt.scope.targetManifestSha256, patchSha256: snapshot.target?.patchSha256 ?? null,
       originalReportsSha256: sha256(JSON.stringify(snapshot.reports)),
       targetReportsSha256: snapshot.target && sha256(JSON.stringify(snapshot.target.reports)),
-      totals: comparison.totals, dispatches, cleanupConfirmed: true,
+      totals: comparison.totals, targetRuleId: targetFinding ? targetFinding.ruleId : null,
+      newFindingGroups, remainingFindingGroups: after.size, dispatches, cleanupConfirmed: true,
     };
   } finally {
     clearInterval(heartbeat);
