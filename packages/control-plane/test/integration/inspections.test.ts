@@ -1910,16 +1910,25 @@ it.each(['normal', 'config response lost', 'config unconfirmed', 'dispatch ID lo
         return use('/trusted-fixture/approved.oci.tar');
       },
     } });
-    const run = (worker: FormalReleaseWorker) => vi.waitFor(async () => {
-      const result = await worker.tick();
-      if (result.status === 'idle') throw new Error('Waiting for the formal release wakeup');
-      return result;
-    }, { timeout: 5_000, interval: 45 });
+    const run = async (worker: FormalReleaseWorker, phase: string) => {
+      const deadline = performance.now() + 5_000;
+      do {
+        const result = await worker.tick();
+        if (result.status !== 'idle') return result;
+        await delay(45);
+      } while (performance.now() < deadline);
+      const operation = await readOperation(operationId);
+      const job = operation.wakeupJobId && (await database.storage.boss.findJobs(formalReleaseQueue, { id: operation.wakeupJobId }))[0];
+      const { rows: [runtime] } = await database.admin.query<{ reason: string }>('SELECT reason FROM itervane.run_runtime WHERE run_id=$1', [task.runId]);
+      throw new Error(`No Komodo wakeup for ${phase} (${operation.state}, ${runtime?.reason}, ${job ? job.state : 'missing'})`);
+    };
     const newWorker = () => new FormalReleaseWorker(database.storage, backend);
-    const imported = await run(importWorker);
+    const imported = await run(importWorker, 'registry import');
     expect(imported).toMatchObject({ status: scenario === 'registry response lost' ? 'requeued' : 'komodo_ready', scope: { operationId, mode: 'import' } });
     if (scenario === 'registry response lost') {
-      expect(await run(newWorker())).toMatchObject({ status: 'komodo_ready', scope: { operationId, mode: 'registry_recovery' } });
+      expect(await run(newWorker(), 'registry observation')).toMatchObject({
+        status: 'komodo_ready', scope: { operationId, mode: 'registry_recovery' },
+      });
     }
     expect(configureImage).not.toHaveBeenCalled();
     expect(dispatch).not.toHaveBeenCalled();
@@ -1948,14 +1957,14 @@ it.each(['normal', 'config response lost', 'config unconfirmed', 'dispatch ID lo
     if (scenario === 'config response lost' || scenario === 'config unconfirmed') {
       expect(first.status).toBe('requeued');
       expect(dispatch).not.toHaveBeenCalled();
-      const recovery = await run(newWorker());
+      const recovery = await run(newWorker(), 'Komodo configuration observation');
       expect(recovery).toMatchObject({ status: scenario === 'config response lost' ? 'komodo_ready' : 'requeued',
         scope: { operationId, mode: 'komodo_recovery', komodoStep: 'komodo_config' } });
       if (scenario === 'config unconfirmed') {
-        expect((await run(newWorker())).status).toBe('requeued');
-        last = await run(newWorker());
+        expect((await run(newWorker(), 'second configuration observation')).status).toBe('requeued');
+        last = await run(newWorker(), 'last configuration observation');
       } else {
-        const writer = await run(newWorker());
+        const writer = await run(newWorker(), 'Komodo writer after confirmed configuration');
         expect(writer.scope).toMatchObject({ operationId, mode: 'komodo_write' });
         last = writer;
       }
@@ -1965,7 +1974,7 @@ it.each(['normal', 'config response lost', 'config unconfirmed', 'dispatch ID lo
       const current = await taskService.get(identity, task.id);
       await taskService.cancel(identity, task.id, { expectedVersion: current.version });
       const [ownerGrant] = await database.storage.db.delete(workspaceMembers).returning();
-      const recovered = await run(newWorker());
+      const recovered = await run(newWorker(), 'recorded deployment observation');
       expect(recovered.scope).toMatchObject({ operationId, mode: 'komodo_recovery', komodoStep: 'komodo_dispatch' });
       expect(recovered.scope.fence).toBeGreaterThan(first.scope.fence);
       last = recovered;
