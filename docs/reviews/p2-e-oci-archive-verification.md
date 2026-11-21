@@ -11,3 +11,5 @@
 托管 KVM 的标准 OCI 验收使用 `a3fdbdd375f5cb604a82b51665c084e5b45bf709`，与数据库测试的源码指纹同为 `43def032c730e4a6a3baa8eefa906afb26bf194f60df576fe984480b7f3bda93`。第一代 503 记录了回执，归档读取证明为空。第二代的 `archive_verified` 与独立读取的 79,042,560 字节归档一致，归档 SHA-256 为 `ea9c11067c03d2a50b35d4d478351e3b72e42fc5ba59ed7351e1853dbce4f3af`，镜像清单为 `sha256:b06d063f02fd3674aed1f32d9acdd1567626d92f93652ab704e91b3b7f15d2d7`。第二代结论 SHA-256 为 `be2681ea07992201f9e25e12fea3b43541912789a393a59b860199bf93ba1fcb`，Runner 回执 SHA-256 为 `ef482bea30f6896915700f2ed5222ee86b0bc33b0ff1d98d70c90965143d5ebd`。两代客体和暂存目录均已清理。 [实际归档回读](https://github.com/MaLaNg116/itervane/actions/runs/44911700913/job/136868700544)
 
 P2-E-A2 将读取证明与已登记目标、复验规则和时间窗口绑定，P2-E-C 将核对实际上传到镜像仓库的摘要。
+
+四组原生验收通过。既有 Worker 路径的源码指纹与正式归档验收相同，暂存目录清理完成。核对最终评审提交 `7139612fb81a6ec5bd1a6d5e30d4cda9d0e03cb4` 的常规 CI 与原生源码一致后，以 `6da80b231c70b434e44575bc8fe060087cdadaf0` 合入 `main`。 [原生验收](https://github.com/MaLaNg116/itervane/actions/runs/44911700913) · [合并记录](https://github.com/MaLaNg116/itervane/pull/39)
