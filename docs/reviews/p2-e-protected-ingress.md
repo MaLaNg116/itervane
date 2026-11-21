@@ -16,3 +16,5 @@ TypeScript、200 项单元及发布目标修订的真实 PostgreSQL 专项通过
 同一码的两组 GitHub 常规检查均通过，含 161 项真实 PostgreSQL 和双语浏览器回归。本机一次全量通过 160/161 项，既有复验恢复用例收到转人工结果，托管全量通过该用例。八项本机专题通过。 [托管数据库与浏览器](https://github.com/MaLaNg116/itervane/actions/runs/44944200204) · [同版托管 Runner](https://github.com/MaLaNg116/itervane/actions/runs/44943972003)
 
 本机试验的后端是可信样例，运行身份来自固定夹具。真实 Docker 私有网络的自托管接线及入口核验随 D2-C 验证，D3 接续正式发布操作、短租约和最终数据库结算。
+
+合入前复核了目标修订指纹、有效路由和代理后端绑定、探测身份的路径和方法限制，以及取证前后的运行容器一致性。审查版本 `0c1947b31a21425e6983662d243284dc02b23cf1` 的业务代码与原生验收一致，两组常规检查通过。已合入 `7667862d0bbf59c4f9dd887e14fd630d3f3d36e2`。 [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44947621937) · [分支 CI](https://github.com/MaLaNg116/itervane/actions/runs/44947618111)

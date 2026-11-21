@@ -1,0 +1,55 @@
+http:
+  routers:
+    demo:
+      entryPoints: [websecure]
+      rule: "Host(`demo.example.invalid`)"
+      tls: {}
+      service: demo
+      middlewares: [demo-auth, demo-strip]
+    demo-health:
+      entryPoints: [websecure]
+      rule: "Host(`demo.example.invalid`) && Path(`/health`) && Method(`GET`)"
+      tls: {}
+      service: demo
+      middlewares: [demo-health-auth, demo-strip]
+    demo-login:
+      entryPoints: [websecure]
+      rule: "Host(`demo.example.invalid`) && PathPrefix(`/oauth2/`)"
+      tls: {}
+      service: demo-login
+    rollout-observations:
+      entryPoints: [management]
+      rule: "Host(`127.0.0.1`) && Method(`GET`) && (PathPrefix(`/api/http/`) || PathPrefix(`/api/tcp/`))"
+      service: api@internal
+
+  services:
+    demo:
+      loadBalancer:
+        servers:
+          - url: http://demo-container:3000
+    demo-login:
+      loadBalancer:
+        servers:
+          - url: http://application-access:4180
+
+  middlewares:
+    demo-auth:
+      forwardAuth:
+        address: http://application-access:4180/oauth2/auth
+        trustForwardHeader: false
+        authRequestHeaders: [Cookie]
+    demo-health-auth:
+      forwardAuth:
+        address: http://application-access:4180/oauth2/auth
+        trustForwardHeader: false
+        authRequestHeaders: [Authorization, Cookie]
+    demo-strip:
+      headers:
+        customRequestHeaders:
+          Authorization: ""
+          Cookie: ""
+
+tls:
+  certificates:
+    - certFile: /etc/traefik/tls/certificate.pem
+      keyFile: /etc/traefik/tls/key.pem
