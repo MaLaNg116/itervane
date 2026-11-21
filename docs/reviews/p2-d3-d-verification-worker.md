@@ -11,4 +11,11 @@
 
 以 `49d1c866c612e5e371a97f5901f01937987dfaa5` 验证了 TypeScript、163 项单元和 129 项真实 PostgreSQL 17 集成。数据库测试源码指纹为 `7b2219e68b8a69473835e9ac5f1d710052fa86b65d7afc11b8f44c6197dcbcf6`。本地数据库验证使用固定的 Runner 证据夹具。常规 CI 的确定性、门户和扫描器检查已通过，正式 Worker 与真实隔离客体联动由托管 KVM 单独验收。 [常规 CI](https://github.com/MaLaNg116/itervane/actions/runs/44905416353) · [正式流转实证](https://github.com/MaLaNg116/itervane/actions/runs/44905411730)
 
+标准 OCI 验收用生产 Worker 接受两条真实任务，每条有唯一复扫回执和数据库结论。英文本机模型对同版本健康回执七轮查询四段证据，中文 503 回执六轮读取三段证据并保留失败。两条路的 Runner 发布指纹与本地相同，客体和暂存区均清理。健康归档的独立 manifest 与扫描回执一致。 [KVM 与存档](https://github.com/MaLaNg116/itervane/actions/runs/44905411730/job/136849812071)
+
+| 样例 | 复验结论 SHA-256 | 正式回执 SHA-256 |
+| --- | --- | --- |
+| 英文健康 | `559192b0b0a01d6881eae858521203d5a89c0264c3c78842e69dcedeb0da3b2a` | `d2b557cae485bbae08451aa821fe58d98f72acb7890a741560da0c1e44f0c7cc` |
+| 中文 503 | `8536b510e9209ae7ff8e019f3c89d7eb0cb00f82ee5f883d4fbeb76b6a3b05bc` | `fd505c6e82501f1a6bf576d6161f9c9bd5da7257661056f06dc460d6031a9a9c` |
+
 D-C2 接续受控返修代次与预算。D-D 提供双语门户及外部 MCP 的结果视图。P2-E 在实际发布前独立核对候选和人工批准。
