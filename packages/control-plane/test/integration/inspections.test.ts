@@ -9,10 +9,11 @@ import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, type QualifiedInspectionReceipt,
-  type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt, type RepairPatch } from '@itervane/contracts';
+  type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
+  type QualifiedVerificationReceipt, type RepairPatch } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
 import { canonicalRepairCommand, canonicalRepairObservation, canonicalVerificationCommand, prepareQualifiedVerificationRequest,
-  scannerProfiles, sha256 } from '@itervane/runner';
+  scannerProfiles, sha256, verifyQualifiedVerificationReceipt } from '@itervane/runner';
 import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../verification/src/agent/npm-repair-fixture.js';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
@@ -659,6 +660,51 @@ it('recovers an uncertain rescan only on the original idle Runner and retains th
   await database.admin.query('DELETE FROM itervane.workspace_members');
   await expect(run(recovered)).rejects.toMatchObject({ code: 'not_found' });
   expect(verify).toHaveBeenCalledTimes(2);
+});
+
+it('requires the standard build proof to match the frozen profile and snapshot in the lease transaction', async () => {
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(), auditModel: auditModel() });
+  try { expect(await worker.tick()).toBe(true); } finally { await worker.close(); }
+  const scope = await claimAfterAudit();
+  const [inspection] = await database.storage.db.select().from(inspectionAttempts);
+  const original = qualifiedInspectionResponseSchema.parse(inspection?.receipt);
+  if (original.kind !== 'receipt') throw new Error('Missing original inspection');
+  const profile = { ...verificationProfile, buildProfileSha256: sha256('protected build profile') };
+  const verify = vi.fn<RescanRunner['verify']>(async (coordinates, input, repair, authorize) => {
+    await authorize();
+    const command = canonicalVerificationCommand({ input, repair });
+    const request = prepareQualifiedVerificationRequest(coordinates, command);
+    const { origin: _origin, ...bound } = request;
+    const domainId = randomUUID();
+    const receipt: QualifiedVerificationReceipt = {
+      kind: 'verification_receipt', scope: bound, domainId, commitSha256: original.commitSha256, imageSha256,
+      originSha256: original.originSha256, cleanupConfirmed: true, sessionVerified: true,
+      snapshot: {
+        ...original.snapshot, runId: domainId, inputsSha256: bound.scannerInputsSha256, target: null,
+        commandSha256: bound.commandSha256, verificationInputSha256: bound.verificationInputSha256,
+        build: {
+          status: 'built', version: 1, runId: domainId, buildProfileSha256: profile.buildProfileSha256,
+          verificationInputSha256: bound.verificationInputSha256, baselineSha256: profile.baselineSha256,
+          subjectManifestSha256: input.subject.manifestSha256, projectionSha256: sha256('staged projection'),
+          isolationVerified: true, dist: { sha256: sha256('measured build'), files: 3, bytes: 220 },
+        },
+      },
+    };
+    const forged = structuredClone(receipt);
+    forged.snapshot.build!.baselineSha256 = sha256('changed protected baseline');
+    expect(() => verifyQualifiedVerificationReceipt(forged, request, command)).toThrow('runner_standard_build_binding');
+    await expect(database.storage.db.update(formalRescanAttempts).set({
+      state: 'recorded', settledFence: scope.fence, settledWorkerId: scope.workerId, settledAt: new Date(),
+      receipt: forged, receiptSha256: sha256(JSON.stringify(forged)),
+    }).where(eq(formalRescanAttempts.requestId, bound.requestId))).rejects
+      .toMatchObject({ cause: { code: '23514', message: 'standard_build_evidence_binding' } });
+    return receipt;
+  });
+  const rescan = () => runFormalRescan(coordinator, scope, profile, { observe: async () => idleRepairRunner(), verify });
+  const result = await rescan();
+  expect(result).toMatchObject({ kind: 'scanned', receipt: { snapshot: { build: { status: 'built', isolationVerified: true } } } });
+  expect(await rescan()).toEqual(result);
+  expect(verify).toHaveBeenCalledTimes(1);
 });
 
 it('keeps verification unavailable while an audit finding has no published repair candidate', async () => {
