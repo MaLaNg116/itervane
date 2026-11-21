@@ -220,8 +220,8 @@ async function probe() {
     await client.connect(new StreamableHTTPClientTransport(new URL(`${address}/mcp`), {
       requestInit: { headers: { Authorization: `Bearer ${mcpToken}`, 'Accept-Language': 'zh-CN' } },
     }));
-    const start = async (purpose: string, revision = commit) => admissionDtoSchema.parse((await client.callTool({ name: 'start_audit', arguments: {
-      projectId: project.id, source: { repositoryId: repository.id, commit: revision }, dataClass: 'public', purpose, locale: 'zh-CN', idempotencyKey: randomUUID(),
+    const start = async (purpose: string, revision = commit, locale: 'en' | 'zh-CN' = 'zh-CN') => admissionDtoSchema.parse((await client.callTool({ name: 'start_audit', arguments: {
+      projectId: project.id, source: { repositoryId: repository.id, commit: revision }, dataClass: 'public', purpose, locale, idempotencyKey: randomUUID(),
     } })).structuredContent).task;
     const reached = (taskId: string, state: string) => poll(async () => {
       const row = (await db.admin.query('SELECT state FROM itervane.tasks WHERE id=$1', [taskId])).rows[0];
@@ -269,7 +269,8 @@ async function probe() {
         baselineOutcome?: 'passed' | 'failed') => {
         phase = `standard_build_audit_${outcome}`;
         worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, audit.baseURL);
-        const task = await start('Verify the standard build from this fixed source', revision);
+        const task = await start('Verify the standard build from this fixed source', revision,
+          build.oci && baselineOutcome === 'passed' ? 'en' : 'zh-CN');
         await reached(task.id, 'waiting_input');
         const reviewed = formalAuditDtoSchema.parse(await request(`/v1/tasks/${task.id}/audit`));
         if (reviewed.status !== 'recorded' || reviewed.result.status !== 'completed') throw new Error('standard_build_audit');
