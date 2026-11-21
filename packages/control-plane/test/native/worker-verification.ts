@@ -20,13 +20,15 @@ async function verify() {
       || !/^\/itervane_test_[a-f0-9]{12}$/.test(new URL(config.databaseUrl).pathname)) throw new Error('verification_fixture_config');
   const target = { taskId: idSchema.parse(taskId), runId: idSchema.parse(runId) };
   const findingId = expected === 'original' ? null : sha256Schema.parse(expected);
-  const [profileSha, baselineSha, expectedBuild] = buildArgs;
-  if (buildArgs.length !== 0 && (buildArgs.length !== 3 || findingId !== null
-      || (expectedBuild !== 'built' && expectedBuild !== 'profile_mismatch' && expectedBuild !== 'offline_install'))) {
+  const [profileSha, baselineSha, expectedBuild, expectedBaseline] = buildArgs;
+  if (buildArgs.length !== 0 && ((buildArgs.length !== 3 && buildArgs.length !== 4) || findingId !== null
+      || (expectedBuild !== 'built' && expectedBuild !== 'profile_mismatch' && expectedBuild !== 'offline_install')
+      || (expectedBaseline !== undefined && (expectedBuild !== 'built' || (expectedBaseline !== 'passed' && expectedBaseline !== 'failed'))))) {
     throw new Error('verification_fixture_build_config');
   }
   const buildProfile = buildArgs.length ? {
     buildProfileSha256: sha256Schema.parse(profileSha), baselineSha256: sha256Schema.parse(baselineSha),
+    ...(expectedBaseline ? { runStandardBaseline: true as const } : {}),
   } : undefined;
   phase = 'claim';
   const database = await openDatabase(config.databaseUrl);
@@ -105,7 +107,15 @@ async function verify() {
       phase = `build_${observed}`;
       equal(observed, expectedBuild);
       equal(evidence.buildProfileSha256, buildProfile.buildProfileSha256);
-      if (evidence.status === 'built') equal(evidence.isolationVerified, true);
+      if (evidence.status === 'built') {
+        equal(evidence.isolationVerified, true);
+        const baselineEvidence = evidence.baseline;
+        if (baselineEvidence) {
+          const status = baselineEvidence.status === 'blocked' ? baselineEvidence.code : baselineEvidence.status;
+          phase = `baseline_${status}`;
+          equal(status, expectedBaseline);
+        } else equal(expectedBaseline, undefined);
+      }
     } else equal(snapshot.build, undefined);
 
     phase = 'replay';
