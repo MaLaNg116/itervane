@@ -1076,7 +1076,7 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
   try {
     if (!eligible) {
       expect((await freeze()).statusCode).toBe(409);
-      expect(await view()).toMatchObject({ candidate: null, candidateTarget: null, availableTargets: [], actions: [] });
+      expect(await view()).toMatchObject({ candidate: null, candidateTarget: null, result: null, availableTargets: [], actions: [] });
       expect(await database.storage.db.select().from(releaseCandidates)).toEqual([]);
       return;
     }
@@ -1088,7 +1088,7 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
     const display = { environmentId: environment.id, applicationId: environment.applicationId,
       environmentName: environment.name, applicationName: 'Release sample' };
     expect(await view()).toEqual({ taskId: task.id, runId: current.runId, taskVersion: current.version,
-      candidate: null, candidateTarget: null, availableTargets: [{ ...display, revision: 1 }], actions: [] });
+      candidate: null, candidateTarget: null, result: null, availableTargets: [{ ...display, revision: 1 }], actions: [] });
     expect((await freeze({ ...payload, environmentId: otherEnvironment.id })).statusCode).toBe(404);
     expect((await freeze({ ...payload, expectedVersion: current.version + 1 })).statusCode).toBe(409);
 
