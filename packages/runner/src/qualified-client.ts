@@ -14,6 +14,7 @@ import {
 } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from './profiles.js';
 import { canonicalRepairCommand, canonicalRepairObservation, protectedRepairPath } from './repair-command.js';
+import { scanFindingId } from './scan-finding-id.js';
 import { sourcePath } from './snapshot.js';
 
 const requestLimit = 2048;
@@ -87,7 +88,7 @@ export function verifyQualifiedInspectionReceipt(receipt: QualifiedInspectionRec
     const ids = new Set<string>();
     for (const finding of report.findings) {
       const path = sourcePath(finding.path);
-      if (ids.has(finding.id) || finding.id !== sha256(JSON.stringify([report.scanner, snapshot.manifestSha256, finding.ruleId, path, finding.line]))) {
+      if (ids.has(finding.id) || finding.id !== scanFindingId(report.scanner, snapshot.manifestSha256, { ...finding, path })) {
         throw new Error('runner_receipt_finding');
       }
       ids.add(finding.id);

@@ -11,6 +11,7 @@ const snapshot = z.strictObject({
 });
 export const npmPackageNameSchema = z.string().min(1).max(214).regex(/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/);
 export const npmStableVersionSchema = z.string().max(29).regex(/^(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})$/);
+export const npmAdvisoryIdSchema = z.string().regex(/^(?:CVE-\d{4}-\d{4,12}|GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})$/);
 export const npmAdvisoryEvidenceSchema = z.strictObject({
   name: npmPackageNameSchema, installedVersion: npmStableVersionSchema,
   fixedVersions: z.array(npmStableVersionSchema).max(8).refine(versions => new Set(versions).size === versions.length),

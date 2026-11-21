@@ -1,6 +1,7 @@
-import { npmAdvisoryEvidenceSchema, npmStableVersionSchema, normalizedScannerFindingSchema } from '@itervane/contracts';
+import { npmAdvisoryEvidenceSchema, npmAdvisoryIdSchema, npmStableVersionSchema, normalizedScannerFindingSchema } from '@itervane/contracts';
 import { z } from 'zod';
-import { scannerProfiles, sha256 } from './profiles.js';
+import { scannerProfiles } from './profiles.js';
+import { scanFindingId } from './scan-finding-id.js';
 import { sourcePath, type SourceManifest } from './snapshot.js';
 
 type Scanner = 'gitleaks' | 'trivy';
@@ -54,9 +55,8 @@ export function normalizeScan(scanner: Scanner, input: Input): ScanSummary {
     if (Buffer.byteLength(input.report) > 4194304) throw new Error('invalid_report');
     const parsed: unknown = JSON.parse(input.report); const findings: Finding[] = [];
     const add = (ruleId: string, path: string, findingLine: number | null, risk: Finding['severity'], npm?: Finding['npm']) => {
-      const coordinates = [scanner, input.manifest.sha256, ruleId, path, findingLine];
-      const id = sha256(JSON.stringify(npm ? [...coordinates, npm.name, npm.installedVersion] : coordinates));
-      findings.push({ id, ruleId, path, line: findingLine, severity: risk, ...(npm ? { npm } : {}) });
+      const finding = { ruleId, path, line: findingLine, severity: risk, ...(npm ? { npm } : {}) };
+      findings.push({ id: scanFindingId(scanner, input.manifest.sha256, finding), ...finding });
       if (findings.length > 2000) throw new Error('invalid_report');
     };
     if (scanner === 'gitleaks') {
@@ -75,7 +75,7 @@ export function normalizeScan(scanner: Scanner, input: Input): ScanSummary {
         if (!/(?:^|\/)package-lock\.json$/.test(path)) throw new Error('invalid_report');
         packages += z.array(record).max(100_000).parse(result.Packages ?? []).length;
         for (const issue of z.array(record).max(2000).parse(result.Vulnerabilities ?? [])) {
-          const ruleId = z.string().regex(/^(?:CVE-\d{4}-\d{4,12}|GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})$/).parse(issue.VulnerabilityID);
+          const ruleId = npmAdvisoryIdSchema.parse(issue.VulnerabilityID);
           add(ruleId, path, null, severity.parse(String(issue.Severity ?? 'unknown').toLowerCase()), npmAdvisory(issue));
         }
       }
