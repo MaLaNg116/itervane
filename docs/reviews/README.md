@@ -51,7 +51,7 @@
 | 045 | P2-E-C2 按不可变摘要导入并回读 Registry | [#45](https://github.com/MaLaNg116/itervane/pull/45)，已合入 main | [Registry 导入导读](p2-e-verified-registry-import.md) | 70 项宿主、163 项单元、138 项 PostgreSQL、真实 Distribution 回读和[四组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44921453641)通过 |
 | 046 | P2-E-C3-A Registry 来源与审批目标版本绑定 | [#46](https://github.com/MaLaNg116/itervane/pull/46)，已合入 main | [来源绑定导读](p2-e-release-registry-binding.md) | 163 项单元、138 项 PostgreSQL 全量复跑、真实 Registry 来源核对和[四组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44922298771)通过 |
 | 047 | P2-E-C3-B 正式发布队列认领与执行权恢复 | [#47](https://github.com/MaLaNg116/itervane/pull/47)，已合入 main | [正式认领导读](p2-e-formal-release-claim.md) | 148 项真实 PostgreSQL、163 项单元、70 项宿主、常规 CI 和[四组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44926192666)通过 |
-| 048 | P2-E-C3-C1 归档凭据与唯一 Registry 导入意图 | [#48](https://github.com/MaLaNg116/itervane/pull/48)，基于已合入 #47 的 main | [发布步骤导读](p2-e-formal-release-registry-steps.md) | 149 项真实 PostgreSQL、163 项单元、真实 Registry 只读核对与原生 Worker 打包通过，[托管验收](https://github.com/MaLaNg116/itervane/actions/runs/44928454610)进行中 |
+| 048 | P2-E-C3-C1 归档凭据与唯一 Registry 导入意图 | [#48](https://github.com/MaLaNg116/itervane/pull/48)，已合入 main | [发布步骤导读](p2-e-formal-release-registry-steps.md) | 149 项真实 PostgreSQL、163 项单元、常规 CI 与[四组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44928454610)通过，核对实际 Registry 摘要及暂存清理 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
