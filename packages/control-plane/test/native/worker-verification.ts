@@ -13,14 +13,20 @@ import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-res
 import { runFormalVerification } from '../../src/runtime/formal-verification.js';
 import { currentInspectionAttempt } from '../../src/service/inspection-evidence.js';
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
+import { readApprovedArchive } from './release-archive.js';
 
 let phase = 'config';
 
-async function verify() {
-  const [taskId, runId, expected, ...buildArgs] = process.argv.slice(2);
+function fixtureConfig() {
   const config = workerConfig();
   if (process.platform !== 'linux' || !process.getuid?.() || !config.runner
       || !/^\/itervane_test_[a-f0-9]{12}$/.test(new URL(config.databaseUrl).pathname)) throw new Error('verification_fixture_config');
+  return { ...config, runner: config.runner };
+}
+
+async function verify() {
+  const [taskId, runId, expected, ...buildArgs] = process.argv.slice(2);
+  const config = fixtureConfig();
   const target = { taskId: idSchema.parse(taskId), runId: idSchema.parse(runId) };
   const findingId = expected === 'original' ? null : sha256Schema.parse(expected);
   const [profileSha, baselineSha, expectedBuild, expectedBaseline, ociInputsSha] = buildArgs;
@@ -197,5 +203,13 @@ async function verify() {
   }
 }
 
-try { console.log(JSON.stringify(await verify())); }
+try {
+  const [action, operationId, ...extra] = process.argv.slice(2);
+  if (action === 'read-approved-archive') {
+    phase = 'archive_transfer';
+    equal(extra.length, 0);
+    const { databaseUrl, runner } = fixtureConfig();
+    console.log(JSON.stringify(await readApprovedArchive(databaseUrl, runner, operationId)));
+  } else console.log(JSON.stringify(await verify()));
+}
 catch { console.error(`verification_fixture_phase_${phase}`); process.exitCode = 1; }

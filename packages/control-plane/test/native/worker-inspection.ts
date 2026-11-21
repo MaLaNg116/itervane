@@ -489,7 +489,14 @@ async function probe() {
         await new ExecutionCoordinator(db.storage).reconcile(randomUUID());
         const [genericWakeup] = (await db.admin.query('SELECT wakeup_job_id FROM itervane.task_runs WHERE id=$1', [current.runId])).rows;
         equal(genericWakeup?.wakeup_job_id, null);
-        retry = { before, after, retrySha256, generation: handoff.generation, candidate, approval: { operationId, decisionVersion: confirmed.decisionVersion } };
+        phase = 'standard_formal_release_archive_transport';
+        const transferred = await runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+          'verification', ['read-approved-archive', operationId]);
+        deepStrictEqual(transferred, { operationId, fingerprint: candidate.fingerprint, archiveSha256: candidate.manifest.image.archive.sha256,
+          bytes: candidate.manifest.image.archive.bytes, wrongRunnerDenied: true, wrongSizeDenied: true, revokedDenied: true, stagedFilesRemaining: false });
+        await assertDrained(controllerUid, staging);
+        retry = { before, after, retrySha256, generation: handoff.generation, candidate, archiveTransport: transferred,
+          approval: { operationId, decisionVersion: confirmed.decisionVersion } };
       }
       return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
         built, healthRegression, drift, ...(retry ? { retry } : {}), stagedFilesRemaining: false };

@@ -1,6 +1,8 @@
-import { lstat, realpath } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { lstat, mkdtemp, open, realpath, rm } from 'node:fs/promises';
 import { createConnection, type Socket } from 'node:net';
-import { dirname, isAbsolute } from 'node:path';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   npmRegistryTarball, npmRepairPaths,
@@ -26,6 +28,7 @@ const requestLimit = 2048;
 const responseLimit = 4 * 1024 * 1024 + 8192;
 const repairResponseLimit = 32 * 1024;
 const heartbeatMs = 450;
+const archiveTransferMs = 66_000;
 
 export type QualifiedControllerAddress = {
   socketPath: string; controllerUid: number; imageSha256: string;
@@ -37,7 +40,7 @@ type RepairReceipt = QualifiedRepairReceipt | QualifiedRepairObservationReceipt;
 type VerificationCoordinates = Pick<QualifiedVerificationRequest, 'requestId' | 'fence' | 'workspaceSha256' | 'origin'>;
 type VerificationCommand = ReturnType<typeof canonicalVerificationCommand>;
 
-class Lines {
+class SocketReader {
   private readonly iterator;
   private pending: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   constructor(socket: Socket) { this.iterator = socket[Symbol.asyncIterator](); }
@@ -55,10 +58,29 @@ class Lines {
         this.pending = this.pending.subarray(end + 1);
         return Buffer.concat(chunks, total).toString('utf8');
       }
-      const next = await this.iterator.next();
-      if (next.done || !Buffer.isBuffer(next.value)) throw new Error('runner_frame_missing');
-      this.pending = next.value;
+      await this.fill();
     }
+  }
+
+  async *readBytes(size: number) {
+    let remaining = size;
+    while (remaining > 0) {
+      if (!this.pending.length) await this.fill();
+      const chunk = this.pending.subarray(0, remaining);
+      this.pending = this.pending.subarray(chunk.length);
+      remaining -= chunk.length;
+      yield chunk;
+    }
+  }
+
+  async requireEnd() {
+    if (this.pending.length || !(await this.iterator.next()).done) throw new Error('runner_unexpected_bytes');
+  }
+
+  private async fill() {
+    const next = await this.iterator.next();
+    if (next.done || !Buffer.isBuffer(next.value)) throw new Error('runner_frame_missing');
+    this.pending = next.value;
   }
 }
 
@@ -282,12 +304,77 @@ export class QualifiedInspectionClient {
     });
   }
 
+  async withRetainedArchive<T>(raw: QualifiedOciArchiveVerification, authorize: () => Promise<void>,
+    use: (archivePath: string) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const expected = qualifiedOciArchiveVerificationSchema.parse(raw);
+    if (expected.runnerImageSha256 !== this.imageSha256) throw new Error('runner_archive_image_binding');
+    signal?.throwIfAborted();
+    await verifySocket(this.address);
+    const directory = await mkdtemp(join(tmpdir(), 'itervane-release-'));
+    const path = join(directory, 'image.oci.tar');
+    try {
+      await this.receiveArchive(expected, path, authorize, signal);
+      signal?.throwIfAborted();
+      return await use(path);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  private async receiveArchive(expected: QualifiedOciArchiveVerification, path: string,
+    authorize: () => Promise<void>, signal?: AbortSignal) {
+    const deadline = AbortSignal.timeout(archiveTransferMs);
+    const active = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    const { archive } = expected;
+    active.throwIfAborted();
+    const socket = createConnection(this.address.socketPath);
+    const reader = new SocketReader(socket);
+    const cancel = () => socket.destroy();
+    active.addEventListener('abort', cancel, { once: true });
+    try {
+      active.throwIfAborted();
+      socket.write(`ARCHIVE_READ 1 ${archive.sha256} ${archive.bytes}\n`);
+      if (await reader.read(requestLimit) !== `ARCHIVE_READY 1 ${this.imageSha256}`) throw new Error('runner_archive_handshake');
+      await authorize();
+      active.throwIfAborted();
+      const file = await open(path, 'wx', 0o600);
+      try {
+        active.throwIfAborted();
+        socket.write('K');
+        const digest = createHash('sha256');
+        let recheckAt = performance.now() + heartbeatMs;
+        for await (const chunk of reader.readBytes(archive.bytes)) {
+          if (performance.now() >= recheckAt) {
+            await authorize();
+            recheckAt = performance.now() + heartbeatMs;
+          }
+          active.throwIfAborted();
+          digest.update(chunk);
+          await file.writeFile(chunk);
+        }
+        if (digest.digest('hex') !== archive.sha256) throw new Error('runner_archive_digest');
+        const receipt = qualifiedOciArchiveVerificationSchema.parse(JSON.parse(await reader.read(requestLimit)));
+        if (receipt.runnerImageSha256 !== this.imageSha256 || receipt.archive.sha256 !== archive.sha256
+            || receipt.archive.bytes !== archive.bytes) throw new Error('runner_archive_receipt');
+        await reader.requireEnd();
+        await file.chmod(0o400);
+      } finally { await file.close(); }
+      // The staged file is still private. Revalidate before any consumer can access it.
+      active.throwIfAborted();
+      await authorize();
+      active.throwIfAborted();
+    } finally {
+      active.removeEventListener('abort', cancel);
+      cancel();
+    }
+  }
+
   private async readObservation<T>(request: string, signal: AbortSignal | undefined, decode: (value: unknown) => T): Promise<T | null> {
     if (signal?.aborted) return null;
     try { await verifySocket(this.address); }
     catch { return null; }
     const socket = createConnection(this.address.socketPath);
-    const lines = new Lines(socket);
+    const lines = new SocketReader(socket);
     const stop = () => socket.destroy();
     const deadline = setTimeout(stop, 6_000);
     signal?.addEventListener('abort', stop, { once: true });
@@ -372,7 +459,7 @@ export class QualifiedInspectionClient {
     catch { return unavailable(); }
 
     const socket = createConnection(this.address.socketPath);
-    const lines = new Lines(socket);
+    const lines = new SocketReader(socket);
     const done = new AbortController();
     const overall = setTimeout(() => socket.destroy(), 190_000);
     const handshake = setTimeout(() => socket.destroy(), 6_000);

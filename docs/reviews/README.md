@@ -46,7 +46,8 @@
 | 040 | P2-E-A2 冻结当前复验候选与版本化发布目标 | [#40](https://github.com/MaLaNg116/itervane/pull/40)，已合入 main | [候选冻结导读](p2-e-formal-release-candidate.md) | 138 项真实 PostgreSQL、常规 CI 和[四组托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44913906085)通过 |
 | 041 | P2-E-B1 正式候选的本人确认与原子入队 | [#41](https://github.com/MaLaNg116/itervane/pull/41)，已合入 main | [人工决定导读](p2-e-formal-release-approval.md) | 138 项真实 PostgreSQL、常规 CI 和[四组托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44914829105)通过 |
 | 042 | P2-E-B2 双语审批面板和外部 MCP 候选查询 | [#42](https://github.com/MaLaNg116/itervane/pull/42)，已合入 main | [双语审批和 MCP 导读](p2-e-formal-release-portal.md) | 163 项单元、138 项真实 PostgreSQL 全量复跑、双语浏览器专项和[四组托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44917062529)通过 |
-| 043 | P2-E-B3 外部 MCP 发布申请和目标查询 | [#43](https://github.com/MaLaNg116/itervane/pull/43)，基于已合入 #42 的 main | [MCP 发布申请导读](p2-e-mcp-release-request.md) | TypeScript 和 138 项真实 PostgreSQL 通过，[托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44917917440)进行中 |
+| 043 | P2-E-B3 外部 MCP 发布申请和目标查询 | [#43](https://github.com/MaLaNg116/itervane/pull/43)，已合入 main | [MCP 发布申请导读](p2-e-mcp-release-request.md) | TypeScript、138 项真实 PostgreSQL、常规 CI 和[四组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44917917440)通过 |
+| 044 | P2-E-C1 受保护的发布制品传输 | [#44](https://github.com/MaLaNg116/itervane/pull/44)，基于已合入 #43 的 main | [归档传输导读](p2-e-release-archive-transfer.md) | 68 项宿主、163 项单元、138 项 PostgreSQL、七项 Unix socket 专项和[托管 KVM OCI](https://github.com/MaLaNg116/itervane/actions/runs/44919348867)通过，原生完整回归进行中 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
