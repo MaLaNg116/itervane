@@ -17,7 +17,7 @@ import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRuntime,
-  inspectionAttempts } from '../../src/persistence/schema.js';
+  formalVerificationInputs, inspectionAttempts } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
 import { runFormalRepair } from '../../src/runtime/formal-repair.js';
@@ -26,6 +26,7 @@ import { GuardedCheckpointer } from '../../src/runtime/checkpointer.js';
 import { FormalRepairExecution, type RepairRunner } from '../../src/runtime/repair-execution.js';
 import { observeFormalRepairTargets, type RepairObservationRunner } from '../../src/runtime/repair-observation.js';
 import { ToolGateway } from '../../src/runtime/tools.js';
+import { prepareFormalVerificationInput } from '../../src/runtime/verification-input.js';
 import { DurableWorker } from '../../src/runtime/worker.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
@@ -43,6 +44,12 @@ let identity: VerifiedIdentity; let coordinator: ExecutionCoordinator; let task:
 const origin = 'https://example.invalid/inspection.git';
 const imageSha256 = 'a'.repeat(64);
 const workspaceSha256 = 'd'.repeat(64);
+const verificationProfile = { id: 'standard-web-fixture', baselineSha256: sha256('protected baseline'),
+  policySha256: sha256('verification policy'), scannerInputsSha256: sha256('verification scanners'), runnerImageSha256: imageSha256 };
+const clearRepairHandoff = () => database.admin.query(
+  'TRUNCATE itervane.formal_verification_inputs, itervane.formal_repair_results, itervane.formal_repair_attempts, '
+  + 'itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs',
+);
 beforeAll(async () => { database = await databaseFixture(); issuer = await identityFixture(); identity = await createIdentityVerifier(issuer.config)(await issuer.token()); });
 beforeEach(async () => {
   await database.reset(); await bootstrapOwner(database.storage, { issuer: issuer.config.issuer, subject: 'owner' });
@@ -162,7 +169,7 @@ function completedRunner(finding?: string, partial = false) {
 }
 
 async function claimAfterAudit() {
-  // Establish the repair phase lease in this fixture while the application handoff is in development.
+  // Exercise the worker-side evidence services under a real lease without dispatching another worker.
   await database.admin.query("UPDATE itervane.tasks SET state='queued' WHERE id=$1", [task.id]);
   await database.admin.query("UPDATE itervane.task_runs SET state='queued' WHERE task_id=$1", [task.id]);
   await coordinator.reconcile(randomUUID());
@@ -473,7 +480,7 @@ it.each(['continuous', 'reclaimed', 'existing audit'] as const)('continues a sea
       const audited = await tasks.get(identity, task.id);
       expect((await tasks.events(identity, task.id, 50)).at(-1)).toMatchObject({ reason: 'audit_ready' });
       // An audit recorded before the repair handoff migration can enter repair as well.
-      await database.admin.query('TRUNCATE itervane.formal_repair_results, itervane.formal_repair_attempts, itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs');
+      await clearRepairHandoff();
       await tasks.resume(identity, task.id, { expectedVersion: audited.version });
       expect(await auditOnly.tick()).toBe(true);
       const deferred = await tasks.get(identity, task.id);
@@ -537,6 +544,20 @@ it.each(['continuous', 'reclaimed', 'existing audit'] as const)('continues a sea
       }]);
       expect(exported.body).not.toContain(line.trim());
       expect(JSON.stringify(view)).not.toContain('"replacement"');
+      const scope = await claimAfterAudit();
+      const prepare = () => coordinator.withLease(scope, (tx, current) => prepareFormalVerificationInput(tx, current.task, scope, verificationProfile));
+      const frozen = await prepare();
+      expect(frozen.document).toMatchObject({ runId: task.runId, audit: { resultSha256: audit!.sha256 }, profile: verificationProfile,
+        subject: { kind: 'repair', resultSha256: result!.sha256, requestId: result!.requestId, patchSha256 },
+      });
+      const [operation] = await database.storage.db.select().from(formalRepairOperations);
+      expect(frozen.document.subject).toMatchObject({ commandSha256: operation!.commandSha256, operationId: operation!.operationId });
+      expect(JSON.stringify(frozen.document)).not.toContain('"replacement"');
+      await expect(prepare()).resolves.toEqual(frozen);
+      await expect(database.storage.db.insert(formalVerificationInputs).values({
+        runId: scope.runId, preparedFence: scope.fence, workerId: scope.workerId, sha256: frozen.sha256,
+        document: { ...frozen.document, subject: { ...frozen.document.subject, manifestSha256: sha256('substituted candidate') } },
+      })).rejects.toMatchObject({ cause: { code: '23514', message: 'formal_verification_input_authority_or_source_mismatch' } });
       expect((await api.inject({ url: `${url}/patch?expectedSha256=${sha256('different result')}`, headers: { authorization } })).statusCode).toBe(409);
       const principal = randomUUID();
       await database.admin.query('INSERT INTO itervane.principals(id,issuer,subject) VALUES($1,$2,$3)', [principal, issuer.config.issuer, 'viewer']);
@@ -547,6 +568,7 @@ it.each(['continuous', 'reclaimed', 'existing audit'] as const)('continues a sea
       await database.admin.query('DELETE FROM itervane.workspace_members');
       expect((await api.inject({ url: patchUrl, headers: { authorization } })).statusCode).toBe(404);
       expect((await client.callTool({ name: 'get_repair', arguments: { taskId: task.id } })).isError).toBe(true);
+      await expect(prepare()).rejects.toMatchObject({ code: 'not_found' });
     } finally { await client.close(); await api.close(); }
   }
 });
@@ -567,6 +589,29 @@ it('retains the audited source when there are no findings and does not queue a r
   } finally { await worker.close(); }
   expect(observeRepair).not.toHaveBeenCalled();
   expect(repair).not.toHaveBeenCalled();
+  const scope = await claimAfterAudit();
+  const prepare = (lease: ExecutionScope, profile = verificationProfile) =>
+    coordinator.withLease(lease, (tx, current) => prepareFormalVerificationInput(tx, current.task, lease, profile));
+  const [first, duplicate] = await Promise.all([prepare(scope), prepare(scope)]);
+  expect(duplicate).toEqual(first);
+  expect(first.document.subject).toEqual({ kind: 'original', manifestSha256: first.document.inspection.snapshotSha256 });
+  expect(first.sha256).toBe(sha256(JSON.stringify(first.document)));
+  await expect(prepare(scope, { ...verificationProfile, policySha256: sha256('changed policy') })).rejects.toMatchObject({ code: 'conflict' });
+  await expect(database.storage.db.delete(formalVerificationInputs)).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'formal_verification_input_is_retained' } });
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await coordinator.reconcile(randomUUID());
+  const current = await claim();
+  await expect(prepare(scope)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(prepare(current)).resolves.toEqual(first);
+  expect(await database.storage.db.select().from(formalVerificationInputs)).toHaveLength(1);
+});
+
+it('keeps verification unavailable while an audit finding has no published repair candidate', async () => {
+  const { scope } = await repairReady();
+  await expect(coordinator.withLease(scope, (tx, current) => prepareFormalVerificationInput(tx, current.task, scope, verificationProfile)))
+    .rejects.toMatchObject({ code: 'unavailable' });
+  expect(await database.storage.db.select().from(formalVerificationInputs)).toEqual([]);
 });
 
 it('records one immutable repair command and a checked receipt across concurrent duplicate dispatches', async () => {
@@ -998,7 +1043,7 @@ it('revalidates the same repair input after a new lease and seals existing compl
   await expect(database.storage.pool.query('UPDATE itervane.formal_repair_inputs SET sha256=sha256')).rejects
     .toMatchObject({ code: '23514', message: 'formal_repair_input_is_retained' });
   // The isolated test database now resembles a completed audit from before this migration.
-  await database.admin.query('TRUNCATE itervane.formal_repair_results, itervane.formal_repair_attempts, itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs');
+  await clearRepairHandoff();
   expect(await prepare()).toEqual(prepared);
   expect((await database.storage.db.select().from(formalRepairInputs))[0]?.preparedFence).toBe(scope.fence);
 });
