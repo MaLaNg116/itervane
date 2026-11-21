@@ -10,4 +10,6 @@
 
 固定源码全量 PostgreSQL 138 项通过，源码指纹为 `0a7beac19a1cafce133f33aa6c171e151eb81d121de14557acde594cb7003960`。
 
+托管 KVM 四组验收通过。实际第二代候选、批准操作、79,042,560 字节归档、独立 OCI 报告及 Registry 回读一致，并确认暂存清理。托管运行版本 `92629905a9e57fc38275c5f9f7b0e5e76b7ed36c` 到已审查版本 `f8cfa1da49435e77d7550c17977c3ccac3d62c32` 仅修改文档。常规 CI 通过后已合入 `main`，合并提交为 `1e0169a2e3e1b9ab664d7426cf45fec44ec002c3`。 [四组托管验收](https://github.com/MaLaNg116/itervane/actions/runs/44921453641)
+
 C3 将实际 Registry 来源纳入目标版本核对，并把归档交接和导入接入正式执行槽。C4 与 E-D 分别进行 Komodo 派发和实际在线版本核对。 [PR #45](https://github.com/MaLaNg116/itervane/pull/45) · [托管 KVM 与 Registry 验收](https://github.com/MaLaNg116/itervane/actions/runs/44921453641)

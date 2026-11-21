@@ -9,3 +9,5 @@
 固定源码 `7489035926aa3e37f3f9bd6d8df2fa5cb597c669`。TypeScript、163 项单元和原生 Worker 打包通过。本机非 root 的 Distribution 3.1.2 路径验证换源、缺失历史配置和额外 URL 路径都在进入执行权及暂存之前拒绝，规范地址的同摘要导入通过。首次 PostgreSQL 137 项通过，既有「接管已记录修复」用例返回 `incompatible_checkpoint`。相同源码指纹 `aaf7ce3ea026a357ce0f71b3f13de0068fea16d3d96183efe27a9d19409a2c36` 全量复跑 138 项通过。该次波动的原因尚未定位。 [PR #46](https://github.com/MaLaNg116/itervane/pull/46) · [托管验收](https://github.com/MaLaNg116/itervane/actions/runs/44922298771)
 
 C3-B 接入全局执行槽和正式队列认领。登记变更使用现有目标锁，待派发操作还需要重验授权版本、有效期和证据。
+
+在 #45 合入后的 `main` 上核对托管版本 `32a9ae659afb86a6ef4977bbdfb8b20c3228a178`，运行代码一致。托管 OCI 验收已通过，冻结目标来源、批准操作、归档、镜像及配置摘要均与真实 Registry 回读一致，独立制品记录确认暂存清理。 [基于 main 的 #46](https://github.com/MaLaNg116/itervane/pull/46) · [托管验收](https://github.com/MaLaNg116/itervane/actions/runs/44922298771)
