@@ -19,3 +19,9 @@
 - C4 将配置更新和实际部署分别绑定到同一候选和操作。已获得的下游更新 ID 用于查询完成结果。丢失回执时依据原生记录、操作归属与实际目标状态核对，保留证据不足的操作供人工处理。E-D 在真实运行目标上独立核对版本、配置、访问保护及健康，再结算任务。
 
 外部助手可以申请发布并查询状态，维护者确认之后由正式 Worker 推进。测试使用公开或合成样例，用户项目依赖安装、构建和启动验证继续在合格的一次性 VM 中执行。放开部署 capability 需要走完 E-D 的真实出口。
+
+## C2 参考实现
+
+在与发布 Worker 相同的非 root 模式下，Skopeo 1.13.3 直接打开 `oci-archive:` 会尝试恢复 tar 记录的属主。先在私有目录内按固定文件名写入 OCI layout，重新验证归档 SHA-256、成员边界、manifest、配置和层，随后将目录交给 Skopeo。内容固定后使用 `--preserve-digests` 向 `repository@sha256:…` 导入。已在临时 Distribution 3.1.2 核对摘要写入以及 manifest 和配置原始字节。 [Skopeo copy](https://github.com/containers/skopeo/blob/main/docs/skopeo-copy.1.md) · [OCI Distribution 规格](https://github.com/opencontainers/distribution-spec/blob/main/spec.md)
+
+Registry 来源由安装维护者配置，镜像仓库名沿用任务目标登记。参考组合支持 HTTPS 与可选的 Basic 服务账号。本机匿名测试使用显式回环地址。在执行权核对后进行一次导入，随后独立读取固定 digest 下的 manifest 和 config，核对标头、原始字节与候选。拷贝进程异常时也先读 Registry 的可见状态。正式消费者接线时还需把实际 Registry 来源与已批准的目标版本绑定。

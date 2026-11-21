@@ -4,11 +4,14 @@ import { createReadStream } from 'node:fs';
 import { lstat, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { formalReleaseManifestSchema, idSchema, qualifiedOciArchiveVerificationSchema } from '@itervane/contracts';
+import { formalReleaseManifestSchema, formalReleaseTargetSchema, idSchema, qualifiedOciArchiveVerificationSchema } from '@itervane/contracts';
 import { QualifiedInspectionClient, sha256, type QualifiedControllerAddress } from '@itervane/runner';
 import { openDatabase } from '../../src/persistence/database.js';
+import { ReleaseRegistryPublisher } from '../../src/runtime/release-registry.js';
 
-export async function readApprovedArchive(databaseUrl: string, address: QualifiedControllerAddress, rawOperationId: unknown) {
+export async function readApprovedArchive(databaseUrl: string, address: QualifiedControllerAddress, rawOperationId: unknown,
+  registry: { origin: string; materializer: string }) {
+  ok(/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/.test(registry.origin));
   const operationId = idSchema.parse(rawOperationId);
   const database = await openDatabase(databaseUrl);
   try {
@@ -16,9 +19,10 @@ export async function readApprovedArchive(databaseUrl: string, address: Qualifie
     // The formal release consumer will additionally reserve and validate its own execution fence.
     async function approval() {
       const { rows: [row] } = await database.pool.query<{
-        candidate: unknown; fingerprint: string; archive: unknown; result_sha: string;
+        candidate: unknown; fingerprint: string; archive: unknown; result_sha: string; repository: unknown;
       }>(`
-        SELECT c.document AS candidate, c.fingerprint, v.document->'archiveVerification' AS archive, v.sha256 AS result_sha
+        SELECT c.document AS candidate, c.fingerprint, v.document->'archiveVerification' AS archive, v.sha256 AS result_sha,
+          target.document->>'imageRepository' AS repository
         FROM itervane.release_operations o
         JOIN itervane.release_candidates c ON c.id=o.candidate_id AND c.environment_id=o.environment_id
         JOIN itervane.tasks t ON t.id=c.task_id AND t.project_id=c.project_id AND t.requested_by=c.requested_by
@@ -41,17 +45,20 @@ export async function readApprovedArchive(databaseUrl: string, address: Qualifie
       equal(sha256(JSON.stringify(candidate)), row.fingerprint);
       equal(candidate.image.runnerImageSha256, proof.runnerImageSha256);
       deepStrictEqual(candidate.image.archive, proof.archive);
-      return { fingerprint: row.fingerprint, proof };
+      const { archive, manifestDigest, configDigest } = candidate.image;
+      return { fingerprint: row.fingerprint, proof, image: { archive, manifestDigest, configDigest },
+        repository: formalReleaseTargetSchema.shape.imageRepository.parse(row.repository) };
     }
 
-    const { fingerprint, proof } = await approval();
+    const approved = await approval();
+    const { fingerprint, proof, image, repository } = approved;
     const runner = new QualifiedInspectionClient(address);
     const originalTmp = process.env.TMPDIR;
     const staging = await mkdtemp(join(tmpdir(), 'itervane-archive-fixture-'));
     let checks = 0;
     const authorize = async () => {
       checks++;
-      deepStrictEqual(await approval(), { fingerprint, proof });
+      deepStrictEqual(await approval(), approved);
     };
     const unreachable = async () => fail('unverified archive reached its consumer');
     process.env.TMPDIR = staging;
@@ -83,8 +90,17 @@ export async function readApprovedArchive(databaseUrl: string, address: Qualifie
         authorizedOnce = true;
       }, unreachable), /fixture_revoked/);
       deepStrictEqual(await readdir(staging), []);
+      const publisher = new ReleaseRegistryPublisher({ origin: registry.origin }, { materializer: registry.materializer, skopeo: '/usr/bin/skopeo' });
+      const imported = await runner.withRetainedArchive(proof, authorize, async path => {
+        await rejects(publisher.publish(repository, { ...image, configDigest: `sha256:${sha256('different configuration')}` },
+          path, authorize), /registry_tool_failed/);
+        const proof = await publisher.publish(repository, image, path, authorize);
+        deepStrictEqual(await publisher.publish(repository, image, path, authorize), proof);
+        return proof;
+      });
+      deepStrictEqual(await readdir(staging), []);
       return { operationId, fingerprint, ...received, wrongRunnerDenied: true, wrongSizeDenied: true,
-        revokedDenied: true, stagedFilesRemaining: false };
+        revokedDenied: true, stagedFilesRemaining: false, registry: imported };
     } finally {
       if (originalTmp === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = originalTmp;
