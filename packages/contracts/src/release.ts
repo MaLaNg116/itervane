@@ -30,6 +30,43 @@ function releaseServiceOrigin(service: string) {
 export const releaseRegistryOriginSchema = releaseServiceOrigin('Registry');
 export const releaseKomodoOriginSchema = releaseServiceOrigin('Komodo');
 
+const ingressHostname = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/;
+const ingressName = z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9_-]*$/);
+const ingressOrigin = z.string().max(2048).refine(input => {
+  const url = URL.parse(input);
+  return url?.protocol === 'https:' && input === url.origin && ingressHostname.test(url.hostname);
+}, 'Expected a canonical HTTPS application origin');
+const ingressNetwork = z.string().max(128).regex(/^[a-z0-9][a-z0-9_.-]*$/)
+  .refine(name => !['bridge', 'default', 'none', 'host', 'ingress'].includes(name), 'Expected a dedicated application network');
+const forwardAuthAddress = z.string().max(2048).refine(input => {
+  const url = URL.parse(input);
+  return !!url && ['https:', 'http:'].includes(url.protocol) && ingressHostname.test(url.hostname)
+    && input === url.origin + '/oauth2/auth';
+}, 'Expected the canonical ForwardAuth endpoint');
+const keycloakIssuer = z.string().max(2048).refine(input => {
+  const url = URL.parse(input);
+  return !!url && (url.protocol === 'https:' || (url.protocol === 'http:' && url.hostname === '127.0.0.1' && !!url.port))
+    && /^\/realms\/[a-zA-Z0-9_.-]+$/.test(url.pathname) && input === url.origin + url.pathname;
+}, 'Expected a Keycloak realm issuer');
+const probeIdentityField = z.string().min(1).max(255).regex(/^[!-~]+$/);
+const rolloutProbeIdentity = z.strictObject({
+  issuer: keycloakIssuer, audience: probeIdentityField, clientId: probeIdentityField, subject: probeIdentityField,
+});
+
+export const releaseRolloutCheckSchema = z.strictObject({
+  version: z.literal(1),
+  origin: ingressOrigin,
+  healthPath: z.literal('/health'),
+  network: ingressNetwork,
+  backendPort: z.int().min(1).max(65_535),
+  traefik: z.strictObject({
+    apiOrigin: releaseServiceOrigin('Traefik management'),
+    entryPoint: ingressName, routeName: ingressName, forwardAuthAddress,
+  }),
+  probeIdentity: rolloutProbeIdentity,
+}).refine(check => check.origin !== check.traefik.apiOrigin, 'Expected a separate management endpoint');
+export type ReleaseRolloutCheck = Readonly<z.infer<typeof releaseRolloutCheckSchema>>;
+
 export const formalReleaseTargetSchema = z.strictObject({
   environmentId: idSchema, deploymentId: komodoResourceIdSchema, serverId: komodoResourceIdSchema,
   imageRepository: z.string().max(180).regex(/^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$/),
@@ -37,6 +74,7 @@ export const formalReleaseTargetSchema = z.strictObject({
   komodo: z.strictObject({ origin: releaseKomodoOriginSchema, actorId: komodoResourceIdSchema }).optional(),
   runtimeConfigSha256: sha256Schema, verificationProfileSha256: sha256Schema,
   rolloutCheckSha256: sha256Schema, recoveryPlanSha256: sha256Schema,
+  rolloutCheck: releaseRolloutCheckSchema.optional(),
   blockImageSeverities: imageBlockers.default(['critical', 'high', 'unknown']),
   approvalTtlSeconds: z.int().min(60).max(86_400).default(1800),
   verificationMaxAgeSeconds: z.int().min(60).max(604_800).default(86_400),

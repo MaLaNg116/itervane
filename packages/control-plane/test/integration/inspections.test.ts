@@ -51,7 +51,7 @@ import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { FormalReleaseService } from '../../src/service/formal-release.js';
 import { publishFormalRepair } from '../../src/service/repair-result.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
-import { registerReleaseTarget } from '../../src/service/release-targets.js';
+import { fingerprintRolloutCheck, registerReleaseTarget } from '../../src/service/release-targets.js';
 import { ReleaseCandidateService } from '../../src/service/releases.js';
 import { TaskService } from '../../src/service/tasks.js';
 import { VerificationViewService } from '../../src/service/verification-view.js';
@@ -1270,7 +1270,15 @@ async function adjustFixtureVerification(statement: string, values: unknown[] = 
 
 const komodoBinding = { origin: 'https://komodo.example.invalid', actorId: 'd'.repeat(24) };
 
-async function queuedFormalRelease(options: { separateRequester?: boolean; expiring?: boolean; komodo?: boolean } = {}) {
+const rolloutCheckFixture = {
+  version: 1, origin: 'https://app.example.invalid', healthPath: '/health', network: 'private-demo', backendPort: 3000,
+  traefik: { apiOrigin: 'http://127.0.0.1:8120', entryPoint: 'websecure', routeName: 'demo',
+    forwardAuthAddress: 'http://demo-oauth:4180/oauth2/auth' },
+  probeIdentity: { issuer: 'https://idp.example.invalid/realms/demo', audience: 'demo',
+    clientId: 'demo-probe', subject: 'expected-probe-service-account' },
+} as const;
+
+async function queuedFormalRelease(options: { separateRequester?: boolean; expiring?: boolean; komodo?: boolean; rolloutCheck?: boolean } = {}) {
   const taskService = new TaskService(database.storage);
   const resources = new ResourceService(database.storage);
   const verifyIdentity = createIdentityVerifier(issuer.config);
@@ -1309,7 +1317,8 @@ async function queuedFormalRelease(options: { separateRequester?: boolean; expir
   const target = { environmentId: environment.id, deploymentId: 'a'.repeat(24), serverId: 'b'.repeat(24),
     imageRepository: 'testing/standard', registryOrigin: releaseOrigin, runtimeConfigSha256: sha256('runtime configuration'),
     verificationProfileSha256: verificationProfileFingerprint(standardVerificationProfile), verificationMaxAgeSeconds: 60,
-    rolloutCheckSha256: sha256('health verification'), recoveryPlanSha256: sha256('known release'),
+    rolloutCheckSha256: options.rolloutCheck ? fingerprintRolloutCheck(rolloutCheckFixture) : sha256('health verification'),
+    recoveryPlanSha256: sha256('known release'), ...(options.rolloutCheck ? { rolloutCheck: rolloutCheckFixture } : {}),
     ...(options.komodo ? { komodo: komodoBinding } : {}),
   };
   await registerReleaseTarget(database.storage, target);
@@ -1502,8 +1511,21 @@ it.each([
   ['requester access', 'permission_revoked'],
   ['verification proof', 'release_evidence_changed'],
 ] as const)('blocks formal release when %s no longer matches the approval', async (change, reason) => {
-  const { operationId, target, taskService } = await queuedFormalRelease({ separateRequester: change === 'requester access' });
-  if (change === 'target revision') await registerReleaseTarget(database.storage, { ...target, rolloutCheckSha256: sha256('new check') });
+  const { approval, operationId, target, taskService } = await queuedFormalRelease({
+    separateRequester: change === 'requester access', rolloutCheck: change === 'target revision',
+  });
+  if (change === 'target revision') {
+    const original = await registerReleaseTarget(database.storage, target);
+    expect(original.revision).toBe(1);
+    expect(approval.manifest.rolloutCheckSha256).toBe(fingerprintRolloutCheck(rolloutCheckFixture));
+    const changed = { ...rolloutCheckFixture, origin: 'https://updated.example.invalid',
+      probeIdentity: { ...rolloutCheckFixture.probeIdentity, clientId: 'new-probe' } };
+    await expect(registerReleaseTarget(database.storage, { ...target, rolloutCheck: changed })).rejects.toMatchObject({ code: 'invalid_input' });
+    expect(await registerReleaseTarget(database.storage, target)).toEqual(original);
+    const updated = await registerReleaseTarget(database.storage, { ...target, rolloutCheck: changed, rolloutCheckSha256: fingerprintRolloutCheck(changed) });
+    expect(updated).toMatchObject({ revision: 2 });
+    expect(updated.fingerprint).not.toBe(original.fingerprint);
+  }
   if (change === 'Komodo binding') {
     const original = await registerReleaseTarget(database.storage, target);
     expect(original.revision).toBe(1);
