@@ -1,9 +1,10 @@
+import { npmAdvisoryEvidenceSchema, npmStableVersionSchema, normalizedScannerFindingSchema } from '@itervane/contracts';
 import { z } from 'zod';
 import { scannerProfiles, sha256 } from './profiles.js';
 import { sourcePath, type SourceManifest } from './snapshot.js';
 
 type Scanner = 'gitleaks' | 'trivy';
-type Finding = { id: string; ruleId: string; path: string; line: number | null; severity: 'unknown' | 'low' | 'medium' | 'high' | 'critical' };
+type Finding = z.infer<typeof normalizedScannerFindingSchema>;
 export type ScanSummary = {
   scanner: Scanner; version: string; policySha256: string; snapshotSha256: string;
   status: 'completed' | 'failed' | 'unavailable' | 'unsupported';
@@ -27,6 +28,14 @@ function filePath(value: unknown, input: Input) {
   return path;
 }
 
+function npmAdvisory(issue: Record<string, unknown>): Finding['npm'] {
+  const raw = issue.FixedVersion;
+  const versions = typeof raw === 'string' && raw.length <= 256 ? raw.split(',').map(value => value.trim()) : [];
+  const fixedVersions = versions.length <= 8 && versions.every(version => npmStableVersionSchema.safeParse(version).success)
+    ? [...new Set(versions)].sort() : [];
+  return npmAdvisoryEvidenceSchema.safeParse({ name: issue.PkgName, installedVersion: issue.InstalledVersion, fixedVersions }).data;
+}
+
 /** Raw reports are never returned. Known fields are rebuilt; secrets, snippets and stderr are discarded. */
 export function normalizeScan(scanner: Scanner, input: Input): ScanSummary {
   const profile = scannerProfiles.find(value => value.scanner === scanner)!;
@@ -44,9 +53,10 @@ export function normalizeScan(scanner: Scanner, input: Input): ScanSummary {
   try {
     if (Buffer.byteLength(input.report) > 4194304) throw new Error('invalid_report');
     const parsed: unknown = JSON.parse(input.report); const findings: Finding[] = [];
-    const add = (ruleId: string, path: string, findingLine: number | null, risk: Finding['severity']) => {
-      const id = sha256(JSON.stringify([scanner, input.manifest.sha256, ruleId, path, findingLine]));
-      findings.push({ id, ruleId, path, line: findingLine, severity: risk });
+    const add = (ruleId: string, path: string, findingLine: number | null, risk: Finding['severity'], npm?: Finding['npm']) => {
+      const coordinates = [scanner, input.manifest.sha256, ruleId, path, findingLine];
+      const id = sha256(JSON.stringify(npm ? [...coordinates, npm.name, npm.installedVersion] : coordinates));
+      findings.push({ id, ruleId, path, line: findingLine, severity: risk, ...(npm ? { npm } : {}) });
       if (findings.length > 2000) throw new Error('invalid_report');
     };
     if (scanner === 'gitleaks') {
@@ -66,7 +76,7 @@ export function normalizeScan(scanner: Scanner, input: Input): ScanSummary {
         packages += z.array(record).max(100_000).parse(result.Packages ?? []).length;
         for (const issue of z.array(record).max(2000).parse(result.Vulnerabilities ?? [])) {
           const ruleId = z.string().regex(/^(?:CVE-\d{4}-\d{4,12}|GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4})$/).parse(issue.VulnerabilityID);
-          add(ruleId, path, null, severity.parse(String(issue.Severity ?? 'unknown').toLowerCase()));
+          add(ruleId, path, null, severity.parse(String(issue.Severity ?? 'unknown').toLowerCase()), npmAdvisory(issue));
         }
       }
       if (packages === 0) return stopped('unsupported', 'missing_inventory');

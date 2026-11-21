@@ -9,10 +9,17 @@ const snapshot = z.strictObject({
   files: z.int().min(1).max(5000), totalBytes: z.int().min(1).max(33554432),
   inputsSha256: sha256Schema, readOnly: z.literal(true), offline: z.literal(true),
 });
+export const npmPackageNameSchema = z.string().min(1).max(214).regex(/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/);
+export const npmStableVersionSchema = z.string().max(29).regex(/^(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})\.(?:0|[1-9][0-9]{0,8})$/);
+export const npmAdvisoryEvidenceSchema = z.strictObject({
+  name: npmPackageNameSchema, installedVersion: npmStableVersionSchema,
+  fixedVersions: z.array(npmStableVersionSchema).max(8).refine(versions => new Set(versions).size === versions.length),
+});
 export const normalizedScannerFindingSchema = z.strictObject({
   id: sha256Schema, ruleId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/),
   path: z.string().min(1).max(240), line: z.int().min(1).max(100000000).nullable(),
   severity: z.enum(['unknown', 'low', 'medium', 'high', 'critical']),
+  npm: npmAdvisoryEvidenceSchema.optional(),
 });
 const report = z.strictObject({
   scanner: z.enum(['gitleaks', 'trivy']), version: z.string().regex(/^\d+\.\d+\.\d+$/),
@@ -25,6 +32,9 @@ const report = z.strictObject({
     ? value.reason !== null || (value.scanner === 'trivy') !== (value.database !== null)
     : value.reason === null || value.findings.length > 0 || value.database !== null) {
     ctx.addIssue({ code: 'custom', message: 'Invalid scanner outcome' });
+  }
+  if (value.findings.some(finding => finding.npm !== undefined && (value.scanner !== 'trivy' || finding.line !== null))) {
+    ctx.addIssue({ code: 'custom', message: 'Npm coordinates require an npm advisory finding' });
   }
 });
 

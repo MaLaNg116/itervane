@@ -39,6 +39,24 @@ it('keeps database identity, known vulnerability IDs and severity while removing
   expect(JSON.stringify(result)).not.toContain('never-echo-this');
 });
 
+it('retains bounded npm advisory coordinates and distinguishes packages sharing an advisory', () => {
+  const initial = trivy({ PkgName: 'lodash', InstalledVersion: '4.17.20', FixedVersion: '4.17.21, 4.17.21',
+    Title: 'unsupported advisory prose',
+  });
+  const raw = JSON.parse(initial) as { Results: { Vulnerabilities: Record<string, unknown>[] }[] };
+  raw.Results[0]!.Vulnerabilities.push({ ...raw.Results[0]!.Vulnerabilities[0], PkgName: '@demo/dependency',
+    InstalledVersion: '1.0.0', FixedVersion: '>=1.1.0',
+  });
+  const result = normalizeScan('trivy', { manifest: fixture.manifest, report: JSON.stringify(raw), exitCode: 10, database, now });
+  expect(result.status).toBe('completed');
+  expect(new Set(result.findings.map(finding => finding.id)).size).toBe(2);
+  expect(result.findings.find(finding => finding.npm?.name === 'lodash')?.npm)
+    .toEqual({ name: 'lodash', installedVersion: '4.17.20', fixedVersions: ['4.17.21'] });
+  expect(result.findings.find(finding => finding.npm?.name === '@demo/dependency')?.npm)
+    .toEqual({ name: '@demo/dependency', installedVersion: '1.0.0', fixedVersions: [] });
+  expect(JSON.stringify(result)).not.toContain('unsupported advisory prose');
+});
+
 it('recognizes zero findings only for a completed supported scan and rejects out-of-snapshot locations', () => {
   expect(normalizeScan('gitleaks', { manifest: fixture.manifest, report: '[]', exitCode: 0 })).toMatchObject({ status: 'completed', findings: [] });
   const wrong = JSON.parse(trivy()) as { Results: { Target: string }[] }; wrong.Results[0]!.Target = '/etc/passwd';
