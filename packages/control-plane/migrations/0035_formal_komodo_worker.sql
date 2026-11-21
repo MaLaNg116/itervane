@@ -217,9 +217,9 @@ BEGIN
 
   IF komodo_step THEN
     IF mapping IS NULL OR current_state NOT IN ('running', 'cancel_requested')
-      OR CASE WHEN current_phase = 'release_komodo_reconciling' THEN NEW.prepared_fence >= current_fence
-        ELSE (NEW.prepared_fence, NEW.prepared_by) IS DISTINCT FROM (current_fence, current_worker)
-      END THEN
+      OR (current_phase = 'release_komodo_reconciling' AND NEW.prepared_fence >= current_fence)
+      OR (current_phase IS DISTINCT FROM 'release_komodo_reconciling'
+        AND (NEW.prepared_fence, NEW.prepared_by) IS DISTINCT FROM (current_fence, current_worker)) THEN
       RAISE EXCEPTION USING ERRCODE = '23514', MESSAGE = 'formal_release_step_authority';
     END IF;
     IF NEW.kind = 'komodo_dispatch' AND current_phase = 'release_komodo_dispatch_prepared'
