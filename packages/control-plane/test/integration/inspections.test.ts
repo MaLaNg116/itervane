@@ -21,7 +21,7 @@ import { scriptedVerification } from '../../../verification/src/agent/verificati
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
-import { formalAuditInputs, formalAuditResults, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
+import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
@@ -31,6 +31,7 @@ import { runFormalRepair } from '../../src/runtime/formal-repair.js';
 import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
 import { FormalReleaseSteps } from '../../src/runtime/formal-release-steps.js';
 import { FormalReleaseWorker } from '../../src/runtime/formal-release-worker.js';
+import { FormalRolloutCoordinator } from '../../src/runtime/formal-rollout-claim.js';
 import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-rescan.js';
 import { runFormalVerification, type FormalVerificationOptions } from '../../src/runtime/formal-verification.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
@@ -1882,6 +1883,120 @@ it('records one Komodo configuration and dispatch with separately bound observat
   ]);
   expect(en.at(-1)?.message).toMatch(/independent Komodo read/);
   expect(zh.at(-1)?.message).toMatch(/独立核对/);
+});
+
+async function parkForRollout({ approval, target }: Awaited<ReturnType<typeof queuedFormalRelease>>) {
+  const release = new FormalReleaseCoordinator(coordinator, releaseOrigin);
+  const registry = new FormalReleaseSteps(release);
+  const importScope = await release.claim(await fetchFormalWakeup(), randomUUID());
+  if (!importScope) throw new Error('Expected OCI import claim');
+  await registry.confirmArchive(importScope, await registry.prepareArchive(importScope));
+  const image = standardRegistryProof(approval.manifest.image);
+  await registry.prepareRegistry(importScope);
+  await registry.confirmRegistry(importScope, image);
+  expect(await release.handoffKomodo(importScope)).toBe('komodo_ready');
+  const writer = await release.claim(await fetchFormalWakeup(), randomUUID());
+  if (writer?.mode !== 'komodo_write') throw new Error('Expected Komodo writer');
+  const komodo = new FormalKomodoSteps(release);
+  const configuration = { deploymentId: target.deploymentId, serverId: target.serverId,
+    runtimeConfigSha256: target.runtimeConfigSha256, imageReference: image.reference };
+  await komodo.prepareConfiguration(writer, { ...configuration, imageReference: '' });
+  await komodo.authorizeWrite(writer, 'komodo_config');
+  await komodo.confirmConfiguration(writer, configuration);
+  await komodo.prepareDispatch(writer);
+  await komodo.authorizeWrite(writer, 'komodo_dispatch');
+  const update = { updateId: 'e'.repeat(24), actorId: komodoBinding.actorId, deploymentId: target.deploymentId,
+    status: 'Complete', success: true } as const;
+  await komodo.recordUpdate(writer, { ...update, status: 'Queued', success: false });
+  await komodo.confirmDispatch(writer, update);
+  expect(await release.finishKomodo(writer)).toBe('awaiting_rollout');
+  return { image, update, writer, komodo };
+}
+
+it('claims one formal rollout alongside a model workflow and keeps read authority after cancellation and grant removal', async () => {
+  const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
+  const { operationId, target, taskService } = submitted;
+  const { image, update, writer, komodo } = await parkForRollout(submitted);
+  const other = (await taskService.admit(identity, { projectId: task.projectId, source: task.source,
+    purpose: 'Independent workflow', dataClass: 'synthetic', idempotencyKey: randomUUID() })).task;
+  const workflowJob = await vi.waitFor(async () => {
+    const [job] = await database.storage.boss.fetch(queueName, { includeMetadata: true });
+    if (!job) throw new Error('Expected independent workflow wakeup');
+    return job;
+  });
+  const workflow = await coordinator.claim(workflowJob, randomUUID());
+  expect(workflow).toMatchObject({ taskId: other.id });
+
+  const observe = new FormalRolloutCoordinator(database.storage, releaseOrigin);
+  await expect(new FormalRolloutCoordinator(database.storage, 'https://different.registry.invalid').claimNext(randomUUID()))
+    .rejects.toMatchObject({ reason: 'release_target_changed' });
+  const parallel = await Promise.all([observe.claimNext(randomUUID()), observe.claimNext(randomUUID())]);
+  const leases = parallel.filter(lease => lease !== null);
+  expect(leases).toHaveLength(1);
+  const scope = leases[0]!;
+  expect(scope).toMatchObject({ operationId, fence: 1 });
+  await expect(observe.authorize({ ...scope, workerId: randomUUID() })).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(observe.authorize({ ...scope, operationId: randomUUID() })).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(observe.authorize(scope)).resolves.toMatchObject({
+    manifest: submitted.approval.manifest, image, update, check: rolloutCheckFixture,
+    target: { deploymentId: target.deploymentId, serverId: target.serverId, komodo: komodoBinding },
+  });
+  const current = await taskService.get(identity, task.id);
+  expect(await taskService.cancel(identity, task.id, { expectedVersion: current.version })).toMatchObject({ state: 'cancel_requested' });
+  const [removed] = await database.storage.db.delete(workspaceMembers).returning();
+  await expect(observe.authorize(scope)).resolves.toMatchObject({ update });
+  await expect(komodo.authorizeWrite(writer, 'komodo_dispatch')).rejects.toBeInstanceOf(ExecutionLost);
+  await database.storage.db.insert(workspaceMembers).values({ principalId: removed!.principalId, workspaceId: removed!.workspaceId });
+  const events = await taskService.events(identity, task.id, 50, 'zh-CN');
+  expect(events.find(event => event.type === 'task.release_rollout_claimed')?.message).toMatch(/只读租约/);
+  expect((await database.admin.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: other.id });
+  expect(await readOperation(operationId)).toMatchObject({ state: 'reconciling', wakeupJobId: null, observation: null });
+});
+
+it('durably fences formal rollout recovery and escalates after three expired observations', async () => {
+  const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
+  const { operationId, taskService, target } = submitted;
+  await parkForRollout(submitted);
+  for (const fence of [1, 2, 3]) {
+    const replacement = new FormalRolloutCoordinator(database.storage, releaseOrigin, 1);
+    const scope = await replacement.claimNext(randomUUID());
+    expect(scope).toMatchObject({ operationId, fence });
+    if (!scope) throw new Error('Expected an observation attempt');
+    await database.admin.query(`SELECT pg_sleep_until(lease_until + interval '20 milliseconds')
+      FROM itervane.formal_release_rollout_attempts WHERE operation_id=$1 AND fence=$2`, [operationId, fence]);
+    await expect(replacement.authorize(scope)).rejects.toBeInstanceOf(ExecutionLost);
+  }
+  const final = new FormalRolloutCoordinator(database.storage, releaseOrigin);
+  expect(await final.claimNext(randomUUID())).toBeNull();
+  expect(await final.claimNext(randomUUID())).toBeNull();
+  const attempts = await database.storage.db.select().from(formalReleaseRolloutAttempts).orderBy(formalReleaseRolloutAttempts.fence);
+  expect(attempts).toMatchObject([{ fence: 1, state: 'expired' }, { fence: 2, state: 'expired' }, { fence: 3, state: 'manual_review' }]);
+  expect(new Set(attempts.map(attempt => attempt.workerId)).size).toBe(3);
+  expect(await taskService.get(identity, task.id)).toMatchObject({ state: 'needs_human' });
+  const [manual] = (await taskService.events(identity, task.id, 50, 'en')).filter(event => event.type === 'task.release_rollout_manual_review');
+  expect(manual).toMatchObject({ reason: 'release_rollout_limit', message: /remains reserved/ });
+  await expect(registerReleaseTarget(database.storage, { ...target, runtimeConfigSha256: sha256('changed') })).rejects.toMatchObject({ code: 'conflict' });
+  expect(await readOperation(operationId)).toMatchObject({ state: 'reconciling', wakeupJobId: null, observation: null });
+});
+
+it('rejects direct formal rollout lease changes outside the recorded handoff and bounds', async () => {
+  const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
+  const { operationId } = submitted;
+  const observer = new FormalRolloutCoordinator(database.storage, releaseOrigin);
+  const insert = (fence: number, seconds: number) => database.storage.pool.query(`INSERT
+    INTO itervane.formal_release_rollout_attempts (operation_id, fence, worker_id, lease_until)
+    VALUES ($1, $2, $3, clock_timestamp() + $4 * interval '1 second')`, [operationId, fence, randomUUID(), seconds]);
+  expect(await observer.claimNext(randomUUID())).toBeNull();
+  await expect(insert(1, 45)).rejects.toMatchObject({ code: '23514', message: 'formal_rollout_binding_required' });
+  await parkForRollout(submitted);
+  await expect(insert(2, 45)).rejects.toMatchObject({ code: '23514', message: 'formal_rollout_lease_required' });
+  await expect(insert(1, 46)).rejects.toMatchObject({ code: '23514', message: 'formal_rollout_lease_required' });
+  expect(await observer.claimNext(randomUUID())).toMatchObject({ operationId, fence: 1 });
+  await expect(insert(2, 45)).rejects.toMatchObject({ code: '23514', message: 'formal_rollout_lease_required' });
+  await expect(database.storage.pool.query("UPDATE itervane.formal_release_rollout_attempts SET state='expired' WHERE operation_id=$1", [operationId]))
+    .rejects.toMatchObject({ code: '23514', message: 'formal_rollout_attempt_is_immutable' });
+  await expect(database.storage.pool.query('DELETE FROM itervane.formal_release_rollout_attempts WHERE operation_id=$1', [operationId]))
+    .rejects.toMatchObject({ code: '23514', message: 'formal_rollout_attempt_is_immutable' });
 });
 
 it.each(['normal', 'config response lost', 'config unconfirmed', 'dispatch ID lost',
