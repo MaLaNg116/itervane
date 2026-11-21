@@ -6,6 +6,7 @@ import { executionSlot, formalReleaseRolloutAttempts, formalReleaseTargets, rele
   releaseOperations, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { readReleaseManifest } from '../service/formal-release.js';
+import type { InstalledReleaseTarget } from '../service/release-targets.js';
 import { databaseNow } from '../service/releases.js';
 import { appendEvent, ExecutionLost } from './authority.js';
 import { targetForKomodo } from './formal-komodo-steps.js';
@@ -46,11 +47,11 @@ async function lockPendingRollout(tx: Transaction, operationId: string) {
 
 type PendingRollout = NonNullable<Awaited<ReturnType<typeof lockPendingRollout>>>;
 
-async function readRolloutBinding(tx: Transaction, pending: PendingRollout, workerOrigin: string) {
+async function readRolloutBinding(tx: Transaction, pending: PendingRollout, workerOrigin: string, installed?: InstalledReleaseTarget) {
   const { candidate, task, operation } = pending;
   const manifest = readReleaseManifest(candidate);
   if (task.generation !== manifest.generation || task.requestedBy !== candidate.requestedBy) throw new ExecutionLost();
-  const { mapping } = await verifyFormalReleaseTarget(tx, task, pending, manifest, workerOrigin);
+  const { mapping } = await verifyFormalReleaseTarget(tx, task, pending, manifest, workerOrigin, installed);
   if (!mapping.rolloutCheck || mapping.rolloutCheckSha256 !== manifest.rolloutCheckSha256 ||
       mapping.runtimeConfigSha256 !== manifest.runtimeConfigSha256) throw new ExecutionLost();
   const target = targetForKomodo(mapping);
@@ -89,7 +90,8 @@ async function expireAttempt(tx: Transaction, attempt: RolloutAttempt, workerId:
 export class FormalRolloutCoordinator {
   private readonly workerOrigin: string;
 
-  constructor(private readonly database: Database, workerOrigin: string, private readonly leaseSeconds = maxRolloutLeaseSeconds) {
+  constructor(private readonly database: Database, workerOrigin: string, private readonly leaseSeconds = maxRolloutLeaseSeconds,
+    private readonly installed?: InstalledReleaseTarget) {
     this.workerOrigin = releaseRegistryOriginSchema.parse(workerOrigin);
     if (!Number.isInteger(leaseSeconds) || leaseSeconds < 1 || leaseSeconds > maxRolloutLeaseSeconds) throw new Error('invalid_rollout_lease');
   }
@@ -112,12 +114,14 @@ export class FormalRolloutCoordinator {
         .innerJoin(runRuntime, eq(runRuntime.runId, releaseCandidates.runId))
         .innerJoin(formalReleaseTargets, eq(formalReleaseTargets.environmentId, releaseOperations.environmentId))
         .where(and(eq(releaseOperations.state, 'reconciling'), isNull(releaseOperations.wakeupJobId), eq(runRuntime.reason, awaitingRollout),
-          sql`jsonb_typeof(${formalReleaseTargets.document}->'rolloutCheck') = 'object'`, notInArray(releaseOperations.id, exhausted)))
+          sql`jsonb_typeof(${formalReleaseTargets.document}->'rolloutCheck') = 'object'`, notInArray(releaseOperations.id, exhausted),
+          this.installed && eq(formalReleaseTargets.environmentId, this.installed.environmentId),
+          this.installed && eq(formalReleaseTargets.sha256, this.installed.mappingSha256)))
         .orderBy(asc(releaseOperations.createdAt), asc(releaseOperations.id)).limit(1);
       if (!next) return null;
       const pending = await lockPendingRollout(tx, next.operationId);
       if (!pending) return null;
-      await readRolloutBinding(tx, pending, this.workerOrigin);
+      await readRolloutBinding(tx, pending, this.workerOrigin, this.installed);
       const [previous] = await tx.select({ fence: formalReleaseRolloutAttempts.fence }).from(formalReleaseRolloutAttempts)
         .where(eq(formalReleaseRolloutAttempts.operationId, next.operationId)).orderBy(desc(formalReleaseRolloutAttempts.fence)).limit(1);
       const fence = (previous?.fence ?? 0) + 1;
@@ -138,7 +142,7 @@ export class FormalRolloutCoordinator {
       if (!pending) throw new ExecutionLost();
       const [attempt] = await tx.select().from(formalReleaseRolloutAttempts).where(attemptIdentity(scope)).for('update');
       if (!attempt || attempt.leaseUntil <= await databaseNow(tx)) throw new ExecutionLost();
-      const binding = await readRolloutBinding(tx, pending, this.workerOrigin);
+      const binding = await readRolloutBinding(tx, pending, this.workerOrigin, this.installed);
       const result = await action(tx, pending, binding);
       if (attempt.leaseUntil <= await databaseNow(tx)) throw new ExecutionLost();
       return result;

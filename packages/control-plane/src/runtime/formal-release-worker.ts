@@ -3,6 +3,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import type { ReleaseRegistryImageProof } from '@itervane/contracts';
 import type { QualifiedInspectionClient } from '@itervane/runner';
 import { formalReleaseQueue, type Database } from '../persistence/database.js';
+import type { InstalledReleaseTarget } from '../service/release-targets.js';
 import { ExecutionLost } from './authority.js';
 import { ExecutionCoordinator } from './coordinator.js';
 import { FormalKomodoSteps } from './formal-komodo-steps.js';
@@ -14,6 +15,7 @@ import type { ReleaseRegistryPublisher } from './release-registry.js';
 
 type ReleaseBackend = {
   origin: string;
+  installed?: InstalledReleaseTarget;
   registry: Pick<ReleaseRegistryPublisher, 'publish' | 'observe'>;
   runner?: Pick<QualifiedInspectionClient, 'withRetainedArchive'>;
   komodo?: Pick<KomodoReleaseClient, 'inspectTarget' | 'configureImage' | 'dispatch' | 'observeUpdate'>;
@@ -34,7 +36,7 @@ export class FormalReleaseWorker {
   constructor(private readonly database: Database, private readonly backend: ReleaseBackend, options: { leaseSeconds?: number } = {}) {
     const coordinator = new ExecutionCoordinator(database, options);
     this.leaseSeconds = coordinator.leaseSeconds;
-    this.release = new FormalReleaseCoordinator(coordinator, backend.origin);
+    this.release = new FormalReleaseCoordinator(coordinator, backend.origin, backend.installed);
     this.steps = new FormalReleaseSteps(this.release);
     this.komodo = new FormalKomodoSteps(this.release);
   }

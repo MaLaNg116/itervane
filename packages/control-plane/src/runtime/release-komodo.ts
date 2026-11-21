@@ -13,6 +13,7 @@ type Credentials = z.infer<typeof credentialSchema>;
 type Authorize = () => Promise<void>;
 
 const objectId = z.object({ $oid: komodoResourceIdSchema });
+const apiKeyOwner = z.object({ key: secret, user_id: komodoResourceIdSchema });
 const imageReference = releaseKomodoConfigurationSchema.shape.imageReference;
 const imageConfig = z.strictObject({ type: z.literal('Image'), params: z.strictObject({ image: imageReference }) });
 const json = z.json();
@@ -45,7 +46,7 @@ const deployedContainer = z.object({
   NetworkSettings: z.object({ Networks: z.record(deploymentNetwork, z.unknown()) }),
 });
 
-const routes = { GetDeployment: 'read', InspectDeploymentContainer: 'read',
+const routes = { ListApiKeys: 'read', GetDeployment: 'read', InspectDeploymentContainer: 'read',
   UpdateDeployment: 'write', Deploy: 'execute', GetUpdate: 'read' } as const;
 type Method = keyof typeof routes;
 
@@ -159,6 +160,14 @@ export class KomodoReleaseClient {
     if (observed.target.id !== target.deploymentId || operator !== target.komodo.actorId
         || (expectedId && _id.$oid !== expectedId)) throw new KomodoReleaseError(method, 'binding');
     return { updateId: _id.$oid, deploymentId: target.deploymentId, actorId: operator, status, success };
+  }
+
+  async verifyCredentialOwner(signal?: AbortSignal) {
+    // Komodo scopes this list to the authenticated account and omits secret hashes.
+    const keys = await this.call('ListApiKeys', {}, z.array(apiKeyOwner), async () => {}, signal);
+    if (!keys.some(key => key.key === this.#credentials.key && key.user_id === this.#credentials.actorId)) {
+      throw new KomodoReleaseError('ListApiKeys', 'binding');
+    }
   }
 
   async inspectTarget(raw: KomodoReleaseTarget, authorize: Authorize, signal?: AbortSignal) {

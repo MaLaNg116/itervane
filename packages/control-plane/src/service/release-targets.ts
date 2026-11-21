@@ -5,6 +5,8 @@ import type { Database } from '../persistence/database.js';
 import { environments, formalReleaseTargets, releaseOperations } from '../persistence/schema.js';
 import { DomainError, parseInput } from './errors.js';
 
+export type InstalledReleaseTarget = Readonly<{ environmentId: string; mappingSha256: string }>;
+
 export function fingerprintRolloutCheck(input: unknown) {
   return sha256(JSON.stringify(releaseRolloutCheckSchema.parse(input)));
 }
@@ -15,6 +17,18 @@ export function readReleaseTarget(row: typeof formalReleaseTargets.$inferSelect)
       || (document.rolloutCheck && fingerprintRolloutCheck(document.rolloutCheck) !== document.rolloutCheckSha256)
       || sha256(JSON.stringify(document)) !== row.sha256) throw new Error('formal_release_target_integrity');
   return document;
+}
+
+export async function readInstalledReleaseTarget(database: Database, expected: InstalledReleaseTarget) {
+  const [target] = await database.db.select({ target: formalReleaseTargets }).from(formalReleaseTargets)
+    .innerJoin(environments, and(eq(environments.id, formalReleaseTargets.environmentId),
+      eq(environments.projectId, formalReleaseTargets.projectId), eq(environments.applicationId, formalReleaseTargets.applicationId)))
+    .where(and(eq(environments.access, 'protected'), eq(formalReleaseTargets.environmentId, expected.environmentId),
+      eq(formalReleaseTargets.sha256, expected.mappingSha256)));
+  if (!target) throw new Error('release_installation_target');
+  const mapping = readReleaseTarget(target.target);
+  if (!mapping.registryOrigin || !mapping.komodo || !mapping.rolloutCheck) throw new Error('release_installation_target');
+  return { ...mapping, registryOrigin: mapping.registryOrigin, komodo: mapping.komodo, rolloutCheck: mapping.rolloutCheck };
 }
 
 export async function registerReleaseTarget(database: Database, rawTarget: unknown) {

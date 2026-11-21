@@ -43,6 +43,16 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
+it('requires the installed Komodo key to belong to the enrolled actor', async () => {
+  fetchKomodo.mockResolvedValueOnce(Response.json([{ key: credentials.key, user_id: actorId, secret: '' }]));
+  await expect(release.verifyCredentialOwner()).resolves.toBeUndefined();
+  fetchKomodo.mockResolvedValueOnce(Response.json([{ key: credentials.key, user_id: otherId }]));
+  await expect(release.verifyCredentialOwner()).rejects.toMatchObject({ step: 'ListApiKeys', reason: 'binding' });
+  expect(fetchKomodo.mock.calls.map(([url]) => String(url))).toEqual([
+    origin + '/read/ListApiKeys', origin + '/read/ListApiKeys',
+  ]);
+});
+
 it('binds the generated container name and all runtime settings except the image', () => {
   const { future_setting: _originalSetting, ...config } = configured.config;
   const orderedDifferently = { ...configured,

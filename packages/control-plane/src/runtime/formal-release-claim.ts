@@ -9,7 +9,7 @@ import { environments, formalReleaseSteps, formalReleaseTargets, releaseCandidat
 import { requireStoredActor, type Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
 import { describeVerifiedRelease, latestReleaseCandidate, readReleaseManifest } from '../service/formal-release.js';
-import { readReleaseTarget } from '../service/release-targets.js';
+import { readReleaseTarget, type InstalledReleaseTarget } from '../service/release-targets.js';
 import { databaseNow } from '../service/releases.js';
 import { readPublishedVerification } from '../service/verification-result.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, ExecutionLost, lockExecution, lockSlot, renewSlot,
@@ -108,11 +108,12 @@ function decisionBinding({ operation, candidate }: LockedRelease) {
 }
 
 async function verifyTarget(tx: Transaction, task: TaskRow, { candidate, environment }: LockedRelease,
-  manifest: FormalReleaseManifest, workerOrigin: string) {
+  manifest: FormalReleaseManifest, workerOrigin: string, installed?: InstalledReleaseTarget) {
   const [target] = await tx.select().from(formalReleaseTargets).where(eq(formalReleaseTargets.environmentId, environment.id)).for('share');
   if (!target || environment.access !== 'protected' || target.projectId !== task.projectId || environment.projectId !== task.projectId
       || target.applicationId !== environment.applicationId || target.applicationId !== candidate.applicationId
-      || target.revision !== manifest.target.revision || target.sha256 !== manifest.target.mappingSha256) {
+      || target.revision !== manifest.target.revision || target.sha256 !== manifest.target.mappingSha256
+      || (installed && (environment.id !== installed.environmentId || target.sha256 !== installed.mappingSha256))) {
     throw new ReleaseAuthorityRejected('release_target_changed');
   }
   const mapping = readReleaseTarget(target);
@@ -123,7 +124,7 @@ async function verifyTarget(tx: Transaction, task: TaskRow, { candidate, environ
 export { readLink as readFormalReleaseLink, lockRelease as lockLinkedRelease, verifyTarget as verifyFormalReleaseTarget,
   lockRegistryIntent, decisionBinding as releaseDecisionBinding };
 
-async function verifyAuthority(tx: Transaction, task: TaskRow, release: LockedRelease, workerOrigin: string) {
+async function verifyAuthority(tx: Transaction, task: TaskRow, release: LockedRelease, workerOrigin: string, installed?: InstalledReleaseTarget) {
   const { operation, candidate } = release;
   const manifest = readReleaseManifest(candidate);
   if (manifest.generation !== task.generation || candidate.requestedBy !== task.requestedBy || candidate.projectId !== task.projectId
@@ -144,7 +145,7 @@ async function verifyAuthority(tx: Transaction, task: TaskRow, release: LockedRe
     throw new ReleaseAuthorityRejected('release_approval_invalid');
   }
 
-  const { target, mapping } = await verifyTarget(tx, task, release, manifest, workerOrigin);
+  const { target, mapping } = await verifyTarget(tx, task, release, manifest, workerOrigin, installed);
   const proof = await readPublishedVerification(tx, task, { runId: candidate.runId, generation: task.generation });
   const evidence = proof ? describeVerifiedRelease(proof, target, mapping) : null;
   if (!evidence) throw new ReleaseAuthorityRejected('release_evidence_changed');
@@ -156,7 +157,7 @@ async function verifyAuthority(tx: Transaction, task: TaskRow, release: LockedRe
 
 export class FormalReleaseCoordinator {
   private readonly workerOrigin: string;
-  constructor(private readonly coordinator: ExecutionCoordinator, registryOrigin: string) {
+  constructor(private readonly coordinator: ExecutionCoordinator, registryOrigin: string, private readonly installed?: InstalledReleaseTarget) {
     this.workerOrigin = releaseRegistryOriginSchema.parse(registryOrigin);
   }
 
@@ -182,6 +183,11 @@ export class FormalReleaseCoordinator {
       const { operation, candidate, task } = binding;
       const completed = await settle();
       if (completed.affected !== 1) return null;
+      if (this.installed && operation.environmentId !== this.installed.environmentId) {
+        // Preserve wakeups for other enrolled environments without granting this process a lease on them.
+        await renewFormalWakeup(tx, database, operation.id, { state: binding.mode === 'import' ? 'queued' : 'reconciling', delaySeconds: 5 });
+        return null;
+      }
       if (binding.mode !== 'import' && slot.taskId) {
         await renewFormalWakeup(tx, database, operation.id, { state: 'reconciling', delaySeconds: 1 });
         return null;
@@ -208,7 +214,7 @@ export class FormalReleaseCoordinator {
         return null;
       }
       const releaseDecision = decisionBinding(binding);
-      try { await verifyAuthority(tx, task, binding, this.workerOrigin); }
+      try { await verifyAuthority(tx, task, binding, this.workerOrigin, this.installed); }
       catch (error) {
         if (!(error instanceof ReleaseAuthorityRejected)) throw error;
         await tx.update(releaseOperations).set({ state: 'blocked', wakeupJobId: null, updatedAt: sql`clock_timestamp()` })
@@ -251,7 +257,7 @@ export class FormalReleaseCoordinator {
     if (task.state === 'cancel_requested') failure = 'cancelled';
     else {
       try {
-        const { manifest, mapping } = await verifyAuthority(tx, task, binding, this.workerOrigin);
+        const { manifest, mapping } = await verifyAuthority(tx, task, binding, this.workerOrigin, this.installed);
         if (!mapping.komodo) throw new ReleaseAuthorityRejected('release_target_changed');
         try { requireMatchingRegistryImage(registry.proof, mapping, manifest.image); }
         catch (error) {
@@ -311,7 +317,7 @@ export class FormalReleaseCoordinator {
       if ((!importing && !dispatching) || phase === 'release_komodo_reconciling' || phase === 'release_komodo_awaiting_rollout') {
         throw new ExecutionLost();
       }
-      const authority = await verifyAuthority(tx, task, release, this.workerOrigin);
+      const authority = await verifyAuthority(tx, task, release, this.workerOrigin, this.installed);
       return action(tx, task, phase, authority);
     });
   }
@@ -322,7 +328,7 @@ export class FormalReleaseCoordinator {
       const recovering = allowRecovery && scope.mode === 'komodo_recovery' && phase === 'release_komodo_reconciling';
       const original = (scope.mode === 'import' || scope.mode === 'komodo_write') && phase === expected;
       if (!recovering && !original) throw new ExecutionLost();
-      const { mapping } = await verifyTarget(tx, task, release, readReleaseManifest(release.candidate), this.workerOrigin);
+      const { mapping } = await verifyTarget(tx, task, release, readReleaseManifest(release.candidate), this.workerOrigin, this.installed);
       // A recorded Komodo request can be observed after the approval to write has ended.
       return observe(tx, task, mapping);
     }, true);
@@ -347,7 +353,7 @@ export class FormalReleaseCoordinator {
     action: (tx: Transaction, task: TaskRow, observation: RegistryObservation) => Promise<T>) {
     return this.withRegistryIntent(scope, async (tx, task, release, phase, intent) => {
       const manifest = readReleaseManifest(release.candidate);
-      const { mapping } = await verifyTarget(tx, task, release, manifest, this.workerOrigin);
+      const { mapping } = await verifyTarget(tx, task, release, manifest, this.workerOrigin, this.installed);
       // The recorded intent permits outcome checks even if the original permission to write has since ended.
       return action(tx, task, { phase, manifest, mapping, intent });
     });
@@ -436,7 +442,7 @@ export class FormalReleaseCoordinator {
     return this.withClaim(scope, async (tx, task, release, phase) => {
       if (phase === 'release_registry_reconciling') throw new ExecutionLost();
       if (task.state === 'cancel_requested') return false;
-      await verifyAuthority(tx, task, release, this.workerOrigin);
+      await verifyAuthority(tx, task, release, this.workerOrigin, this.installed);
       await renewSlot(tx, this.coordinator.leaseSeconds);
       return true;
     }, true);
