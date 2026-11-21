@@ -6,4 +6,6 @@
 2. `release-formal-v1` 使用固定操作 ID 作唤醒和查证键，载荷只携带这一 ID。源码工作流的领取和恢复会跳过已入发布队列的任务。取消或撤销在同一事务阻断排队记录。 [队列事务](https://github.com/MaLaNg116/itervane/blob/007fb27/packages/control-plane/src/runtime/release-queue.ts) · [恢复分流](https://github.com/MaLaNg116/itervane/blob/007fb27/packages/control-plane/src/runtime/coordinator.ts)
 3. `9718a6a` 在真实 PostgreSQL 验证错误登录客户端、已替换候选、伪造操作、入队失败回滚、重复确认、撤权重授、撤销与取消。托管原生流程使用第二代实际镜像候选和测试签发者记录本人确认，检查同事务操作与正式队列。 [数据库路径](https://github.com/MaLaNg116/itervane/blob/9718a6a/packages/control-plane/test/integration/inspections.test.ts) · [原生路径](https://github.com/MaLaNg116/itervane/blob/9718a6a/packages/control-plane/test/native/worker-inspection.ts)
 
-本机 TypeScript 和九项真实 PostgreSQL 专项已通过，全量回归和托管 KVM 结果随本批记录。B2 添加人用门户与外部 MCP 的同源投影。C 接续制品导入、Komodo 派发和实际运行核对。
+本机 TypeScript、九项真实 PostgreSQL 专项和 138 项全量集成已通过。数据库测试固定 `9718a6aabe1b9af391e87b2f2a94b3de440a35e1`，源码指纹为 `028830020f3fcde6d43c1097a356ba5b25b389dde363a710242c5a0af545e89d`。 [托管验收](https://github.com/MaLaNg116/itervane/actions/runs/44914829105)
+
+B2 添加人用门户与外部 MCP 的同源投影。C 接续制品导入、Komodo 派发和实际运行核对。
