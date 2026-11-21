@@ -1136,17 +1136,27 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
     expect(apiErrorSchema.parse(denied.structuredContent).error.code).toBe('not_found');
     expect(apiErrorSchema.parse((await viewerMcp.callTool(options)).structuredContent).error.code).toBe('not_found');
 
-    expect(await registerReleaseTarget(database.storage, { ...target, blockImageSeverities: ['critical', 'medium'] })).toMatchObject({ revision: 2 });
+    const bound = { ...target, registryOrigin: 'https://registry.example.invalid' };
+    const originRevision = await registerReleaseTarget(database.storage, bound);
+    expect(originRevision.revision).toBe(2);
+    expect(originRevision.fingerprint).not.toBe(registered.fingerprint);
+    expect(await registerReleaseTarget(database.storage, { ...bound, registryOrigin: 'https://REGISTRY.example.invalid:443/' }))
+      .toEqual(originRevision);
+    await expect(registerReleaseTarget(database.storage, { ...bound, registryOrigin: 'http://registry.example.invalid:5000' }))
+      .rejects.toMatchObject({ code: 'invalid_input' });
+    expect((await api.inject({ url, headers })).json()).toMatchObject({ id: candidate.id, status: 'evidence_changed' });
+
+    expect(await registerReleaseTarget(database.storage, { ...bound, blockImageSeverities: ['critical', 'medium'] })).toMatchObject({ revision: 3 });
     expect((await api.inject({ url, headers })).json()).toMatchObject({ id: candidate.id, status: 'evidence_changed' });
     expect(await view()).toMatchObject({ candidate: { id: candidate.id, status: 'evidence_changed', manifest: { target: { revision: 1 } } },
       candidateTarget: display, availableTargets: [], actions: [] });
     expect((await freeze({ ...payload, expectedVersion: current.version + 1 })).statusCode).toBe(409);
-    expect(await registerReleaseTarget(database.storage, target)).toMatchObject({ revision: 3, fingerprint: registered.fingerprint });
+    expect(await registerReleaseTarget(database.storage, bound)).toMatchObject({ revision: 4, fingerprint: originRevision.fingerprint });
     expect((await api.inject({ url, headers })).json()).toMatchObject({ id: candidate.id, status: 'evidence_changed' });
-    expect(await view()).toMatchObject({ availableTargets: [{ ...display, revision: 3 }], actions: [] });
+    expect(await view()).toMatchObject({ availableTargets: [{ ...display, revision: 4 }], actions: [] });
     const externalOwner = await connect('owner', 'itervane:read itervane:write', 'zh-CN');
     expect(formalReleaseOptionsSchema.parse((await externalOwner.callTool(options)).structuredContent)).toEqual({
-      taskId: task.id, runId: current.runId, taskVersion: current.version + 1, availableTargets: [{ ...display, revision: 3 }],
+      taskId: task.id, runId: current.runId, taskVersion: current.version + 1, availableTargets: [{ ...display, revision: 4 }],
     });
     const staleRequest = await externalOwner.callTool(request(current.version));
     expect(apiErrorSchema.parse(staleRequest.structuredContent).error.code).toBe('version_conflict');
@@ -1163,7 +1173,7 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
     expect(replacement).toMatchObject({ status: 'pending', operationId: null, decisions: [] });
     expect(replacement.fingerprint).not.toBe(candidate.fingerprint);
     expect(replacement.manifest.evidenceVersion).toBe(2);
-    expect(replacement.manifest.target.revision).toBe(3);
+    expect(replacement.manifest.target.revision).toBe(4);
     expect((await new TaskService(database.storage).events(identity, task.id, 50, 'zh-CN')).at(-1))
       .toMatchObject({ type: 'task.release_candidate_frozen', state: 'waiting_approval', message: /人工决定/ });
     expect((await database.admin.query('SELECT count(*)::int AS count FROM itervane.release_operations')).rows[0]?.count).toBe(0);
