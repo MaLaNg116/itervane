@@ -181,6 +181,36 @@ class ControllerTest(unittest.TestCase):
             result = Result("inspection_passed", inspection={**proof, **changed}, **options)
             self.assertEqual(controller.response_for(data, result), controller.rejected("job_failed", data["requestId"], "confirmed", domain))
 
+    def test_standard_build_is_denied_before_launch_unless_enabled(self):
+        request, frozen = verification_request()
+        request[controller.BUILD_PROFILE] = "9" * 64
+        frozen["profile"][controller.BUILD_PROFILE] = request[controller.BUILD_PROFILE]
+        command = json.dumps({"input": frozen, "repair": None}).encode()
+        request.update(verificationInputSha256=controller.json_digest(frozen),
+                       commandSha256=hashlib.sha256(command).hexdigest(), commandBytes=len(command))
+        launch = Mock()
+        server, client = socket.socketpair()
+        with server, client:
+            client.sendall(json.dumps(request).encode() + b"\n")
+            response = controller.serve_connection(server, os.getuid(), {ORIGIN: ORIGIN}, WORKSPACE, Mock(),
+                                                   launch, lambda: False, enable_verification=True)
+        self.assertEqual(response, controller.rejected("not_ready", request["requestId"]))
+        launch.assert_not_called()
+        controller.require_verification_command({"input": frozen, "repair": None}, request)
+        with self.assertRaises(ValueError):
+            controller.require_verification_command({"input": frozen, "repair": None},
+                                                      {**request, controller.BUILD_PROFILE: "8" * 64})
+
+    def test_standard_build_proof_cannot_be_omitted_or_rebound(self):
+        request, _ = verification_request()
+        request.update(buildProfileSha256="9" * 64, verificationInputSha256="7" * 64)
+        snapshot = {"runId": str(uuid.uuid4())}
+        self.assertFalse(controller.build_proof_matches(request, snapshot))
+        build = {name: request[name] for name in ("buildProfileSha256", "verificationInputSha256")}
+        build.update(runId=snapshot["runId"], subjectManifestSha256=request["targetManifestSha256"])
+        self.assertTrue(controller.build_proof_matches(request, {**snapshot, "build": build}))
+        self.assertFalse(controller.build_proof_matches(request, {**snapshot, "build": {**build, "subjectManifestSha256": "0" * 64}}))
+
     def test_repair_requires_enablement_current_pulse_and_exact_command_before_launch(self):
         data = repair_request()
         scope = {name: data[name] for name in ("operationId", "repairInputSha256", "baseSnapshotSha256")}

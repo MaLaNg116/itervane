@@ -115,6 +115,7 @@ export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificatio
   const bindings = { taskId, runId, projectId, generation, ...source, verificationInputSha256: command.inputSha256,
     baseSnapshotSha256: inspection.snapshotSha256, targetManifestSha256: subject.manifestSha256,
     runnerImageSha256: profile.runnerImageSha256, scannerInputsSha256: profile.scannerInputsSha256,
+    buildProfileSha256: profile.buildProfileSha256,
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
   };
   if (Object.entries(bindings).some(([key, value]) => scope[key as keyof typeof bindings] !== value)) {
@@ -127,11 +128,22 @@ export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificatio
       || snapshot.verificationInputSha256 !== command.inputSha256 || snapshot.inputsSha256 !== scope.scannerInputsSha256) {
     throw new Error('runner_verification_receipt_binding');
   }
+  const build = snapshot.build;
+  if (receipt.scope.buildProfileSha256 !== scope.buildProfileSha256
+      || build?.buildProfileSha256 !== scope.buildProfileSha256 || (build
+      && (build.runId !== receipt.domainId || build.verificationInputSha256 !== scope.verificationInputSha256
+        || build.subjectManifestSha256 !== subject.manifestSha256 || build.baselineSha256 !== profile.baselineSha256))) {
+    throw new Error('runner_standard_build_binding');
+  }
   const target = snapshot.target;
   if (subject.kind === 'repair'
     ? target?.patchSha256 !== subject.patchSha256 || target?.manifestSha256 !== subject.manifestSha256
     : target !== null || snapshot.manifestSha256 !== subject.manifestSha256) throw new Error('runner_verification_target_binding');
   verifyReportBindings(snapshot.reports, snapshot.manifestSha256);
+  if (build?.status === 'built'
+      && [...snapshot.reports, ...(target?.reports ?? [])].some(report => report.status !== 'completed')) {
+    throw new Error('runner_standard_build_coverage');
+  }
   if (target) {
     const difference = command.repair!.patch.files.flatMap(file => file.edits).reduce((total, edit) =>
       total + Buffer.byteLength(edit.replacement) - (edit.endByte - edit.startByte), 0);
@@ -148,6 +160,7 @@ export function prepareQualifiedVerificationRequest(coordinates: VerificationCoo
     ...coordinates, version: 1, operation: 'verify_source', taskId, runId, projectId, generation, ...source,
     verificationInputSha256: command.inputSha256, baseSnapshotSha256: inspection.snapshotSha256,
     targetManifestSha256: subject.manifestSha256, runnerImageSha256: profile.runnerImageSha256, scannerInputsSha256: profile.scannerInputsSha256,
+    ...(profile.buildProfileSha256 ? { buildProfileSha256: profile.buildProfileSha256 } : {}),
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
   });
 }
