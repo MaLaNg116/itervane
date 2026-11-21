@@ -47,4 +47,8 @@
 4. 门户复用现有组件和确认对话框，保存动作打开时的任务版本。界面语言可切换，Agent 的说明继续使用任务语言。通过 139 项 Linux 单元测试、42 项宿主测试、114 项 PostgreSQL 集成及 23 项浏览器测试。浏览器覆盖双语、版本化恢复、规范补丁下载、动效偏好和 CSP。 [门户候选组件](https://github.com/MaLaNg116/itervane/blob/c04f017b4e3252b53dcece501a03d349c3c967d6/packages/portal/src/pages/task-repair.tsx) · [浏览器验收](https://github.com/MaLaNg116/itervane/blob/c04f017b4e3252b53dcece501a03d349c3c967d6/packages/portal/test/browser/portal.spec.ts)
 5. 新的托管用例通过公开任务 API 恢复已记录的审计，由正式队列 Worker 写入候选。验收会核对 HTTP、MCP、导出指纹、数据库检查点与清理状态。该版本的托管运行待归档。 [正式队列原生验收](https://github.com/MaLaNg116/itervane/blob/9dd9e142189467c426fd1461e6982600051ddd06/packages/control-plane/test/native/worker-inspection.ts#L334)
 
-D2.5 仍需补齐真实模型及两类缺陷的隔离验收。P2-D3 使用独立环境复验补丁、扫描和平台基线，P2-E 负责人工审批及发布核对。
+## D2.5 模型决策与缺陷样例
+
+在 `fe9f1c7` 使用本机已配置的 Anthropic 兼容模型执行 `pnpm probe:formal-repair --live-template`。模型依次读取合成 dotenv 目标、选择 `remove-env-entry-v1`，再引用实际产生的样例回执。3 个模型回合、2 次工具调用、5,810 tokens，修改前后指纹、保留字节及候选状态符合预期。本次使用合成观测与内存补丁，隔离执行另以托管产物验收。 [可复现评测](https://github.com/MaLaNg116/itervane/blob/fe9f1c73501b4a102719c00661252e8308ca0b0c/packages/verification/src/entries/formal-repair.ts)
+
+凭据模板的真实客体回执、依赖修复的成对变更及对应真实模型轨迹仍待验收。P2-D3 使用独立环境复验补丁、扫描和平台基线，P2-E 负责人工审批及发布核对。
