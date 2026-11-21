@@ -10,11 +10,11 @@ import { promisify } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   admissionDtoSchema, applicationDtoSchema, auditFindingsPerScan, environmentDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema,
-  formalRepairDtoSchema, formalRepairPatchDtoSchema, idSchema, komodoResourceIdSchema, projectDtoSchema,
+  formalRepairDtoSchema, formalRepairPatchDtoSchema, formalReleaseResultSchema, formalReleaseViewSchema, idSchema, komodoResourceIdSchema, projectDtoSchema,
   formalRepairRetrySchema, formalVerificationInputSchema, formalVerificationResultSchema, qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
-  repositoryDtoSchema, releaseRegistryImageProofSchema, sha256Schema, sourceInspectionDtoSchema,
+  repositoryDtoSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sha256Schema, sourceInspectionDtoSchema,
   qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
-  taskDtoSchema, taskEventDtoSchema, translate, type FormalAuditResult, type StandardVerificationProfile,
+  taskDtoSchema, taskEventDtoSchema, translate, type FormalAuditResult, type Locale, type StandardVerificationProfile,
 } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
@@ -22,7 +22,7 @@ import { formalReleaseQueue } from '../../src/persistence/database.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
-import { registerReleaseTarget } from '../../src/service/release-targets.js';
+import { fingerprintRolloutCheck, registerReleaseTarget } from '../../src/service/release-targets.js';
 import { bootstrapOwner } from '../../src/service/resources.js';
 import { databaseFixture } from '../helpers/database.js';
 import { identityFixture } from '../helpers/identity.js';
@@ -35,6 +35,7 @@ import { proveKnownKomodoRecovery, proveUnknownKomodoDispatch } from './komodo-r
 import type { KomodoInterruption, runKomodoReleaseFixture } from './komodo-release-worker.js';
 import type { RegistryImportMarker } from './release-recovery.js';
 import { temporaryRegistry } from './registry-fixture.js';
+import { openProtectedIngress } from './protected-ingress.js';
 
 const execute = promisify(execFile);
 const commit = '9167604c888416d7b6518e1c76485d7308cffb5c';
@@ -92,21 +93,32 @@ function sourceWorkerEnvironment(socket: string, controllerUid: string, image: s
     `ITERVANE_RUNNER_UID=${controllerUid}`, `ITERVANE_RUNNER_IMAGE_SHA256=${image}`, 'ITERVANE_WORKER_LEASE_SECONDS=30'];
 }
 
-async function startWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string,
+function startWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string,
   auditURL?: string, verification?: StandardVerificationProfile, repair = false) {
-  const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', ...sourceWorkerEnvironment(socket, controllerUid, image),
+  return startScopedWorker(bundle, [...sourceWorkerEnvironment(socket, controllerUid, image),
     ...(auditURL ? ['ITERVANE_AUDIT_MODEL_PROVIDER=anthropic', `ANTHROPIC_BASE_URL=${auditURL}`,
       `ANTHROPIC_MODEL=${auditFixtureModel}`, `ANTHROPIC_API_KEY=${auditFixtureKey}`] : []),
     ...(verification ? [`ITERVANE_VERIFICATION_PROFILE=${JSON.stringify(verification)}`] : []),
     ...(repair ? ['ITERVANE_FORMAL_REPAIR=1'] : []),
-    'ITERVANE_WORKER_POLL_MS=100', '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c',
-    'set -eu; IFS= read -r DATABASE_URL; export DATABASE_URL; printf "%s\\n" "$$"; exec "$@"', 'itervane-worker', process.execPath, bundle,
+    'ITERVANE_WORKER_POLL_MS=100'], { DATABASE_URL: databaseUrl });
+}
+
+async function startScopedWorker(bundle: string, environment: string[], secrets: Record<string, string>) {
+  const entries = Object.entries(secrets);
+  const loadSecrets = entries.map(([name, value]) => {
+    match(name, /^[A-Z][A-Z0-9_]*$/);
+    ok(!/[\r\n]/.test(value));
+    return `IFS= read -r ${name}; export ${name};`;
+  }).join(' ');
+  const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', ...environment,
+    '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c',
+    `set -eu; ${loadSecrets} printf "%s\\n" "$$"; exec "$@"`, 'itervane-worker', process.execPath, bundle,
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
   const exit = exitStatus(child);
   child.stderr.resume();
   child.stdin.on('error', () => undefined);
   const pidLine = firstLine(child);
-  child.stdin.end(`${databaseUrl}\n`);
+  child.stdin.end(entries.map(([, value]) => value + '\n').join(''));
   try {
     const pid = await pidLine;
     match(pid, /^[1-9][0-9]{0,9}$/);
@@ -240,7 +252,8 @@ async function watchGuest(controllerUid: string) {
 async function probe() {
   const [bundle, socket, controllerUid, imageSha256, staging, repairBundle, verificationBundle, ...extra] = process.argv.slice(2);
   const [buildMode, buildProfile, baseline, oci] = extra;
-  const ociRun = buildMode === 'standard-oci';
+  const protectedRun = buildMode === 'protected-release';
+  const ociRun = buildMode === 'standard-oci' || protectedRun;
   const buildRun = buildMode === 'standard-build' || buildMode === 'standard-build-missing-cache' || ociRun;
   if (process.platform !== 'linux' || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted' || process.env.DATABASE_URL
     || process.env.ITERVANE_POSTGRES_IMAGE || (extra.length !== 0 && (extra.length !== (ociRun ? 4 : 3) || !buildRun))
@@ -263,6 +276,7 @@ async function probe() {
   let auditProvider: Awaited<ReturnType<typeof auditProtocolFixture>> | undefined;
   let releaseRegistry: Awaited<ReturnType<typeof temporaryRegistry>> | undefined;
   let releaseKomodo: Awaited<ReturnType<typeof openNativeReleaseKomodo>> | undefined;
+  let protectedIngress: Awaited<ReturnType<typeof openProtectedIngress>> | undefined;
   const client = new Client({ name: 'itervane-native-worker', version: '0.0.0' });
   try {
     const db = database = await databaseFixture(postgres.url);
@@ -272,9 +286,10 @@ async function probe() {
     api = createApi(db.storage, { ...oidc.config, publicUrl, portalClientId }, { logger: false });
     const address = await api.listen({ host: '127.0.0.1', port: 0 });
     const authorization = async () => `Bearer ${await oidc.token()}`;
-    const request = async (path: string, payload?: object, human = false) => {
+    const request = async (path: string, payload?: object, human = false, locale?: Locale) => {
       const response = await fetch(`${address}${path}`, { method: payload ? 'POST' : 'GET', signal: AbortSignal.timeout(5_000),
         headers: { Authorization: human ? `Bearer ${await oidc.token('owner', { azp: portalClientId })}` : await authorization(),
+          ...(locale ? { 'Accept-Language': locale } : {}),
           ...(payload ? { 'content-type': 'application/json' } : {}) },
         ...(payload ? { body: JSON.stringify(payload) } : {}) });
       equal(response.ok, true, path);
@@ -397,6 +412,201 @@ async function probe() {
             report: { sections, usage: result.usage, checkpointId: result.checkpointId, outcome: result.review.outcome } },
         };
       };
+      const repairRetryFixture = async (profile: StandardVerificationProfile) => {
+        phase = 'standard_repair_retry_run';
+        worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, audit.baseURL, profile, true);
+        const first = await start('Apply a bounded repair and verify the retry after a real health regression', repairRetryCommit);
+        await poll(async () => {
+          const [row] = (await db.admin.query(`SELECT t.state, r.reason FROM itervane.tasks t
+            JOIN itervane.task_runs run ON run.task_id=t.id AND run.generation=t.generation
+            JOIN itervane.run_runtime r ON r.run_id=run.id WHERE t.id=$1`, [first.id])).rows;
+          if (row?.state === 'waiting_input') return true;
+          if (row && ['needs_human', 'failed', 'cancelled', 'reconciling'].includes(row.state)) {
+            if (typeof row.reason === 'string' && /^[a-z_]{1,58}$/.test(row.reason)) phase = `standard_retry_${row.reason}`;
+            throw new Error('retry_fixture_stopped');
+          }
+        }, 780_000, 'standard_repair_retry_run');
+        const current = taskDtoSchema.parse(await request(`/v1/tasks/${first.id}`));
+        notEqual(first.runId, current.runId);
+        await worker.stop('TERM'); worker = undefined;
+        phase = 'standard_repair_retry_receipts';
+        const before = await recordedVerification(first, true, 'repair');
+        const after = await recordedVerification(current, false, 'repair');
+        equal(before.commit, repairRetryCommit);
+        equal(after.commit, repairRetryCommit);
+        equal(before.baseSnapshotSha256, after.baseSnapshotSha256);
+        notEqual(before.targetManifestSha256, after.targetManifestSha256);
+        ok(before.patchSha256 && after.patchSha256);
+        notEqual(before.patchSha256, after.patchSha256);
+        deepStrictEqual(after.totals, { introduced: 0, resolved: 1, remaining: 0 });
+        const [stored] = (await db.admin.query(
+          'SELECT document,sha256,run_id,previous_run_id FROM itervane.formal_repair_retries WHERE task_id=$1', [first.id],
+        )).rows;
+        ok(stored);
+        const retrySha256 = sha256Schema.parse(stored.sha256);
+        const handoff = formalRepairRetrySchema.parse(stored.document);
+        equal(sha256(JSON.stringify(handoff)), retrySha256);
+        equal(stored.run_id, current.runId);
+        equal(stored.previous_run_id, first.runId);
+        equal(handoff.previous.verificationResultSha256, before.verificationResultSha256);
+        equal(handoff.previous.receiptSha256, before.receiptSha256);
+        equal(handoff.generation, 2);
+        const events = (await client.callTool({ name: 'get_task_events', arguments: { taskId: first.id } })).structuredContent as { items: unknown[] };
+        const lifecycle = events.items.map(event => taskEventDtoSchema.parse(event));
+        equal(lifecycle.filter(event => event.type === 'task.repair_retry_queued').length, 1);
+        match(lifecycle.find(event => event.type === 'task.repair_retry_queued')!.message, /返修/);
+        return { current, before, after, retrySha256, generation: handoff.generation };
+      };
+      if (protectedRun) {
+        ok(automaticProfile);
+        const proxyDir = process.env.ITERVANE_NATIVE_RELEASE_PROXIES;
+        ok(proxyDir && proxyDir.startsWith('/') && proxyDir.endsWith('/itervane-release-proxies'));
+        const retry = await repairRetryFixture(automaticProfile);
+        const { current, after } = retry;
+        const built = qualifiedStandardBuildProofSchema.parse(after.build);
+        ok(built.status === 'built' && built.baseline?.status === 'passed' && built.baseline.image?.status === 'scanned');
+        const image = built.baseline.image;
+        phase = 'protected_release_target';
+        const application = applicationDtoSchema.parse(await request(`/v1/projects/${project.id}/applications`, { name: 'Protected standard release' }));
+        const environment = environmentDtoSchema.parse(await request(`/v1/projects/${project.id}/environments`, {
+          name: 'Protected application', applicationId: application.id,
+        }));
+        const registry = releaseRegistry = await temporaryRegistry();
+        const komodo = releaseKomodo = await openNativeReleaseKomodo();
+        const target = await komodo.prepare();
+        await target.allowContainerInspection();
+
+        phase = 'protected_release_ingress';
+        const ingress = protectedIngress = await openProtectedIngress({ ...target.endpoint, port: 3000 }, {
+          traefik: join(proxyDir, 'traefik'), oauth2: join(proxyDir, 'oauth2-proxy'),
+        });
+        const rolloutCheckSha256 = fingerprintRolloutCheck(ingress.check);
+        const mapping = await registerReleaseTarget(db.storage, {
+          environmentId: environment.id, ...target.binding, imageRepository: 'testing/standard', registryOrigin: registry.origin,
+          verificationProfileSha256: verificationProfileFingerprint(automaticProfile), rolloutCheckSha256, rolloutCheck: ingress.check,
+          recoveryPlanSha256: sha256('native protected release recovery plan'),
+        });
+
+        phase = 'protected_release_approval';
+        const candidate = formalReleaseCandidateDtoSchema.parse((await client.callTool({ name: 'request_release',
+          arguments: { taskId: current.id, environmentId: environment.id, expectedVersion: current.version },
+        })).structuredContent);
+        equal(candidate.status, 'pending');
+        equal(candidate.manifest.taskId, current.id);
+        equal(candidate.manifest.runId, current.runId);
+        equal(candidate.manifest.generation, retry.generation);
+        equal(candidate.manifest.verification.resultSha256, after.verificationResultSha256);
+        equal(candidate.manifest.image.manifestDigest, image.manifestDigest);
+        equal(candidate.manifest.image.configDigest, image.configDigest);
+        equal(candidate.manifest.rolloutCheckSha256, rolloutCheckSha256);
+        equal(candidate.manifest.target.mappingSha256, mapping.fingerprint);
+        equal(candidate.fingerprint, sha256(JSON.stringify(candidate.manifest)));
+        const decisionPath = `/v1/release-candidates/${candidate.id}/decisions`;
+        const decision = { action: 'confirm', fingerprint: candidate.fingerprint, expectedVersion: 0, idempotencyKey: randomUUID() };
+        const denied = await fetch(address + decisionPath, { method: 'POST', signal: AbortSignal.timeout(5_000),
+          headers: { Authorization: await authorization(), 'content-type': 'application/json' }, body: JSON.stringify(decision) });
+        await denied.body?.cancel();
+        equal(denied.status, 403);
+        const { rowCount: beforeApproval } = await db.admin.query('SELECT id FROM itervane.release_operations WHERE candidate_id=$1', [candidate.id]);
+        equal(beforeApproval, 0);
+        const outcome = (await request(decisionPath, decision, true)) as { candidate: unknown };
+        const approved = formalReleaseCandidateDtoSchema.parse(outcome.candidate);
+        equal(approved.status, 'confirmed');
+        equal(approved.fingerprint, candidate.fingerprint);
+        const operationId = idSchema.parse(approved.operationId);
+
+        phase = 'protected_release_installed_worker';
+        const shared = dirname(bundle);
+        const ca = join(shared, 'release-test-ca.pem');
+        await execute('/usr/bin/sudo', ['-n', 'install', '-m', '0444', ingress.caFile, ca], { timeout: 5_000 });
+        worker = await startScopedWorker(join(shared, 'release-worker.mjs'), [
+          ...sourceWorkerEnvironment(socket, controllerUid, imageSha256), 'ITERVANE_WORKER_POLL_MS=250',
+          `NODE_EXTRA_CA_CERTS=${ca}`, `ITERVANE_RELEASE_ENVIRONMENT_ID=${environment.id}`,
+          `ITERVANE_RELEASE_TARGET_SHA256=${mapping.fingerprint}`,
+          `ITERVANE_RELEASE_MATERIALIZER=${join(shared, 'release-tools/materialize_oci.py')}`, 'ITERVANE_RELEASE_SKOPEO=/usr/bin/skopeo',
+        ], { DATABASE_URL: db.runtimeUrl, ITERVANE_RELEASE_KOMODO_KEY: target.credentials.key,
+          ITERVANE_RELEASE_KOMODO_SECRET: target.credentials.secret, ITERVANE_RELEASE_PROBE_SECRET: ingress.probeSecret });
+        const resultPath = `/v1/tasks/${current.id}/release`;
+        const readResult = async (locale: Locale) => formalReleaseViewSchema.parse(await request(resultPath, undefined, false, locale));
+        const verified = await poll(async () => {
+          const view = await readResult('en');
+          if (view.result?.status === 'manual_review' || view.result?.status === 'blocked') {
+            throw new Error(view.result.reason ?? 'protected_release_manual_review');
+          }
+          return view.result?.status === 'verified' ? view : undefined;
+        }, 155_000, 'protected_release_result');
+        await worker.stop('TERM'); worker = undefined;
+
+        phase = 'protected_release_evidence';
+        const [record] = (await db.admin.query<{ state: string; proof: unknown; completed_at: Date; wakeup_job_id: string | null }>(
+          `SELECT operation.state, attempt.proof, attempt.completed_at, operation.wakeup_job_id
+            FROM itervane.release_operations operation JOIN itervane.formal_release_rollout_attempts attempt
+              ON attempt.operation_id=operation.id AND attempt.state='verified'
+            WHERE operation.id=$1 AND operation.candidate_id=$2`, [operationId, candidate.id])).rows;
+        ok(record);
+        equal(record.state, 'verified_formal');
+        equal(record.wakeup_job_id, null);
+        const proof = releaseRolloutProofSchema.parse(record.proof);
+        equal(proof.operationId, operationId);
+        equal(proof.candidateId, candidate.id);
+        equal(proof.fingerprint, candidate.fingerprint);
+        equal(proof.decisionVersion, approved.decisionVersion);
+        equal(proof.mappingSha256, mapping.fingerprint);
+        equal(proof.runtime.rolloutCheckSha256, rolloutCheckSha256);
+        equal(proof.runtime.version, 'candidate-' + candidate.manifest.repairedSnapshotSha256.slice(0, 16));
+        equal(proof.manifestDigest, image.manifestDigest);
+        equal(proof.runtime.configDigest, image.configDigest);
+        equal(proof.update.deploymentId, target.binding.deploymentId);
+        equal(proof.update.actorId, target.binding.komodo.actorId);
+        equal(proof.runtime.network, target.endpoint.network);
+        const running = await target.observeContainer(proof.runtime.imageReference, image.configDigest);
+        equal(running.containerId, proof.runtime.containerId);
+        const [registryRecord] = (await db.admin.query(
+          "SELECT proof FROM itervane.formal_release_steps WHERE operation_id=$1 AND kind='registry' AND state='confirmed'", [operationId],
+        )).rows;
+        const published = releaseRegistryImageProofSchema.parse(registryRecord?.proof);
+        equal(published.manifestDigest, image.manifestDigest);
+        equal(published.configDigest, image.configDigest);
+        equal(published.reference, proof.runtime.imageReference);
+        equal(taskDtoSchema.parse(await request(`/v1/tasks/${current.id}`)).state, 'succeeded');
+        const [slot] = (await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows;
+        equal(slot?.task_id, null);
+        await assertDrained(controllerUid, staging);
+
+        const assertReader = async (view: typeof verified, lookup: Client) => {
+          const seen = formalReleaseResultSchema.parse((await lookup.callTool({
+            name: 'get_release_result', arguments: { taskId: current.id },
+          })).structuredContent);
+          deepStrictEqual(seen, { taskId: current.id, runId: current.runId, taskVersion: view.taskVersion, result: view.result });
+          ok(seen.result?.status === 'verified');
+          equal(seen.result.operationId, operationId);
+          equal(seen.result.updateId, proof.update.updateId);
+          deepStrictEqual(seen.result.evidence, { checkedAt: record.completed_at.toISOString(), version: proof.runtime.version,
+            manifestDigest: image.manifestDigest, configDigest: image.configDigest, healthy: true, accessProtected: true });
+          return seen.result;
+        };
+        const chinese = await assertReader(await readResult('zh-CN'), client);
+        const englishClient = new Client({ name: 'itervane-native-release-reader', version: '0.0.0' });
+        try {
+          await englishClient.connect(new StreamableHTTPClientTransport(new URL(`${address}/mcp`), {
+            requestInit: { headers: { Authorization: `Bearer ${mcpToken}`, 'Accept-Language': 'en' } },
+          }));
+          const english = await assertReader(verified, englishClient);
+          equal(chinese.locale, 'zh-CN');
+          equal(english.locale, 'en');
+          notEqual(chinese.message, english.message);
+        } finally { await englishClient.close(); }
+        return {
+          sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
+          retry: { before: retry.before, after, retrySha256: retry.retrySha256, generation: retry.generation },
+          release: { taskId: current.id, runId: current.runId, candidateId: candidate.id, operationId, fingerprint: candidate.fingerprint,
+            decisionVersion: proof.decisionVersion, manifestDigest: proof.manifestDigest, configDigest: proof.runtime.configDigest,
+            version: proof.runtime.version, updateId: proof.update.updateId, healthStatus: proof.runtime.healthStatus,
+            anonymousStatus: proof.runtime.anonymousStatus, approvalDeniedWithoutPortal: true, httpMcpAgreement: true,
+            model: 'scripted_anthropic_fixture', controlPlaneIdentity: 'signed_oidc_fixture', ingressIdentity: 'native_keycloak',
+            stagedFilesRemaining: false },
+        };
+      }
       const buildFixture = async (revision: string, outcome: 'built' | 'profile_mismatch' | 'offline_install',
         baselineOutcome?: 'passed' | 'failed') => {
         phase = `standard_build_audit_${outcome}`;
@@ -466,48 +676,7 @@ async function probe() {
       equal(drift.build.status, 'blocked');
       let retry;
       if (automaticProfile) {
-        phase = 'standard_repair_retry_run';
-        worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, audit.baseURL, automaticProfile, true);
-        const first = await start('Apply a bounded repair and verify the retry after a real health regression', repairRetryCommit);
-        await poll(async () => {
-          const [row] = (await db.admin.query(`SELECT t.state, r.reason FROM itervane.tasks t
-            JOIN itervane.task_runs run ON run.task_id=t.id AND run.generation=t.generation
-            JOIN itervane.run_runtime r ON r.run_id=run.id WHERE t.id=$1`, [first.id])).rows;
-          if (row?.state === 'waiting_input') return true;
-          if (row && ['needs_human', 'failed', 'cancelled', 'reconciling'].includes(row.state)) {
-            if (typeof row.reason === 'string' && /^[a-z_]{1,58}$/.test(row.reason)) phase = `standard_retry_${row.reason}`;
-            throw new Error('retry_fixture_stopped');
-          }
-        }, 780_000, 'standard_repair_retry_run');
-        const current = taskDtoSchema.parse(await request(`/v1/tasks/${first.id}`));
-        notEqual(first.runId, current.runId);
-        await worker.stop('TERM'); worker = undefined;
-        phase = 'standard_repair_retry_receipts';
-        const before = await recordedVerification(first, true, 'repair');
-        const after = await recordedVerification(current, false, 'repair');
-        equal(before.commit, repairRetryCommit);
-        equal(after.commit, repairRetryCommit);
-        equal(before.baseSnapshotSha256, after.baseSnapshotSha256);
-        notEqual(before.targetManifestSha256, after.targetManifestSha256);
-        ok(before.patchSha256 && after.patchSha256);
-        notEqual(before.patchSha256, after.patchSha256);
-        deepStrictEqual(after.totals, { introduced: 0, resolved: 1, remaining: 0 });
-        const [stored] = (await db.admin.query(
-          'SELECT document,sha256,run_id,previous_run_id FROM itervane.formal_repair_retries WHERE task_id=$1', [first.id],
-        )).rows;
-        ok(stored);
-        const retrySha256 = sha256Schema.parse(stored.sha256);
-        const handoff = formalRepairRetrySchema.parse(stored.document);
-        equal(sha256(JSON.stringify(handoff)), retrySha256);
-        equal(stored.run_id, current.runId);
-        equal(stored.previous_run_id, first.runId);
-        equal(handoff.previous.verificationResultSha256, before.verificationResultSha256);
-        equal(handoff.previous.receiptSha256, before.receiptSha256);
-        equal(handoff.generation, 2);
-        const events = (await client.callTool({ name: 'get_task_events', arguments: { taskId: first.id } })).structuredContent as { items: unknown[] };
-        const lifecycle = events.items.map(event => taskEventDtoSchema.parse(event));
-        equal(lifecycle.filter(event => event.type === 'task.repair_retry_queued').length, 1);
-        match(lifecycle.find(event => event.type === 'task.repair_retry_queued')!.message, /返修/);
+        const { current, before, after, retrySha256, generation } = await repairRetryFixture(automaticProfile);
         phase = 'standard_formal_release_candidate';
         const application = applicationDtoSchema.parse(await request(`/v1/projects/${project.id}/applications`, { name: 'Standard release fixture' }));
         const environment = environmentDtoSchema.parse(await request(`/v1/projects/${project.id}/environments`, { name: 'Protected sample', applicationId: application.id }));
@@ -669,7 +838,7 @@ async function probe() {
         const unknownKomodo = await proveUnknownKomodoDispatch(komodoTrial(unknownTarget, cleanTask.id, otherOperation, cleanProof),
           join(dirname(bundle), 'release-tools/materialize_oci.py'), komodoRecovery.updateId);
         await assertDrained(controllerUid, staging);
-        retry = { before, after, retrySha256, generation: handoff.generation, candidate, claim,
+        retry = { before, after, retrySha256, generation, candidate, claim,
           archiveTransport: { ...transport, registry: resumed.proof, registryReadOnly: { initiallyAbsent: true, matchedAfterCleanup: true } },
           registryRecovery: { operationId, preparedFence: interrupted.fence, observedFence: resumed.fence,
             observations: resumed.observations, writeIntents: settled.length, killedBeforeCommit: true, stagingEmpty: interrupted.stagingEmpty },
@@ -981,7 +1150,14 @@ async function probe() {
       verification: { template: templateRescan, npm: npmRescan, original: originalRescan },
     };
   } finally {
-    try { await Promise.all([worker?.stop('TERM'), releaseKomodo?.close(), releaseRegistry?.close()]); }
+    try {
+      // The edge must leave the owned application network before Komodo removes it.
+      try { await worker?.stop('TERM'); }
+      finally {
+        try { await protectedIngress?.close(); }
+        finally { await Promise.all([releaseKomodo?.close(), releaseRegistry?.close()]); }
+      }
+    }
     finally {
       await auditProvider?.close(); await client.close(); await api?.close(); await identity?.close(); await database?.close(); await postgres.close();
     }
@@ -990,7 +1166,7 @@ async function probe() {
 
 try { console.log(JSON.stringify(await probe())); }
 catch (error) {
-  const message = error instanceof Error && /^(?:[a-z_]+_timeout|verification_fixture_phase_[a-z_]{1,56})$/.test(error.message)
+  const message = error instanceof Error && /^(?:[a-z_]+_timeout|verification_fixture_phase_[a-z_]{1,56}|(?:protected_ingress|release_(?:rollout|registry|komodo))_[a-z_]{1,48})$/.test(error.message)
     ? ` (${error.message})` : '';
   console.error(`Native Worker inspection failed during ${phase}${message}.`);
   process.exitCode = 1;
