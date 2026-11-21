@@ -9,3 +9,5 @@
 本机 TypeScript 检查和 202 项单元测试通过。七项原生 Komodo 和四组托管 KVM 通过。原生检查记录正确网络通过、运行镜像与恢复核验、临时网络清理。KVM 的实际崩溃重领和 OCI 发布回读与原生 Komodo 报告具有相同源码指纹 `7d34138377487cfd91da724c972e6f56fce6967d30fdca0576ac18a2f485b8a2`。 [原生 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/44954519447) · [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44954519483)
 
 同一任务从 MCP 发起到受保护 HTTPS 入口访问的验收安排在 D2/D3。
+
+合入前复核了 Docker 网络归属、实际容器无宿主端口、适配器拒绝错误网络和隔离资源清理。最终审查版本 `c703a28a78ac511d1d174bc209bc4ba99ce7d46b` 与原生验证代码一致，六项常规检查均通过，已合入 `fbc292002a2114a72aba817ce50ae4e9e41335c6`。 [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44956876012) · [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44956872320)
