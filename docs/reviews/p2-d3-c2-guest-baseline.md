@@ -14,6 +14,13 @@
 
 - TypeScript 检查、基线探针语法检查、Bash 脚本语法检查和 50 项 Runner 宿主测试通过。
 - 119 项 PostgreSQL 集成通过，包含构建和基线回执的错绑拒绝与匹配回执的持久化重读。托管 [Verification](https://github.com/MaLaNg116/itervane/actions/runs/44894586749) 完成确定性测试、门户和扫描器三组检查。
-- 固定健康候选为 `3a719ca44f306d30cdf2d27e9a6d3b954ed656f0`，健康回归候选为 `1eac5c8776c6e81613cfb5adf6edd2cd6b163ba3`。托管 KVM 验收结果待核对和归档。
+- [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44894586700) 的标准构建和缺包对照均已通过，使用提交 `1b9e0fff43659f970278cd0cdee489af59c321ba`。下载的回执与本地归档源码指纹 `7bb5eb2df45c352846fddf691f2b29957a5dbde3670f415f739cdd289e48dd26` 一致。原有 Runner 全量回归仍在进行。
+
+| 固定候选 | 观察 | 持久化回执 SHA-256 |
+| --- | --- | --- |
+| `3a719ca44f306d30cdf2d27e9a6d3b954ed656f0` | 健康、版本、合成数据、页面和编译资源五项通过。记录进程退出并清除 VM。 | `09650096e43d0523f4afefaad64f3ccb32c528428d1620c873fe9933e10fd008` |
+| `1eac5c8776c6e81613cfb5adf6edd2cd6b163ba3` | 健康返回 503，其余四项通过。失败结果可重读，进程退出且 VM 已清除。 | `eaa96acdded0bfec9eab4a6ef16db1c10d4df0d7d5cc641e2e86a8d4d546e808` |
+
+两次运行的 dist 摘要均为 `62855291e6007de4f3c460b35f5b87a8939d40e6e27e8179f2dfd080bfc0e5d2`。健康候选运行输入摘要为 `28bbaeca8e4e5667d117f338567da91045911b3a99d268f49f455256ef3d5001`，回归候选为 `f44183ce22ccfbc865dde9494f832245e3a0b6ce27afffac493e42abbf258cb8`。锁文件漂移和离线缺包分别记录为 `profile_mismatch` 与 `offline_install`，两种对照均完成清理。
 
 后续依赖为 OCI 产物及其扫描、正式复验 Agent 集成、候选审批后的 Komodo 发布。应用私有回环中的 HTTP 检查仅覆盖固定标准应用运行范围。
