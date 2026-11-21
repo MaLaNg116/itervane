@@ -70,7 +70,7 @@ export class ExecutionCoordinator {
       const run = bound?.run;
       if (!task || !run || task.state !== 'queued' || task.generation !== input.generation || run.taskId !== task.id
         || run.generation !== input.generation || run.wakeupJobId !== job.id || bound?.reason?.startsWith('release_')) { await settle(); return null; }
-      if (slot.taskId && slot.live) {
+      if (slot.taskId) {
         await settle(); await enqueue(tx, this.database, task, run.id, true); return null;
       }
       try { await authorizeRun(tx, task, run.id); }
