@@ -10,3 +10,5 @@
 托管工作流通过七项真实身份及三项网络检查。隔离报告的源码指纹与本机相同，证明两边都读取了业务 Traefik 的实际管理 API，验证了匿名拒绝和受保护健康，并从应用容器核对认证服务和管理网卡的不可达。 [托管入口与隔离验证](https://github.com/MaLaNg116/itervane/actions/runs/44945649304) · [PR #55](https://github.com/MaLaNg116/itervane/pull/55)
 
 D3 接续真实 Komodo 的获批 OCI、只读运行核验与持久化发布结算，最后用同一正式操作验收。
+
+合入前复核了宿主默认绑定、应用容器与管理和认证网络的隔离、两层管理路由的方法和路径约束，以及安装说明。审查版本 `7e59369e3b7cfa83c8279988e17b069d64347fa2` 与原生验收的配置和试验代码一致，两组常规检查通过。已合入 `6388ad047dc60cb8d78b7b0ef7a6afc2cdb35d60`。 [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44948224412) · [分支 CI](https://github.com/MaLaNg116/itervane/actions/runs/44948219326)
