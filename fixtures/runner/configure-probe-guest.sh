@@ -175,6 +175,126 @@ StandardError=null
 UMask=0077
 EOF
   ln -sfn /etc/systemd/system/itervane-guest-build.path /etc/systemd/system/multi-user.target.wants/itervane-guest-build.path
+  if test -f /usr/local/libexec/itervane-build/baseline-probe.mjs; then
+    useradd --system --user-group --no-create-home --shell /usr/sbin/nologin itervane-app
+    useradd --system --user-group --no-create-home --shell /usr/sbin/nologin itervane-baseline
+    install -m 0444 /var/tmp/runtime_guest.py /usr/local/libexec/itervane/runtime_guest.py
+    rm -- /var/tmp/runtime_guest.py
+    install -d -m 2750 -o itervane-app -g itervane-app /var/lib/itervane-runtime-work
+    install -d -m 0755 -o root -g root /var/lib/itervane-runtime-gate
+    install -d -m 2750 -o root -g itervane-source /var/lib/itervane-runtime-output
+    install -d -m 0700 -o itervane-baseline -g itervane-baseline /var/lib/itervane-baseline-output
+    cat >/etc/systemd/system/itervane-runtime-control.path <<'EOF'
+[Path]
+PathExists=/var/lib/itervane-build-input/baseline-request.json
+TriggerLimitIntervalSec=3min
+TriggerLimitBurst=1
+EOF
+    cat >/etc/systemd/system/itervane-runtime-control.service <<'EOF'
+[Unit]
+BindsTo=itervane-guest-source.service
+After=itervane-guest-source.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/itervane/runtime_guest.py supervise
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+NoNewPrivileges=true
+PrivateNetwork=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/itervane-runtime-work /var/lib/itervane-runtime-gate /var/lib/itervane-runtime-output
+TimeoutStartSec=75
+TimeoutStopSec=5
+KillMode=control-group
+UMask=0027
+EOF
+    cat >/etc/systemd/system/itervane-runtime-prep.service <<'EOF'
+[Unit]
+BindsTo=itervane-guest-source.service
+After=itervane-guest-source.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/itervane/runtime_guest.py install
+User=itervane-app
+Group=itervane-app
+RestrictAddressFamilies=AF_UNIX
+PrivateTmp=true
+ReadWritePaths=/var/lib/itervane-runtime-work
+InaccessiblePaths=/var/lib/itervane-baseline-output
+TimeoutStartSec=30
+EOF
+    cat >/etc/systemd/system/itervane-runtime-app.service <<'EOF'
+[Unit]
+BindsTo=itervane-guest-source.service
+After=itervane-guest-source.service
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/itervane/runtime_guest.py application
+User=itervane-app
+Group=itervane-app
+RestrictAddressFamilies=AF_INET AF_UNIX
+PrivateTmp=true
+ReadOnlyPaths=/var/lib/itervane-runtime-work
+InaccessiblePaths=/var/lib/itervane-baseline-output
+TimeoutStartSec=5
+EOF
+    cat >/etc/systemd/system/itervane-runtime-check.service <<'EOF'
+[Unit]
+BindsTo=itervane-guest-source.service itervane-runtime-app.service
+After=itervane-guest-source.service itervane-runtime-app.service
+JoinsNamespaceOf=itervane-runtime-app.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/itervane/runtime_guest.py observe
+User=itervane-baseline
+Group=itervane-baseline
+RestrictAddressFamilies=AF_INET AF_UNIX
+ReadWritePaths=/var/lib/itervane-baseline-output
+InaccessiblePaths=/var/lib/itervane-runtime-work
+TimeoutStartSec=24
+EOF
+    for service in prep app check; do
+      directory="/etc/systemd/system/itervane-runtime-$service.service.d"
+      install -d -m 0755 "$directory"
+      cat >"$directory/10-boundary.conf" <<'EOF'
+[Service]
+NoNewPrivileges=true
+CapabilityBoundingSet=
+PrivateNetwork=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register
+SystemCallErrorNumber=EPERM
+InaccessiblePaths=-/run/dbus/system_bus_socket -/run/systemd/private
+InaccessiblePaths=/var/lib/itervane-probe-source /var/lib/itervane-inspection-source /var/lib/itervane-inspection-output
+InaccessiblePaths=/var/lib/itervane-build-input /var/lib/itervane-build-work /var/lib/itervane-build-output /var/lib/itervane-runtime-output
+ReadOnlyPaths=/usr/local/libexec/itervane-build /var/lib/itervane-runtime-gate
+MemoryMax=640M
+TasksMax=64
+LimitFSIZE=67108864
+TimeoutStopSec=5
+KillMode=control-group
+StandardOutput=null
+StandardError=null
+UMask=0077
+EOF
+    done
+    ln -sfn /etc/systemd/system/itervane-runtime-control.path /etc/systemd/system/multi-user.target.wants/itervane-runtime-control.path
+  fi
 fi
 cat >/etc/systemd/system/itervane-probe-workload.service <<'EOF'
 [Unit]

@@ -27,7 +27,8 @@ if [[ $# -eq 3 ]]; then
   test -f "$build_inputs/profile.json"
   test -f "$build_inputs/npm/bin/npm-cli.js"
   extra+=(--copy-in "$build_inputs:/usr/local/libexec"
-    --upload "$recipe_dir/../../packages/runner/host/build_guest.py:/var/tmp/build_guest.py")
+    --upload "$recipe_dir/../../packages/runner/host/build_guest.py:/var/tmp/build_guest.py"
+    --upload "$recipe_dir/../../packages/runner/host/runtime_guest.py:/var/tmp/runtime_guest.py")
 fi
 
 download() {

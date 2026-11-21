@@ -78,14 +78,16 @@ async function prepare(destination: string) {
 
     phase = 'profile';
     const baseline = readBoundedFile(join(buildRecipe, 'standard-web-baseline.mjs'), 65_536);
+    const baselineProbe = readBoundedFile(join(buildRecipe, 'baseline-probe.mjs'), 65_536);
     const viteConfig = readBoundedFile(join(buildRecipe, 'standard-vite.config.mjs'), 4096);
     await cp(npmRoot, join(destination, 'npm'), { recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true });
     await writeFile(join(destination, 'baseline.mjs'), baseline, { flag: 'wx', mode: 0o600 });
+    await writeFile(join(destination, 'baseline-probe.mjs'), baselineProbe, { flag: 'wx', mode: 0o600 });
     await writeFile(join(destination, 'vite.config.mjs'), viteConfig, { flag: 'wx', mode: 0o600 });
     const profile = standardBuildProfileSchema.parse({
       version: 1, platform: 'linux/amd64', packageSha256: inputs.packageSha256, lockSha256,
       dependenciesSha256: sha256(dependencies), npmVersion, nodeSha256: await fileDigest(process.execPath, 180 * 1024 * 1024),
-      baselineSha256: sha256(baseline), viteConfigSha256: sha256(viteConfig),
+      baselineSha256: sha256(baseline), viteConfigSha256: sha256(viteConfig), baselineProbeSha256: sha256(baselineProbe),
     });
     const profileBytes = JSON.stringify(profile);
     await writeFile(join(destination, 'profile.json'), profileBytes, { flag: 'wx', mode: 0o600 });

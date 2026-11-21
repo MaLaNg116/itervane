@@ -35,6 +35,7 @@ VERIFICATION_COMMAND = INSPECTION_REQUEST.with_name("verification-command.json")
 INSPECTION_RECEIPT = Path("/var/lib/itervane-inspection-output/receipt.json")
 BUILD_INPUT = Path("/var/lib/itervane-build-input")
 BUILD_RECEIPT = Path("/var/lib/itervane-build-output/receipt.json")
+RUNTIME_RECEIPT = Path("/var/lib/itervane-runtime-output/receipt.json")
 FIXTURE_REPOSITORY_ID = "a955164f-7cf2-45c5-8a53-7cdb556db805"
 GIT_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"}
@@ -196,6 +197,28 @@ def read_inspection(receipt, command):
     return proof
 
 
+def observe_standard_baseline(build, wire):
+    names = ("runId", "verificationInputSha256", "subjectManifestSha256", "buildProfileSha256", "baselineSha256", "projectionSha256")
+    request = {name: build[name] for name in names}
+    request["distSha256"] = build["dist"]["sha256"]
+    staged = BUILD_INPUT / "baseline-request.pending"
+    with staged.open("xb") as output:
+        output.write(json.dumps(request, separators=(",", ":")).encode("ascii"))
+        os.fchmod(output.fileno(), 0o440)
+    staged.rename(BUILD_INPUT / "baseline-request.json")
+    try:
+        published = json.loads(wait_receipt(RUNTIME_RECEIPT, 8192, wire))
+    except (ValueError, RecursionError) as error:
+        raise GuestFailure("scan-integrity") from error
+    if not isinstance(published, dict) or published.get("request") != request:
+        raise GuestFailure("scan-integrity")
+    baseline = published.get("result")
+    if (not isinstance(baseline, dict) or baseline.get("baselineSha256") != request["baselineSha256"]
+        or baseline.get("distSha256") != request["distSha256"]):
+        raise GuestFailure("scan-integrity")
+    return baseline
+
+
 def with_standard_build(receipt, proof, command, wire):
     frozen = json.loads(command)
     profile = frozen["input"]["profile"]
@@ -220,6 +243,8 @@ def with_standard_build(receipt, proof, command, wire):
         or outcome.get("verificationInputSha256") != proof["verificationInputSha256"]
         or outcome.get("runId") != proof["runId"] or outcome.get("subjectManifestSha256") != target):
         raise GuestFailure("scan-integrity")
+    if profile.get("runStandardBaseline") is True and outcome.get("status") == "built":
+        outcome["baseline"] = observe_standard_baseline(outcome, wire)
     proof["build"] = outcome
     serialized = json.dumps(proof, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(serialized) > MAX_VERIFICATION_RECEIPT:
