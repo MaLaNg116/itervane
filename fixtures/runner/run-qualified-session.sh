@@ -186,6 +186,7 @@ for key in sys.argv[2].split("."):
     proof = proof[key]
 receipt = proof["build"]["baseline"]["image"]
 archive = receipt["archive"]
+assert proof["archiveVerification"]["archive"] == archive
 assert re.fullmatch(r"[a-f0-9]{64}", archive["sha256"])
 assert re.fullmatch(r"sha256:[a-f0-9]{64}", receipt["manifestDigest"])
 assert type(archive["bytes"]) is int and 0 < archive["bytes"] <= 200 * 1024**2

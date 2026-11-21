@@ -883,7 +883,7 @@ it.each(['build', 'baseline', 'image', 'artifact'] as const)('binds the standard
   expect(verify).toHaveBeenCalledTimes(1);
 });
 
-it.each(['healthy', 'regression', 'reclaimed', 'profile changed', 'revoked', 'cleanup unknown', 'event blocked'] as const)(
+it.each(['healthy', 'archive unavailable', 'archive mismatch', 'regression', 'reclaimed', 'profile changed', 'revoked', 'cleanup unknown', 'event blocked'] as const)(
   'continues the frozen source into verification through the ordinary queue (%s)', async mode => {
     const scan = vi.fn<InspectionRunner['inspect']>(async (request, authorize) => { await authorize(); return testReceipt(request); });
     const started = Promise.withResolvers<void>();
@@ -915,11 +915,22 @@ it.each(['healthy', 'regression', 'reclaimed', 'profile changed', 'revoked', 'cl
     });
     const runner = inspectionRunner(scan);
     const tasks = new TaskService(database.storage);
+    const verifyArchive = vi.fn<NonNullable<FormalVerificationOptions['runner']['verifyArchive']>>(async archive =>
+      mode === 'archive unavailable' ? null : { kind: 'archive_verified', version: 1, runnerImageSha256: imageSha256, archive });
     const openWorker = (profile: StandardVerificationProfile) => new DurableWorker(database.storage, database.runtimeUrl, {
-      runner, auditModel: model, verification: { runner: { observe, verify }, profile },
+      runner, auditModel: model, verification: { runner: { observe, verify, verifyArchive }, profile },
     });
     if (mode === 'event blocked') {
       await database.admin.query("ALTER TABLE itervane.task_events ADD CONSTRAINT injected_verification_event_failure CHECK(type <> 'task.verification_recorded') NOT VALID");
+    }
+    if (mode === 'archive mismatch') {
+      await database.admin.query(`CREATE FUNCTION itervane.substitute_test_archive() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          NEW.document = jsonb_set(NEW.document, '{archiveVerification,archive,bytes}', '1');
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER a_injected_archive_mismatch BEFORE INSERT ON itervane.formal_verification_results
+        FOR EACH ROW EXECUTE FUNCTION itervane.substitute_test_archive()`);
     }
     const first = openWorker(standardVerificationProfile);
     try {
@@ -941,15 +952,18 @@ it.each(['healthy', 'regression', 'reclaimed', 'profile changed', 'revoked', 'cl
     } finally {
       await first.close();
       if (mode === 'event blocked') await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_verification_event_failure');
+      if (mode === 'archive mismatch') await database.admin.query(`DROP TRIGGER a_injected_archive_mismatch ON itervane.formal_verification_results;
+        DROP FUNCTION itervane.substitute_test_archive()`);
     }
 
     expect(scan).toHaveBeenCalledTimes(1);
     expect(auditing).toHaveBeenCalledTimes(3);
     const records = await database.storage.db.select().from(formalVerificationResults);
-    if (mode === 'event blocked') {
+    if (mode === 'event blocked' || mode === 'archive mismatch') {
       expect(records).toEqual([]);
       expect(verify).toHaveBeenCalledTimes(1);
       expect(reviewing).toHaveBeenCalledTimes(5);
+      expect(verifyArchive).toHaveBeenCalledTimes(1);
       const [receipt] = await database.storage.db.select().from(formalRescanAttempts);
       expect(receipt).toMatchObject({ state: 'recorded' });
       expect((await tasks.events(identity, task.id, 20)).at(-1)).toMatchObject({ state: 'needs_human', reason: 'verification_unavailable' });
@@ -958,6 +972,7 @@ it.each(['healthy', 'regression', 'reclaimed', 'profile changed', 'revoked', 'cl
     if (mode === 'revoked' || mode === 'profile changed' || mode === 'cleanup unknown') {
       expect(records).toEqual([]);
       expect(reviewing).not.toHaveBeenCalled();
+      expect(verifyArchive).not.toHaveBeenCalled();
       expect(verify).toHaveBeenCalledTimes(mode === 'cleanup unknown' ? 1 : 0);
       const [event] = (await database.admin.query(
         'SELECT state, detail FROM itervane.task_events WHERE task_id=$1 ORDER BY sequence DESC LIMIT 1', [task.id],
@@ -985,6 +1000,10 @@ it.each(['healthy', 'regression', 'reclaimed', 'profile changed', 'revoked', 'cl
     expect(record!.finalizedFence).toBe(input!.preparedFence + (mode === 'reclaimed' ? 1 : 0));
     expect(verify).toHaveBeenCalledTimes(1);
     expect(reviewing).toHaveBeenCalledTimes(failed ? 4 : 5);
+    if (failed) expect(verifyArchive).not.toHaveBeenCalled();
+    else expect(verifyArchive).toHaveBeenCalledTimes(1);
+    if (failed || mode === 'archive unavailable') expect(record!.document.archiveVerification).toBeUndefined();
+    else expect(record!.document.archiveVerification).toMatchObject({ kind: 'archive_verified', runnerImageSha256: imageSha256 });
     const recent = (await tasks.events(identity, task.id, 20, 'zh-CN')).at(-1);
     expect(recent).toMatchObject({ type: 'task.verification_recorded', state: failed ? 'needs_human' : 'waiting_input',
       reason: failed ? 'verification_checks_failed' : 'verification_observed', reasonMessage: /复验/ });

@@ -303,6 +303,13 @@ async function probe() {
         equal(receipt.scope.fence, stored.attempt_fence);
         equal(stored.finalized_fence, stored.attempt_fence);
         equal(result.review.outcome, failed ? 'checks_failed' : 'observed');
+        if (failed) equal(result.archiveVerification, undefined);
+        else {
+          const image = result.evidence.image;
+          ok(image.status === 'scanned' && image.archive);
+          deepStrictEqual(result.archiveVerification, { kind: 'archive_verified', version: 1, runnerImageSha256: imageSha256,
+            archive: image.archive });
+        }
         const sections = result.observations.map(item => item.section);
         deepStrictEqual(sections, failed ? ['baseline', 'source', 'build'] : ['baseline', 'image', 'source', 'build']);
         const [last] = (await db.admin.query(`SELECT type,detail FROM itervane.task_events
@@ -324,6 +331,7 @@ async function probe() {
           targetReportsSha256: snapshot.target ? sha256(JSON.stringify(snapshot.target.reports)) : null,
           totals, targetRuleId: null, newFindingGroups: totals.introduced, remainingFindingGroups: totals.remaining,
           dispatches: 1, cleanupConfirmed: receipt.cleanupConfirmed, build: snapshot.build ?? null, verificationResultSha256: stored.result_sha,
+          archiveVerification: result.archiveVerification ?? null,
           reviewTrial: { input: { sha256: stored.input_sha, document: input }, evidence: result.evidence,
             report: { sections, usage: result.usage, checkpointId: result.checkpointId, outcome: result.review.outcome } },
         };
