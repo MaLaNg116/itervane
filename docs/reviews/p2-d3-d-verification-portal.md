@@ -9,3 +9,5 @@
 本机 TypeScript 和该浏览器场景已通过，受测页面没有 CSP 违规。以 `629bb8f` 运行的 Linux CI 通过 Chrome、Keycloak、PostgreSQL 和 Worker 的全部 24 项浏览器场景，包含语言切换、任务版本、权限和已有动效。 [全量浏览器回归](https://github.com/MaLaNg116/itervane/actions/runs/44909983933/job/136863611546)
 
 面板显示的证据为人工查看和核对使用。后续发布交给 P2-E 的审批流程。
+
+核对最终提交 `47053c99b0f52e4cb06bc7a1cfba5ce5ea5bccfb` 的常规 CI 和相同浏览器源码后，以 `028a76a79865581330a6750a401fd00c5caf6115` 合入 `main`。 [合并记录](https://github.com/MaLaNg116/itervane/pull/38)
