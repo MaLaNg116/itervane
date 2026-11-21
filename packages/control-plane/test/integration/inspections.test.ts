@@ -9,7 +9,7 @@ import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { createFormalVerification } from '@itervane/agent';
 import { apiErrorSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
-  formalRepairRetryContextSchema, verificationViewSchema,
+  formalReleaseCandidateDtoSchema, formalRepairRetryContextSchema, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
@@ -23,7 +23,7 @@ import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/id
 import { queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
-  taskRuns, workspaceMembers } from '../../src/persistence/schema.js';
+  releaseCandidates, taskRuns, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
 import { runFormalRepair } from '../../src/runtime/formal-repair.js';
@@ -43,6 +43,8 @@ import { InspectionService, prepareInspection } from '../../src/service/inspecti
 import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
 import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { publishFormalRepair } from '../../src/service/repair-result.js';
+import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
+import { registerReleaseTarget } from '../../src/service/release-targets.js';
 import { TaskService } from '../../src/service/tasks.js';
 import { VerificationViewService } from '../../src/service/verification-view.js';
 import { databaseFixture } from '../helpers/database.js';
@@ -1010,8 +1012,95 @@ it.each(['healthy', 'archive unavailable', 'archive mismatch', 'regression', 're
     expect((await database.admin.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
     await expect(database.storage.db.update(formalVerificationResults).set({ sha256: sha256('different result') }))
       .rejects.toMatchObject({ cause: { code: '23514', message: 'formal_verification_result_is_immutable' } });
+    if (mode === 'healthy' || mode === 'archive unavailable' || mode === 'regression') await assertFormalCandidate(mode === 'healthy');
   },
 );
+
+async function assertFormalCandidate(eligible: boolean) {
+  const resources = new ResourceService(database.storage);
+  async function environmentFor(projectId: string) {
+    const application = await resources.createApplication(identity, projectId, { name: 'Release sample' });
+    return resources.createEnvironment(identity, projectId, { applicationId: application.id, name: 'Protected demo' });
+  }
+  const environment = await environmentFor(task.projectId);
+  const target = { environmentId: environment.id, deploymentId: 'a'.repeat(24), serverId: 'b'.repeat(24),
+    imageRepository: 'testing/standard', runtimeConfigSha256: sha256('runtime configuration'),
+    verificationProfileSha256: verificationProfileFingerprint(standardVerificationProfile),
+    rolloutCheckSha256: sha256('health verification'), recoveryPlanSha256: sha256('known release'),
+  };
+  const registered = await registerReleaseTarget(database.storage, target);
+  expect(await registerReleaseTarget(database.storage, target)).toEqual(registered);
+  const current = await new TaskService(database.storage).get(identity, task.id);
+  const api = createApi(database.storage, issuer.config, { logger: false });
+  const url = `/v1/tasks/${task.id}/release-candidate`;
+  const headers = { authorization: `Bearer ${await issuer.token()}`, 'Accept-Language': 'zh-CN' };
+  const payload = { environmentId: environment.id, expectedVersion: current.version };
+  const freeze = (body = payload) => api.inject({ method: 'POST', url, payload: body, headers });
+  try {
+    if (!eligible) {
+      expect((await freeze()).statusCode).toBe(409);
+      expect(await database.storage.db.select().from(releaseCandidates)).toEqual([]);
+      return;
+    }
+    const otherProject = await resources.createProject(identity, { name: 'Other', slug: 'other-release' });
+    const otherEnvironment = await environmentFor(otherProject.id);
+    await expect(registerReleaseTarget(database.storage, { ...target, environmentId: otherEnvironment.id }))
+      .rejects.toMatchObject({ cause: { code: '23505' } });
+    await registerReleaseTarget(database.storage, { ...target, environmentId: otherEnvironment.id, deploymentId: 'c'.repeat(24) });
+    expect((await freeze({ ...payload, environmentId: otherEnvironment.id })).statusCode).toBe(404);
+    expect((await freeze({ ...payload, expectedVersion: current.version + 1 })).statusCode).toBe(409);
+
+    await database.admin.query("ALTER TABLE itervane.task_events ADD CONSTRAINT injected_release_event_failure CHECK(type <> 'task.release_candidate_frozen') NOT VALID");
+    try {
+      expect((await freeze()).statusCode).toBe(500);
+      expect(await database.storage.db.select().from(releaseCandidates)).toEqual([]);
+      expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'waiting_input', version: current.version });
+    } finally { await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_release_event_failure'); }
+
+    const responses = await Promise.all([freeze(), freeze()]);
+    expect(responses.map(response => response.statusCode).sort()).toEqual([200, 201]);
+    const candidate = formalReleaseCandidateDtoSchema.parse(responses[0]!.json());
+    expect(responses[1]!.json()).toEqual(candidate);
+    expect(candidate).toMatchObject({ locale: 'zh-CN', status: 'pending', manifest: {
+      source: task.source, target: { applicationId: environment.applicationId, environmentId: environment.id, revision: 1, mappingSha256: registered.fingerprint },
+      diffSha256: null, runId: current.runId, image: { runnerImageSha256: imageSha256, findings: { medium: 1 } },
+    } });
+    const [proof] = await database.storage.db.select().from(formalVerificationResults);
+    expect(candidate.manifest.verification).toMatchObject({ inputSha256: proof?.inputSha256, resultSha256: proof?.sha256, receiptSha256: proof?.receiptSha256 });
+    expect(candidate.manifest.image.archive).toEqual(proof?.document.archiveVerification?.archive);
+    const [stored] = await database.storage.db.select().from(releaseCandidates);
+    const substitute = { ...candidate.manifest, evidenceVersion: 2, image: { ...candidate.manifest.image,
+      archive: { ...candidate.manifest.image.archive, bytes: candidate.manifest.image.archive.bytes + 1 },
+    } };
+    await expect(database.storage.db.insert(releaseCandidates).values({ ...stored!, id: randomUUID(), evidenceVersion: 2,
+      document: substitute, fingerprint: sha256(JSON.stringify(substitute)),
+    })).rejects.toMatchObject({ cause: { code: '23514', message: 'formal_release_candidate_binding' } });
+
+    const viewer = randomUUID();
+    await database.admin.query('INSERT INTO itervane.principals(id,issuer,subject) VALUES($1,$2,$3)', [viewer, issuer.config.issuer, 'release-viewer']);
+    await database.admin.query("INSERT INTO itervane.project_members(project_id,principal_id,role) VALUES($1,$2,'viewer')", [task.projectId, viewer]);
+    const viewerHeaders = { authorization: `Bearer ${await issuer.token('release-viewer')}`, 'Accept-Language': 'en' };
+    expect((await api.inject({ url, headers: viewerHeaders })).json()).toMatchObject({ id: candidate.id, locale: 'en', status: 'pending' });
+    expect((await api.inject({ method: 'POST', url, headers: viewerHeaders, payload })).statusCode).toBe(403);
+    await database.admin.query('DELETE FROM itervane.project_members WHERE principal_id=$1', [viewer]);
+    expect((await api.inject({ url, headers: viewerHeaders })).statusCode).toBe(404);
+
+    expect(await registerReleaseTarget(database.storage, { ...target, blockImageSeverities: ['critical', 'medium'] })).toMatchObject({ revision: 2 });
+    expect((await api.inject({ url, headers })).json()).toMatchObject({ id: candidate.id, status: 'evidence_changed' });
+    expect((await freeze({ ...payload, expectedVersion: current.version + 1 })).statusCode).toBe(409);
+    expect(await registerReleaseTarget(database.storage, target)).toMatchObject({ revision: 3, fingerprint: registered.fingerprint });
+    expect((await api.inject({ url, headers })).json()).toMatchObject({ id: candidate.id, status: 'evidence_changed' });
+    const next = await freeze({ ...payload, expectedVersion: current.version + 1 });
+    expect(next.statusCode).toBe(201);
+    const replacement = formalReleaseCandidateDtoSchema.parse(next.json());
+    expect(replacement.fingerprint).not.toBe(candidate.fingerprint);
+    expect(replacement.manifest.evidenceVersion).toBe(2);
+    expect(replacement.manifest.target.revision).toBe(3);
+    expect((await new TaskService(database.storage).events(identity, task.id, 50, 'zh-CN')).at(-1))
+      .toMatchObject({ type: 'task.release_candidate_frozen', state: 'waiting_approval', message: /人工决定/ });
+    expect((await database.admin.query('SELECT count(*)::int AS count FROM itervane.release_operations')).rows[0]?.count).toBe(0);
+  } finally { await api.close(); }
+}
 
 it('keeps verification unavailable while an audit finding has no published repair candidate', async () => {
   const { scope } = await repairReady();

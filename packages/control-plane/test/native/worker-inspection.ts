@@ -8,7 +8,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
-  admissionDtoSchema, auditFindingsPerScan, formalAuditDtoSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema, idSchema, projectDtoSchema,
+  admissionDtoSchema, applicationDtoSchema, auditFindingsPerScan, environmentDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema,
+  formalRepairDtoSchema, formalRepairPatchDtoSchema, idSchema, projectDtoSchema,
   formalRepairRetrySchema, formalVerificationInputSchema, formalVerificationResultSchema, qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
   repositoryDtoSchema, sha256Schema, sourceInspectionDtoSchema,
   qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
@@ -16,6 +17,8 @@ import {
 } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
+import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
+import { registerReleaseTarget } from '../../src/service/release-targets.js';
 import { bootstrapOwner } from '../../src/service/resources.js';
 import { databaseFixture } from '../helpers/database.js';
 import { identityFixture } from '../helpers/identity.js';
@@ -447,7 +450,28 @@ async function probe() {
         const lifecycle = events.items.map(event => taskEventDtoSchema.parse(event));
         equal(lifecycle.filter(event => event.type === 'task.repair_retry_queued').length, 1);
         match(lifecycle.find(event => event.type === 'task.repair_retry_queued')!.message, /返修/);
-        retry = { before, after, retrySha256, generation: handoff.generation };
+        phase = 'standard_formal_release_candidate';
+        const application = applicationDtoSchema.parse(await request(`/v1/projects/${project.id}/applications`, { name: 'Standard release fixture' }));
+        const environment = environmentDtoSchema.parse(await request(`/v1/projects/${project.id}/environments`, { name: 'Protected sample', applicationId: application.id }));
+        const target = await registerReleaseTarget(db.storage, {
+          environmentId: environment.id, deploymentId: 'a'.repeat(24), serverId: 'b'.repeat(24), imageRepository: 'testing/standard',
+          verificationProfileSha256: verificationProfileFingerprint(automaticProfile), runtimeConfigSha256: sha256('native candidate fixture'),
+          rolloutCheckSha256: sha256('native rollout fixture'), recoveryPlanSha256: sha256('native previous release fixture'),
+        });
+        const candidatePath = `/v1/tasks/${current.id}/release-candidate`;
+        const candidate = formalReleaseCandidateDtoSchema.parse(await request(candidatePath, { environmentId: environment.id, expectedVersion: current.version }));
+        deepStrictEqual(formalReleaseCandidateDtoSchema.parse(await request(candidatePath)), candidate);
+        equal(sha256(JSON.stringify(candidate.manifest)), candidate.fingerprint);
+        equal(candidate.manifest.runId, current.runId);
+        equal(candidate.manifest.generation, 2);
+        equal(candidate.manifest.diffSha256, after.patchSha256);
+        equal(candidate.manifest.verification.resultSha256, after.verificationResultSha256);
+        equal(candidate.manifest.verification.receiptSha256, after.receiptSha256);
+        equal(candidate.manifest.target.mappingSha256, target.fingerprint);
+        deepStrictEqual(candidate.manifest.image.archive, after.archiveVerification?.archive);
+        equal(taskDtoSchema.parse(await request(`/v1/tasks/${current.id}`)).state, 'waiting_approval');
+        equal((await db.admin.query('SELECT count(*)::int AS count FROM itervane.release_operations')).rows[0]?.count, 0);
+        retry = { before, after, retrySha256, generation: handoff.generation, candidate };
       }
       return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
         built, healthRegression, drift, ...(retry ? { retry } : {}), stagedFilesRemaining: false };
