@@ -20,8 +20,8 @@ async function verify() {
       || !/^\/itervane_test_[a-f0-9]{12}$/.test(new URL(config.databaseUrl).pathname)) throw new Error('verification_fixture_config');
   const target = { taskId: idSchema.parse(taskId), runId: idSchema.parse(runId) };
   const findingId = expected === 'original' ? null : sha256Schema.parse(expected);
-  const [profileSha, baselineSha, expectedBuild, expectedBaseline] = buildArgs;
-  if (buildArgs.length !== 0 && ((buildArgs.length !== 3 && buildArgs.length !== 4) || findingId !== null
+  const [profileSha, baselineSha, expectedBuild, expectedBaseline, ociInputsSha] = buildArgs;
+  if (buildArgs.length !== 0 && (buildArgs.length < 3 || buildArgs.length > 5 || findingId !== null
       || (expectedBuild !== 'built' && expectedBuild !== 'profile_mismatch' && expectedBuild !== 'offline_install')
       || (expectedBaseline !== undefined && (expectedBuild !== 'built' || (expectedBaseline !== 'passed' && expectedBaseline !== 'failed'))))) {
     throw new Error('verification_fixture_build_config');
@@ -29,6 +29,7 @@ async function verify() {
   const buildProfile = buildArgs.length ? {
     buildProfileSha256: sha256Schema.parse(profileSha), baselineSha256: sha256Schema.parse(baselineSha),
     ...(expectedBaseline ? { runStandardBaseline: true as const } : {}),
+    ...(ociInputsSha ? { ociInputsSha256: sha256Schema.parse(ociInputsSha) } : {}),
   } : undefined;
   phase = 'claim';
   const database = await openDatabase(config.databaseUrl);
@@ -114,6 +115,14 @@ async function verify() {
           const status = baselineEvidence.status === 'blocked' ? baselineEvidence.code : baselineEvidence.status;
           phase = `baseline_${status}`;
           equal(status, expectedBaseline);
+          if (ociInputsSha && baselineEvidence.status === 'passed') {
+            const image = baselineEvidence.image;
+            phase = image?.status === 'blocked' ? image.code : 'image_evidence';
+            ok(image?.status === 'scanned');
+            equal(image.scan.imageDigest, image.manifestDigest);
+            equal(image.ociInputsSha256, ociInputsSha);
+            deepStrictEqual(image.scan.database, snapshot.reports[1].database);
+          }
         } else equal(expectedBaseline, undefined);
       }
     } else equal(snapshot.build, undefined);
