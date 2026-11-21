@@ -1492,6 +1492,7 @@ it('waits for an environment already held by another release operation', async (
 
 it.each([
   ['target revision', 'release_target_changed'],
+  ['Komodo binding', 'release_target_changed'],
   ['worker origin', 'release_target_changed'],
   ['approver regrant', 'release_approval_invalid'],
   ['requester access', 'permission_revoked'],
@@ -1499,6 +1500,18 @@ it.each([
 ] as const)('blocks formal release when %s no longer matches the approval', async (change, reason) => {
   const { operationId, target, taskService } = await queuedFormalRelease({ separateRequester: change === 'requester access' });
   if (change === 'target revision') await registerReleaseTarget(database.storage, { ...target, rolloutCheckSha256: sha256('new check') });
+  if (change === 'Komodo binding') {
+    const original = await registerReleaseTarget(database.storage, target);
+    expect(original.revision).toBe(1);
+    const komodo = { origin: 'https://komodo.example.invalid', actorId: 'd'.repeat(24) };
+    const revision = await registerReleaseTarget(database.storage, { ...target, komodo });
+    expect(revision.revision).toBe(2);
+    expect(revision.fingerprint).not.toBe(original.fingerprint);
+    expect(await registerReleaseTarget(database.storage, { ...target, komodo: { ...komodo, origin: 'https://KOMODO.example.invalid:443/' } }))
+      .toEqual(revision);
+    expect(await registerReleaseTarget(database.storage, { ...target, komodo: { ...komodo, actorId: 'e'.repeat(24) } }))
+      .toMatchObject({ revision: 3 });
+  }
   if (change === 'approver regrant') {
     const [removed] = await database.storage.db.delete(workspaceMembers).returning();
     await database.storage.db.insert(workspaceMembers).values({ principalId: removed!.principalId, workspaceId: removed!.workspaceId });
