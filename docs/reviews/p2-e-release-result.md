@@ -6,6 +6,12 @@
 2. `403de7b` 在发布面板显示运行镜像、应用版本、实际更新标识和核验时间。人工核验显示脱敏原因。切换运行后通过任务版本校验移除旧结果。冻结证据与决定历史继续使用同一面板的键盘入口及 GSAP 减少动效处理。 [门户](https://github.com/MaLaNg116/itervane/blob/403de7b/packages/portal/src/pages/task-release.tsx)
 3. `408b851` 在真实 PostgreSQL 中提交核验成功和转人工，使用 HTTP 与实际 MCP 客户端在两种语言下比对同一返回，并验证撤权后两边均拒绝。浏览器覆盖更新、语言切换、减少动效和当前运行隔离。 `aa10586` 补上 OAuth 回调完成后再创建测试任务的等待。 [HTTP 与 MCP](https://github.com/MaLaNg116/itervane/blob/408b851/packages/control-plane/test/integration/inspections.test.ts) · [浏览器](https://github.com/MaLaNg116/itervane/blob/aa10586/packages/portal/test/browser/portal.spec.ts)
 
-TypeScript、202 项单元和两项真实 PostgreSQL 专项通过。真实 Chrome、Keycloak 与控制面会话跑通 3 项门户用例，`aa10586` 的浏览器报告源码指纹 `a96e2ad022062d4bccc15a0953a144db0f3e586e1d25a526ba4c44d3dc21b325`。浏览器用例以可控的发布响应覆盖状态切换，真实数据库验收核对实际结算行。旧用例的空结果断言需要纳入新增字段，`7cfb133` 和 `73d695f` 分别校验冻结前及待审批时的 `result: null`。全量复跑及托管证据随交付归档。
+TypeScript、202 项单元和真实 Chrome、Keycloak 与控制面会话上的 3 项门户用例通过。`aa10586` 的浏览器报告源码指纹为 `a96e2ad022062d4bccc15a0953a144db0f3e586e1d25a526ba4c44d3dc21b325`。浏览器用例以可控的发布响应覆盖状态切换，真实数据库验收核对实际结算行。
+
+首轮 PostgreSQL 全量复跑中，两个旧用例的精确响应断言缺少新增字段。`7cfb133` 和 `73d695f` 补上冻结前、待审批及不满足冻结条件时的 `result: null`。固定版本 `73d695f` 在 PostgreSQL 17.12 通过 5 项专项和 173 项全量测试，源码指纹 `09a499819544a947bb06da39ae203e60239b1192376065e91b5610db6678153b`。
+
+原生工作流使用 `0e57448`，与最终交付之间只有文档和 PostgreSQL 测试断言变化。Komodo、受保护入口和四组托管 KVM 均已通过。源码指纹 `a96e2ad022062d4bccc15a0953a144db0f3e586e1d25a526ba4c44d3dc21b325` 的报告记录了实际崩溃重领、API 与 MCP 一致、已知和未知 Komodo 更新。 [Komodo](https://github.com/MaLaNg116/itervane/actions/runs/44953165620) · [受保护入口](https://github.com/MaLaNg116/itervane/actions/runs/44953165580) · [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44953165652)
+
+合入前复核了项目授权、当前任务与候选绑定、核验回执查验以及门户刷新后的运行隔离。最终审查版本 `077983c28b3719bf87ee50c20d389c62902b174d` 的六项常规检查通过，合入 `7d492e3cc74c87cd52ba999dd31ae4eddbc4d6fc`。 [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44954671172) · [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44954665928)
 
 D3-D 在托管 KVM 上用同一操作验收外部 MCP 接入、修复和复验、人工确认、真实发布与受保护入口结果。
