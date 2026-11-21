@@ -1,11 +1,55 @@
 import { z } from 'zod';
+import { verificationComparisonCountsSchema, verificationImageFindingCountsSchema } from './formal-verification-evidence.js';
 import { sha256Schema } from './inspection.js';
 import { localeSchema } from './i18n.js';
 import { idSchema, sourceRefSchema } from './primitives.js';
+import { qualifiedImageArchiveSchema } from './qualified-standard-image.js';
 
 const version = z.number().int().min(0).max(2_147_483_647);
 const timestamp = z.iso.datetime({ precision: 3 });
 const imageDigest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const komodoId = z.string().regex(/^[a-f0-9]{24}$/);
+const imageSeverity = z.enum(['critical', 'high', 'medium', 'low', 'unknown']);
+const imageBlockers = z.array(imageSeverity).min(1).max(5)
+  .refine(values => new Set(values).size === values.length).transform(values => [...values].sort());
+
+export const formalReleaseTargetSchema = z.strictObject({
+  environmentId: idSchema, deploymentId: komodoId, serverId: komodoId,
+  imageRepository: z.string().max(180).regex(/^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$/),
+  runtimeConfigSha256: sha256Schema, verificationProfileSha256: sha256Schema,
+  rolloutCheckSha256: sha256Schema, recoveryPlanSha256: sha256Schema,
+  blockImageSeverities: imageBlockers.default(['critical', 'high', 'unknown']),
+  approvalTtlSeconds: z.int().min(60).max(86_400).default(1800),
+  verificationMaxAgeSeconds: z.int().min(60).max(604_800).default(86_400),
+});
+export type FormalReleaseTarget = z.infer<typeof formalReleaseTargetSchema>;
+
+export const freezeFormalReleaseSchema = z.strictObject({ environmentId: idSchema, expectedVersion: version.min(1) });
+
+export const formalReleaseManifestSchema = z.strictObject({
+  version: z.literal(1), origin: z.literal('formal_verification'), releaseEligible: z.literal(false), evidenceVersion: version.min(1),
+  taskId: idSchema, runId: idSchema, generation: version.min(1), projectId: idSchema, source: sourceRefSchema,
+  originalSnapshotSha256: sha256Schema, repairedSnapshotSha256: sha256Schema, diffSha256: sha256Schema.nullable(),
+  verification: z.strictObject({
+    inputSha256: sha256Schema, resultSha256: sha256Schema, receiptSha256: sha256Schema,
+    catalogSha256: sha256Schema, profileSha256: sha256Schema, buildSha256: sha256Schema, baselineSha256: sha256Schema,
+    source: verificationComparisonCountsSchema.extend({ introduced: z.literal(0), remaining: z.literal(0) }),
+  }),
+  image: z.strictObject({
+    manifestDigest: imageDigest, configDigest: imageDigest, archive: qualifiedImageArchiveSchema, runnerImageSha256: sha256Schema,
+    scanReportSha256: sha256Schema, scanPolicySha256: sha256Schema, findings: verificationImageFindingCountsSchema,
+  }),
+  runtimeConfigSha256: sha256Schema, rolloutCheckSha256: sha256Schema, recoveryPlanSha256: sha256Schema,
+  target: z.strictObject({ applicationId: idSchema, environmentId: idSchema, mappingSha256: sha256Schema, revision: version.min(1) }),
+  validUntil: timestamp,
+}).refine(manifest => (manifest.originalSnapshotSha256 === manifest.repairedSnapshotSha256) === (manifest.diffSha256 === null));
+export type FormalReleaseManifest = z.infer<typeof formalReleaseManifestSchema>;
+
+export const formalReleaseCandidateDtoSchema = z.strictObject({
+  id: idSchema, fingerprint: sha256Schema, manifest: formalReleaseManifestSchema, createdAt: timestamp,
+  status: z.enum(['pending', 'expired', 'evidence_changed', 'task_changed']),
+  locale: localeSchema, message: z.string().min(1).max(320),
+});
 
 export const fixtureReleaseManifestSchema = z.object({
   version: z.literal(1),

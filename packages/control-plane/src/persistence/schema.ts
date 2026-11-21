@@ -2,7 +2,8 @@ import { sql } from 'drizzle-orm';
 import { boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
   agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
-  type FormalRepairInput, type FormalRepairResult, type FormalRepairRetry, type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
+  type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairInput, type FormalRepairResult, type FormalRepairRetry,
+  type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
   type PreauditRecord, type QualifiedInspectionReceipt, type QualifiedRepairReceipt, type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState,
 } from '@itervane/contracts';
 
@@ -377,6 +378,19 @@ export const preaudits = domain.table('preaudits', {
   AND ${t.document}#>>'{evaluation,formalScan}' = 'false' AND ${t.document}#>>'{evaluation,releaseEligible}' = 'false'
   AND octet_length(${t.document}::text) <= 65536) IS TRUE`)]);
 
+export const formalReleaseTargets = domain.table('formal_release_targets', {
+  environmentId: uuid('environment_id').primaryKey(), projectId: uuid('project_id').notNull(), applicationId: uuid('application_id').notNull(),
+  deploymentId: text('deployment_id').notNull(), revision: integer('revision').notNull(),
+  sha256: text('sha256').notNull(), document: jsonb('document').$type<FormalReleaseTarget>().notNull(), createdAt: createdAt(),
+}, t => [
+  foreignKey({ name: 'formal_release_target_environment_fk', columns: [t.environmentId, t.projectId, t.applicationId],
+    foreignColumns: [environments.id, environments.projectId, environments.applicationId] }),
+  unique('formal_release_target_deployment_unique').on(t.deploymentId),
+  check('formal_release_target_binding', sql`(${t.revision} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.deploymentId} ~ '^[a-f0-9]{24}$' AND ${t.document}->>'deploymentId' = ${t.deploymentId}
+    AND ${t.document}->>'environmentId' = ${t.environmentId}::text AND octet_length(${t.document}::text) <= 4096) IS TRUE`),
+]);
+
 export const releaseCandidates = domain.table('release_candidates', {
   id: uuid('id').primaryKey(),
   projectId: uuid('project_id').notNull(),
@@ -387,7 +401,7 @@ export const releaseCandidates = domain.table('release_candidates', {
   requestedBy: uuid('requested_by').notNull().references(() => principals.id),
   evidenceVersion: integer('evidence_version').notNull(),
   fingerprint: text('fingerprint').notNull(),
-  document: jsonb('document').$type<FixtureReleaseManifest>().notNull(),
+  document: jsonb('document').$type<FixtureReleaseManifest | FormalReleaseManifest>().notNull(),
   createdAt: createdAt(),
 }, t => [
   foreignKey({ name: 'release_candidate_task_project_fk', columns: [t.taskId, t.projectId], foreignColumns: [tasks.id, tasks.projectId] }),
@@ -397,7 +411,7 @@ export const releaseCandidates = domain.table('release_candidates', {
   unique('release_candidate_evidence_version').on(t.taskId, t.evidenceVersion),
   unique('release_candidate_environment_pair').on(t.id, t.environmentId),
   check('release_candidate_binding', sql`(${t.evidenceVersion} > 0 AND ${t.fingerprint} ~ '^[a-f0-9]{64}$'
-    AND ${t.document}->>'version' = '1' AND ${t.document}->>'origin' = 'trusted_fixture'
+    AND ${t.document}->>'version' = '1' AND ${t.document}->>'origin' IN ('trusted_fixture', 'formal_verification')
     AND ${t.document}->'releaseEligible' = 'false'::jsonb
     AND ${t.document}->>'evidenceVersion' = ${t.evidenceVersion}::text
     AND ${t.document}->>'projectId' = ${t.projectId}::text AND ${t.document}->>'taskId' = ${t.taskId}::text

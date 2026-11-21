@@ -29,6 +29,7 @@
     "start:worker": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/worker.ts",
     "db:migrate": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/migrate.ts",
     "bootstrap:owner": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/bootstrap.ts",
+    "register:release-target": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/register-release-target.ts",
     "check": "tsx scripts/check.ts"
   },
   "devDependencies": {
