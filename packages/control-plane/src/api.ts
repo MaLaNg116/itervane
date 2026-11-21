@@ -29,6 +29,7 @@ declare module 'fastify' {
 
 const projectParam = z.object({ projectId: idSchema }).strict();
 const taskParam = z.object({ taskId: idSchema }).strict();
+const candidateParam = z.strictObject({ candidateId: idSchema });
 const identity = (request: FastifyRequest) => {
   if (!request.verifiedIdentity) throw new AuthenticationError();
   return request.verifiedIdentity;
@@ -41,7 +42,7 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
   const resources = new ResourceService(database); const tasks = new TaskService(database);
   const inspections = new InspectionService(database); const audits = new FormalAuditService(database);
   const repairs = new FormalRepairService(database);
-  const release = new FormalReleaseService(database);
+  const release = new FormalReleaseService(database, config.portalClientId);
   const verification = new VerificationViewService(database);
   const rules = new RuleService(database); const preaudits = new PreauditService(database);
   const app = Fastify({
@@ -199,6 +200,10 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
     const { taskId } = parseInput(taskParam, request.params);
     const { candidate, replayed } = await release.freeze(identity(request), taskId, request.body, request.locale);
     return reply.code(replayed ? 200 : 201).send(candidate);
+  });
+  app.post('/v1/release-candidates/:candidateId/decisions', async request => {
+    const { candidateId } = parseInput(candidateParam, request.params);
+    return release.decide(identity(request), candidateId, request.body, request.locale);
   });
   app.post('/v1/tasks/:taskId/cancel', async request => {
     const { taskId } = parseInput(taskParam, request.params); return taskDtoSchema.parse(await tasks.cancel(identity(request), taskId, request.body));

@@ -11,4 +11,6 @@
 
 本机 TypeScript、九项真实 PostgreSQL 专项通过，修正文案后固定 `dcecd48845570e4bae79fd313bceb5b98d81a2c4` 完成 138 项全量集成。最终数据库测试源码指纹为 `43654b08f1bf0e01c9dad8b02dd5e443a48fb4d3a56839f27863be0a9594600f`。 [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44913906085)
 
-托管验收使用声明式的测试目标，核对当前 OCI 证据与持久化候选。E-B 接入本人确认、有效期和正式队列事务。E-C 按目标版本派发并核对真实 Komodo。
+托管 KVM 四组全绿。标准 OCI 路径在第二代复验后冻结正式候选，已核对候选代次、复验结果、回执、补丁和归档指纹。独立回读确认归档 79,042,560 字节、SHA-256 `8e565281028ffcf08ea3d31b8d0bacb64af51db53e3164d8620288f30d636636`，镜像 manifest 一致且工作区与传输暂存已清理。#40 以 `8f49fac09568d76f4fbcc05d2ba66a5e495824dd` 合入 main。 [PR #40](https://github.com/MaLaNg116/itervane/pull/40)
+
+原生验收使用声明式测试目标。E-B 接入本人确认、有效期和正式队列事务。E-C 按目标版本派发并核对真实 Komodo。

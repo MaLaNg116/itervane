@@ -211,6 +211,13 @@
       "when": 1795270094768,
       "tag": "0029_formal_release_candidates",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1795271400000,
+      "tag": "0030_formal_release_approval",
+      "breakpoints": true
     }
   ]
 }

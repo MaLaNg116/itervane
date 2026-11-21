@@ -5,9 +5,9 @@ import {
   type FixtureReleaseManifest, type Locale, type ReleaseCandidateStatus,
 } from '@itervane/contracts';
 import type { VerifiedIdentity } from '../auth/identity.js';
-import type { Database } from '../persistence/database.js';
+import { releaseFixtureQueue, type Database } from '../persistence/database.js';
 import { environments, projects, releaseCandidates, releaseDecisions, releaseOperations, taskRuns, tasks, workspaceMembers } from '../persistence/schema.js';
-import { enqueueReleaseFixture } from '../runtime/release-fixture-queue.js';
+import { enqueueReleaseOperation } from '../runtime/release-queue.js';
 import { requireActor, requireProject, requireStoredActor, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 
@@ -164,7 +164,7 @@ export class ReleaseCandidateService {
         action: input.action, selfConfirmed: input.action === 'confirm' && actor.principalId === candidate.requestedBy, decidedAt: now,
       };
       await tx.insert(releaseDecisions).values(decision);
-      const operationId = decision.action === 'confirm' ? await enqueueReleaseFixture(tx, this.database, {
+      const operationId = decision.action === 'confirm' ? await enqueueReleaseOperation(tx, this.database, releaseFixtureQueue, {
         candidateId, environmentId: candidate.environmentId, approvalVersion: decision.version,
       }) : null;
       const decided = { confirm: 'confirmed', reject: 'rejected', revoke: 'revoked' } as const;

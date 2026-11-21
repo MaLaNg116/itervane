@@ -17,6 +17,8 @@ import {
 } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
+import { formalReleaseQueue } from '../../src/persistence/database.js';
+import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
 import { registerReleaseTarget } from '../../src/service/release-targets.js';
 import { bootstrapOwner } from '../../src/service/resources.js';
@@ -212,12 +214,14 @@ async function probe() {
     const db = database = await databaseFixture(postgres.url);
     const oidc = identity = await identityFixture();
     await bootstrapOwner(db.storage, { issuer: oidc.config.issuer, subject: 'owner' });
-    api = createApi(db.storage, { ...oidc.config, publicUrl }, { logger: false });
+    const portalClientId = 'itervane-native-portal';
+    api = createApi(db.storage, { ...oidc.config, publicUrl, portalClientId }, { logger: false });
     const address = await api.listen({ host: '127.0.0.1', port: 0 });
     const authorization = async () => `Bearer ${await oidc.token()}`;
-    const request = async (path: string, payload?: object) => {
+    const request = async (path: string, payload?: object, human = false) => {
       const response = await fetch(`${address}${path}`, { method: payload ? 'POST' : 'GET', signal: AbortSignal.timeout(5_000),
-        headers: { Authorization: await authorization(), ...(payload ? { 'content-type': 'application/json' } : {}) },
+        headers: { Authorization: human ? `Bearer ${await oidc.token('owner', { azp: portalClientId })}` : await authorization(),
+          ...(payload ? { 'content-type': 'application/json' } : {}) },
         ...(payload ? { body: JSON.stringify(payload) } : {}) });
       equal(response.ok, true, path);
       return response.json() as Promise<unknown>;
@@ -471,7 +475,21 @@ async function probe() {
         deepStrictEqual(candidate.manifest.image.archive, after.archiveVerification?.archive);
         equal(taskDtoSchema.parse(await request(`/v1/tasks/${current.id}`)).state, 'waiting_approval');
         equal((await db.admin.query('SELECT count(*)::int AS count FROM itervane.release_operations')).rows[0]?.count, 0);
-        retry = { before, after, retrySha256, generation: handoff.generation, candidate };
+        phase = 'standard_formal_release_approval';
+        const approved = (await request(`/v1/release-candidates/${candidate.id}/decisions`, {
+          action: 'confirm', fingerprint: candidate.fingerprint, expectedVersion: 0, idempotencyKey: randomUUID(),
+        }, true)) as { candidate: unknown; replayed: boolean };
+        const confirmed = formalReleaseCandidateDtoSchema.parse(approved.candidate);
+        const operationId = idSchema.parse(confirmed.operationId);
+        equal(confirmed.status, 'confirmed');
+        equal(confirmed.decisionVersion, 1);
+        equal(confirmed.decisions[0]?.selfConfirmed, true);
+        equal(approved.replayed, false);
+        deepStrictEqual((await db.storage.boss.findJobs(formalReleaseQueue, { id: operationId }))[0]?.data, { operationId });
+        await new ExecutionCoordinator(db.storage).reconcile(randomUUID());
+        const [genericWakeup] = (await db.admin.query('SELECT wakeup_job_id FROM itervane.task_runs WHERE id=$1', [current.runId])).rows;
+        equal(genericWakeup?.wakeup_job_id, null);
+        retry = { before, after, retrySha256, generation: handoff.generation, candidate, approval: { operationId, decisionVersion: confirmed.decisionVersion } };
       }
       return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
         built, healthRegression, drift, ...(retry ? { retry } : {}), stagedFilesRemaining: false };

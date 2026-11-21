@@ -20,10 +20,10 @@ import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../v
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
-import { queueName } from '../../src/persistence/database.js';
+import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
-  releaseCandidates, taskRuns, workspaceMembers } from '../../src/persistence/schema.js';
+  releaseCandidates, releaseDecisions, releaseOperations, taskRuns, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
 import { runFormalRepair } from '../../src/runtime/formal-repair.js';
@@ -1012,11 +1012,13 @@ it.each(['healthy', 'archive unavailable', 'archive mismatch', 'regression', 're
     expect((await database.admin.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
     await expect(database.storage.db.update(formalVerificationResults).set({ sha256: sha256('different result') }))
       .rejects.toMatchObject({ cause: { code: '23514', message: 'formal_verification_result_is_immutable' } });
-    if (mode === 'healthy' || mode === 'archive unavailable' || mode === 'regression') await assertFormalCandidate(mode === 'healthy');
+    if (mode === 'healthy' || mode === 'reclaimed' || mode === 'archive unavailable' || mode === 'regression') {
+      await assertFormalCandidate(mode === 'healthy' || mode === 'reclaimed', mode === 'reclaimed' ? 'cancel' : 'revoke');
+    }
   },
 );
 
-async function assertFormalCandidate(eligible: boolean) {
+async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel') {
   const resources = new ResourceService(database.storage);
   async function environmentFor(projectId: string) {
     const application = await resources.createApplication(identity, projectId, { name: 'Release sample' });
@@ -1031,7 +1033,8 @@ async function assertFormalCandidate(eligible: boolean) {
   const registered = await registerReleaseTarget(database.storage, target);
   expect(await registerReleaseTarget(database.storage, target)).toEqual(registered);
   const current = await new TaskService(database.storage).get(identity, task.id);
-  const api = createApi(database.storage, issuer.config, { logger: false });
+  const portalClientId = 'itervane-test-portal';
+  const api = createApi(database.storage, { ...issuer.config, portalClientId }, { logger: false });
   const url = `/v1/tasks/${task.id}/release-candidate`;
   const headers = { authorization: `Bearer ${await issuer.token()}`, 'Accept-Language': 'zh-CN' };
   const payload = { environmentId: environment.id, expectedVersion: current.version };
@@ -1101,7 +1104,66 @@ async function assertFormalCandidate(eligible: boolean) {
     expect((await new TaskService(database.storage).events(identity, task.id, 50, 'zh-CN')).at(-1))
       .toMatchObject({ type: 'task.release_candidate_frozen', state: 'waiting_approval', message: /人工决定/ });
     expect((await database.admin.query('SELECT count(*)::int AS count FROM itervane.release_operations')).rows[0]?.count).toBe(0);
+    await assertReleaseApproval(api, replacement, candidate, portalClientId, stop);
   } finally { await api.close(); }
+}
+
+async function assertReleaseApproval(api: ReturnType<typeof createApi>, current: ReturnType<typeof formalReleaseCandidateDtoSchema.parse>,
+  superseded: ReturnType<typeof formalReleaseCandidateDtoSchema.parse>, portalClientId: string, stop: 'revoke' | 'cancel') {
+  const url = `/v1/release-candidates/${current.id}/decisions`;
+  const headers = { authorization: `Bearer ${await issuer.token('owner', { azp: portalClientId })}`, 'Accept-Language': 'zh-CN' };
+  const payload = { action: 'confirm', fingerprint: current.fingerprint, expectedVersion: 0, idempotencyKey: randomUUID() };
+  const confirm = () => api.inject({ method: 'POST', url, payload, headers });
+  expect((await api.inject({ method: 'POST', url, payload, headers: { authorization: `Bearer ${await issuer.token()}` } })).statusCode).toBe(403);
+  expect((await api.inject({ method: 'POST', url: `/v1/release-candidates/${superseded.id}/decisions`, headers,
+    payload: { ...payload, fingerprint: superseded.fingerprint },
+  })).statusCode).toBe(409);
+  await expect(database.storage.db.insert(releaseOperations).values({ id: randomUUID(), candidateId: current.id,
+    environmentId: current.manifest.target.environmentId, approvalVersion: 1,
+  })).rejects.toMatchObject({ cause: { code: '23514', message: 'formal_release_operation_approval_binding' } });
+
+  const sending = vi.spyOn(database.storage.boss, 'send').mockResolvedValueOnce(null);
+  try { expect((await confirm()).statusCode).toBe(503); }
+  finally { sending.mockRestore(); }
+  expect(await database.storage.db.select().from(releaseOperations)).toHaveLength(0);
+  expect(await database.storage.db.select().from(releaseDecisions)).toHaveLength(0);
+  expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'waiting_approval' });
+
+  const responses = await Promise.all([confirm(), confirm()]);
+  expect(responses.map(response => response.statusCode)).toEqual([200, 200]);
+  expect(responses.map(response => response.json().replayed).sort()).toEqual([false, true]);
+  const approved = formalReleaseCandidateDtoSchema.parse(responses[0]!.json().candidate);
+  expect(responses[1]!.json().candidate).toEqual(approved);
+  expect(approved).toMatchObject({ id: current.id, status: 'confirmed', decisionVersion: 1, message: /已入队/,
+    decisions: [{ action: 'confirm', selfConfirmed: true }],
+  });
+  const operations = await database.storage.db.select().from(releaseOperations);
+  expect(operations).toHaveLength(1);
+  expect(operations[0]).toMatchObject({ id: approved.operationId, state: 'queued' });
+  const jobs = await database.storage.boss.findJobs(formalReleaseQueue);
+  expect(jobs).toHaveLength(1);
+  expect(jobs[0]).toMatchObject({ id: approved.operationId, data: { operationId: approved.operationId } });
+  const tasks = new TaskService(database.storage);
+  const queued = await tasks.get(identity, task.id);
+  expect(queued.state).toBe('queued');
+  await coordinator.reconcile(randomUUID());
+  expect((await database.storage.db.select().from(taskRuns).where(eq(taskRuns.id, queued.runId)))[0]?.wakeupJobId).toBeNull();
+
+  if (stop === 'revoke') {
+    const [owner] = await database.storage.db.delete(workspaceMembers).returning();
+    await database.storage.db.insert(workspaceMembers).values({ principalId: owner!.principalId, workspaceId: owner!.workspaceId });
+    expect((await confirm()).json()).toMatchObject({ replayed: true, candidate: { status: 'approver_revoked' } });
+    const revoke = await api.inject({ method: 'POST', url, headers, payload: {
+      action: 'revoke', fingerprint: current.fingerprint, expectedVersion: 1, idempotencyKey: randomUUID(),
+    } });
+    expect(revoke.statusCode).toBe(200);
+    expect(revoke.json()).toMatchObject({ candidate: { status: 'revoked', decisionVersion: 2 } });
+  } else {
+    expect(await tasks.cancel(identity, task.id, { expectedVersion: queued.version })).toMatchObject({ state: 'cancelled' });
+    expect((await confirm()).json()).toMatchObject({ replayed: true, candidate: { status: 'task_changed' } });
+  }
+  expect((await database.storage.db.select().from(releaseOperations))[0]).toMatchObject({ state: 'blocked' });
+  expect(await database.storage.boss.fetch(formalReleaseQueue)).toEqual([]);
 }
 
 it('keeps verification unavailable while an audit finding has no published repair candidate', async () => {
