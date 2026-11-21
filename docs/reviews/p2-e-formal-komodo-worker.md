@@ -12,3 +12,5 @@ TypeScript、179 项单元、十项真实 PostgreSQL 专项及 161 项 PostgreSQ
 独立原生 Komodo 适配器检查已通过。首次使用真实 Runner 制品的中断试验停在已知更新路径，旧夹具第一次 tick 回收租约时即要求拿到延时任务。`c621ac7` 接续实际入队的唤醒，空闲期间核对零重复写入。 [原生 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/44938461015) · [首轮托管 Runner](https://github.com/MaLaNg116/itervane/actions/runs/44938461019)
 
 托管 OCI 复跑核对同一候选、人工决定、Registry 操作及容器实际版本。原先的 Registry 回读 fence 为 9。配置写入、配置回读、派发与已记录更新回读分别使用 11、12、13、14，运行镜像的 manifest 与配置摘要匹配第二代获批归档。从另一份获批归档派发且丢失原生更新 ID 的独立操作保留环境占用并转人工。两条路径均发生一次配置、一次派发，证据与实际归档、容器身份对齐，两个暂存区均已清理。标准构建与缺包回归通过。独立 Runner 回归在既有崩溃恢复结算处失败，使用同一提交单独重跑。生产入口依赖 E-D 的实际运行版本、访问保护和健康核验。 [OCI 和回归](https://github.com/MaLaNg116/itervane/actions/runs/44940682806) · [PR #52](https://github.com/MaLaNg116/itervane/pull/52)
+
+同版第二次尝试通过旧有崩溃恢复回归，确认五个不同的原生域、恢复租约递增、HTTP/MCP 一致和暂存清理。核对回归、OCI 与 PostgreSQL 的源码指纹一致后，按固定 PR 版本复核合入 main。 [Runner 第二次尝试](https://github.com/MaLaNg116/itervane/actions/runs/44940682806/attempts/2) · [合入提交](https://github.com/MaLaNg116/itervane/commit/48ec8322422c0ec6635ab2ec1bf6c34ed3c693f0)
