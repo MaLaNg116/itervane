@@ -173,6 +173,7 @@ pnpm exec tsx packages/control-plane/test/native/worker-inspection.ts "$shared/w
 assert_empty
 
 if [[ "$scenario" == standard-oci ]]; then
+  sudo -n install -m 0444 fixtures/runner/verify-stored-oci.py "$shared/verify-stored-oci.py"
   read -r archive_sha archive_bytes expected_manifest < <(/usr/bin/python3 - "$report" <<'PY'
 import json
 import re
@@ -189,7 +190,7 @@ PY
   archive="$artifacts/$archive_sha.oci.tar"
   test "$(sudo -n -u "$runner" stat -c '%s %a' -- "$archive")" = "$archive_bytes 400"
   test "$(sudo -n -u "$runner" sha256sum -- "$archive" | cut -d ' ' -f 1)" = "$archive_sha"
-  measured_manifest=$(sudo -n -u "$runner" /usr/bin/python3 -I -B fixtures/runner/verify-stored-oci.py "$archive" "$expected_manifest")
+  measured_manifest=$(sudo -n -u "$runner" /usr/bin/python3 -I -B "$shared/verify-stored-oci.py" "$archive" "$expected_manifest")
   test "$measured_manifest" = "$expected_manifest"
   test "$(sudo -n -u "$runner" find "$artifacts" -maxdepth 1 -type f -name '*.oci.tar' -printf '.' )" = .
   test -z "$(sudo -n -u "$runner" find "$artifacts" -maxdepth 1 -name '.pending-*' -print -quit)"
