@@ -6,11 +6,12 @@ export const dockerDigest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const objectId = z.string().regex(/^[a-f0-9]{24}$/);
 export const resource = z.object({ _id: z.object({ $oid: objectId }), name: z.string().min(1).max(128) });
 export const image = z.object({ type: z.literal('Image'), params: z.object({ image: z.string().max(256) }) });
+export const fixtureAppNetwork = z.string().regex(/^itervane-app-[a-f0-9-]{36}$/);
 export const deployment = resource.extend({
   config: z.object({
     server_id: objectId,
     image,
-    network: z.literal('none'),
+    network: fixtureAppNetwork,
     restart: z.literal('no'),
     labels: z.string().max(128),
     swarm_id: z.literal('').default(''),

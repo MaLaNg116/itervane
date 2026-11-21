@@ -9,7 +9,8 @@ import {
   KomodoReleaseClient, KomodoReleaseError, komodoRuntimeConfigSha256, type KomodoReleaseTarget,
 } from '../../../control-plane/src/runtime/release-komodo.js';
 import { report } from '../report.js';
-import { deployment, dockerDigest, KomodoError, KomodoNativeClient, komodoVersion, loginLocalAdmin, observeUpdate, readBounded, requestDeploy, resource } from './komodo.js';
+import { deployment, dockerDigest, fixtureAppNetwork, KomodoError, KomodoNativeClient, komodoVersion,
+  loginLocalAdmin, observeUpdate, readBounded, requestDeploy, resource } from './komodo.js';
 
 const execute = promisify(execFile);
 const coreOrigin = 'http://127.0.0.1:49120';
@@ -28,12 +29,15 @@ const actualContainer = z.object({
   Image: dockerDigest,
   Config: z.object({ Image: z.string(), Labels: z.record(z.string(), z.string()) }),
   State: z.object({ Running: z.boolean() }),
-  HostConfig: z.object({ NetworkMode: z.literal('none'), Privileged: z.literal(false) }),
+  HostConfig: z.object({ NetworkMode: fixtureAppNetwork, Privileged: z.literal(false), PublishAllPorts: z.literal(false),
+    PortBindings: z.union([z.null(), z.strictObject({})]) }),
+  NetworkSettings: z.object({ Networks: z.record(fixtureAppNetwork, z.unknown()) }),
 });
 
 type Version = 'a' | 'b';
 type Manifest = { version: Version; digest: string; config: string; reference: string };
-type Target = { id: string; server: string; name: string; label: string; actor: string };
+type Target = { id: string; server: string; name: string; label: string; actor: string; network: string };
+type AppNetwork = { id: string; name: string; mark: string };
 
 async function docker(step: string, args: string[], env = process.env) {
   try {
@@ -43,6 +47,20 @@ async function docker(step: string, args: string[], env = process.env) {
   } catch {
     throw new KomodoError(step, 'response');
   }
+}
+
+async function createAppNetwork(mark: string): Promise<AppNetwork> {
+  const name = fixtureAppNetwork.parse('itervane-app-' + mark);
+  const id = z.string().regex(/^[a-f0-9]{64}$/).parse(await docker('CreateAppNetwork', [
+    'network', 'create', '--driver', 'bridge', '--internal', '--label', labelKey + '=' + mark, name,
+  ]));
+  return { id, name, mark };
+}
+
+async function confirmAppNetwork(network: AppNetwork) {
+  const value = await docker('InspectAppNetwork', ['network', 'inspect', '--format',
+    '{{.Name}} {{.Driver}} {{.Internal}} {{index .Labels "io.itervane.komodo-probe"}}', network.id]);
+  if (value !== `${network.name} bridge true ${network.mark}`) throw new KomodoError('AppNetworkIdentity', 'binding');
 }
 
 async function waitFor<T>(step: string, find: () => Promise<T | undefined>, duration: number) {
@@ -86,7 +104,8 @@ async function publishFixture(version: Version) {
   return { version, digest, config: local, reference: repository + '@' + digest } satisfies Manifest;
 }
 
-async function bootstrap(password: string, reference: string, name: string, mark: string) {
+async function bootstrap(password: string, reference: string, name: string, network: AppNetwork) {
+  await confirmAppNetwork(network);
   const session = await waitFor('CoreLogin', () => loginLocalAdmin(
     new KomodoNativeClient(coreOrigin), 'itervane-bootstrap', password,
   ), 75_000);
@@ -103,8 +122,8 @@ async function bootstrap(password: string, reference: string, name: string, mark
   const created = await admin.call('write', 'CreateDeployment', {
     name,
     config: {
-      server_id: serverId, image: configImage(reference), network: 'none', restart: 'no',
-      labels: labelKey + '=' + mark, auto_update: false, poll_for_updates: false, send_alerts: false,
+      server_id: serverId, image: configImage(reference), network: network.name, restart: 'no',
+      labels: labelKey + '=' + network.mark, auto_update: false, poll_for_updates: false, send_alerts: false,
     },
   }, deployment);
   const foreign = await admin.call('write', 'CreateDeployment', { name: name + '-other' }, resource);
@@ -123,7 +142,7 @@ async function bootstrap(password: string, reference: string, name: string, mark
     user_id: actor, name: 'release-probe', expires: Date.now() + 20 * 60_000,
   }, z.object({ key: z.string().min(1).max(512), secret: z.string().min(1).max(512) }));
   const client = new KomodoNativeClient(coreOrigin, credentials);
-  const target = { id, server: serverId, name, actor, label: labelKey + '=' + mark };
+  const target = { id, server: serverId, name, actor, label: labelKey + '=' + network.mark, network: network.name };
   await readTarget(client, target, reference);
   try {
     await client.call('read', 'GetDeployment', { deployment: foreign._id.$oid }, z.unknown());
@@ -140,7 +159,7 @@ async function bootstrap(password: string, reference: string, name: string, mark
 
 function confirmTarget(value: z.infer<typeof deployment>, target: Target, reference: string) {
   if (value._id.$oid !== target.id || value.name !== target.name || value.config.server_id !== target.server
-    || value.config.labels.trim() !== target.label || value.config.image.params.image !== reference) {
+      || value.config.network !== target.network || value.config.labels.trim() !== target.label || value.config.image.params.image !== reference) {
     throw new KomodoError('DeploymentIdentity', 'binding');
   }
 }
@@ -149,21 +168,26 @@ async function readTarget(client: KomodoNativeClient, target: Target, reference:
   confirmTarget(await client.call('read', 'GetDeployment', { deployment: target.id }, deployment), target, reference);
 }
 
-async function inspect(name: string) {
-  const result = await docker('InspectContainer', ['container', 'inspect', '--format', '{{json .}}', name]);
-  return actualContainer.parse(JSON.parse(result));
+async function inspect(target: Target) {
+  const result = await docker('InspectContainer', ['container', 'inspect', '--format', '{{json .}}', target.name]);
+  const container = actualContainer.parse(JSON.parse(result));
+  const networks = Object.keys(container.NetworkSettings.Networks);
+  if (container.HostConfig.NetworkMode !== target.network || networks.length !== 1 || networks[0] !== target.network) {
+    throw new KomodoError('ObservedAppNetwork', 'binding');
+  }
+  return container;
 }
 
-async function observeFixture(name: string, mark: string, expected: Manifest, previousContainer?: string) {
-  const first = await inspect(name);
+async function observeFixture(target: Target, mark: string, expected: Manifest, previousContainer?: string) {
+  const first = await inspect(target);
   if (first.Id === previousContainer || !first.State.Running || first.Image !== expected.config
     || first.Config.Image !== expected.reference || first.Config.Labels[labelKey] !== mark) {
     throw new KomodoError('ObservedContainer', 'binding');
   }
   const body = await docker('RequestFixtureHealth', [
-    'exec', name, '/bin/busybox', 'wget', '-q', '-T', '2', '-O', '-', 'http://127.0.0.1:8080/healthz',
+    'exec', target.name, '/bin/busybox', 'wget', '-q', '-T', '2', '-O', '-', 'http://127.0.0.1:8080/healthz',
   ]);
-  if (body !== expected.version || (await inspect(name)).Id !== first.Id) throw new KomodoError('ObservedHealth', 'binding');
+  if (body !== expected.version || (await inspect(target)).Id !== first.Id) throw new KomodoError('ObservedHealth', 'binding');
   return first;
 }
 
@@ -182,12 +206,12 @@ async function deployFixture(
     updateId = await requestDeploy(client, target.id);
     if (!await observeUpdate(client, updateId, target.id, target.actor)) throw new KomodoError('DeployComplete', 'response');
     await readTarget(client, target, manifest.reference);
-    const observed = await waitFor('ObserveFixture', () => observeFixture(target.name, mark, manifest, previousContainer), 12_000);
+    const observed = await waitFor('ObserveFixture', () => observeFixture(target, mark, manifest, previousContainer), 12_000);
     return { updateId, observed };
   } catch (error) {
     // A timed-out dispatch might already have run. Read the actual target once.
     // Keep the probe failed and never send another write from this branch.
-    const state = await inspect(target.name).catch(() => undefined);
+    const state = await inspect(target).catch(() => undefined);
     if (state?.Config.Labels[labelKey] === mark) {
       const matched = state.State.Running && state.Config.Image === manifest.reference && state.Image === manifest.config;
       console.log('Komodo recovery observation: ' + (matched ? 'requested_image_running' : 'different_state'));
@@ -249,12 +273,14 @@ async function verifyFormalAdapter(setup: Awaited<ReturnType<typeof bootstrap>>,
   if (!result.success) throw new KomodoError('FormalAdapterUpdate', 'response');
   await expectReleaseRejection('GetUpdate', 'binding', () =>
     mismatch.observeUpdate({ ...binding, komodo: { ...binding.komodo, actorId: foreignId } }, updateId, authorize));
-  const observed = await waitFor('FormalAdapterFixture', () => observeFixture(target.name, mark, approved, previousContainer), 12_000);
+  const observed = await waitFor('FormalAdapterFixture', () => observeFixture(target, mark, approved, previousContainer), 12_000);
   const runningImage = { manifestDigest: approved.digest, configDigest: approved.config };
   await expectReleaseRejection('InspectDeploymentContainer', 'http', () =>
-    adapter.inspectRuntime(binding, runningImage, 'none', authorize));
+    adapter.inspectRuntime(binding, runningImage, target.network, authorize));
   await setup.allowBoundContainerInspection();
-  const runtime = await adapter.inspectRuntime(binding, runningImage, 'none', authorize);
+  const runtime = await adapter.inspectRuntime(binding, runningImage, target.network, authorize);
+  await expectReleaseRejection('InspectDeploymentContainer', 'binding', () =>
+    adapter.inspectRuntime(binding, runningImage, 'itervane-app-' + randomUUID(), authorize));
   if (runtime.containerId !== observed.Id || '/' + runtime.containerName !== observed.Name || runtime.configDigest !== observed.Image) {
     throw new KomodoError('FormalAdapterRunningImage', 'binding');
   }
@@ -268,6 +294,8 @@ const text = {
   formal: ['The release adapter enforced target and update bindings and verified the fixture.',
     '正式发布适配器校验了目标与更新绑定，并核对了实际样例。'],
   cleaned: ['Removed the owned fixture and temporary Compose resources.', '本轮样例和临时 Compose 资源已清理。'],
+  privateNetwork: ['The running target only joined its internal bridge and published no host ports.',
+    '实际运行目标只加入自己的内部桥接网络，未发布宿主端口。'],
   failure: ['Verification interrupted at', '验证中止于'],
 } as const;
 
@@ -300,19 +328,29 @@ async function removeOwnedFixture(mark: string) {
   }
 }
 
+async function removeAppTarget(network: AppNetwork) {
+  try {
+    await removeOwnedFixture(network.mark);
+  } finally {
+    await confirmAppNetwork(network);
+    await docker('RemoveAppNetwork', ['network', 'rm', network.id]);
+  }
+}
+
 /** Test-only Core/Periphery. The approved artifact is served by the calling trial's private registry. */
 export async function openNativeReleaseKomodo(env: NodeJS.ProcessEnv = process.env) {
   if (process.platform !== 'linux' || process.arch !== 'x64' || env.GITHUB_ACTIONS !== 'true'
     || env.PROBE_HOST_ENVIRONMENT !== 'github-hosted') throw new KomodoError('ReleaseFixtureHost', 'binding');
-  const owned = new Set<string>();
+  const owned = new Set<AppNetwork>();
   const stack = nativeStack('itervane-release-' + randomUUID(), env);
   try { await stack.start(false); }
   catch (error) { await stack.stop().catch(() => undefined); throw error; }
   return {
     async prepare() {
       const mark = randomUUID();
-      owned.add(mark);
-      const setup = await bootstrap(stack.adminPassword, '', 'itervane-release-' + mark, mark);
+      const network = await createAppNetwork(mark);
+      owned.add(network);
+      const setup = await bootstrap(stack.adminPassword, '', 'itervane-release-' + mark, network);
       const { target, credentials, client } = setup;
       const raw = await client.call('read', 'GetDeployment', { deployment: target.id }, z.unknown());
       return {
@@ -321,7 +359,7 @@ export async function openNativeReleaseKomodo(env: NodeJS.ProcessEnv = process.e
         credentials: { ...credentials, actorId: target.actor },
         async observeContainer(reference: string, configDigest: string) {
           const container = await waitFor('ObserveApprovedContainer', async () => {
-            const status = await inspect(target.name);
+            const status = await inspect(target);
             return status.State.Running ? status : undefined;
           }, 20_000);
           if (container.Config.Labels[labelKey] !== mark || container.Config.Image !== reference || container.Image !== configDigest) {
@@ -332,8 +370,9 @@ export async function openNativeReleaseKomodo(env: NodeJS.ProcessEnv = process.e
       };
     },
     async close() {
-      try { for (const mark of owned) await removeOwnedFixture(mark); }
-      finally { await stack.stop(); }
+      const cleanup = await Promise.allSettled([...owned].map(removeAppTarget));
+      await stack.stop();
+      if (cleanup.some(result => result.status === 'rejected')) throw new KomodoError('ReleaseFixtureCleanup', 'response');
     },
   };
 }
@@ -349,6 +388,7 @@ export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
   const mark = randomUUID();
   const name = 'itervane-probe-' + mark;
   const stack = nativeStack(name, env);
+  let network: AppNetwork | undefined;
   try {
     await stack.start(true);
     await waitFor('RegistryReady', async () => {
@@ -361,7 +401,8 @@ export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
     const a = await publishFixture('a');
     const b = await publishFixture('b');
     if (a.digest === b.digest || a.config === b.config) throw new KomodoError('FixtureVersions', 'binding');
-    const setup = await bootstrap(stack.adminPassword, a.reference, name, mark);
+    network = await createAppNetwork(mark);
+    const setup = await bootstrap(stack.adminPassword, a.reference, name, network);
     const { client, target } = setup;
     checks.push({ id: 'native-komodo-identity', status: 'passed', detail: 'Komodo ' + komodoVersion + '. ' + text.authorized[lang] });
     const seen = new Set<string>();
@@ -380,6 +421,8 @@ export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
     if (seen.has(release.updateId)) throw new KomodoError('FormalAdapterDistinctUpdate', 'binding');
     checks.push({ id: 'formal-komodo-adapter', status: 'passed', detail: text.formal[lang] + ' Update=' + release.updateId
       + ' OCI=' + b.digest + ' Image=' + release.observed.Image + ' Runtime=' + release.runtimeConfigSha256 + '.' });
+    await confirmAppNetwork(network);
+    checks.push({ id: 'protected-container-network', status: 'passed', detail: text.privateNetwork[lang] });
   } catch (error) {
     const reason = error instanceof KomodoError
       ? error.step + ' (' + error.reason + (error.status ? ', HTTP ' + error.status : '') + ')'
@@ -390,7 +433,7 @@ export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
   } finally {
     let cleanupFailed = false;
     try {
-      await removeOwnedFixture(mark);
+      if (network) await removeAppTarget(network);
     } catch { cleanupFailed = true; }
     try { await stack.stop(); }
     catch { cleanupFailed = true; }
