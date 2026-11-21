@@ -5,6 +5,10 @@ import {
 } from './contracts.js';
 import { agentText } from './messages.js';
 import { finishRepairInputSchema, formalRepairCompletionSchema } from './repair-contracts.js';
+import {
+  finishVerificationInputSchema, formalVerificationCompletionSchema, pendingVerificationSections,
+  verificationObservations, type VerificationSection,
+} from './verification-contracts.js';
 
 type Completion = { summary: string; evidenceIds: string[] };
 
@@ -72,6 +76,37 @@ export function finishFormalRepair(evidence: readonly AgentEvidence[], raw: unkn
   if (data?.kind !== 'repair_candidate') return;
   return formalRepairCompletionSchema.parse({ ...result.data, operationId: data.candidate.operationId,
     receiptSha256: data.receiptSha256, candidateManifestSha256: data.candidate.candidateManifestSha256 });
+}
+
+export function finishFormalVerification(evidence: readonly AgentEvidence[], raw: unknown) {
+  const input = finishVerificationInputSchema.safeParse(raw);
+  if (!input.success || pendingVerificationSections(evidence).length) return;
+  const observations = verificationObservations(evidence);
+  if (observations.length !== input.data.evidenceIds.length || observations.some(item => !input.data.evidenceIds.includes(item.id))
+      || input.data.followUps.some(item => !input.data.evidenceIds.includes(item.evidenceId))
+      || new Set(observations.map(item => item.receiptSha256)).size !== 1
+      || new Set(observations.map(item => item.snapshotSha256)).size !== 1
+      || new Set(observations.map(item => item.section)).size !== observations.length) return;
+  const source = observations.find(item => item.section === 'source');
+  const build = observations.find(item => item.section === 'build');
+  const baseline = observations.find(item => item.section === 'baseline');
+  const image = observations.find(item => item.section === 'image');
+  if (!source || !build || !baseline || (image && baseline.result.status !== 'passed')) return;
+  const unverified: VerificationSection[] = [];
+  if (source.result.status !== 'compared') unverified.push('source');
+  if (build.result.status !== 'built' && build.result.status !== 'failed') unverified.push('build');
+  if (baseline.result.status !== 'passed' && baseline.result.status !== 'failed') unverified.push('baseline');
+  if (image?.result.status !== 'scanned' || !image.result.archive) unverified.push('image');
+
+  let outcome: 'observed' | 'checks_failed' | 'source_findings' | 'incomplete' = 'observed';
+  if (build.result.status === 'failed' || baseline.result.status === 'failed') outcome = 'checks_failed';
+  else if (source.result.status === 'compared' && (source.result.introduced > 0 || source.result.remaining > 0)) outcome = 'source_findings';
+  else if (unverified.length) outcome = 'incomplete';
+
+  return formalVerificationCompletionSchema.parse({
+    ...input.data, outcome, unverified, source: source.result,
+    receiptSha256: source.receiptSha256, candidateManifestSha256: source.snapshotSha256,
+  });
 }
 
 export function finishVerify(evidence: readonly AgentEvidence[], raw: unknown, audit: AuditReport, repair: RepairReport): VerificationReport | undefined {

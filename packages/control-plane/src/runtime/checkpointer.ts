@@ -5,27 +5,37 @@ import { BaseCheckpointSaver, type ChannelVersions, type Checkpoint, type Checkp
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { and, eq } from 'drizzle-orm';
 import { sha256Schema } from '@itervane/contracts';
-import { checkpointWrites, formalAuditInputs, formalAuditRuntime, formalRepairInputs, formalRepairRuntime, runRuntime } from '../persistence/schema.js';
+import { checkpointWrites, formalAuditInputs, formalAuditRuntime, formalRepairInputs, formalRepairRuntime,
+  formalRescanAttempts, formalVerificationInputs, formalVerificationRuntime, runRuntime } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { ExecutionLost, type ExecutionScope } from './authority.js';
 import { ExecutionCoordinator } from './coordinator.js';
 
 type CheckpointOptions = { signal?: AbortSignal } & (
-  { auditInputSha256: string; repairInputSha256?: never } | { repairInputSha256: string; auditInputSha256?: never }
+  { auditInputSha256: string; repairInputSha256?: never; verification?: never }
+  | { repairInputSha256: string; auditInputSha256?: never; verification?: never }
+  | { verification: { inputSha256: string; receiptSha256: string }; auditInputSha256?: never; repairInputSha256?: never }
 );
+const formalGraphs = {
+  audit: { inputs: formalAuditInputs, pointers: formalAuditRuntime },
+  repair: { inputs: formalRepairInputs, pointers: formalRepairRuntime },
+  verify: { inputs: formalVerificationInputs, pointers: formalVerificationRuntime },
+};
 
 /** Only this logical run's published checkpoint is a valid recovery entry point. */
 export class GuardedCheckpointer extends BaseCheckpointSaver {
   readonly threadId: string;
-  private readonly graph: 'preflight' | 'audit' | 'repair';
+  private readonly graph: 'preflight' | keyof typeof formalGraphs;
   private readonly formalInputSha256: string | undefined;
+  private readonly verificationReceiptSha256: string | undefined;
   private readonly signal: AbortSignal | undefined;
   constructor(readonly coordinator: ExecutionCoordinator, readonly scope: ExecutionScope, readonly storage: PostgresSaver,
     options?: CheckpointOptions) {
     super(storage.serde);
-    this.formalInputSha256 = options ? sha256Schema.parse(options.repairInputSha256 ?? options.auditInputSha256) : undefined;
+    this.formalInputSha256 = options ? sha256Schema.parse(options.verification?.inputSha256 ?? options.repairInputSha256 ?? options.auditInputSha256) : undefined;
+    this.verificationReceiptSha256 = options?.verification && sha256Schema.parse(options.verification.receiptSha256);
     this.signal = options?.signal;
-    this.graph = options?.repairInputSha256 !== undefined ? 'repair' : options ? 'audit' : 'preflight';
+    this.graph = options?.verification ? 'verify' : options?.repairInputSha256 !== undefined ? 'repair' : options ? 'audit' : 'preflight';
     this.threadId = this.graph === 'preflight' ? scope.runId : `${this.graph}:${scope.runId}`;
   }
 
@@ -46,13 +56,21 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
 
   private async publication(tx: Transaction, runtime: typeof runRuntime.$inferSelect) {
     this.signal?.throwIfAborted();
-    if (!this.formalInputSha256) return runtime;
-    const inputs = this.graph === 'repair' ? formalRepairInputs : formalAuditInputs;
-    const pointers = this.graph === 'repair' ? formalRepairRuntime : formalAuditRuntime;
+    if (this.graph === 'preflight') return runtime;
+    const { inputs, pointers } = formalGraphs[this.graph];
     const [input] = await tx.select({ sha256: inputs.sha256 }).from(inputs).where(eq(inputs.runId, this.scope.runId));
-    if (input?.sha256 !== this.formalInputSha256) throw new ExecutionLost();
+    if (!this.formalInputSha256 || input?.sha256 !== this.formalInputSha256) throw new ExecutionLost();
+    if (this.verificationReceiptSha256) {
+      const [rescan] = await tx.select({ receiptSha256: formalRescanAttempts.receiptSha256 }).from(formalRescanAttempts).where(and(
+        eq(formalRescanAttempts.runId, this.scope.runId), eq(formalRescanAttempts.inputSha256, this.formalInputSha256),
+        eq(formalRescanAttempts.state, 'recorded')));
+      if (rescan?.receiptSha256 !== this.verificationReceiptSha256) throw new ExecutionLost();
+    }
     const [pointer] = await tx.select().from(pointers).where(eq(pointers.runId, this.scope.runId));
-    if (pointer && pointer.inputSha256 !== this.formalInputSha256) throw new ExecutionLost();
+    if (pointer && (pointer.inputSha256 !== this.formalInputSha256
+        || (this.verificationReceiptSha256 && (!('receiptSha256' in pointer) || pointer.receiptSha256 !== this.verificationReceiptSha256)))) {
+      throw new ExecutionLost();
+    }
     return pointer ?? { checkpointId: null, checkpointStep: -2 };
   }
 
@@ -83,10 +101,16 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
       if (!published.checkpointId || metadata.step > published.checkpointStep) {
         const pointer = { checkpointId: checkpoint.id, checkpointStep: metadata.step };
         if (this.formalInputSha256) {
-          const pointers = this.graph === 'repair' ? formalRepairRuntime : formalAuditRuntime;
           const formal = { ...pointer, inputSha256: this.formalInputSha256, publishedFence: this.scope.fence, workerId: this.scope.workerId };
-          await tx.insert(pointers).values({ runId: this.scope.runId, ...formal })
-            .onConflictDoUpdate({ target: pointers.runId, set: formal });
+          if (this.verificationReceiptSha256) {
+            const verification = { ...formal, receiptSha256: this.verificationReceiptSha256 };
+            await tx.insert(formalVerificationRuntime).values({ runId: this.scope.runId, ...verification })
+              .onConflictDoUpdate({ target: formalVerificationRuntime.runId, set: verification });
+          } else {
+            const pointers = this.graph === 'repair' ? formalRepairRuntime : formalAuditRuntime;
+            await tx.insert(pointers).values({ runId: this.scope.runId, ...formal })
+              .onConflictDoUpdate({ target: pointers.runId, set: formal });
+          }
         } else {
           await tx.update(runRuntime).set(pointer).where(eq(runRuntime.runId, this.scope.runId));
         }

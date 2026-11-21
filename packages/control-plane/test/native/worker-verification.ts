@@ -1,15 +1,18 @@
 import { deepStrictEqual, equal, ok } from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { idSchema, qualifiedInspectionResponseSchema, sha256Schema } from '@itervane/contracts';
+import { formalVerificationInputSchema, idSchema, qualifiedInspectionResponseSchema, sha256Schema } from '@itervane/contracts';
+import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { QualifiedInspectionClient, scannerProfiles, sha256 } from '@itervane/runner';
 import { eq } from 'drizzle-orm';
 import { workerConfig } from '../../src/config.js';
 import { openDatabase, queueName } from '../../src/persistence/database.js';
-import { formalRescanAttempts } from '../../src/persistence/schema.js';
+import { formalRescanAttempts, formalVerificationInputs } from '../../src/persistence/schema.js';
 import { clearSlot } from '../../src/runtime/authority.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
-import { runFormalRescan } from '../../src/runtime/formal-rescan.js';
+import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-rescan.js';
+import { runFormalVerification } from '../../src/runtime/formal-verification.js';
 import { currentInspectionAttempt } from '../../src/service/inspection-evidence.js';
+import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
 
 let phase = 'config';
 
@@ -64,10 +67,11 @@ async function verify() {
     };
     const runner = new QualifiedInspectionClient(config.runner);
     let dispatches = 0;
-    const rescan = () => runFormalRescan(coordinator, scope, profile, {
+    const observedRunner: RescanRunner = {
       observe: signal => runner.observe(signal),
       verify(...args) { dispatches += 1; return runner.verify(...args); },
-    }, abort.signal);
+    };
+    const rescan = () => runFormalRescan(coordinator, scope, profile, observedRunner, abort.signal);
 
     phase = 'scan';
     const result = await rescan();
@@ -147,6 +151,32 @@ async function verify() {
     equal(stored.fence, scope.fence);
     equal(stored.inputSha256, receipt.scope.verificationInputSha256);
     equal(stored.receiptSha256, sha256(JSON.stringify(receipt)));
+
+    let reviewTrial;
+    if (ociInputsSha) {
+      phase = 'review_agent';
+      const [frozen] = await database.db.select().from(formalVerificationInputs).where(eq(formalVerificationInputs.runId, scope.runId));
+      ok(frozen);
+      const document = formalVerificationInputSchema.parse(frozen.document);
+      const saver = PostgresSaver.fromConnString(config.databaseUrl, { schema: 'itervane_checkpoint' });
+      try {
+        const model = { adapter: scriptedVerification(document.locale), providerSha256: sha256('scripted verification trial') };
+        const reviewed = await runFormalVerification(coordinator, scope, saver, model, { profile, runner: observedRunner }, abort.signal);
+        ok(reviewed.kind === 'reviewed');
+        const report = reviewed.report;
+        equal(report.status, 'completed');
+        equal(report.releaseEligible, false);
+        equal(report.formalVerification?.receiptSha256, stored.receiptSha256);
+        equal(report.formalVerification?.outcome, expectedBaseline === 'passed' ? 'observed' : 'checks_failed');
+        const sections = report.evidence.flatMap(item => item.data.kind === 'verification_section' ? [item.data.section] : []);
+        deepStrictEqual(sections, expectedBaseline === 'passed' ? ['baseline', 'image', 'source', 'build'] : ['baseline', 'source', 'build']);
+        deepStrictEqual(await runFormalVerification(coordinator, scope, saver, model, { profile, runner: observedRunner }, abort.signal), reviewed);
+        equal(dispatches, 1);
+        reviewTrial = { input: { sha256: frozen.sha256, document }, evidence: projected,
+          report: { sections, usage: report.usage, checkpointId: report.checkpointId!, outcome: report.formalVerification.outcome } };
+      } finally { await saver.end(); }
+    }
+
     // The fixture leaves the slot only after the authenticated cleanup receipt.
     clearInterval(heartbeat);
     await coordinator.withLease(scope, tx => clearSlot(tx));
@@ -159,6 +189,7 @@ async function verify() {
       totals: comparison.totals, targetRuleId: targetFinding ? targetFinding.ruleId : null,
       newFindingGroups, remainingFindingGroups: after.size, dispatches, cleanupConfirmed: true, build: snapshot.build ?? null,
       evidence: projected,
+      ...(reviewTrial ? { reviewTrial } : {}),
     };
   } finally {
     clearInterval(heartbeat);

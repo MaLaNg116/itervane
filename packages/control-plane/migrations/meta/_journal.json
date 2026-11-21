@@ -176,6 +176,13 @@
       "when": 1795259805073,
       "tag": "0024_formal_oci_artifact_receipt",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1795261665955,
+      "tag": "0025_formal_verification_checkpoint",
+      "breakpoints": true
     }
   ]
 }
