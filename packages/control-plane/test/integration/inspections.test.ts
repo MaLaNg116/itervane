@@ -1726,6 +1726,33 @@ it('bounds registry recovery to three claims and preserves a held unknown result
   expect(events.at(-1)).toMatchObject({ type: 'task.release_registry_manual_review', state: 'cancel_requested', reason: 'release_registry_unavailable' });
 });
 
+it('requires this lease to recheck Registry before making a previously confirmed proof available', async () => {
+  const { operationId, approval } = await queuedFormalRelease();
+  const release = new FormalReleaseCoordinator(coordinator, releaseOrigin);
+  const steps = new FormalReleaseSteps(release);
+  const first = await release.claim(await fetchFormalWakeup(), randomUUID());
+  if (!first) throw new Error('Expected the original release claim');
+  await steps.confirmArchive(first, await steps.prepareArchive(first));
+  await steps.prepareRegistry(first);
+  const proof = standardRegistryProof(approval.manifest.image);
+  await steps.confirmRegistry(first, proof);
+  expect(await steps.readRegistryProof(first)).toEqual(proof);
+
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await release.reconcile(randomUUID());
+  const recovery = await release.claim(await fetchFormalWakeup(), randomUUID());
+  if (!recovery) throw new Error('Expected the Registry observation claim');
+  expect(recovery).toMatchObject({ operationId, mode: 'registry_recovery' });
+  expect(recovery.fence).toBeGreaterThan(first.fence);
+  await expect(steps.readRegistryProof(first)).rejects.toBeInstanceOf(ExecutionLost);
+  expect(await steps.readRegistryProof(recovery)).toBeNull();
+  await steps.confirmRegistry(recovery, proof);
+  expect(await steps.readRegistryProof(recovery)).toEqual(proof);
+  await expect(release.authorizeRegistryWrite(recovery)).rejects.toBeInstanceOf(ExecutionLost);
+  expect((await database.storage.db.select().from(formalReleaseSteps).where(eq(formalReleaseSteps.kind, 'registry')))[0])
+    .toMatchObject({ state: 'confirmed', preparedFence: first.fence, settledFence: first.fence, proof });
+});
+
 it('keeps verification unavailable while an audit finding has no published repair candidate', async () => {
   const { scope } = await repairReady();
   await expect(coordinator.withLease(scope, (tx, current) => prepareFormalVerificationInput(tx, current.task, scope, verificationProfile)))

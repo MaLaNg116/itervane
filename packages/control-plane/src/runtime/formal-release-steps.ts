@@ -94,7 +94,9 @@ export class FormalReleaseSteps {
   }
 
   async readRegistryProof(scope: FormalReleaseScope) {
-    return this.release.withRegistryObservation(scope, async (_tx, _task, { intent, mapping, manifest }) =>
-      intent.state === 'confirmed' ? requireMatchingImage(intent.proof, mapping, manifest.image) : null);
+    return this.release.withRegistryObservation(scope, async (_tx, _task, { phase, intent, mapping, manifest }) =>
+      phase === 'release_registry_verified' && intent.state === 'confirmed'
+        ? requireMatchingImage(intent.proof, mapping, manifest.image)
+        : null);
   }
 }
