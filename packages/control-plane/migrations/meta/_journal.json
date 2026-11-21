@@ -197,6 +197,13 @@
       "when": 1795265597787,
       "tag": "0027_bounded_repair_retry",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1795269600000,
+      "tag": "0028_formal_oci_archive_verification",
+      "breakpoints": true
     }
   ]
 }

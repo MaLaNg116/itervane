@@ -1,6 +1,6 @@
 import { finishFormalVerification, type FormalVerificationReport } from '@itervane/agent';
 import { formalVerificationResultSchema, type FormalVerificationEvidence,
-  type FormalVerificationResult } from '@itervane/contracts';
+  type FormalVerificationResult, type QualifiedOciArchiveVerification } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { and, eq } from 'drizzle-orm';
 import type { Database } from '../persistence/database.js';
@@ -27,11 +27,11 @@ function recordedObservations(report: FormalVerificationReport, evidence: Formal
 }
 
 export async function publishFormalVerification(tx: Transaction, task: TaskRow, scope: ExecutionScope,
-  result: { report: FormalVerificationReport; evidence: FormalVerificationEvidence },
+  result: { report: FormalVerificationReport; evidence: FormalVerificationEvidence; archiveVerification?: QualifiedOciArchiveVerification },
   provider: FormalVerificationResult['provider'], signal: AbortSignal,
   retryConfig?: { database: Database; repairPolicySha256: string }) {
   signal.throwIfAborted();
-  const { report } = result;
+  const { report, archiveVerification } = result;
   const [entry] = await tx.select({ pointer: formalVerificationRuntime, attempt: formalRescanAttempts })
     .from(formalVerificationRuntime).innerJoin(formalRescanAttempts, and(eq(formalRescanAttempts.runId, formalVerificationRuntime.runId),
       eq(formalRescanAttempts.inputSha256, formalVerificationRuntime.inputSha256),
@@ -39,8 +39,11 @@ export async function publishFormalVerification(tx: Transaction, task: TaskRow, 
     .where(and(eq(formalVerificationRuntime.runId, scope.runId), eq(formalRescanAttempts.state, 'recorded')));
   if (!entry || entry.pointer.checkpointId !== report.checkpointId || report.runId !== scope.runId || report.role !== 'verify'
       || report.origin !== 'formal_verification') throw new ExecutionLost();
-  const { evidence } = recordedVerificationEvidence(entry.attempt.receipt, entry.pointer.receiptSha256);
+  const { receipt, evidence } = recordedVerificationEvidence(entry.attempt.receipt, entry.pointer.receiptSha256);
   if (JSON.stringify(evidence) !== JSON.stringify(result.evidence)) throw new Error('formal_verification_projection_binding');
+  if (archiveVerification && archiveVerification.runnerImageSha256 !== receipt.imageSha256) {
+    throw new Error('formal_verification_archive_runner');
+  }
 
   const review = report.formalVerification ?? null;
   if (report.status === 'completed') {
@@ -57,7 +60,7 @@ export async function publishFormalVerification(tx: Transaction, task: TaskRow, 
   const document = formalVerificationResultSchema.parse({
     version: 1, taskId: task.id, runId, projectId: task.projectId, generation, locale: task.locale,
     requestId, inputSha256, receiptSha256, checkpointId, provider, releaseEligible: report.releaseEligible, usage: report.usage,
-    evidence, observations: recordedObservations(report, evidence), review,
+    evidence, ...(archiveVerification ? { archiveVerification } : {}), observations: recordedObservations(report, evidence), review,
     status: review ? 'reviewed' : 'requires_human', reason: report.reason,
   });
   const hash = sha256(JSON.stringify(document));
