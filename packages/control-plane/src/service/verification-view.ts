@@ -1,18 +1,16 @@
 import {
-  eventReasonMessages, formalVerificationInputSchema, formalVerificationResultSchema, idSchema,
+  eventReasonMessages, idSchema,
   taskEventReasonSchema, translate, verificationViewSchema, type Locale, type MessageKey, type RecordedVerificationView,
 } from '@itervane/contracts';
-import { sha256 } from '@itervane/runner';
 import { and, eq } from 'drizzle-orm';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import type { Database } from '../persistence/database.js';
-import { formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, runRuntime, taskRuns, tasks }
-  from '../persistence/schema.js';
+import { runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import type { TaskRow } from '../runtime/authority.js';
-import { recordedVerificationEvidence } from '../runtime/verification-evidence.js';
 import { requireActor, requireProject, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 import { readRepairRetry } from './repair-retry.js';
+import { readPublishedVerification } from './verification-result.js';
 
 type RunRef = { runId: string; generation: number };
 const outcomeMessages: Record<RecordedVerificationView['outcome'], MessageKey> = {
@@ -22,34 +20,9 @@ const outcomeMessages: Record<RecordedVerificationView['outcome'], MessageKey> =
 };
 
 async function readRecord(tx: Transaction, task: TaskRow, run: RunRef, locale: Locale): Promise<RecordedVerificationView | null> {
-  const [entry] = await tx.select({ row: formalVerificationResults, input: formalVerificationInputs, pointer: formalVerificationRuntime, attempt: formalRescanAttempts })
-    .from(formalVerificationResults)
-    .innerJoin(taskRuns, and(eq(taskRuns.id, formalVerificationResults.runId), eq(taskRuns.taskId, task.id), eq(taskRuns.generation, run.generation)))
-    .innerJoin(formalVerificationInputs, eq(formalVerificationInputs.runId, taskRuns.id))
-    .innerJoin(formalVerificationRuntime, eq(formalVerificationRuntime.runId, taskRuns.id))
-    .innerJoin(formalRescanAttempts, eq(formalRescanAttempts.requestId, formalVerificationResults.requestId))
-    .where(eq(taskRuns.id, run.runId));
-  if (!entry) return null;
-
-  const { row, input: storedInput, pointer, attempt } = entry;
-  const input = formalVerificationInputSchema.parse(storedInput.document);
-  const result = formalVerificationResultSchema.parse(row.document);
-  const { receipt, evidence } = recordedVerificationEvidence(attempt.receipt, row.receiptSha256);
-  if (result.taskId !== task.id || result.projectId !== task.projectId || result.locale !== task.locale
-      || result.runId !== run.runId || result.generation !== run.generation || sha256(JSON.stringify(result)) !== row.sha256
-      || result.inputSha256 !== row.inputSha256 || result.receiptSha256 !== row.receiptSha256 || result.requestId !== row.requestId
-      || result.checkpointId !== row.checkpointId || pointer.checkpointId !== row.checkpointId
-      || pointer.inputSha256 !== row.inputSha256 || pointer.receiptSha256 !== row.receiptSha256
-      || attempt.state !== 'recorded' || attempt.runId !== run.runId || attempt.inputSha256 !== row.inputSha256
-      || attempt.receiptSha256 !== row.receiptSha256 || receipt.scope.requestId !== row.requestId
-      || input.taskId !== task.id || input.projectId !== task.projectId || input.runId !== run.runId || input.generation !== run.generation
-      || input.source.repositoryId !== task.repositoryId || input.source.commit !== task.commit || input.locale !== task.locale
-      || storedInput.sha256 !== row.inputSha256 || sha256(JSON.stringify(input)) !== row.inputSha256
-      || input.subject.manifestSha256 !== evidence.binding.subjectManifestSha256
-      || evidence.binding.source.repositoryId !== task.repositoryId || evidence.binding.source.commit !== task.commit
-      || JSON.stringify(evidence) !== JSON.stringify(result.evidence)) {
-    throw new Error('formal_verification_view_integrity');
-  }
+  const verification = await readPublishedVerification(tx, task, run);
+  if (!verification) return null;
+  const { row, result, evidence } = verification;
 
   const outcome = result.review?.outcome ?? 'requires_human';
   const { source, build, baseline, image } = evidence;

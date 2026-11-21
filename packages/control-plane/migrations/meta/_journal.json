@@ -204,6 +204,13 @@
       "when": 1795269600000,
       "tag": "0028_formal_oci_archive_verification",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1795270094768,
+      "tag": "0029_formal_release_candidates",
+      "breakpoints": true
     }
   ]
 }
