@@ -995,7 +995,7 @@ it('keeps verification unavailable while an audit finding has no published repai
   expect(await database.storage.db.select().from(formalVerificationInputs)).toEqual([]);
 });
 
-it.each(['reclaimed change', 'repeat patch', 'budget exhausted', 'restored grant', 'changed policy', 'queue failure'] as const)(
+it.each(['reclaimed change', 'remaining finding', 'repeat patch', 'budget exhausted', 'restored grant', 'changed policy', 'queue failure'] as const)(
   'binds failed-candidate retry behavior to the PostgreSQL ledger (%s)', async mode => {
     const prefix = 'header=fixture\nkeep=on\n';
     const removed = 'REMOVE=public\n';
@@ -1021,6 +1021,15 @@ it.each(['reclaimed change', 'repeat patch', 'budget exhausted', 'restored grant
       if (input.subject.kind !== 'repair' || !patch || !candidate) throw new Error('Missing frozen candidate');
       const request = prepareQualifiedVerificationRequest(coordinates, canonicalVerificationCommand({ input, repair: patch }));
       const healthy = candidate.changes[0]?.afterSha256 === sha256(prefix + replacement) && mode !== 'budget exhausted';
+      if (mode === 'remaining finding' && input.generation === 1) {
+        const receipt = standardVerificationReceipt(scan!, request, input, false, candidate);
+        const target = receipt.snapshot.target!;
+        const finding = receipt.snapshot.reports[0].findings[0]!;
+        target.reports[0].findings = [{ ...finding,
+          id: sha256(JSON.stringify(['gitleaks', target.manifestSha256, finding.ruleId, finding.path, finding.line])),
+        }];
+        return receipt;
+      }
       return standardVerificationReceipt(scan!, request, input, !healthy, candidate);
     });
     const observedRetries: Array<ReturnType<typeof formalRepairRetryContextSchema.parse>> = [];
@@ -1064,11 +1073,12 @@ it.each(['reclaimed change', 'repeat patch', 'budget exhausted', 'restored grant
       return;
     }
     expect(duplicates).toHaveLength(0);
-    expect(previousResult?.document.review).toMatchObject({ outcome: 'checks_failed' });
+    const failure = mode === 'remaining finding' ? { outcome: 'source_findings', introduced: 0, remaining: 1 }
+      : { outcome: 'checks_failed', checks: [{ id: 'health', code: 'unexpected_status', statusCode: 503 }] };
+    expect(previousResult?.document.review?.outcome).toBe(failure.outcome);
     expect(retry).toMatchObject({ taskId: task.id, previousRunId: task.runId, runId: ready.runId, document: {
       generation: 2, previous: { verificationResultSha256: previousResult?.sha256, receiptSha256: previousResult?.receiptSha256,
-        patchShape: { files: 1, replacementBytes: 0 }, failure: { outcome: 'checks_failed',
-          checks: [{ id: 'health', code: 'unexpected_status', statusCode: 503 }] } },
+        patchShape: { files: 1, replacementBytes: 0 }, failure },
     } });
     expect(ready).toMatchObject({ state: 'queued' });
     expect((await tasks.events(identity, task.id, 50, 'zh-CN')).at(-1)).toMatchObject({ type: 'task.repair_retry_queued', message: /返修/ });
