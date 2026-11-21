@@ -13,4 +13,6 @@
 | 可信试验镜像 | 重复封装一致，OCI manifest 为 `sha256:b455c59a241dd1ca2873dfd261948a3a8b04c3cb00f562563141baf39e6481ea`，解包文件逐字节匹配 |
 | 回归 | WSL 执行 56 项宿主测试，覆盖 blob 改写、摘要替换、符号链接、硬链接、外部 URL 和错误平台 |
 
+托管 Linux 固定版本 `5424c982bb77cd144d3d186033e9f706e82da23f` 的三个证据文件已下载复核，封装输入和试验镜像摘要与 WSL 实测一致。 [托管 OCI Inputs](https://github.com/MaLaNg116/itervane/actions/runs/44896141493)
+
 实际候选的镜像封装及独立扫描进入 C3-B，产物持久化交接进入 C3-C。本批只处理公开基底与可信测试材料。 [OCI 布局规范](https://github.com/opencontainers/image-spec/blob/v1.1.1/image-layout.md) · [umoci 0.6.0 发布](https://github.com/opencontainers/umoci/releases/tag/v0.6.0)
