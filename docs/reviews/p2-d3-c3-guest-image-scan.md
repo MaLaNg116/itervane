@@ -8,4 +8,4 @@
 4. `8c788cd` 将作用域、同一候选和扫描摘要纳入 PostgreSQL 回执约束。测试冻结摘要被替换及扫描指向另一个镜像时的事务拒绝。 [迁移](../../packages/control-plane/migrations/0023_formal_standard_image_evidence.sql)
 5. `14e4124` 在托管 KVM 增加标准镜像场景，核对健康候选的 OCI 证据、503 失败、锁漂移和租约回执重读。 [验收工作流](../../.github/workflows/native-runner.yml)
 
-Windows TypeScript、59 项 Linux 宿主回归及真实 PostgreSQL 专项 3 项已通过。健康候选的托管 KVM 证据待归档。C3-C 负责实际 OCI 字节的受限导出和持久交接，后续验收继续走 D3-D 与 P2-E。
+Windows TypeScript、59 项 Linux 宿主测试、真实 PostgreSQL 全量 120 项通过。首轮 [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44897356042) 使用提交 `cc4b61529a345bf2af58c628f625d15497fb26f8`。C3-C 负责实际 OCI 字节的受限导出和持久交接，后续验收继续走 D3-D 与 P2-E。
