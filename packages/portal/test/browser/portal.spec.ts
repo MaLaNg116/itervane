@@ -288,7 +288,7 @@ test('uses the exact frozen release for bilingual decisions, closes stale approv
     const locale = route.request().headers()['accept-language'] === 'zh-CN' ? 'zh-CN' : 'en';
     return route.fulfill({ json: formalReleaseViewSchema.parse({
       taskId: task.id, runId: displaced ? randomUUID() : task.runId, taskVersion,
-      candidate: current ? localize(current, locale) : null, candidateTarget: current ? target : null,
+      candidate: current ? localize(current, locale) : null, candidateTarget: current ? target : null, result: null,
       availableTargets: current ? [] : [{ ...target, revision: 1 }],
       actions: current?.status === 'pending' ? ['confirm', 'reject'] : current?.status === 'confirmed' ? ['revoke'] : [],
     }) });
@@ -369,6 +369,80 @@ test('uses the exact frozen release for bilingual decisions, closes stale approv
   await expectMotionCsp(page);
 });
 
+test('shows the bilingual release result as it changes and clears evidence from a previous run', async ({ page, stack }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await observeMotion(page, stack.origin);
+  const project = await seedProject(stack);
+  const authorization = authorizationFrom(page);
+  await login(page, stack);
+  const task = await admit(stack, authorization(), project);
+  const { candidate, target } = frozenReleaseFixture(task);
+  const base = `${stack.origin}/v1/tasks/${task.id}`;
+  const firstOperation = randomUUID();
+  const firstUpdate = 'c'.repeat(24);
+  const secondOperation = randomUUID();
+  const checkedAt = new Date().toISOString();
+  let taskRunId = task.runId;
+  let taskVersion = task.version + 3;
+  let taskState: TaskDto['state'] = 'reconciling';
+  let releaseRunId = taskRunId;
+  let releaseVersion = taskVersion;
+  let status: 'checking' | 'verified' | 'manual_review' = 'checking';
+  await page.route(base, route => route.fulfill({ json: taskDtoSchema.parse({
+    ...task, runId: taskRunId, version: taskVersion, state: taskState,
+  }) }));
+  await page.route(`${base}/release`, route => {
+    const locale = route.request().headers()['accept-language'] === 'zh-CN' ? 'zh-CN' : 'en';
+    const operationId = status === 'manual_review' ? secondOperation : firstOperation;
+    const updateId = status === 'manual_review' ? 'd'.repeat(24) : firstUpdate;
+    const message = { checking: 'task.release_rollout_claimed', verified: 'release.operation.verified_formal',
+      manual_review: 'release.result.manual_review' } as const;
+    return route.fulfill({ json: formalReleaseViewSchema.parse({
+      taskId: task.id, runId: releaseRunId, taskVersion: releaseVersion,
+      candidate: { ...candidate, operationId, manifest: { ...candidate.manifest, runId: releaseRunId } },
+      candidateTarget: target, availableTargets: [], actions: [],
+      result: { operationId, candidateId: candidate.id, updateId, status, locale, message: translate(locale, message[status]),
+        ...(status === 'verified' ? { evidence: { checkedAt, manifestDigest: candidate.manifest.image.manifestDigest,
+          configDigest: candidate.manifest.image.configDigest, version: 'standard-v2', healthy: true, accessProtected: true } } : {}),
+        ...(status === 'manual_review' ? { reason: 'release_rollout_health_failed',
+          reasonMessage: translate(locale, 'reason.release_rollout_health_failed') } : {}),
+      },
+    }) });
+  });
+  await page.goto(`${stack.origin}/#/tasks/${task.id}`);
+  const result = page.getByTestId('release-result');
+  await expect(result.getByRole('status')).toHaveText(translate('en', 'task.release_rollout_claimed'));
+  await expect(result.getByText(firstUpdate, { exact: true })).toBeVisible();
+  await expect(result.getByText('Running image digest')).toHaveCount(0);
+  const disclosure = page.getByText('Candidate evidence', { exact: true });
+  await disclosure.focus(); await disclosure.press('Enter');
+  await expect(page.getByText(firstOperation, { exact: true })).toBeVisible();
+  await expect.poll(async () => (await motionProbe(page)).disclosures).toBeGreaterThan(0);
+  await disclosure.press('Enter');
+
+  status = 'verified'; taskState = 'succeeded'; releaseVersion = ++taskVersion;
+  await expect(result.getByRole('status')).toHaveText(translate('en', 'release.operation.verified_formal'));
+  await expect(result.getByText(candidate.manifest.image.manifestDigest, { exact: true })).toBeVisible();
+  await expect(result.getByText('standard-v2', { exact: true })).toBeVisible();
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const motionBefore = (await motionProbe(page)).disclosures;
+  await language(page, 'zh-CN');
+  await expect(result.getByRole('status')).toHaveText(translate('zh-CN', 'release.operation.verified_formal'));
+  await expect(result.getByText('实际运行镜像摘要')).toBeVisible();
+  const translatedDisclosure = page.getByText('候选证据', { exact: true });
+  await translatedDisclosure.focus(); await translatedDisclosure.press('Enter');
+  await expect(page.getByText(firstOperation, { exact: true })).toBeVisible();
+  expect((await motionProbe(page)).disclosures).toBe(motionBefore);
+
+  taskRunId = randomUUID(); taskVersion++; taskState = 'needs_human';
+  await expect(result).toHaveCount(0);
+  releaseRunId = taskRunId; releaseVersion = taskVersion; status = 'manual_review';
+  await expect(result.getByRole('status')).toContainText(translate('zh-CN', 'release.result.manual_review'));
+  await expect(result.getByRole('status')).toContainText(translate('zh-CN', 'reason.release_rollout_health_failed'));
+  await expect(result.getByText('standard-v2', { exact: true })).toHaveCount(0);
+  await expectMotionCsp(page);
+});
+
 test('shows release evidence without actions to a read-only member and clears it when access is revoked', async ({ page, stack }) => {
   const project = await seedProject(stack, true);
   const authorization = authorizationFrom(page);
@@ -383,7 +457,7 @@ test('shows release evidence without actions to a read-only member and clears it
   const task = taskDtoSchema.parse(await response.json());
   const { candidate, target } = frozenReleaseFixture(task);
   await page.route(`${base}/release`, route => route.fulfill({ json: formalReleaseViewSchema.parse({
-    taskId: task.id, runId: task.runId, taskVersion: task.version, candidate, candidateTarget: target, availableTargets: [], actions: [],
+    taskId: task.id, runId: task.runId, taskVersion: task.version, candidate, candidateTarget: target, availableTargets: [], actions: [], result: null,
   }) }));
   await page.goto(`${stack.origin}/#/tasks/${task.id}`);
   const panel = page.getByTestId('formal-release');
