@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, ne, sql } from 'drizzle-orm';
 import {
   qualifiedInspectionStatusSchema, qualifiedVerificationResponseSchema,
-  type QualifiedInspectionStatus, type QualifiedVerificationReceipt, type QualifiedVerificationResponse, type VerificationProfile,
+  type FormalVerificationEvidence, type QualifiedInspectionStatus, type QualifiedVerificationReceipt, type QualifiedVerificationResponse, type VerificationProfile,
 } from '@itervane/contracts';
 import {
   canonicalVerificationCommand, compareVerificationScans, prepareQualifiedVerificationRequest, sha256, verifyQualifiedVerificationReceipt,
@@ -12,13 +12,17 @@ import { formalRescanAttempts, repositories } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { ExecutionLost, type ExecutionScope } from './authority.js';
 import type { ExecutionCoordinator } from './coordinator.js';
+import { projectVerificationEvidence } from './verification-evidence.js';
 import { prepareFormalVerificationInput } from './verification-input.js';
 
 export type RescanRunner = Pick<QualifiedInspectionClient, 'observe' | 'verify'>;
 type Attempt = typeof formalRescanAttempts.$inferSelect;
 type Basis = Awaited<ReturnType<typeof prepareFormalVerificationInput>>;
 type Rejection = Extract<QualifiedVerificationResponse, { kind: 'rejected' }>;
-type RescanResult = { kind: 'scanned'; receipt: QualifiedVerificationReceipt; comparison: ReturnType<typeof compareVerificationScans> };
+type RescanResult = {
+  kind: 'scanned'; receipt: QualifiedVerificationReceipt; comparison: ReturnType<typeof compareVerificationScans>;
+  evidence: FormalVerificationEvidence;
+};
 
 const notReady = (): Rejection =>
   ({ kind: 'rejected', requestId: null, domainId: null, code: 'not_ready', cleanup: 'not_started' });
@@ -53,7 +57,8 @@ function checked(raw: unknown, plan: ReturnType<typeof dispatch>): Rejection | R
       || (attempt.receiptSha256 && attempt.receiptSha256 !== sha256(JSON.stringify(receipt)))) {
     throw new Error('formal_rescan_receipt_integrity');
   }
-  return { kind: 'scanned', receipt, comparison: compareVerificationScans(snapshot, snapshot.target ?? snapshot) };
+  const comparison = compareVerificationScans(snapshot, snapshot.target ?? snapshot);
+  return { kind: 'scanned', receipt, comparison, evidence: projectVerificationEvidence(receipt, comparison) };
 }
 
 async function settle(tx: Transaction, scope: ExecutionScope, attempt: Attempt, state: 'closed' | 'uncertain' | 'recorded',

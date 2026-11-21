@@ -35,7 +35,8 @@
 | 029 | P2-D3-C2-C 同一候选的客体运行与受保护基线 | [#29](https://github.com/MaLaNg116/itervane/pull/29)，基于已合入 #28 | [客体基线导读](p2-d3-c2-guest-baseline.md) | 119 项 PostgreSQL 集成与 50 项宿主测试通过，[三组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44894586700)全绿，已合入 main |
 | 030 | P2-D3-C3-A 固定 OCI 基底和封装工具 | [#30](https://github.com/MaLaNg116/itervane/pull/30)，已合入 main | [OCI 输入导读](p2-d3-c3-image-inputs.md) | [托管 Linux](https://github.com/MaLaNg116/itervane/actions/runs/44896141493)与本机摘要一致，重复封装、解包、输入边界和既有 KVM 回归通过 |
 | 031 | P2-D3-C3-B 同一客体组装和离线镜像扫描 | [#31](https://github.com/MaLaNg116/itervane/pull/31)，已合入 main | [镜像扫描导读](p2-d3-c3-guest-image-scan.md) | [四组 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44897356042)、120 项 PostgreSQL 和 59 项宿主测试通过 |
-| 032 | P2-D3-C3-C 留存同摘要扫描的 OCI 制品 | [#32](https://github.com/MaLaNg116/itervane/pull/32)，基于已合入 #31 | [制品留存导读](p2-d3-c3-oci-artifacts.md) | 121 项 PostgreSQL、65 项宿主测试和[托管 KVM 独立归档回读](https://github.com/MaLaNg116/itervane/actions/runs/44899721011/job/136832963320)通过 |
+| 032 | P2-D3-C3-C 留存同摘要扫描的 OCI 制品 | [#32](https://github.com/MaLaNg116/itervane/pull/32)，已合入 main | [制品留存导读](p2-d3-c3-oci-artifacts.md) | 121 项 PostgreSQL、65 项宿主测试和[四组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44899721011)通过 |
+| 033 | P2-D3-D-A 正式复验事实和有界投影 | [#33](https://github.com/MaLaNg116/itervane/pull/33)，基于已合入 #32 | [正式复验事实导读](p2-d3-d-verification-evidence.md) | 四项真实 PostgreSQL 回执对照和[四组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44899950264)通过，健康镜像和 503 前置失败均可复核 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 

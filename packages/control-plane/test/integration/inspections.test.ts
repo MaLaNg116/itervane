@@ -30,6 +30,7 @@ import { FormalRepairExecution, type RepairRunner } from '../../src/runtime/repa
 import { observeFormalRepairTargets, type RepairObservationRunner } from '../../src/runtime/repair-observation.js';
 import { ToolGateway } from '../../src/runtime/tools.js';
 import { prepareFormalVerificationInput } from '../../src/runtime/verification-input.js';
+import { projectVerificationEvidence } from '../../src/runtime/verification-evidence.js';
 import { DurableWorker } from '../../src/runtime/worker.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
@@ -685,7 +686,8 @@ it.each(['build', 'baseline', 'image', 'artifact'] as const)('binds the standard
     platform: 'linux/amd64', manifestDigest: imageDigest, configDigest,
     baseManifestDigest: 'sha256:' + sha256('base'), appLayerDigest: 'sha256:' + sha256('app layer'),
     runtimeLayerSha256: sha256('runtime layer'), scan: {
-      scanner: 'trivy', version: '0.76.2', imageDigest, configDigest, osPackages: 1, npmPackages: 1, findings: [],
+      scanner: 'trivy', version: '0.76.2', imageDigest, configDigest, osPackages: 1, npmPackages: 1,
+      findings: [{ class: 'lang-pkgs', advisory: 'FIXTURE-1', package: 'test-module', version: '1.2.3', severity: 'MEDIUM' }],
       policySha256: sha256('protected image scan'), reportSha256: sha256('image report'), database: databaseEvidence,
     },
     ...(stage === 'artifact' ? { archive: { format: 'oci-layout-tar' as const, sha256: sha256('retained bytes'), bytes: 613 } } : {}),
@@ -750,6 +752,29 @@ it.each(['build', 'baseline', 'image', 'artifact'] as const)('binds the standard
   const rescan = () => runFormalRescan(coordinator, scope, profile, { observe: async () => idleRepairRunner(), verify });
   const result = await rescan();
   expect(result).toMatchObject({ kind: 'scanned', receipt: { snapshot: { build: { status: 'built', isolationVerified: true } } } });
+  if (result.kind !== 'scanned') throw new Error('Missing formal rescan result');
+  expect(result.evidence).toMatchObject({
+    binding: { taskId: scope.taskId, runId: scope.runId, projectId: original.scope.projectId,
+      verificationInputSha256: result.receipt.scope.verificationInputSha256, receiptSha256: sha256(JSON.stringify(result.receipt)) },
+    source: { status: 'compared', introduced: 0, remaining: 0, resolved: 0 },
+    build: { status: 'built', distSha256: sha256('measured build') },
+    baseline: { status: stage === 'build' ? 'not_requested' : 'passed' },
+    image: image ? { status: 'scanned', manifestDigest: imageDigest, findings: { medium: 1 },
+      archive: image.status === 'scanned' ? image.archive ?? null : null }
+      : { status: 'not_requested' },
+  });
+  expect(JSON.stringify(result.evidence)).not.toContain('test-module');
+  if (stage === 'artifact') {
+    const failed = structuredClone(result.receipt);
+    const build = failed.snapshot.build;
+    if (build?.status !== 'built' || build.baseline?.status !== 'passed') throw new Error('Missing baseline');
+    build.baseline.status = 'failed';
+    delete build.baseline.image;
+    build.baseline.checks[0] = { id: 'health', status: 'failed', code: 'unexpected_status', statusCode: 503 };
+    expect(projectVerificationEvidence(failed, result.comparison)).toMatchObject({
+      baseline: { status: 'failed', failures: [{ id: 'health', statusCode: 503 }] }, image: { status: 'not_reached' },
+    });
+  }
   if (stage !== 'build') {
     expect(result).toMatchObject({ receipt: { snapshot: { build: { baseline: { status: 'passed', appExited: true } } } } });
   }

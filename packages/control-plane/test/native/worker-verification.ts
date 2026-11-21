@@ -75,7 +75,7 @@ async function verify() {
       phase = `scan_${result.code}`;
       throw new Error('verification_fixture_scan');
     }
-    const { receipt, comparison } = result;
+    const { receipt, comparison, evidence: projected } = result;
     const { snapshot } = receipt;
     phase = 'evidence';
     equal(receipt.scope.runId, scope.runId);
@@ -83,6 +83,9 @@ async function verify() {
     equal(receipt.scope.baseSnapshotSha256, original.snapshot.manifestSha256);
     equal(receipt.scope.commit, original.scope.commit);
     equal(receipt.cleanupConfirmed, true);
+    equal(projected.binding.taskId, scope.taskId);
+    equal(projected.binding.receiptSha256, sha256(JSON.stringify(receipt)));
+    equal(projected.binding.subjectManifestSha256, receipt.scope.targetManifestSha256);
     ok(receipt.domainId !== original.domainId);
     ok(comparison.status === 'compared');
     const findingKey = (group: typeof comparison.groups[number]) =>
@@ -115,6 +118,7 @@ async function verify() {
           const status = baselineEvidence.status === 'blocked' ? baselineEvidence.code : baselineEvidence.status;
           phase = `baseline_${status}`;
           equal(status, expectedBaseline);
+          equal(projected.baseline.status, baselineEvidence.status);
           if (ociInputsSha && baselineEvidence.status === 'passed') {
             const image = baselineEvidence.image;
             phase = image?.status === 'blocked' ? image.code : 'image_evidence';
@@ -123,6 +127,12 @@ async function verify() {
             equal(image.ociInputsSha256, ociInputsSha);
             deepStrictEqual(image.scan.database, snapshot.reports[1].database);
             ok(image.archive && image.archive.bytes > 0);
+            ok(projected.image.status === 'scanned');
+            equal(projected.image.manifestDigest, image.manifestDigest);
+            deepStrictEqual(projected.image.archive, image.archive);
+            equal(Object.values(projected.image.findings).reduce((sum, count) => sum + count, 0), image.scan.findings.length);
+          } else if (ociInputsSha) {
+            equal(projected.image.status, 'not_reached');
           }
         } else equal(expectedBaseline, undefined);
       }
@@ -148,6 +158,7 @@ async function verify() {
       targetReportsSha256: snapshot.target && sha256(JSON.stringify(snapshot.target.reports)),
       totals: comparison.totals, targetRuleId: targetFinding ? targetFinding.ruleId : null,
       newFindingGroups, remainingFindingGroups: after.size, dispatches, cleanupConfirmed: true, build: snapshot.build ?? null,
+      evidence: projected,
     };
   } finally {
     clearInterval(heartbeat);
