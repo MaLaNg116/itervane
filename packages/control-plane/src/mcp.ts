@@ -3,7 +3,7 @@ import { Server, createMcpHandler, isSpecType, type CallToolResult } from '@mode
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { cancelTaskSchema, formalReleaseOptionsSchema, freezeFormalReleaseSchema, idSchema, listQuerySchema, preauditInputSchema,
+import { cancelTaskSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, freezeFormalReleaseSchema, idSchema, listQuerySchema, preauditInputSchema,
   resumeTaskSchema, ruleIdSchema, ruleQuerySchema, startTaskSchema, translate, type Locale } from '@itervane/contracts';
 import { assertVerifiedIdentity, AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
 import { canonicalPublicUrl } from './config.js';
@@ -38,6 +38,7 @@ const specs = [
   { name: 'get_verification', key: 'mcp.verification', input: taskIdInput, write: false },
   { name: 'get_release_candidate', key: 'mcp.release_candidate', input: taskIdInput, write: false },
   { name: 'get_release_options', key: 'mcp.release_options', input: taskIdInput, write: false },
+  { name: 'get_release_result', key: 'mcp.release_result', input: taskIdInput, write: false },
   { name: 'request_release', key: 'mcp.request_release', input: releaseRequestInput, write: true },
   { name: 'cancel_task', key: 'mcp.cancel', input: versionInput, write: true },
   { name: 'resume_task', key: 'mcp.resume', input: resumeInput, write: true },
@@ -100,6 +101,10 @@ export function createMcpEndpoint(database: Database, config: IdentityConfig & {
           case 'get_release_options': {
             const { taskId, runId, taskVersion, availableTargets } = await release.getView(identity, taskIdInput.parse(args).taskId, locale);
             output = formalReleaseOptionsSchema.parse({ taskId, runId, taskVersion, availableTargets }); break;
+          }
+          case 'get_release_result': {
+            const { taskId, runId, taskVersion, result: releaseResult } = await release.getView(identity, taskIdInput.parse(args).taskId, locale);
+            output = formalReleaseResultSchema.parse({ taskId, runId, taskVersion, result: releaseResult }); break;
           }
           case 'request_release': {
             const { taskId, ...input } = releaseRequestInput.parse(args);
