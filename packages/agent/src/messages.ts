@@ -13,6 +13,7 @@ const en = {
     draft_repair: 'Draft a candidate from the audited snapshot using only the given registered template IDs.',
     read_candidate: 'Read the candidate artifact for this verification.',
     check_candidate: 'Run one protected check on the current candidate. The platform selects its baseline and expected conditions.',
+    read_verification: 'Read one section of the validated Runner receipt for this verification.',
     finish_role: 'Submit a draft conclusion backed by the IDs of actual observations from this role.',
     request_human: 'Stop and request human review if the evidence is insufficient.',
   },
@@ -32,6 +33,11 @@ const en = {
     goal: 'Prepare a candidate patch for the published audit findings within the isolated Runner.',
     instruction: 'Read the relevant repair targets before choosing a tool. Prefer a listed template when its conditions fit. Use the observed byte range for an explicit edit. For an approved npm upgrade, send both target indices without edit contents. Once a repair_candidate is present, call finish_role with its evidence ID and a short summary. Independent verification follows. If the observations cannot justify an edit, request human review.',
     finish: 'Call this once a repair_candidate is present. Set evidenceId to the enumerated evidence ID and provide a short summary of the applied change.',
+  },
+  formalVerification: {
+    goal: 'Explain what the protected checks found for the fixed candidate and identify supported follow-up work.',
+    instruction: 'Use read_verification to review source, build and baseline. The baseline result determines whether the image section is available. Explain actual failures, remaining and new findings, and evidence gaps. Use observed facts for follow-up suggestions. Approval is handled by the platform.',
+    finish: 'Cite the IDs of all observations in evidenceIds. Submit a short summary and a followUps list, citing one observed ID per suggestion. Use an empty list when no follow-up is needed.',
   },
   role: {
     audit: 'Review the source, distinguish hypotheses from facts, and explain each protected finding.',
@@ -66,6 +72,7 @@ const en = {
     repair_complete: 'The candidate patch is recorded and ready for independent verification.',
     repair_reconciling: 'The repair Runner requires reconciliation before another action.',
     repair_unavailable: 'The scoped repair Runner is unavailable.',
+    verification_review_complete: 'The verification review cites the protected checks for this candidate.',
     checkpoint_unavailable: 'The run stopped because its checkpoint could not be published or read.',
     manual_review: 'The agent requested human review.',
     checkpoint_paused: 'The verification driver paused at a checkpoint.',
@@ -85,6 +92,7 @@ const zh: Translations = {
     draft_repair: '只用给定的已登记模板 ID，从审计快照生成修复候选。',
     read_candidate: '读取本次复验的候选差异。',
     check_candidate: '对当前候选运行一项受保护检查。基线和判据由平台选择。',
+    read_verification: '读取本次复验已核验 Runner 回执的一项内容。',
     finish_role: '提交本角色的结论草案，引用实际观察的编号。',
     request_human: '证据不足时停止并请求人工处理。',
   },
@@ -104,6 +112,11 @@ const zh: Translations = {
     goal: '在隔离 Runner 内为已发布审计发现准备候选补丁。',
     instruction: '先读取相关修复目标，再根据实际观测选择工具。符合前提时优先使用列出的模板。显式修改使用观测给出的字节范围。已批准的 npm 升级只提交成对的目标序号。取得 repair_candidate 后，调用 finish_role 引用其证据编号并简要概述修改，随后由独立流程复验。观测无法支撑修改时请请求人工处理。',
     finish: '取得 repair_candidate 后调用此工具。从枚举值中选择证据编号填入 evidenceId，简要概述已发生的修改。',
+  },
+  formalVerification: {
+    goal: '说明受保护检查对固定候选的发现，并给出有证据支持的后续动作。',
+    instruction: '用 read_verification 查看源码复扫、构建和基线。基线结果决定是否可查看镜像。说明实际失败、未解决及新增的问题，以及缺证范围。建议只基于已取得的观察，审批由平台处理。',
+    finish: '在 evidenceIds 中引用全部观察编号。提交简要摘要和 followUps 列表，每条建议引用一项已观察的证据。无需跟进时提交空列表。',
   },
   role: {
     audit: '审阅源码，区分假设与事实，逐项说明受保护检查的发现。',
@@ -138,6 +151,7 @@ const zh: Translations = {
     repair_complete: '候选补丁已记录，等待独立复验。',
     repair_reconciling: '修复 Runner 需要核对后才能继续操作。',
     repair_unavailable: '当前作用范围内的修复 Runner 暂不可用。',
+    verification_review_complete: '复验意见已引用该候选的受保护检查结果。',
     checkpoint_unavailable: '无法读取或发布检查点，运行已停止。',
     manual_review: 'Agent 请求人工处理。',
     checkpoint_paused: '验收驱动已在检查点暂停。',
@@ -148,6 +162,11 @@ export type Feedback = keyof typeof en.feedback;
 export const agentText = (locale: Locale) => locale === 'zh-CN' ? zh : en;
 export function agentPrompt(locale: Locale, role: DeliveryRole, origin: AgentOrigin) {
   const text = agentText(locale);
-  const instruction = origin === 'formal_audit' ? text.formal.instruction : origin === 'formal_repair' ? text.formalRepair.instruction : text.role[role];
-  return `${text.prompt} ${instruction}`;
+  const instruction = {
+    trusted_fixture: text.role[role],
+    formal_audit: text.formal.instruction,
+    formal_repair: text.formalRepair.instruction,
+    formal_verification: text.formalVerification.instruction,
+  };
+  return `${text.prompt} ${instruction[origin]}`;
 }

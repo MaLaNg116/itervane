@@ -5,8 +5,9 @@ import {
 } from './contracts.js';
 import { agentText, type AgentReason, type Feedback } from './messages.js';
 import { formalRepairCompletionSchema } from './repair-contracts.js';
-import { finishFormalRepair } from './results.js';
+import { finishFormalRepair, finishFormalVerification } from './results.js';
 import { canCall, plannedToolSchema } from './tools.js';
+import { formalVerificationCompletionSchema } from './verification-contracts.js';
 
 const terminalReasons = agentText('en').reason;
 const feedback = agentText('en').feedback;
@@ -26,6 +27,7 @@ const stateSchema = z.object({
   audit: auditReportSchema.nullable(),
   repairs: z.array(repairReportSchema).max(3),
   formalRepair: formalRepairCompletionSchema.optional(),
+  formalVerification: formalVerificationCompletionSchema.optional(),
   verifications: z.array(verificationReportSchema).max(3),
   stop: z.object({
     status: z.enum(['completed', 'requires_human', 'cancelled']),
@@ -35,9 +37,14 @@ const stateSchema = z.object({
 export type AgentState = z.infer<typeof stateSchema>;
 export type Stop = NonNullable<AgentState['stop']>;
 
+export function initialRole(origin: AgentOrigin): AgentState['role'] {
+  if (origin === 'formal_verification') return 'verify';
+  return origin === 'formal_repair' ? 'repair' : 'audit';
+}
+
 export function initialState(spec: AgentSpec, bindingSha256: string, origin: AgentOrigin): AgentState {
   return {
-    version: 1, bindingSha256, role: origin === 'formal_repair' ? 'repair' : 'audit', deadlineAt: Date.now() + spec.limits.maxDurationMs,
+    version: 1, bindingSha256, role: initialRole(origin), deadlineAt: Date.now() + spec.limits.maxDurationMs,
     usage: { turns: 0, toolCalls: 0, tokens: 0 },
     pending: null, nextTool: null, evidence: [], currentEvidence: [], trace: [],
     stalled: 0, feedback: null, audit: null, repairs: [], verifications: [], stop: null,
@@ -54,8 +61,8 @@ export function restoreState(raw: unknown, spec: AgentSpec, binding: string, ori
     || (!state.stop && state.usage.tokens > limits.maxTokens)
     || state.evidence.length > state.usage.toolCalls || state.trace.length > state.usage.toolCalls
     || state.repairs.length > limits.maxRepairs || state.repairs.length < state.verifications.length
-    || (state.role !== 'audit' && state.audit === null && origin !== 'formal_repair')
-    || (state.role === 'verify' && !state.stop && state.repairs.length !== state.verifications.length + 1)
+    || (origin === 'trusted_fixture' && state.role !== 'audit' && state.audit === null)
+    || (origin === 'trusted_fixture' && state.role === 'verify' && !state.stop && state.repairs.length !== state.verifications.length + 1)
     || (state.pending === 'observation' && !state.nextTool) || (state.pending === 'decision' && state.nextTool)) return;
   if (origin === 'formal_audit' && (state.role !== 'audit' || state.repairs.length || state.verifications.length
     || state.evidence.length !== state.currentEvidence.length
@@ -70,6 +77,22 @@ export function restoreState(raw: unknown, spec: AgentSpec, binding: string, ori
       if (JSON.stringify(finishFormalRepair(state.evidence, { summary, evidenceId })) !== JSON.stringify(state.formalRepair)) return;
     }
   } else if (state.formalRepair) return;
+  if (origin === 'formal_verification') {
+    if (state.role !== 'verify' || state.audit || state.repairs.length || state.verifications.length
+        || state.evidence.length !== state.currentEvidence.length || state.trace.length !== state.evidence.length
+        || new Set(state.currentEvidence).size !== state.currentEvidence.length
+        || state.evidence.some(item => item.snapshotSha256 !== spec.snapshotSha256)
+        || state.trace.some(({ role, call, evidenceId }, index) => {
+          const observed = state.evidence[index];
+          return role !== 'verify' || call.name !== 'read_verification' || observed?.id !== evidenceId
+            || observed.data.kind !== 'verification_section' || observed.data.section !== call.args.section;
+        })
+        || (state.formalVerification !== undefined) !== (state.stop?.reason === 'verification_review_complete' && state.stop.status === 'completed')) return;
+    if (state.formalVerification) {
+      const { summary, evidenceIds, followUps } = state.formalVerification;
+      if (JSON.stringify(finishFormalVerification(state.evidence, { summary, evidenceIds, followUps })) !== JSON.stringify(state.formalVerification)) return;
+    }
+  } else if (state.formalVerification) return;
   const ids = new Set(state.evidence.map(item => item.id));
   if (ids.size !== state.evidence.length || state.evidence.some(({ id, ...receipt }) =>
     receipt.origin !== origin || receipt.bindingSha256 !== binding || sha256(JSON.stringify(receipt)) !== id)
