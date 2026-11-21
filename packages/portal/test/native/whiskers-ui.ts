@@ -46,23 +46,25 @@ export async function openPermissions(page: Page) {
   }).toPass({ timeout: 16_000 });
 }
 
-export async function selectWriteLevel(page: Page) {
+type KeyLevel = 'Read' | 'Write';
+
+export async function selectKeyLevel(page: Page, access: KeyLevel) {
   const level = page.locator('.mud-input-control.mud-select').filter({
     has: page.locator('label').filter({ hasText: /^Level$/ }),
   });
   try { await level.click(); }
   catch { throw new NativeBrowserFailure('level-control'); }
-  try { await page.locator('.mud-popover-open').getByText('Write', { exact: true }).click(); }
+  try { await page.locator('.mud-popover-open').getByText(access, { exact: true }).click(); }
   catch { throw new NativeBrowserFailure('level-option'); }
 }
 
-export async function createWriteKey(page: Page, name: string) {
+export async function createMcpKey(page: Page, name: string, access: KeyLevel) {
   const field = page.getByPlaceholder('e.g. Claude Code', { exact: true });
   await field.fill(name);
   await field.press('Tab');
   await page.getByRole('button', { name: 'Create key', exact: true }).click();
   const row = page.getByRole('row').filter({ has: page.getByRole('cell', { name, exact: true }) });
-  await expect(row.getByText('Write', { exact: true })).toBeVisible();
+  await expect(row.getByText(access, { exact: true })).toBeVisible();
   const key = (await row.getByRole('cell').nth(1).innerText()).trim();
   if (!/^[a-f0-9]{64}$/.test(key)) throw new Error('Invalid native key');
   return key;

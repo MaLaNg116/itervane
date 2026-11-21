@@ -83,13 +83,34 @@ export class WhiskersFixture {
   }
 
   async snapshot(name: string) {
+    const state = await this.inspectOwned(name);
+    if (!state.State.Running) throw new Error('Fixture was not running');
+    return { id: state.Id, started: state.State.StartedAt };
+  }
+
+  private async inspectOwned(name: string) {
     if (!this.owned.has(name)) throw new Error('Unrecorded fixture');
     const raw = await docker(['container', 'inspect', '--format', '{{json .}}', name]);
     const state = identifiedState.parse(JSON.parse(raw));
-    if (state.Name !== '/' + name || state.Config.Labels[labelKey] !== this.runId || !state.State.Running) {
+    if (state.Name !== '/' + name || state.Config.Labels[labelKey] !== this.runId) {
       throw new Error('Unexpected fixture state');
     }
-    return { id: state.Id, started: state.State.StartedAt };
+    return state;
+  }
+
+  async stopOther() {
+    const before = await this.snapshot(this.other);
+    await docker(['container', 'stop', '--time', '2', before.id]);
+    const stopped = await this.inspectOwned(this.other);
+    if (stopped.Id !== before.id || stopped.State.Running) throw new Error('Fixture did not stop');
+  }
+
+  async withPausedWhiskers(observe: () => Promise<void>) {
+    const { id } = await this.snapshot(this.base);
+    await docker(['container', 'pause', id]);
+    try { await observe(); }
+    finally { await docker(['container', 'unpause', id]); }
+    await awaitWhiskers();
   }
 
   async healthy(name: string) {
