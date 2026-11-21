@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { test as base, expect, type Page } from '@playwright/test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { admissionDtoSchema, catalogDtoSchema, formalAuditDtoSchema, preauditDtoSchema, sourceInspectionDtoSchema, taskDtoSchema } from '@itervane/contracts';
+import { admissionDtoSchema, catalogDtoSchema, formalAuditDtoSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema,
+  preauditDtoSchema, sourceInspectionDtoSchema, taskDtoSchema } from '@itervane/contracts';
 import { browserStack } from './stack.js';
 
 type Stack = Awaited<ReturnType<typeof browserStack>>;
@@ -99,6 +101,70 @@ test('renders the audit checklist with locale-independent evidence and escaped n
   await expect(panel.getByText('潜在影响')).toBeVisible();
   await expect(panel.getByText('已形成审计清单。')).toBeVisible();
   await expect(panel.getByText(finding.impact, { exact: true })).toHaveAttribute('lang', 'en');
+});
+
+test('resumes a recorded audit and downloads its versioned repair patch in the bilingual portal', async ({ page, stack }) => {
+  await observeMotion(page, stack.origin);
+  const project = await seedProject(stack);
+  const authorization = authorizationFrom(page);
+  await login(page, stack);
+  await expect(page.getByRole('link', { name: project.title, exact: true })).toBeVisible();
+  const created = await admit(stack, authorization(), project);
+  await paused(stack, created.id);
+  const base = `${stack.origin}/v1/tasks/${created.id}`;
+  const task = taskDtoSchema.parse(await (await fetch(base, { headers: { Authorization: authorization() } })).json());
+  const hash = (text: string) => createHash('sha256').update(text).digest('hex');
+  const patch = { version: 1, baseSnapshotSha256: hash('original'), files: [{
+    path: 'settings/example.txt', beforeSha256: hash('before'), edits: [{ startByte: 2, endByte: 9, replacement: '' }],
+  }] };
+  const patchSha256 = hash(JSON.stringify(patch));
+  const resultSha256 = hash('repair result');
+  const summary = 'Removed a fixture entry <repair-fixture>.';
+  const result = { version: 1, taskId: task.id, runId: task.runId, projectId: project.id, generation: 1, locale: 'en',
+    inputSha256: hash('input'), checkpointId: randomUUID(), auditResultSha256: hash('audit'), baseSnapshotSha256: patch.baseSnapshotSha256,
+    provider: 'anthropic', releaseEligible: false, usage: { turns: 3, toolCalls: 2, tokens: 90 }, status: 'candidate_ready', reason: 'repair_complete',
+    candidate: { summary, evidenceId: hash('evidence'), operationId: randomUUID(), receiptSha256: hash('receipt'),
+      patchSha256, manifestSha256: hash('candidate'), changes: [{ path: patch.files[0]!.path, beforeSha256: hash('before'),
+        afterSha256: hash('after'), beforeBytes: 17, afterBytes: 10, edits: 1,
+      }],
+    },
+  };
+  let published = false;
+  await page.route(`${base}/repair`, async route => {
+    const locale = route.request().headers()['accept-language'] === 'zh-CN' ? 'zh-CN' : 'en';
+    const coordinates = { taskId: task.id, runId: task.runId, locale };
+    const response = published
+      ? { ...coordinates, status: 'recorded', sha256: resultSha256, recordedAt: task.createdAt, result, resumeAvailable: false,
+        message: locale === 'en' ? 'Candidate ready for independent verification.' : '候选已就绪，等待独立复验。',
+      }
+      : { ...coordinates, status: 'pending', result: null, resumeAvailable: true, message: 'Audit ready for repair.' };
+    await route.fulfill({ json: formalRepairDtoSchema.parse(response) });
+  });
+  await page.route(`${base}/resume`, async route => {
+    expect(route.request().postDataJSON()).toEqual({ expectedVersion: task.version });
+    published = true;
+    await route.fulfill({ json: taskDtoSchema.parse({ ...task, version: task.version + 1, state: 'queued' }) });
+  });
+  await page.route(`${base}/repair/patch?expectedSha256=${resultSha256}`, route =>
+    route.fulfill({ json: formalRepairPatchDtoSchema.parse({ taskId: task.id, runId: task.runId, resultSha256, patchSha256, patch }) }));
+  await page.goto(`${stack.origin}/#/tasks/${task.id}`);
+  const panel = page.getByTestId('formal-repair');
+  await panel.getByRole('button', { name: 'Continue to repair', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Continue from the recorded audit?' });
+  await dialog.getByRole('button', { name: 'Continue to repair', exact: true }).click();
+  await expect(panel.getByRole('table', { name: 'Candidate changes' })).toContainText('settings/example.txt');
+  await expect(panel.getByText(summary, { exact: true })).toHaveAttribute('lang', 'en');
+  await expect(panel.locator('repair-fixture')).toHaveCount(0);
+  await language(page, 'zh-CN');
+  await expect(panel.getByRole('table', { name: '候选变更' })).toContainText('修改前（字节）');
+  await expect(panel.getByText('候选已就绪，等待独立复验。')).toBeVisible();
+  await expect(panel.getByText(summary, { exact: true })).toHaveAttribute('lang', 'en');
+  const pending = page.waitForEvent('download');
+  await panel.getByRole('button', { name: '下载补丁' }).click();
+  const downloaded = await pending;
+  expect(downloaded.suggestedFilename()).toBe(`itervane-patch-${patchSha256.slice(0, 12)}.json`);
+  expect(await readFile((await downloaded.path())!, 'utf8')).toBe(JSON.stringify(patch));
+  expect((await motionProbe(page)).csp).toEqual([]);
 });
 
 type MotionProbe = { state: number; events: number; headings: number; disclosures: number; csp: string[]; privateWithError: boolean };
