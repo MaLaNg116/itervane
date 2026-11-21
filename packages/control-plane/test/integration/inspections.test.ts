@@ -54,7 +54,7 @@ import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { FormalReleaseService } from '../../src/service/formal-release.js';
 import { publishFormalRepair } from '../../src/service/repair-result.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
-import { fingerprintRolloutCheck, registerReleaseTarget } from '../../src/service/release-targets.js';
+import { fingerprintRolloutCheck, readInstalledReleaseTarget, registerReleaseTarget } from '../../src/service/release-targets.js';
 import { ReleaseCandidateService } from '../../src/service/releases.js';
 import { TaskService } from '../../src/service/tasks.js';
 import { VerificationViewService } from '../../src/service/verification-view.js';
@@ -1914,6 +1914,51 @@ async function parkForRollout({ approval, target }: Awaited<ReturnType<typeof qu
   expect(await release.finishKomodo(writer)).toBe('awaiting_rollout');
   return { image, update, writer, komodo };
 }
+
+it('keeps formal release scheduled for the installed environment and blocks drift before any downstream call', async () => {
+  const { approval, operationId, target } = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
+  const installed = { environmentId: target.environmentId, mappingSha256: approval.manifest.target.mappingSha256 };
+  await expect(readInstalledReleaseTarget(database.storage, installed)).resolves.toMatchObject({
+    environmentId: target.environmentId, komodo: komodoBinding, rolloutCheck: rolloutCheckFixture,
+  });
+  const registry = { publish: vi.fn(), observe: vi.fn() };
+  const runner = { withRetainedArchive: vi.fn() };
+  const other = new FormalReleaseWorker(database.storage, {
+    origin: releaseOrigin, registry, runner, installed: { ...installed, environmentId: randomUUID() },
+  });
+  const original = await readOperation(operationId);
+  expect(await other.tick()).toMatchObject({ status: 'idle' });
+  const waiting = await readOperation(operationId);
+  expect(waiting).toMatchObject({ state: 'queued' });
+  expect(waiting?.wakeupJobId).toBeTruthy();
+  expect(waiting?.wakeupJobId).not.toBe(original?.wakeupJobId);
+
+  await registerReleaseTarget(database.storage, { ...target, runtimeConfigSha256: sha256('new installer target') });
+  await expect(readInstalledReleaseTarget(database.storage, installed)).rejects.toThrow('release_installation_target');
+  const matchingProcess = new FormalReleaseCoordinator(coordinator, releaseOrigin, installed);
+  const [wake] = await database.storage.boss.findJobs(formalReleaseQueue, { id: waiting!.wakeupJobId! });
+  if (!wake) throw new Error('Expected installation-scoped wakeup');
+  await database.admin.query("SELECT pg_sleep_until($1::timestamptz + interval '20 milliseconds')", [wake.startAfter]);
+  expect(await matchingProcess.claim(await fetchFormalWakeup(), randomUUID())).toBeNull();
+  expect(await readOperation(operationId)).toMatchObject({ state: 'blocked', wakeupJobId: null });
+  expect(runner.withRetainedArchive).not.toHaveBeenCalled();
+  expect(registry.publish).not.toHaveBeenCalled();
+  expect(registry.observe).not.toHaveBeenCalled();
+});
+
+it('scopes formal rollout observation to the installed environment and target fingerprint', async () => {
+  const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
+  const installed = { environmentId: submitted.target.environmentId, mappingSha256: submitted.approval.manifest.target.mappingSha256 };
+  await parkForRollout(submitted);
+  const other = new FormalRolloutCoordinator(database.storage, releaseOrigin, undefined, { ...installed, mappingSha256: sha256('other target') });
+  expect(await other.claimNext(randomUUID())).toBeNull();
+  const observe = new FormalRolloutCoordinator(database.storage, releaseOrigin, undefined, installed);
+  const scope = await observe.claimNext(randomUUID());
+  if (!scope) throw new Error('Expected rollout lease from enrolled target');
+  expect(scope.operationId).toBe(submitted.operationId);
+  await expect(other.authorize(scope)).rejects.toMatchObject({ reason: 'release_target_changed' });
+  await expect(observe.authorize(scope)).resolves.toMatchObject({ rolloutCheckSha256: submitted.target.rolloutCheckSha256 });
+});
 
 it('claims one formal rollout alongside a model workflow and keeps read authority after cancellation and grant removal', async () => {
   const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });

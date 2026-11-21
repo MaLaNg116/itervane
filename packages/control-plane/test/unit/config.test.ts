@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { canonicalPublicUrl, migrationConfig, runtimeConfig, workerConfig } from '../../src/config.js';
+import { canonicalPublicUrl, migrationConfig, releaseWorkerConfig, runtimeConfig, workerConfig } from '../../src/config.js';
 
 const configured = {
   DATABASE_URL: 'postgresql://localhost/itervane', ITERVANE_OIDC_ISSUER: 'https://identity.example/realms/personal',
@@ -37,6 +37,27 @@ it('requires a complete local socket, separate controller UID and pinned image f
   for (const overrides of [{ ITERVANE_RUNNER_UID: '0' }, { ITERVANE_RUNNER_IMAGE_SHA256: undefined },
     { ITERVANE_RUNNER_SOCKET: 'https://example.invalid/runner.sock' }]) expect(() => workerConfig({ ...environment, ...overrides })).toThrow();
   expect(workerConfig({ DATABASE_URL: configured.DATABASE_URL }).runner).toBeUndefined();
+});
+
+it('starts the release worker only with a pinned environment, qualified Runner and complete service credentials', () => {
+  const environment = {
+    DATABASE_URL: configured.DATABASE_URL,
+    ITERVANE_RUNNER_SOCKET: '/run/itervane/inspection.sock', ITERVANE_RUNNER_UID: '1234', ITERVANE_RUNNER_IMAGE_SHA256: 'a'.repeat(64),
+    ITERVANE_RELEASE_ENVIRONMENT_ID: '123e4567-e89b-42d3-a456-426614174000', ITERVANE_RELEASE_TARGET_SHA256: 'b'.repeat(64),
+    ITERVANE_RELEASE_MATERIALIZER: '/opt/itervane/oci-layout', ITERVANE_RELEASE_SKOPEO: '/usr/bin/skopeo',
+    ITERVANE_RELEASE_KOMODO_KEY: 'fixture-key', ITERVANE_RELEASE_KOMODO_SECRET: 'fixture-secret',
+    ITERVANE_RELEASE_PROBE_SECRET: 'fixture-health',
+  };
+  expect(releaseWorkerConfig(environment)).toMatchObject({
+    installed: { environmentId: environment.ITERVANE_RELEASE_ENVIRONMENT_ID, mappingSha256: environment.ITERVANE_RELEASE_TARGET_SHA256 },
+    tools: { materializer: environment.ITERVANE_RELEASE_MATERIALIZER, skopeo: environment.ITERVANE_RELEASE_SKOPEO },
+    runner: { controllerUid: 1234 }, leaseSeconds: 10,
+  });
+  for (const overrides of [{ ITERVANE_RELEASE_PROBE_SECRET: undefined }, { ITERVANE_RUNNER_IMAGE_SHA256: undefined },
+    { ITERVANE_RELEASE_TARGET_SHA256: undefined }, { ITERVANE_RELEASE_SKOPEO: 'skopeo' }, { ITERVANE_RELEASE_REGISTRY_USER: 'missing-password' }]) {
+    expect(() => releaseWorkerConfig({ ...environment, ...overrides })).toThrow();
+  }
+  expect(workerConfig(environment).auditModel).toBeUndefined();
 });
 
 it('fixes the public MCP URL in configuration instead of deriving it from untrusted request headers', () => {
