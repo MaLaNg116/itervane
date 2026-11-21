@@ -131,10 +131,12 @@ async function assessCandidate(tx: Transaction, task: TaskRow, row: Candidate, m
   const claimed = operation?.state === 'dispatching'
     && (komodoPhase !== undefined || ['release_claimed', 'release_registry_prepared', 'release_registry_verified'].includes(runtime?.reason ?? ''))
     && (task.state === 'running' || task.state === 'cancel_requested');
-  const observing = operation?.state === 'reconciling' && runtime?.reason === 'release_registry_reconciling'
+  const observing = operation?.state === 'reconciling' && (komodoPhase !== undefined || runtime?.reason === 'release_registry_reconciling')
     && ['running', 'reconciling', 'cancel_requested'].includes(task.state);
   const dispatchPhase = komodoPhase ? `task.${komodoPhase}` as const : 'task.release_claimed';
-  const progress: CandidateProgress | undefined = claimed ? dispatchPhase : observing ? 'task.release_registry_uncertain' : undefined;
+  let progress: CandidateProgress | undefined;
+  if (claimed || (observing && komodoPhase)) progress = dispatchPhase;
+  else if (observing) progress = 'task.release_registry_uncertain';
   const queued = operation?.state === 'queued' && task.state === 'queued' && runtime?.reason === 'release_queued';
   const active = task.generation === manifest.generation && task.requestedBy === row.requestedBy && (last?.action === 'confirm'
     ? queued || claimed || observing
