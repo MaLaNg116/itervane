@@ -1,10 +1,10 @@
-import { lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { linkSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   qualifiedGuestRepairProofSchema, repairCandidateManifestSchema, repairCandidateReceiptSchema, repairCommandByteLimit, repairCommandSchema,
   type RepairPatch,
 } from '@itervane/contracts';
-import { readBoundedFile, readGuestSnapshotData } from './guest-snapshot.js';
+import { isNpmLock, readBoundedFile, readGuestSnapshotData, readPublishedWorktree } from './guest-snapshot.js';
 import { sha256, sourceLimits } from './profiles.js';
 import { canonicalRepairCommand, protectedRepairPath } from './repair-command.js';
 import { readRepairSource, repairText } from './guest-repair-source.js';
@@ -12,6 +12,7 @@ import { requireNpmRepairPatch } from './npm-repair.js';
 
 const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 type RepairCommand = ReturnType<typeof canonicalRepairCommand>;
+const publishedMode = (mode: '100644' | '100755') => mode === '100755' ? 0o550 : 0o440;
 
 function editText(content: Buffer, edits: RepairPatch['files'][number]['edits']) {
   if (repairText(content) === null) throw new Error('repair-text');
@@ -67,22 +68,43 @@ function prepareCandidate({ manifest: base, files }: ReturnType<typeof readGuest
   return { contents, manifest, patch, receipt };
 }
 
+/** Verify a reconstructed candidate by its independently recorded manifest. */
+export function readGuestCandidate(ready: string, expectedManifestSha256: string) {
+  const manifest = repairCandidateManifestSchema.parse(JSON.parse(readBoundedFile(join(ready, 'manifest.json'), 4 * 1024 * 1024).toString('utf8')));
+  if (sha256(JSON.stringify(manifest)) !== expectedManifestSha256) throw new Error('repair-candidate-integrity');
+  const files = readPublishedWorktree(ready, manifest.files);
+  for (const [index, file] of files.entries()) {
+    const { sha256: expected, bytes, mode } = manifest.files[index]!;
+    const permissions = lstatSync(join(ready, 'worktree', file.path)).mode & 0o777;
+    if (file.content.length !== bytes || sha256(file.content) !== expected || permissions !== publishedMode(mode)) {
+      throw new Error('repair-candidate-integrity');
+    }
+  }
+  return { manifest, files };
+}
+
 function publishCandidate(output: string, snapshot: ReturnType<typeof readGuestSnapshotData>, command: RepairCommand) {
   const target = join(output, 'candidate');
   if (lstatSync(target, { throwIfNoEntry: false })) throw new Error('repair-publication-exists');
   const { contents, manifest, patch, receipt } = prepareCandidate(snapshot, command);
   const staging = mkdtempSync(join(output, '.candidate-'));
   try {
+    const inventory = join(staging, 'npm');
+    mkdirSync(inventory, { mode: 0o750 });
     for (const file of manifest.files) {
       const destination = join(staging, 'worktree', file.path);
       mkdirSync(dirname(destination), { recursive: true, mode: 0o750 });
-      writeFileSync(destination, contents.get(file.path)!, { flag: 'wx', mode: file.mode === '100755' ? 0o550 : 0o440 });
-      const published = readBoundedFile(destination, file.bytes);
-      if (published.length !== file.bytes || sha256(published) !== file.sha256) throw new Error('repair-candidate-integrity');
+      writeFileSync(destination, contents.get(file.path)!, { flag: 'wx', mode: publishedMode(file.mode) });
+      if (isNpmLock(file.path)) {
+        const projected = join(inventory, file.path);
+        mkdirSync(dirname(projected), { recursive: true, mode: 0o750 });
+        linkSync(destination, projected);
+      }
     }
     writeFileSync(join(staging, 'patch.json'), JSON.stringify(patch), { flag: 'wx', mode: 0o440 });
     writeFileSync(join(staging, 'manifest.json'), JSON.stringify(manifest), { flag: 'wx', mode: 0o440 });
     writeFileSync(join(staging, 'receipt.json'), JSON.stringify(receipt), { flag: 'wx', mode: 0o440 });
+    readGuestCandidate(staging, receipt.candidateManifestSha256);
     renameSync(staging, target);
     return receipt;
   } catch (error) {
