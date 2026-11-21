@@ -1,12 +1,12 @@
 import { finishFormalVerification, type FormalVerificationReport } from '@itervane/agent';
-import { formalVerificationResultSchema, qualifiedVerificationResponseSchema, type FormalVerificationEvidence,
+import { formalVerificationResultSchema, type FormalVerificationEvidence,
   type FormalVerificationResult } from '@itervane/contracts';
-import { compareVerificationScans, sha256 } from '@itervane/runner';
+import { sha256 } from '@itervane/runner';
 import { and, eq } from 'drizzle-orm';
 import type { Database } from '../persistence/database.js';
 import { formalRescanAttempts, formalVerificationResults, formalVerificationRuntime, runRuntime } from '../persistence/schema.js';
 import { appendEvent, clearSlot, ExecutionLost, type ExecutionScope, type TaskRow } from '../runtime/authority.js';
-import { projectVerificationEvidence } from '../runtime/verification-evidence.js';
+import { recordedVerificationEvidence } from '../runtime/verification-evidence.js';
 import type { Transaction } from './access.js';
 import { DomainError } from './errors.js';
 import { enqueueRepairRetry, prepareRepairRetry, readRepairRetry } from './repair-retry.js';
@@ -39,12 +39,7 @@ export async function publishFormalVerification(tx: Transaction, task: TaskRow, 
     .where(and(eq(formalVerificationRuntime.runId, scope.runId), eq(formalRescanAttempts.state, 'recorded')));
   if (!entry || entry.pointer.checkpointId !== report.checkpointId || report.runId !== scope.runId || report.role !== 'verify'
       || report.origin !== 'formal_verification') throw new ExecutionLost();
-  const receipt = qualifiedVerificationResponseSchema.parse(entry.attempt.receipt);
-  if (receipt.kind !== 'verification_receipt' || sha256(JSON.stringify(receipt)) !== entry.pointer.receiptSha256) {
-    throw new Error('formal_verification_recorded_receipt');
-  }
-  const { snapshot } = receipt;
-  const evidence = projectVerificationEvidence(receipt, compareVerificationScans(snapshot, snapshot.target ?? snapshot));
+  const { evidence } = recordedVerificationEvidence(entry.attempt.receipt, entry.pointer.receiptSha256);
   if (JSON.stringify(evidence) !== JSON.stringify(result.evidence)) throw new Error('formal_verification_projection_binding');
 
   const review = report.formalVerification ?? null;

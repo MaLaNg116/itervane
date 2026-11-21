@@ -85,7 +85,7 @@ export async function enqueueRepairRetry(tx: Transaction, database: Database, ta
   await enqueue(tx, database, next, runId);
 }
 
-export async function readRepairRetry(tx: Transaction, task: TaskRow, scope: ExecutionScope): Promise<FormalRepairRetry | undefined> {
+export async function readRepairRetry(tx: Transaction, task: TaskRow, scope: Pick<ExecutionScope, 'runId' | 'generation'>): Promise<FormalRepairRetry | undefined> {
   if (task.generation === 1) return;
   const [stored] = await tx.select().from(formalRepairRetries).where(eq(formalRepairRetries.runId, scope.runId));
   if (!stored) return;
