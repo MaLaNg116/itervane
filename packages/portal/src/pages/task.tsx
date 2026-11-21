@@ -12,6 +12,14 @@ import { Badge } from '../ui/badge.js';
 import { Button } from '../ui/button.js';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '../ui/dialog.js';
 import { TaskAudit } from './task-audit.js';
+import { TaskRepair } from './task-repair.js';
+
+const controlText = {
+  cancel: { title: 'cancelTitle', help: 'cancelHelp', confirm: 'confirmCancel' },
+  retry: { title: 'resumeTitle', help: 'resumeHelp', confirm: 'confirmResume' },
+  audit: { title: 'continueAuditTitle', help: 'continueAuditHelp', confirm: 'continueAudit' },
+  repair: { title: 'continueRepairTitle', help: 'continueRepairHelp', confirm: 'continueRepair' },
+} as const;
 
 export function TaskPage({ id }: { id: string }) {
   const { locale } = usePortal();
@@ -26,7 +34,7 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
   const access = useRemote(`/v1/projects/${task.projectId}/access`, projectAccessDtoSchema, { poll: true });
   const events = useRemote(`/v1/tasks/${task.id}/events?limit=100`, z.object({ items: taskEventDtoSchema.array() }).strict(), { poll: true, localized: true });
   const inspection = useRemote(`/v1/tasks/${task.id}/source-inspection`, sourceInspectionDtoSchema, { poll: true });
-  const [confirmation, setConfirmation] = useState<{ action: 'cancel' | 'retry' | 'audit'; expectedVersion: number } | null>(null);
+  const [confirmation, setConfirmation] = useState<{ action: keyof typeof controlText; expectedVersion: number } | null>(null);
   const returnButton = useRef<HTMLButtonElement>(null);
   const inFlight = useRef(false);
   const canWrite = access.data?.canWrite === true && !access.error;
@@ -42,7 +50,7 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
   const canStartAudit = task.state === 'waiting_input' && waitReason === 'inspection_ready';
   if (access.error) return <Failure error={access.error} locale={locale} />;
   const cancelling = confirmation?.action === 'cancel';
-  const auditing = confirmation?.action === 'audit';
+  const dialog = controlText[confirmation?.action ?? 'retry'];
   return <>
     <a href={`#/projects/${task.projectId}`} className="back-link">← {t('tasks')}</a>
     <PageHeading title={t('taskDetails')} actions={<>
@@ -80,14 +88,16 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
     </Panel>
     </div>
     <TaskAudit taskId={task.id} />
+    <TaskRepair taskId={task.id} canWrite={canWrite} disabled={control.isPending}
+      onResume={() => setConfirmation({ action: 'repair', expectedVersion: task.version })} />
     {canWrite && <Dialog open={confirmation !== null} disablePointerDismissal onOpenChange={(open, event) => {
       if (open) return;
       if (inFlight.current) event.cancel();
       else setConfirmation(null);
     }}>
       <DialogContent initialFocus={returnButton} aria-busy={control.isPending}>
-        <DialogTitle>{t(cancelling ? 'cancelTitle' : auditing ? 'continueAuditTitle' : 'resumeTitle')}</DialogTitle>
-        <DialogDescription>{t(cancelling ? 'cancelHelp' : auditing ? 'continueAuditHelp' : 'resumeHelp')}</DialogDescription>
+        <DialogTitle>{t(dialog.title)}</DialogTitle>
+        <DialogDescription>{t(dialog.help)}</DialogDescription>
         <DialogFooter>
           <DialogClose disabled={control.isPending} render={<Button ref={returnButton} variant="outline" />}>{t('cancel')}</DialogClose>
           <Button variant={cancelling ? 'destructive' : 'default'} disabled={control.isPending} onClick={() => {
@@ -95,7 +105,7 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
             inFlight.current = true;
             // The version is the one shown when the user opened the confirmation.
             control.mutate(confirmation);
-          }}>{t(cancelling ? 'confirmCancel' : auditing ? 'continueAudit' : 'confirmResume')}</Button>
+          }}>{t(dialog.confirm)}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>}

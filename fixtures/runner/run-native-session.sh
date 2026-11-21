@@ -75,6 +75,7 @@ if primary != "image-rejected":
         if scenario == "inspect":
             expected.extend((item, "passed") for item in (
                 "runner-inspection-snapshot", "runner-inspection-offline", "runner-inspection-gitleaks", "runner-inspection-trivy",
+                "runner-repair-replay",
             ))
         expected.append(("runner-job-cleaned", "passed"))
     elif scenario != "heartbeat":
@@ -108,13 +109,18 @@ if scenario in ("source", "inspect"):
 if scenario == "inspect":
     with Path(path).with_name("kvm-inspection-inputs.json").open() as stream:
         inputs = json.load(stream)
-    snapshot, enforcement, gitleaks, trivy = (check["detail"] for check in report["checks"][3:7])
+    snapshot, enforcement, gitleaks, trivy, repair = (check["detail"] for check in report["checks"][3:8])
     assert "87e87fe4cddfcc6cbb4ed4ed4a2a7644e79a622919fd325f17e8b5841c7b2ca7" in snapshot
     assert "1844359" in snapshot
     assert inputs["inputsSha256"] in enforcement
     assert inputs["databaseSha256"] in trivy and inputs["databaseUpdatedAt"] in trivy
     assert ("合成密钥对照通过" if locale == "zh-CN" else "passed the synthetic secret controls") in gitleaks
     assert ("锁文件对照及缺库拒绝通过" if locale == "zh-CN" else "rejected the missing database") in trivy
+    # These byte digests come from git show for the fixed README and the expected added line.
+    assert "127ee6ca0a857feaa9ae6fa40b1204ac9c5e87cb53ebc14c744adffb37cb4bcc" in repair
+    assert "a9453f75e4f178583b4af83b02e814684e49f4b18c0e69c17a96695942a098cc" in repair
+    assert ("拒绝受保护路径、过期摘要和跨字符字节区间" if locale == "zh-CN"
+            else "Rejected a protected path, stale digest and split character.") in repair
 PY
   test -z "$(as_runner find "$stage" -mindepth 1 -print -quit)"
 }

@@ -7,23 +7,32 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
-import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, qualifiedInspectionResponseSchema, type QualifiedInspectionRequest } from '@itervane/contracts';
+import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
+  qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, type QualifiedInspectionReceipt,
+  type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt, type RepairPatch } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
-import { scannerProfiles, sha256 } from '@itervane/runner';
+import { canonicalRepairCommand, canonicalRepairObservation, scannerProfiles, sha256 } from '@itervane/runner';
+import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../verification/src/agent/npm-repair-fixture.js';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { queueName } from '../../src/persistence/database.js';
-import { formalAuditInputs, formalAuditResults, inspectionAttempts } from '../../src/persistence/schema.js';
+import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRuntime,
+  inspectionAttempts } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
-import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
+import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
+import { runFormalRepair } from '../../src/runtime/formal-repair.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
 import { GuardedCheckpointer } from '../../src/runtime/checkpointer.js';
+import { FormalRepairExecution, type RepairRunner } from '../../src/runtime/repair-execution.js';
+import { observeFormalRepairTargets, type RepairObservationRunner } from '../../src/runtime/repair-observation.js';
 import { ToolGateway } from '../../src/runtime/tools.js';
 import { DurableWorker } from '../../src/runtime/worker.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
 import { InspectionService, prepareInspection } from '../../src/service/inspections.js';
 import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
+import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
+import { publishFormalRepair } from '../../src/service/repair-result.js';
 import { TaskService } from '../../src/service/tasks.js';
 import { databaseFixture } from '../helpers/database.js';
 import { identityFixture } from '../helpers/identity.js';
@@ -97,10 +106,15 @@ it('enforces current project permission for both preparing and reading the plan'
   expect((await database.admin.query('SELECT * FROM itervane.inspection_plans')).rowCount).toBe(0);
 });
 
-function testReceipt(request: QualifiedInspectionRequest, partial = false, findingPath?: string) {
+function testReceipt(request: QualifiedInspectionRequest, partial = false, findingPath?: string, approval?: NpmUpgradeApproval) {
   const { origin, ...scope } = request;
   const domainId = randomUUID();
   const manifestSha256 = 'b'.repeat(64);
+  const npmFinding = approval && {
+    id: sha256(JSON.stringify(['trivy', manifestSha256, approval.advisoryId, npmFixturePaths.lock, null, approval.name, approval.installedVersion])),
+    severity: 'high', ruleId: approval.advisoryId, path: npmFixturePaths.lock, line: null,
+    npm: { name: approval.name, installedVersion: approval.installedVersion, fixedVersions: [approval.fixedVersion] },
+  };
   const receipt = qualifiedInspectionResponseSchema.parse({
     kind: 'receipt', scope, domainId, imageSha256, originSha256: sha256(origin), commitSha256: 'c'.repeat(64),
     cleanupConfirmed: true, sessionVerified: true,
@@ -111,7 +125,7 @@ function testReceipt(request: QualifiedInspectionRequest, partial = false, findi
         findings: scanner === 'gitleaks' && findingPath ? [{
           id: sha256(JSON.stringify([scanner, manifestSha256, 'fixture-pattern', findingPath, 3])),
           severity: 'unknown', ruleId: 'fixture-pattern', path: findingPath, line: 3,
-        }] : [],
+        }] : scanner === 'trivy' && npmFinding ? [npmFinding] : [],
         status: partial && scanner === 'trivy' ? 'unsupported' : 'completed',
         reason: partial && scanner === 'trivy' ? 'missing_inventory' : null,
         database: scanner === 'trivy' && !partial ? { sha256: 'f'.repeat(64), updatedAt: new Date().toISOString() } : null,
@@ -146,6 +160,536 @@ function auditModel(complete = concludeAudit) {
 function completedRunner(finding?: string, partial = false) {
   return inspectionRunner(async (request, authorize) => { await authorize(); return testReceipt(request, partial, finding); });
 }
+
+async function claimAfterAudit() {
+  // Establish the repair phase lease in this fixture while the application handoff is in development.
+  await database.admin.query("UPDATE itervane.tasks SET state='queued' WHERE id=$1", [task.id]);
+  await database.admin.query("UPDATE itervane.task_runs SET state='queued' WHERE task_id=$1", [task.id]);
+  await coordinator.reconcile(randomUUID());
+  return claim();
+}
+
+async function repairReady() {
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(fixtureFindingPath), auditModel: auditModel() });
+  try { await worker.tick(); } finally { await worker.close(); }
+  const [inspection] = await database.storage.db.select().from(inspectionAttempts);
+  const [repair] = await database.storage.db.select().from(formalRepairInputs);
+  if (!inspection?.receipt || !repair?.document.findingIds.length) throw new Error('Missing repair fixture basis');
+  const original = 'Public sample\n';
+  const patch: RepairPatch = {
+    version: 1, baseSnapshotSha256: repair.document.inspection.snapshotSha256,
+    files: [{ path: fixtureFindingPath, beforeSha256: sha256(original),
+      edits: [{ startByte: Buffer.byteLength(original), endByte: Buffer.byteLength(original), replacement: 'Reviewed.\n' }] }],
+  };
+  return { scope: await claimAfterAudit(), scan: inspection.receipt, original,
+    proposal: { callKeySha256: sha256('repair call'), findingIds: repair.document.findingIds, patch } };
+}
+
+function repairReceipt(scan: QualifiedInspectionReceipt, request: Parameters<RepairRunner['repair']>[0],
+  workspace: Parameters<RepairRunner['repair']>[1], patch: RepairPatch, original: string | Readonly<Record<string, string>>): QualifiedRepairReceipt {
+  const command = canonicalRepairCommand(workspace, patch);
+  const { origin: registered, ...scope } = qualifiedRepairRequestSchema.parse({ ...request, operation: 'apply_repair',
+    commandSha256: sha256(command.bytes), commandBytes: command.bytes.length });
+  const domainId = randomUUID();
+  const changes = patch.files.map(file => {
+    const bytes = Buffer.from(typeof original === 'string' ? original : original[file.path]!);
+    let modified = bytes;
+    for (const edit of file.edits.toReversed()) {
+      modified = Buffer.concat([modified.subarray(0, edit.startByte), Buffer.from(edit.replacement), modified.subarray(edit.endByte)]);
+    }
+    return { path: file.path, beforeSha256: file.beforeSha256, afterSha256: sha256(modified), beforeBytes: bytes.length,
+      afterBytes: modified.length, edits: file.edits.length };
+  });
+  return {
+    kind: 'repair_receipt', scope, domainId, imageSha256, originSha256: sha256(registered), commitSha256: scan.commitSha256,
+    cleanupConfirmed: true, sessionVerified: true,
+    snapshot: {
+      runId: domainId, repositoryId: scope.repositoryId, commit: scope.commit, tree: scan.snapshot.tree, files: scan.snapshot.files,
+      manifestSha256: scope.baseSnapshotSha256, commandSha256: scope.commandSha256, readOnly: true, offline: true,
+      candidate: { version: 1, operationId: scope.operationId, repairInputSha256: scope.repairInputSha256,
+        baseSnapshotSha256: scope.baseSnapshotSha256, workspaceSha256: command.workspaceSha256, patchSha256: command.patchSha256,
+        candidateManifestSha256: sha256(JSON.stringify(changes)), changes },
+    },
+  };
+}
+
+const idleRepairRunner = () => ({ kind: 'status' as const, version: 1 as const, state: 'idle' as const, workspaceSha256, imageSha256 });
+
+function repairObservationReceipt(scan: QualifiedInspectionReceipt, raw: Parameters<RepairObservationRunner['observeRepair']>[0],
+  workspace: Parameters<RepairObservationRunner['observeRepair']>[1], targets: Parameters<RepairObservationRunner['observeRepair']>[2],
+  original: string, range: QualifiedRepairObservationReceipt['snapshot']['observation']['targets'][number]['range'] = null
+): QualifiedRepairObservationReceipt {
+  const command = canonicalRepairObservation({ workspace, targets });
+  const { origin: registered, ...request } = qualifiedRepairObservationRequestSchema.parse({ ...raw, operation: 'observe_repair',
+    commandSha256: sha256(command.bytes), commandBytes: command.bytes.length });
+  const domainId = randomUUID();
+  return {
+    kind: 'repair_observation', scope: request, domainId, imageSha256, originSha256: sha256(registered), commitSha256: scan.commitSha256,
+    cleanupConfirmed: true, sessionVerified: true, snapshot: {
+      runId: domainId, repositoryId: request.repositoryId, commit: request.commit, tree: scan.snapshot.tree, files: scan.snapshot.files,
+      manifestSha256: workspace.baseSnapshotSha256, commandSha256: request.commandSha256, readOnly: true, offline: true,
+      observation: { version: 1, operationId: workspace.operationId, repairInputSha256: workspace.repairInputSha256,
+        baseSnapshotSha256: workspace.baseSnapshotSha256, targets: targets.map(target => ({
+          ...target, status: 'text', file: { bytes: Buffer.byteLength(original), sha256: sha256(original) }, range, templates: [],
+        })) },
+    },
+  };
+}
+
+it('observes only published audit targets while the current project grant survives', async () => {
+  const { scope, proposal, scan, original } = await repairReady();
+  let revoke = false;
+  let blockedPulse = false;
+  const observeRepair = vi.fn<RepairObservationRunner['observeRepair']>(async (raw, workspace, targets, authorize) => {
+    await authorize();
+    if (revoke) {
+      const [grant] = (await database.admin.query('DELETE FROM itervane.workspace_members RETURNING workspace_id, principal_id')).rows;
+      try { await authorize(); } catch { blockedPulse = true; }
+      await database.admin.query('INSERT INTO itervane.workspace_members(workspace_id,principal_id) VALUES($1,$2)', [grant.workspace_id, grant.principal_id]);
+    }
+    return repairObservationReceipt(scan, raw, workspace, targets, original);
+  });
+  const options = { runner: { observe: async () => idleRepairRunner(), observeRepair }, protectedPaths: [] };
+  await expect(observeFormalRepairTargets(coordinator, scope, [sha256('foreign finding')], options)).rejects.toMatchObject({ code: 'forbidden' });
+  expect(observeRepair).not.toHaveBeenCalled();
+  const observation = await observeFormalRepairTargets(coordinator, scope, proposal.findingIds, options);
+  expect(observation).toMatchObject({ kind: 'repair_observation', scope: { runId: scope.runId, fence: scope.fence },
+    snapshot: { observation: { targets: [{ findingId: proposal.findingIds[0], path: fixtureFindingPath, line: 3, scanner: 'gitleaks' }] } } });
+  expect(await database.storage.db.select().from(formalRepairOperations)).toEqual([]);
+  revoke = true;
+  await expect(observeFormalRepairTargets(coordinator, scope, proposal.findingIds, options)).rejects.toMatchObject({ code: 'not_found' });
+  expect(blockedPulse).toBe(true);
+  expect(observeRepair).toHaveBeenCalledTimes(2);
+});
+
+it('binds a reviewed npm pair to the recorded scan and prevents partial edits, policy substitution and replay after revocation', async () => {
+  const runner = inspectionRunner(async (request, authorize) => {
+    await authorize();
+    return testReceipt(request, false, undefined, npmFixtureApproval);
+  });
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner, auditModel: auditModel() });
+  try { await worker.tick(); } finally { await worker.close(); }
+  const [inspection] = await database.storage.db.select().from(inspectionAttempts);
+  const [input] = await database.storage.db.select().from(formalRepairInputs);
+  if (!input || !inspection?.receipt) throw new Error('Missing npm fixture audit');
+  const scan = inspection.receipt;
+  const scope = await claimAfterAudit();
+  const [findingId] = input.document.findingIds;
+  expect(findingId).toBe(scan.snapshot.reports.find(report => report.scanner === 'trivy')?.findings[0]?.id);
+  const files = npmFixtureFiles();
+  const originals = Object.fromEntries(files.map(({ path, original }) => [path, original]));
+  const patch = { version: 1 as const, baseSnapshotSha256: input.document.inspection.snapshotSha256,
+    files: files.map(({ path, original, edits }) => ({ path, beforeSha256: sha256(original), edits })) };
+  const proposal = { callKeySha256: sha256('npm repair'), findingIds: [findingId!], patch };
+  const pair = [{ findingId, lockPath: npmFixturePaths.lock, approval: npmFixtureApproval }];
+  const repair = vi.fn<RepairRunner['repair']>(async (request, workspace, appliedPatch, authorize) => {
+    await authorize();
+    expect(workspace.npmRepairs).toEqual(pair);
+    return repairReceipt(scan, request, workspace, appliedPatch, originals);
+  });
+  const observeRepair = vi.fn<RepairObservationRunner['observeRepair']>(async (request, workspace, targets, authorize) => {
+    await authorize();
+    const receipt = repairObservationReceipt(scan, request, workspace, targets, '');
+    expect(workspace.npmRepairs).toEqual(pair);
+    for (const target of receipt.snapshot.observation.targets) {
+      const file = files.find(entry => entry.path === target.path)!;
+      const { name, installedVersion, fixedVersion } = npmFixtureApproval;
+      target.file = { sha256: sha256(file.original), bytes: Buffer.byteLength(file.original) };
+      target.npm = { name, installedVersion, fixedVersion, edits: file.edits };
+    }
+    return receipt;
+  });
+  const options = { runner: { observe: async () => idleRepairRunner(), repair, observeRepair }, protectedPaths: [], npmApprovals: [npmFixtureApproval] };
+  const execution = new FormalRepairExecution(coordinator, options);
+  const unapproved = new FormalRepairExecution(coordinator, { ...options, npmApprovals: [] });
+  const stale = new FormalRepairExecution(coordinator, { ...options, npmApprovals: [{ ...npmFixtureApproval, fixedVersion: '4.17.22' }] });
+  const protectedExecution = new FormalRepairExecution(coordinator, { ...options, protectedPaths: [npmFixturePaths.manifest] });
+  await expect(unapproved.apply(scope, proposal)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(stale.apply(scope, proposal)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(protectedExecution.apply(scope, proposal)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(execution.apply(scope, { ...proposal, patch: { ...patch, files: patch.files.slice(0, 1) } })).rejects.toMatchObject({ code: 'forbidden' });
+  expect(repair).not.toHaveBeenCalled();
+  expect(await database.storage.db.select().from(formalRepairOperations)).toEqual([]);
+  await expect(observeFormalRepairTargets(coordinator, scope, proposal.findingIds, options)).resolves.toMatchObject({ kind: 'repair_observation' });
+  const applied = await execution.apply(scope, proposal);
+  expect(applied).toMatchObject({ kind: 'repair_receipt', snapshot: { candidate: { changes: files.map(({ path, expected }) =>
+    ({ path, afterSha256: sha256(expected) })) } } });
+  expect(await execution.apply(scope, proposal)).toEqual(applied);
+  const altered = new FormalRepairExecution(coordinator, { ...options, npmApprovals: [{ ...npmFixtureApproval, integrity: `sha512-${'A'.repeat(86)}==` }] });
+  await expect(altered.apply(scope, proposal)).rejects.toMatchObject({ code: 'idempotency_conflict' });
+  await expect(unapproved.apply(scope, proposal)).rejects.toMatchObject({ code: 'forbidden' });
+  expect(repair).toHaveBeenCalledTimes(1);
+  const [stored] = await database.storage.db.select().from(formalRepairOperations);
+  expect(JSON.parse(stored!.command)).toMatchObject({ workspace: { npmRepairs: pair } });
+});
+
+it('uses the recorded mutation after a new worker claims a reserved repair whose checkpoint result was lost', async () => {
+  const { scope, proposal, scan } = await repairReady();
+  const prefix = 'fixture=one\nfixture2=two\n';
+  const line = 'fixture3=public\n';
+  const replacement = '# Replaced fixture line\n';
+  const original = prefix + line;
+  const range = { startByte: Buffer.byteLength(prefix), endByte: Buffer.byteLength(original), sha256: sha256(line) };
+  const signal = new AbortController();
+  const retired = new ExecutionLost();
+  const observeRepair = vi.fn<RepairObservationRunner['observeRepair']>(async (request, workspace, targets, authorize) => {
+    await authorize();
+    return repairObservationReceipt(scan, request, workspace, targets, original, range);
+  });
+  const repair = vi.fn<RepairRunner['repair']>(async (request, workspace, patch, authorize) => {
+    await authorize();
+    expect(patch.files).toEqual([{ path: fixtureFindingPath, beforeSha256: sha256(original),
+      edits: [{ startByte: range.startByte, endByte: range.endByte, replacement }] }]);
+    return repairReceipt(scan, request, workspace, patch, original);
+  });
+  const complete = vi.fn<ModelAdapter['complete']>(async ({ conversation }) => {
+    const context = conversation[0];
+    if (context?.kind !== 'user') throw new Error('Missing repair context');
+    const { observations } = JSON.parse(context.text) as { observations: AgentEvidence[] };
+    const candidate = observations.find(item => item.data.kind === 'repair_candidate');
+    if (candidate) return auditTurn('finish_role', { summary: '已按观测区间修改。', evidenceId: candidate.id });
+    const target = observations.find(item => item.data.kind === 'repair_targets');
+    if (!target || target.data.kind !== 'repair_targets') return auditTurn('read_repair_targets', { findingIds: proposal.findingIds });
+    const { startByte, endByte } = target.data.observation.targets[0]!.range!;
+    return auditTurn('apply_repair_patch', {
+      observationId: target.id, targets: [{ targetIndex: 0, edits: [{ startByte, endByte, replacement }] }],
+    });
+  });
+  const options = { runner: { observe: async () => idleRepairRunner(), observeRepair, repair }, protectedPaths: [] };
+  const storage = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+  const saveWrites = storage.putWrites.bind(storage);
+  const intercept = vi.spyOn(storage, 'putWrites').mockImplementation(async (config, writes, taskId, path) => {
+    if (writes.some(([channel, value]) => channel === 'state' && JSON.stringify(value).includes('"kind":"repair_candidate"'))) {
+      signal.abort(retired);
+    }
+    await saveWrites(config, writes, taskId, path);
+  });
+  try {
+    await expect(runFormalRepair(coordinator, scope, storage, auditModel(complete), options, signal.signal)).rejects.toBe(retired);
+    intercept.mockRestore();
+    const [before] = await database.storage.db.select().from(formalRepairAttempts);
+    expect(before).toMatchObject({ state: 'recorded', settledFence: scope.fence });
+    expect(complete).toHaveBeenCalledTimes(2);
+    await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+    await coordinator.reconcile(randomUUID());
+    const replacementScope = await claim();
+    const report = await runFormalRepair(coordinator, replacementScope, storage, auditModel(complete), options, new AbortController().signal);
+    expect(replacementScope.fence).toBeGreaterThan(scope.fence);
+    expect(report).toMatchObject({ reason: 'repair_complete', releaseEligible: false, usage: { turns: 3, toolCalls: 2 },
+      formalRepair: { operationId: before!.operationId, receiptSha256: before!.receiptSha256 },
+    });
+    expect(await database.storage.db.select().from(formalRepairAttempts)).toEqual([before]);
+    const [operation] = await database.storage.db.select().from(formalRepairOperations);
+    expect(operation).toMatchObject({ callKeySha256: sha256(`${report.bindingSha256}:2`), operationId: before!.operationId });
+    const [pointer] = await database.storage.db.select().from(formalRepairRuntime);
+    expect(pointer).toMatchObject({ checkpointId: report.checkpointId, publishedFence: replacementScope.fence });
+    expect(observeRepair).toHaveBeenCalledTimes(1);
+    expect(repair).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledTimes(3);
+
+    const publish = (outcome = report, lease = replacementScope) => coordinator.withLease(lease, (tx, { task: current }) =>
+      publishFormalRepair(tx, current, lease, outcome, 'anthropic', new AbortController().signal));
+    await expect(publish(report, scope)).rejects.toBeInstanceOf(ExecutionLost);
+    await expect(publish({ ...report, checkpointId: randomUUID() })).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(publish({ ...report, formalRepair: { ...report.formalRepair!, receiptSha256: sha256('different receipt') } }))
+      .rejects.toThrow('formal_repair_candidate_evidence');
+    await database.admin.query("ALTER TABLE itervane.task_events ADD CONSTRAINT injected_repair_event_failure CHECK(type <> 'task.repair_recorded') NOT VALID");
+    try {
+      await expect(publish()).rejects.toMatchObject({ cause: { constraint: 'injected_repair_event_failure' } });
+      expect(await database.storage.db.select().from(formalRepairResults)).toEqual([]);
+      expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'running' });
+    } finally { await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_repair_event_failure'); }
+    const result = await publish();
+    expect(result.document).toMatchObject({ status: 'candidate_ready', releaseEligible: false, candidate: {
+      operationId: before!.operationId, receiptSha256: before!.receiptSha256, manifestSha256: report.formalRepair!.candidateManifestSha256,
+    } });
+    expect((await database.storage.db.select().from(formalRepairResults))[0]).toMatchObject({
+      requestId: before!.requestId, checkpointId: report.checkpointId, sha256: result.sha256, finalizedFence: replacementScope.fence,
+    });
+    expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'waiting_input' });
+    const detail = (await database.admin.query("SELECT detail FROM itervane.task_events WHERE type='task.repair_recorded'")).rows;
+    expect(detail).toEqual([{ detail: { reason: 'repair_ready', runId: scope.runId, repairResultSha256: result.sha256 } }]);
+    await expect(database.storage.db.delete(formalRepairResults)).rejects
+      .toMatchObject({ cause: { code: '23514', message: 'formal_repair_result_is_retained' } });
+  } finally { intercept.mockRestore(); await storage.end(); }
+});
+
+it.each(['continuous', 'reclaimed', 'existing audit'] as const)('continues a sealed audit into a repair candidate through the ordinary queue (%s)', async mode => {
+  const prefix = 'header=fixture\nkeep=on\n';
+  const line = 'REMOVE=public\n';
+  const original = prefix + line;
+  const range = { startByte: Buffer.byteLength(prefix), endByte: Buffer.byteLength(original), sha256: sha256(line) };
+  let scan: QualifiedInspectionReceipt | undefined;
+  const inspect = vi.fn<InspectionRunner['inspect']>(async (request, authorize) => {
+    await authorize();
+    scan = testReceipt(request, false, fixtureFindingPath);
+    return scan;
+  });
+  const observeRepair = vi.fn<RepairObservationRunner['observeRepair']>(async (request, workspace, targets, authorize) => {
+    await authorize();
+    return repairObservationReceipt(scan!, request, workspace, targets, original, range);
+  });
+  const repair = vi.fn<RepairRunner['repair']>(async (request, workspace, patch, authorize) => {
+    await authorize();
+    return repairReceipt(scan!, request, workspace, patch, original);
+  });
+  const completeAudit = vi.fn(concludeAudit);
+  const completeRepair = vi.fn<ModelAdapter['complete']>(async ({ conversation }) => {
+    const context = conversation[0];
+    if (context?.kind !== 'user') throw new Error('Missing repair context');
+    const { observations, handoff } = JSON.parse(context.text) as { observations: AgentEvidence[]; handoff: { findings: Array<{ id: string }> } };
+    const candidate = observations.find(item => item.data.kind === 'repair_candidate');
+    if (candidate) return auditTurn('finish_role', { evidenceId: candidate.id, summary: '已清理示例配置项。' });
+    const target = observations.find(item => item.data.kind === 'repair_targets');
+    if (!target || target.data.kind !== 'repair_targets') return auditTurn('read_repair_targets', { findingIds: handoff.findings.map(item => item.id) });
+    return auditTurn('apply_repair_patch', { observationId: target.id, targets: [{ targetIndex: 0,
+      edits: [{ startByte: range.startByte, endByte: range.endByte, replacement: '' }],
+    }] });
+  });
+  const model = auditModel(request => {
+    const context = request.conversation[0];
+    const repairing = context?.kind === 'user' && JSON.parse(context.text).role === 'repair';
+    return (repairing ? completeRepair : completeAudit)(request);
+  });
+  const source = inspectionRunner(inspect);
+  const tasks = new TaskService(database.storage);
+  if (mode === 'reclaimed') {
+    const scanWorker = new DurableWorker(database.storage, database.runtimeUrl, { runner: source });
+    try { expect(await scanWorker.tick()).toBe(true); } finally { await scanWorker.close(); }
+    const current = await tasks.get(identity, task.id);
+    await tasks.resume(identity, task.id, { expectedVersion: current.version });
+    const scope = await claim();
+    const storage = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+    try {
+      await expect(runFormalAudit(coordinator, scope, storage, model, new AbortController().signal, true)).resolves.toBe('repair_pending');
+    } finally { await storage.end(); }
+    expect(await tasks.get(identity, task.id)).toMatchObject({ state: 'running' });
+    await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  }
+  if (mode === 'existing audit') {
+    const auditOnly = new DurableWorker(database.storage, database.runtimeUrl, { runner: source, auditModel: model });
+    try {
+      expect(await auditOnly.tick()).toBe(true);
+      const audited = await tasks.get(identity, task.id);
+      expect((await tasks.events(identity, task.id, 50)).at(-1)).toMatchObject({ reason: 'audit_ready' });
+      // An audit recorded before the repair handoff migration can enter repair as well.
+      await database.admin.query('TRUNCATE itervane.formal_repair_results, itervane.formal_repair_attempts, itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs');
+      await tasks.resume(identity, task.id, { expectedVersion: audited.version });
+      expect(await auditOnly.tick()).toBe(true);
+      const deferred = await tasks.get(identity, task.id);
+      expect((await tasks.events(identity, task.id, 50)).at(-1)).toMatchObject({ reason: 'repair_deferred' });
+      expect(deferred.state).toBe('waiting_input');
+      await tasks.resume(identity, task.id, { expectedVersion: deferred.version });
+    } finally { await auditOnly.close(); }
+  }
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: source, auditModel: model,
+    repair: { runner: { observe: async () => idleRepairRunner(), observeRepair, repair }, protectedPaths: [] },
+  });
+  try { expect(await worker.tick()).toBe(true); } finally { await worker.close(); }
+  const [result] = await database.storage.db.select().from(formalRepairResults);
+  const [audit] = await database.storage.db.select().from(formalAuditResults);
+  const events = await tasks.events(identity, task.id, 50, 'zh-CN');
+  expect(result?.document, JSON.stringify({ reason: events.at(-1)?.reason, auditCalls: completeAudit.mock.calls.length,
+    repairCalls: completeRepair.mock.calls.length, observationCalls: observeRepair.mock.calls.length, patchCalls: repair.mock.calls.length,
+  })).toMatchObject({ status: 'candidate_ready', auditResultSha256: audit?.sha256, releaseEligible: false,
+    candidate: { changes: [{ path: fixtureFindingPath, beforeSha256: sha256(original), afterSha256: sha256(prefix) }] },
+  });
+  expect(await tasks.get(identity, task.id)).toMatchObject({ runId: task.runId, state: 'waiting_input' });
+  expect(result!.finalizedFence).toBe(audit!.finalizedFence + (mode === 'continuous' ? 0 : mode === 'reclaimed' ? 1 : 2));
+  expect(events.at(-1)).toMatchObject({ type: 'task.repair_recorded', reason: 'repair_ready',
+    reasonMessage: '修复候选已就绪，等待独立复验。',
+  });
+  expect(inspect).toHaveBeenCalledTimes(1);
+  expect(observeRepair).toHaveBeenCalledTimes(1);
+  expect(repair).toHaveBeenCalledTimes(1);
+  expect(completeAudit).toHaveBeenCalledTimes(3);
+  expect(completeRepair).toHaveBeenCalledTimes(3);
+  if (mode === 'continuous') {
+    const publicUrl = 'https://itervane.example';
+    const api = createApi(database.storage, { ...issuer.config, publicUrl }, { logger: false });
+    const client = new Client({ name: 'repair-reader', version: '0.0.0' });
+    try {
+      const address = await api.listen({ host: '127.0.0.1', port: 0 });
+      const token = await issuer.token('owner', { aud: `${publicUrl}/mcp`, scope: 'itervane:read' });
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+        requestInit: { headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'zh-CN' } },
+      }));
+      const observed = await client.callTool({ name: 'get_repair', arguments: { taskId: task.id } });
+      expect(observed.isError).not.toBe(true);
+      const view = formalRepairDtoSchema.parse(observed.structuredContent);
+      const url = `/v1/tasks/${task.id}/repair`;
+      const authorization = `Bearer ${await issuer.token()}`;
+      const zh = await api.inject({ url, headers: { authorization, 'Accept-Language': 'zh-CN' } });
+      const en = await api.inject({ url, headers: { authorization, 'Accept-Language': 'en' } });
+      expect(zh.statusCode).toBe(200);
+      expect(zh.json()).toEqual(view);
+      expect(en.json()).toMatchObject({ status: 'recorded', locale: 'en', result: result!.document,
+        message: 'The candidate patch is recorded and ready for independent verification.',
+      });
+      const patchUrl = `${url}/patch?expectedSha256=${result!.sha256}`;
+      const exported = await api.inject({ url: patchUrl, headers: { authorization } });
+      expect(exported.statusCode).toBe(200);
+      expect(exported.headers['cache-control']).toBe('no-store');
+      const { patch, patchSha256 } = formalRepairPatchDtoSchema.parse(exported.json());
+      expect(patchSha256).toBe(sha256(JSON.stringify(patch)));
+      expect(patch.files).toEqual([{ path: fixtureFindingPath, beforeSha256: sha256(original),
+        edits: [{ startByte: range.startByte, endByte: range.endByte, replacement: '' }],
+      }]);
+      expect(exported.body).not.toContain(line.trim());
+      expect(JSON.stringify(view)).not.toContain('"replacement"');
+      expect((await api.inject({ url: `${url}/patch?expectedSha256=${sha256('different result')}`, headers: { authorization } })).statusCode).toBe(409);
+      const principal = randomUUID();
+      await database.admin.query('INSERT INTO itervane.principals(id,issuer,subject) VALUES($1,$2,$3)', [principal, issuer.config.issuer, 'viewer']);
+      await database.admin.query("INSERT INTO itervane.project_members(project_id,principal_id,role) VALUES($1,$2,'viewer')", [task.projectId, principal]);
+      const viewer = { authorization: `Bearer ${await issuer.token('viewer')}` };
+      expect((await api.inject({ url, headers: viewer })).statusCode).toBe(200);
+      expect((await api.inject({ url: patchUrl, headers: viewer })).statusCode).toBe(403);
+      await database.admin.query('DELETE FROM itervane.workspace_members');
+      expect((await api.inject({ url: patchUrl, headers: { authorization } })).statusCode).toBe(404);
+      expect((await client.callTool({ name: 'get_repair', arguments: { taskId: task.id } })).isError).toBe(true);
+    } finally { await client.close(); await api.close(); }
+  }
+});
+
+it('retains the audited source when there are no findings and does not queue a repair', async () => {
+  const observeRepair = vi.fn<RepairObservationRunner['observeRepair']>();
+  const repair = vi.fn<RepairRunner['repair']>();
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, {
+    runner: completedRunner(), auditModel: auditModel(),
+    repair: { runner: { observe: async () => idleRepairRunner(), observeRepair, repair }, protectedPaths: [] },
+  });
+  const tasks = new TaskService(database.storage);
+  try {
+    expect(await worker.tick()).toBe(true);
+    const waiting = await tasks.get(identity, task.id);
+    expect(waiting.state).toBe('waiting_input');
+    await expect(tasks.resume(identity, task.id, { expectedVersion: waiting.version })).rejects.toMatchObject({ code: 'unsupported_state' });
+  } finally { await worker.close(); }
+  expect(observeRepair).not.toHaveBeenCalled();
+  expect(repair).not.toHaveBeenCalled();
+});
+
+it('records one immutable repair command and a checked receipt across concurrent duplicate dispatches', async () => {
+  const { scope, proposal, scan, original } = await repairReady();
+  const admitted = Promise.withResolvers<void>();
+  const finish = Promise.withResolvers<void>();
+  const repair = vi.fn<RepairRunner['repair']>(async (request, workspace, patch, authorize) => {
+    await authorize(); admitted.resolve();
+    await finish.promise;
+    return repairReceipt(scan, request, workspace, patch, original);
+  });
+  const execution = new FormalRepairExecution(coordinator, { runner: { observe: async () => idleRepairRunner(), repair }, protectedPaths: [] });
+  const processing = execution.apply(scope, proposal);
+  try {
+    await Promise.race([admitted.promise, processing.then(() => { throw new Error('Repair was not dispatched'); })]);
+    expect(await execution.apply(scope, proposal)).toMatchObject({ kind: 'rejected', code: 'cleanup_unproven', cleanup: 'unknown' });
+    const [record] = await database.storage.db.select().from(formalRepairAttempts);
+    expect(record).toMatchObject({ state: 'reserved', fence: scope.fence, receipt: null });
+  } finally { finish.resolve(); }
+  const result = await processing;
+  expect(result).toMatchObject({ kind: 'repair_receipt', cleanupConfirmed: true });
+  expect(await execution.apply(scope, proposal)).toEqual(result);
+  expect(repair).toHaveBeenCalledTimes(1);
+  const [operation] = await database.storage.db.select().from(formalRepairOperations);
+  const [attempt] = await database.storage.db.select().from(formalRepairAttempts);
+  expect(operation).toMatchObject({ preparedFence: scope.fence, findingIds: proposal.findingIds, commandSha256: sha256(operation!.command) });
+  expect(attempt).toMatchObject({ operationId: operation!.operationId, state: 'recorded', settledFence: scope.fence,
+    settledWorkerId: scope.workerId, receipt: result, receiptSha256: sha256(JSON.stringify(result)) });
+
+  const changed: RepairPatch = { ...proposal.patch, files: proposal.patch.files.map(file => ({ ...file,
+    edits: file.edits.map(edit => ({ ...edit, replacement: 'Different verified change.\n' })) })) };
+  await expect(execution.apply(scope, { ...proposal, patch: changed })).rejects.toMatchObject({ code: 'idempotency_conflict' });
+  await expect(database.storage.db.update(formalRepairAttempts).set({ state: 'closed' })).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'formal_repair_attempt_transition' } });
+  const otherOperationId = randomUUID();
+  const persisted = JSON.parse(operation!.command);
+  const other = canonicalRepairCommand({ ...persisted.workspace, operationId: otherOperationId }, persisted.patch);
+  await expect(database.storage.db.insert(formalRepairOperations).values({ ...operation!, operationId: otherOperationId,
+    callKeySha256: sha256('modified command'), command: other.bytes.toString('utf8') })).rejects
+    .toMatchObject({ cause: { code: '23514', constraint: 'formal_repair_operation_command' } });
+});
+
+it('restricts scoped repair paths and retains no candidate for an invalid runner receipt', async () => {
+  const { scope, proposal, scan, original } = await repairReady();
+  const arrived = Promise.withResolvers<QualifiedRepairReceipt>();
+  const finish = Promise.withResolvers<void>();
+  const repair = vi.fn<RepairRunner['repair']>(async (request, workspace, patch, authorize) => {
+    await authorize();
+    const receipt = { ...repairReceipt(scan, request, workspace, patch, original), commitSha256: sha256('different object') };
+    arrived.resolve(receipt);
+    await finish.promise;
+    return receipt;
+  });
+  const runner = { observe: async () => idleRepairRunner(), repair };
+  const protectedExecution = new FormalRepairExecution(coordinator, { runner, protectedPaths: [fixtureFindingPath.toUpperCase()] });
+  const execution = new FormalRepairExecution(coordinator, { runner, protectedPaths: [] });
+  await expect(protectedExecution.apply(scope, proposal)).rejects.toMatchObject({ code: 'forbidden' });
+  const other = { ...proposal.patch, files: proposal.patch.files.map(file => ({ ...file, path: 'unobserved.ts' })) };
+  await expect(execution.apply(scope, { ...proposal, patch: other })).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(execution.apply(scope, { ...proposal, findingIds: [sha256('foreign')] })).rejects.toMatchObject({ code: 'forbidden' });
+  expect(repair).not.toHaveBeenCalled();
+  expect(await database.storage.db.select().from(formalRepairOperations)).toEqual([]);
+  const processing = execution.apply(scope, proposal);
+  try {
+    const receipt = await Promise.race([arrived.promise, processing.then(() => { throw new Error('Repair was not dispatched'); })]);
+    await expect(database.storage.db.update(formalRepairAttempts).set({ state: 'recorded', settledFence: scope.fence,
+      settledWorkerId: scope.workerId, settledAt: new Date(), receipt, receiptSha256: sha256(JSON.stringify(receipt)) }))
+      .rejects.toMatchObject({ cause: { code: '23514', message: 'formal_repair_attempt_authority_or_receipt_mismatch' } });
+  } finally { finish.resolve(); }
+  expect(await processing).toMatchObject({ kind: 'rejected', code: 'cleanup_unproven' });
+  expect(repair).toHaveBeenCalledTimes(1);
+  expect((await database.storage.db.select().from(formalRepairAttempts))[0]).toMatchObject({ state: 'uncertain', receipt: null });
+});
+
+it('replays only after the original runner workspace is proven idle under a recovered lease', async () => {
+  const { scope, proposal, scan, original } = await repairReady();
+  let status = idleRepairRunner();
+  const repair = vi.fn<RepairRunner['repair']>(async (request, workspace, patch, authorize) => {
+    await authorize();
+    if (request.fence === scope.fence) await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+    return repairReceipt(scan, request, workspace, patch, original);
+  });
+  const execution = new FormalRepairExecution(coordinator, { runner: { observe: async () => status, repair }, protectedPaths: [] });
+  await expect(execution.apply(scope, proposal)).rejects.toBeInstanceOf(ExecutionLost);
+  const [originalAttempt] = await database.storage.db.select().from(formalRepairAttempts);
+  expect(originalAttempt).toMatchObject({ state: 'reserved', receipt: null });
+  await coordinator.reconcile(randomUUID());
+  const recovered = await claim();
+  expect(recovered).toMatchObject({ runId: scope.runId });
+  expect(recovered.fence).toBeGreaterThan(scope.fence);
+  status = { ...status, workspaceSha256: sha256('different runner workspace') };
+  await expect(execution.apply(recovered, proposal)).resolves.toMatchObject({ code: 'cleanup_unproven', requestId: originalAttempt!.requestId });
+  expect(repair).toHaveBeenCalledTimes(1);
+  expect((await database.storage.db.select().from(formalRepairAttempts))[0]).toMatchObject({ state: 'uncertain', settledFence: recovered.fence });
+  status = idleRepairRunner();
+  await expect(execution.apply(recovered, proposal)).resolves.toMatchObject({ kind: 'repair_receipt', scope: { fence: recovered.fence } });
+  const attempts = await database.storage.db.select().from(formalRepairAttempts);
+  expect(attempts).toHaveLength(2);
+  expect(attempts.find(row => row.requestId === originalAttempt!.requestId)).toMatchObject({ state: 'closed', receipt: null });
+  const replacement = attempts.find(row => row.state === 'recorded')!;
+  expect(replacement.operationId).toBe(originalAttempt!.operationId);
+  expect(replacement.requestId).not.toBe(originalAttempt!.requestId);
+  expect(await database.storage.db.select().from(formalRepairOperations)).toHaveLength(1);
+});
+
+it.each(['cancelled', 'revoked'] as const)('keeps cleanup evidence only when a repair task is %s', async change => {
+  const { scope, proposal, scan, original } = await repairReady();
+  const repair = vi.fn<RepairRunner['repair']>(async (request, workspace, patch, authorize) => {
+    await authorize();
+    if (change === 'cancelled') {
+      const tasks = new TaskService(database.storage);
+      const current = await tasks.get(identity, task.id);
+      await tasks.cancel(identity, task.id, { expectedVersion: current.version });
+    } else {
+      await database.admin.query('DELETE FROM itervane.workspace_members');
+    }
+    await expect(authorize()).rejects.toBeDefined();
+    return repairReceipt(scan, request, workspace, patch, original);
+  });
+  const execution = new FormalRepairExecution(coordinator, { runner: { observe: async () => idleRepairRunner(), repair }, protectedPaths: [] });
+  await expect(execution.apply(scope, proposal)).rejects.toBeDefined();
+  expect((await database.storage.db.select().from(formalRepairAttempts))[0]).toMatchObject({ state: 'closed', receipt: null, receiptSha256: null });
+});
 
 async function attempt(scope: ExecutionScope) {
   const plan = await coordinator.withLease(scope, (tx, current) => prepareInspection(tx, current.task, scope.runId, scope.fence));
@@ -264,6 +808,13 @@ it('publishes a receipt and its tool event atomically, and reuses the receipt af
     inspectionSha256: attempt.receipt_sha256, usage: { turns: 3, toolCalls: 2, tokens: 90 },
     checklist: { coverage: 'complete', findings: [{ scanner: 'gitleaks', path: fixtureFindingPath, line: 3, certainty: 'suspected' }] },
   });
+  const [sealed] = await database.storage.db.select().from(formalRepairInputs);
+  const repair = formalRepairInputSchema.parse(sealed?.document);
+  expect(repair).toMatchObject({ source: task.source, inspection: handoff.inspection, catalogSha256: handoff.catalog.sha256,
+    audit: { resultSha256: row?.sha256, inputSha256: auditInput?.sha256, checkpointId: audit.checkpointId },
+    findingIds: audit.checklist?.findings.map(finding => finding.id),
+  });
+  expect(sealed?.sha256).toBe(sha256(JSON.stringify(repair)));
   expect(audit.trace.map(item => item.tool)).toEqual(['read_scan', 'read_scan']);
   expect(complete).toHaveBeenCalledTimes(3);
   expect(JSON.stringify(complete.mock.calls.map(([request]) => request.conversation))).not.toContain(fixtureFindingPath);
@@ -272,7 +823,7 @@ it('publishes a receipt and its tool event atomically, and reuses the receipt af
   expect((await tasks.events(identity, task.id, 50, 'zh-CN')).at(-1)).toMatchObject({ type: 'task.audit_recorded', reason: 'audit_ready' });
   const events = await database.admin.query("SELECT detail FROM itervane.task_events WHERE type='task.audit_recorded'");
   expect(events.rows).toEqual([{ detail: { runId: scope.runId, reason: 'audit_ready', auditResultSha256: row?.sha256 } }]);
-  await expect(tasks.resume(identity, task.id, { expectedVersion: audited.version })).rejects.toMatchObject({ code: 'unsupported_state' });
+  await expect(tasks.resume(identity, task.id, { expectedVersion: audited.version - 1 })).rejects.toMatchObject({ code: 'version_conflict' });
   await expect(database.storage.pool.query('UPDATE itervane.formal_audit_results SET sha256=sha256')).rejects
     .toMatchObject({ code: '23514', message: 'formal_audit_result_is_retained' });
   await expect(database.storage.pool.query('UPDATE itervane.formal_audit_runtime SET checkpoint_step=checkpoint_step+1')).rejects
@@ -302,6 +853,7 @@ it('shares one recorded audit across authorized HTTP and external MCP with indep
     runner: completedRunner(fixtureFindingPath), auditModel: configuredAuditModel({ protocol: 'anthropic', baseURL: provider.baseURL,
       apiKey: auditFixtureKey, model: auditFixtureModel }),
   });
+  expect(await database.storage.db.select().from(formalRepairInputs)).toEqual([]);
   try { await worker.tick(); } finally { try { await worker.close(); } finally { await provider.close(); } }
   expect(provider.calls).toEqual(['read_scan', 'read_rule', 'read_scan', 'finish_role']);
   const publicUrl = 'https://itervane.example';
@@ -335,10 +887,15 @@ it.each(['runner_missing', 'incomplete_scan'])('keeps the model off when source 
   const worker = new DurableWorker(database.storage, database.runtimeUrl, {
     auditModel: auditModel(complete), ...(condition === 'incomplete_scan' ? { runner: completedRunner(undefined, true) } : {}),
   });
-  try { await worker.tick(); } finally { await worker.close(); }
+  const tasks = new TaskService(database.storage);
+  try {
+    await vi.waitFor(async () => {
+      await worker.tick();
+      expect(await tasks.get(identity, task.id)).toMatchObject({ state: 'waiting_input' });
+    }, { timeout: 5_000, interval: 50 });
+  } finally { await worker.close(); }
   expect(complete).not.toHaveBeenCalled();
   expect(await database.storage.db.select().from(formalAuditResults)).toEqual([]);
-  expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'waiting_input' });
 });
 
 it('recovers the reserved turn after Worker shutdown without calling the model again', async () => {
@@ -409,8 +966,41 @@ it('rolls back the outcome and handoff when the audit event cannot be written', 
     await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_audit_event_failure');
   }
   expect(await database.storage.db.select().from(formalAuditResults)).toEqual([]);
+  expect(await database.storage.db.select().from(formalRepairInputs)).toEqual([]);
   expect(await new TaskService(database.storage).get(identity, task.id)).toMatchObject({ state: 'needs_human' });
   expect((await new TaskService(database.storage).events(identity, task.id, 50)).at(-1)).toMatchObject({ reason: 'audit_failed' });
+});
+
+it('revalidates the same repair input after a new lease and seals existing completed audits on demand', async () => {
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(fixtureFindingPath), auditModel: auditModel() });
+  const tasks = new TaskService(database.storage);
+  try {
+    await vi.waitFor(async () => {
+      await worker.tick();
+      expect(await tasks.get(identity, task.id)).toMatchObject({ state: 'waiting_input' });
+    }, { timeout: 5_000, interval: 50 });
+  } finally { await worker.close(); }
+  const [sealed] = await database.storage.db.select().from(formalRepairInputs);
+  expect(sealed).toBeDefined();
+  const scope = await claimAfterAudit();
+  const prepare = (execution = scope) => coordinator.withLease(execution, (tx, current) => prepareFormalRepairInput(tx, current.task, execution));
+  const prepared = await prepare();
+  expect(prepared).toMatchObject({ sha256: sealed!.sha256, document: formalRepairInputSchema.parse(sealed!.document),
+    audit: { checkpointId: sealed!.document.audit.checkpointId, status: 'completed' },
+  });
+  expect(await prepare()).toEqual(prepared);
+  expect((await database.storage.db.select().from(formalRepairInputs))[0]?.preparedFence).toBe(sealed!.preparedFence);
+  await expect(prepare({ ...scope, fence: sealed!.preparedFence })).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(prepare({ ...scope, runId: randomUUID() })).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(database.storage.db.insert(formalRepairInputs).values({ ...sealed!, preparedFence: scope.fence, workerId: scope.workerId,
+    document: { ...prepared.document, inspection: { ...prepared.document.inspection, snapshotSha256: '0'.repeat(64) } },
+  })).rejects.toMatchObject({ cause: { code: '23514', message: 'formal_repair_input_authority_or_audit_mismatch' } });
+  await expect(database.storage.pool.query('UPDATE itervane.formal_repair_inputs SET sha256=sha256')).rejects
+    .toMatchObject({ code: '23514', message: 'formal_repair_input_is_retained' });
+  // The isolated test database now resembles a completed audit from before this migration.
+  await database.admin.query('TRUNCATE itervane.formal_repair_results, itervane.formal_repair_attempts, itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs');
+  expect(await prepare()).toEqual(prepared);
+  expect((await database.storage.db.select().from(formalRepairInputs))[0]?.preparedFence).toBe(scope.fence);
 });
 
 it('freezes the audit input under the current lease and rejects a substituted snapshot or planned-only source', async () => {
@@ -473,6 +1063,51 @@ it('isolates the audit checkpoint, its acknowledged writes and its input from pr
     await coordinator.reconcile(randomUUID());
     const replacement = new GuardedCheckpointer(coordinator, await claim(), storage, { auditInputSha256 });
     expect((await replacement.getTuple(auditConfig))?.checkpoint.id).toBe(sharedId.id);
+  } finally { await storage.end(); }
+});
+
+it('recovers the repair checkpoint from the published input and filters unacknowledged intermediate writes', async () => {
+  const { scope } = await repairReady();
+  const [auditInput] = await database.storage.db.select().from(formalAuditInputs);
+  const [repairInput] = await database.storage.db.select().from(formalRepairInputs);
+  const storage = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+  try {
+    const audit = new GuardedCheckpointer(coordinator, scope, storage, { auditInputSha256: auditInput!.sha256 });
+    const repair = new GuardedCheckpointer(coordinator, scope, storage, { repairInputSha256: repairInput!.sha256 });
+    const auditConfig = { configurable: { thread_id: audit.threadId } };
+    const repairConfig = { configurable: { thread_id: repair.threadId } };
+    const auditCheckpoint = await audit.getTuple(auditConfig);
+    expect(auditCheckpoint).toBeDefined();
+    expect(await repair.getTuple(repairConfig)).toBeUndefined();
+    await expect(repair.getTuple(auditConfig)).rejects.toBeInstanceOf(ExecutionLost);
+    const invalid = new GuardedCheckpointer(coordinator, scope, storage, { repairInputSha256: auditInput!.sha256 });
+    await expect(invalid.getTuple(repairConfig)).rejects.toBeInstanceOf(ExecutionLost);
+
+    const first = { ...emptyCheckpoint(), id: auditCheckpoint!.checkpoint.id };
+    const bound = await repair.put(repairConfig, first, { source: 'input', step: -1, parents: {} }, {});
+    await repair.putWrites(bound, [['observed', true]], 'repair-node');
+    await storage.putWrites(bound, [['unpublished', true]], 'orphan-node');
+    const orphan = emptyCheckpoint();
+    await storage.put(bound, orphan, { source: 'loop', step: 0, parents: {} }, {});
+    expect((await repair.getTuple(repairConfig))?.checkpoint.id).toBe(first.id);
+    expect((await repair.getTuple(repairConfig))?.pendingWrites).toEqual([['repair-node', 'observed', true]]);
+    expect((await audit.getTuple(auditConfig))?.pendingWrites).not.toContainEqual(['repair-node', 'observed', true]);
+    const pointer = (await database.storage.db.select().from(formalRepairRuntime))[0]!;
+    expect(pointer).toMatchObject({ runId: scope.runId, checkpointId: first.id, publishedFence: scope.fence });
+    await expect(database.storage.db.update(formalRepairRuntime).set({ checkpointStep: pointer.checkpointStep })).rejects
+      .toMatchObject({ cause: { code: '23514', message: 'formal_repair_pointer_regression' } });
+
+    const expired = await database.admin.query(
+      "UPDATE itervane.execution_slot SET lease_until=TIMESTAMPTZ '2000-01-01T00:00:00Z' WHERE run_id=$1 AND worker_id=$2 AND fence=$3 RETURNING lease_until < clock_timestamp() AS expired",
+      [scope.runId, scope.workerId, scope.fence],
+    );
+    expect(expired.rows).toEqual([{ expired: true }]);
+    await expect(repair.putWrites(bound, [['expired', true]], 'old-node')).rejects.toBeInstanceOf(ExecutionLost);
+    await coordinator.reconcile(randomUUID());
+    const replacement = new GuardedCheckpointer(coordinator, await claim(), storage, { repairInputSha256: repairInput!.sha256 });
+    const recovered = await replacement.getTuple(repairConfig);
+    expect(recovered?.checkpoint.id).toBe(first.id);
+    expect(recovered?.pendingWrites).toEqual([['repair-node', 'observed', true]]);
   } finally { await storage.end(); }
 });
 

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import {
   admissionDtoSchema, applicationDtoSchema, capabilitiesSchema, environmentDtoSchema,
   idSchema, listQuerySchema, meDtoSchema, projectAccessDtoSchema, portalConfigSchema, projectDtoSchema, repositoryDtoSchema, taskDtoSchema, taskEventDtoSchema,
-  negotiateLocale, sourceInspectionDtoSchema, ruleIdSchema, ruleQuerySchema, preauditAdmissionSchema, preauditDtoSchema, type Locale,
+  negotiateLocale, sourceInspectionDtoSchema, ruleIdSchema, ruleQuerySchema, preauditAdmissionSchema, preauditDtoSchema, sha256Schema, type Locale,
 } from '@itervane/contracts';
 import { AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
 import type { Database } from './persistence/database.js';
@@ -17,6 +17,7 @@ import { canonicalPublicUrl } from './config.js';
 import { registerPortal } from './portal.js';
 import { InspectionService } from './service/inspections.js';
 import { FormalAuditService } from './service/formal-audit.js';
+import { FormalRepairService } from './service/repair-result.js';
 import { PreauditService, RuleService } from './service/preaudits.js';
 
 declare module 'fastify' {
@@ -37,6 +38,7 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
   const verify = createIdentityVerifier(config);
   const resources = new ResourceService(database); const tasks = new TaskService(database);
   const inspections = new InspectionService(database); const audits = new FormalAuditService(database);
+  const repairs = new FormalRepairService(database);
   const rules = new RuleService(database); const preaudits = new PreauditService(database);
   const app = Fastify({
     logger: options.logger === false ? false : { level: 'info' },
@@ -171,6 +173,15 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
   app.get('/v1/tasks/:taskId/audit', async request => {
     const { taskId } = parseInput(taskParam, request.params);
     return audits.get(identity(request), taskId, request.locale);
+  });
+  app.get('/v1/tasks/:taskId/repair', async request => {
+    const { taskId } = parseInput(taskParam, request.params);
+    return repairs.get(identity(request), taskId, request.locale);
+  });
+  app.get('/v1/tasks/:taskId/repair/patch', async request => {
+    const { taskId } = parseInput(taskParam, request.params);
+    const { expectedSha256 } = parseInput(z.strictObject({ expectedSha256: sha256Schema }), request.query);
+    return repairs.exportPatch(identity(request), taskId, expectedSha256);
   });
   app.post('/v1/tasks/:taskId/cancel', async request => {
     const { taskId } = parseInput(taskParam, request.params); return taskDtoSchema.parse(await tasks.cancel(identity(request), taskId, request.body));

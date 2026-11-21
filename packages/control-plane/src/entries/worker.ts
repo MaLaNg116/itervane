@@ -11,7 +11,11 @@ try {
   const auditModel = config.auditModel ? configuredAuditModel(config.auditModel) : undefined;
   const database = await openDatabase(config.databaseUrl);
   const worker = new DurableWorker(database, config.databaseUrl, { leaseSeconds: config.leaseSeconds,
-    ...(runner ? { runner } : {}), ...(auditModel ? { auditModel } : {}) });
+    ...(runner ? { runner } : {}), ...(auditModel ? { auditModel } : {}),
+    ...(runner && config.repairProtectedPaths ? { repair: { runner, protectedPaths: config.repairProtectedPaths,
+      npmApprovals: config.npmRepairApprovals,
+    } } : {}),
+  });
   const controller = new AbortController();
   const stop = () => { controller.abort(); void worker.close().catch(() => undefined); };
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, stop);
@@ -27,6 +31,6 @@ try {
     try { await worker.close(); } finally { await database.close(); }
   }
 } catch {
-  console.error('Worker startup failed. Verify database migrations, Runner settings, and audit model settings.');
+  console.error('Worker startup failed. Verify database migrations, Runner settings, and model settings.');
   process.exitCode = 1;
 }

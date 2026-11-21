@@ -16,6 +16,8 @@ MAX_TRANSFER_BYTES = 32 * 1024 * 1024
 MAX_FILES = 5000
 MAX_INSPECTION_RECEIPT = 2048
 MAX_QUALIFIED_RECEIPT = 4 * 1024 * 1024
+MAX_REPAIR_COMMAND = 2 * 1024 * 1024
+MAX_REPAIR_RECEIPT = 16 * 1024
 REFS_TYPE = "application/x-git-upload-pack-advertisement"
 PACK_TYPE = "application/x-git-upload-pack-result"
 UPLOAD_TYPE = "application/x-git-upload-pack-request"
@@ -24,6 +26,9 @@ GUEST_ERRORS = frozenset((
     b"guest-input", b"git-fetch", b"git-objects", b"guest-io",
     b"snapshot-rejected", b"scan-boundary", b"scan-inputs", b"scan-gitleaks",
     b"scan-trivy", b"scan-controls", b"scan-integrity",
+))
+GUEST_REPAIR_ERRORS = frozenset((
+    b"repair-base", b"repair-scope", b"repair-precondition", b"repair-invalid", b"repair-integrity",
 ))
 
 

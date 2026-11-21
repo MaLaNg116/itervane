@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { sha256Schema } from '@itervane/contracts';
 import { z } from 'zod';
+import { exerciseGuestRepair } from './guest-repair-fixture.js';
 import { readBoundedFile, readGuestSnapshot } from './guest-snapshot.js';
 import { scannerCommands, scannerProfiles, sha256 } from './profiles.js';
 import { normalizeScan, type ScanSummary } from './scans.js';
@@ -106,6 +107,7 @@ function summarize(scan: ScanSummary) {
 /** Runs from the sealed scan service after its kernel boundary checks. */
 export async function inspectGuestSnapshot(ready: string, tools: string) {
   const { runId, mode, manifest } = readGuestSnapshot(ready);
+  if (mode !== 'qualified' && mode !== 'fixture') throw new Error('scan-boundary');
   const { inputs, inputsSha256 } = await verifyInputs(tools);
   const output = mkdtempSync(join(tmpdir(), 'itervane-raw-scan-'));
   try {
@@ -134,8 +136,11 @@ export async function inspectGuestSnapshot(ready: string, tools: string) {
     if (mode === 'qualified') return { ...proof, repositoryId: manifest.source.repositoryId, reports: [gitleaks, trivy] };
     if (trivy.status !== 'completed') throw new Error('scan-trivy');
     fixtureControls(gitleaks, trivy);
+    let repair: ReturnType<typeof exerciseGuestRepair>;
+    try { repair = exerciseGuestRepair(ready, output, manifest); }
+    catch { throw new Error('scan-integrity'); }
     return {
-      ...proof, controlsChecked: true, missingDatabaseRejected: true,
+      ...proof, controlsChecked: true, missingDatabaseRejected: true, repair,
       gitleaks: summarize(gitleaks),
       trivy: { ...summarize(trivy), databaseSha256: inputs.databaseSha256, databaseUpdatedAt: inputs.databaseUpdatedAt },
     };

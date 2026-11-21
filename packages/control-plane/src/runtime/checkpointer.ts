@@ -5,24 +5,28 @@ import { BaseCheckpointSaver, type ChannelVersions, type Checkpoint, type Checkp
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { and, eq } from 'drizzle-orm';
 import { sha256Schema } from '@itervane/contracts';
-import { checkpointWrites, formalAuditInputs, formalAuditRuntime, runRuntime } from '../persistence/schema.js';
+import { checkpointWrites, formalAuditInputs, formalAuditRuntime, formalRepairInputs, formalRepairRuntime, runRuntime } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { ExecutionLost, type ExecutionScope } from './authority.js';
 import { ExecutionCoordinator } from './coordinator.js';
 
+type CheckpointOptions = { signal?: AbortSignal } & (
+  { auditInputSha256: string; repairInputSha256?: never } | { repairInputSha256: string; auditInputSha256?: never }
+);
+
 /** Only this logical run's published checkpoint is a valid recovery entry point. */
 export class GuardedCheckpointer extends BaseCheckpointSaver {
   readonly threadId: string;
-  private readonly graph: 'preflight' | 'audit';
-  private readonly auditInputSha256: string | undefined;
+  private readonly graph: 'preflight' | 'audit' | 'repair';
+  private readonly formalInputSha256: string | undefined;
   private readonly signal: AbortSignal | undefined;
   constructor(readonly coordinator: ExecutionCoordinator, readonly scope: ExecutionScope, readonly storage: PostgresSaver,
-    options?: { auditInputSha256: string; signal?: AbortSignal }) {
+    options?: CheckpointOptions) {
     super(storage.serde);
-    this.auditInputSha256 = options ? sha256Schema.parse(options.auditInputSha256) : undefined;
+    this.formalInputSha256 = options ? sha256Schema.parse(options.repairInputSha256 ?? options.auditInputSha256) : undefined;
     this.signal = options?.signal;
-    this.graph = options ? 'audit' : 'preflight';
-    this.threadId = options ? `audit:${scope.runId}` : scope.runId;
+    this.graph = options?.repairInputSha256 !== undefined ? 'repair' : options ? 'audit' : 'preflight';
+    this.threadId = this.graph === 'preflight' ? scope.runId : `${this.graph}:${scope.runId}`;
   }
 
   // PostgresSaver 为分叉重算加入随机版本后缀，避免未发布分支占用同一个 blob key。
@@ -42,12 +46,13 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
 
   private async publication(tx: Transaction, runtime: typeof runRuntime.$inferSelect) {
     this.signal?.throwIfAborted();
-    if (!this.auditInputSha256) return runtime;
-    const [input] = await tx.select({ sha256: formalAuditInputs.sha256 }).from(formalAuditInputs)
-      .where(eq(formalAuditInputs.runId, this.scope.runId));
-    if (input?.sha256 !== this.auditInputSha256) throw new ExecutionLost();
-    const [pointer] = await tx.select().from(formalAuditRuntime).where(eq(formalAuditRuntime.runId, this.scope.runId));
-    if (pointer && pointer.inputSha256 !== this.auditInputSha256) throw new ExecutionLost();
+    if (!this.formalInputSha256) return runtime;
+    const inputs = this.graph === 'repair' ? formalRepairInputs : formalAuditInputs;
+    const pointers = this.graph === 'repair' ? formalRepairRuntime : formalAuditRuntime;
+    const [input] = await tx.select({ sha256: inputs.sha256 }).from(inputs).where(eq(inputs.runId, this.scope.runId));
+    if (input?.sha256 !== this.formalInputSha256) throw new ExecutionLost();
+    const [pointer] = await tx.select().from(pointers).where(eq(pointers.runId, this.scope.runId));
+    if (pointer && pointer.inputSha256 !== this.formalInputSha256) throw new ExecutionLost();
     return pointer ?? { checkpointId: null, checkpointStep: -2 };
   }
 
@@ -77,10 +82,11 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
       this.signal?.throwIfAborted();
       if (!published.checkpointId || metadata.step > published.checkpointStep) {
         const pointer = { checkpointId: checkpoint.id, checkpointStep: metadata.step };
-        if (this.auditInputSha256) {
-          const audit = { ...pointer, inputSha256: this.auditInputSha256, publishedFence: this.scope.fence, workerId: this.scope.workerId };
-          await tx.insert(formalAuditRuntime).values({ runId: this.scope.runId, ...audit })
-            .onConflictDoUpdate({ target: formalAuditRuntime.runId, set: audit });
+        if (this.formalInputSha256) {
+          const pointers = this.graph === 'repair' ? formalRepairRuntime : formalAuditRuntime;
+          const formal = { ...pointer, inputSha256: this.formalInputSha256, publishedFence: this.scope.fence, workerId: this.scope.workerId };
+          await tx.insert(pointers).values({ runId: this.scope.runId, ...formal })
+            .onConflictDoUpdate({ target: pointers.runId, set: formal });
         } else {
           await tx.update(runRuntime).set(pointer).where(eq(runRuntime.runId, this.scope.runId));
         }
@@ -93,7 +99,7 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
     const bound = this.bind(config);
     await this.coordinator.withLease(this.scope, async (tx, { runtime }) => {
       if (typeof bound.configurable?.checkpoint_id !== 'string') throw new ExecutionLost();
-      if (this.auditInputSha256) await this.publication(tx, runtime);
+      if (this.formalInputSha256) await this.publication(tx, runtime);
       await this.storage.putWrites(bound, writes, taskId, taskPath);
       this.signal?.throwIfAborted();
       if (writes.length) await tx.insert(checkpointWrites).values(await Promise.all(writes.map(async ([channel, value]) => ({

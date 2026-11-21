@@ -19,8 +19,8 @@ if __name__ == "__main__":
 
 from guest_job import ProtocolError, verify_workload_receipt
 from source_wire import (
-    CLOSED, GUEST_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_QUALIFIED_RECEIPT,
-    MAX_REQUEST_BYTES, MAX_TRANSFER_BYTES, PACK_TYPE, QUALIFIED_START, RECEIPT,
+    CLOSED, GUEST_ERRORS, GUEST_REPAIR_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_QUALIFIED_RECEIPT,
+    MAX_REPAIR_COMMAND, MAX_REPAIR_RECEIPT, MAX_REQUEST_BYTES, MAX_TRANSFER_BYTES, PACK_TYPE, QUALIFIED_START, RECEIPT,
     REFS_TYPE, SOURCE_PORT, START, UPLOAD_TYPE, SourceWire,
 )
 
@@ -28,6 +28,8 @@ from source_wire import (
 WORK = "/var/lib/itervane-probe-source"
 INSPECTION_TOOLS = Path("/usr/local/libexec/itervane-inspection")
 INSPECTION_REQUEST = Path("/var/lib/itervane-inspection-source/scan-request")
+REPAIR_COMMAND = INSPECTION_REQUEST.with_name("repair-command.json")
+REPAIR_OBSERVATION = INSPECTION_REQUEST.with_name("repair-observation.json")
 INSPECTION_RECEIPT = Path("/var/lib/itervane-inspection-output/receipt.json")
 FIXTURE_REPOSITORY_ID = "a955164f-7cf2-45c5-8a53-7cdb556db805"
 GIT_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
@@ -155,7 +157,7 @@ def verify_objects(root, identity, commit):
     return RECEIPT.pack(identity, bytes.fromhex(commit), bytes.fromhex(tree.decode()), hashlib.sha256(raw_commit).digest(), len(records) - 1)
 
 
-def inspect_source(repository, identity, commit, repository_id, mode, wire):
+def inspect_source(repository, identity, commit, repository_id, mode, wire, command=None):
     result = subprocess.run(
         [INSPECTION_TOOLS / "node", INSPECTION_TOOLS / "worker.mjs", "snapshot", repository,
          str(uuid.UUID(bytes=identity)), commit, repository_id, mode],
@@ -163,7 +165,12 @@ def inspect_source(repository, identity, commit, repository_id, mode, wire):
     )
     if result.returncode:
         raise GuestFailure("snapshot-rejected")
-    receipt_limit = MAX_QUALIFIED_RECEIPT if mode == "qualified" else MAX_INSPECTION_RECEIPT
+    receipt_limit = MAX_REPAIR_RECEIPT if command is not None else MAX_QUALIFIED_RECEIPT if mode == "qualified" else MAX_INSPECTION_RECEIPT
+    command_path = REPAIR_OBSERVATION if mode == "repair-observation" else REPAIR_COMMAND
+    if command is not None:
+        with command_path.open("xb") as stream:
+            stream.write(command)
+            os.fchmod(stream.fileno(), 0o440)
     INSPECTION_REQUEST.touch(mode=0o600, exist_ok=False)
     try:
         while True:
@@ -180,27 +187,31 @@ def inspect_source(repository, identity, commit, repository_id, mode, wire):
             receipt = report.read(receipt_limit + 1)
     finally:
         INSPECTION_REQUEST.unlink()
+        if command is not None:
+            command_path.unlink()
     try:
         proof = json.loads(receipt) if len(receipt) <= receipt_limit else None
         if not isinstance(proof, dict):
             raise ValueError()
         if "code" in proof:
             code = proof["code"].encode("ascii")
-            if len(proof) == 1 and code.startswith((b"scan-", b"snapshot-")) and code in GUEST_ERRORS:
+            scan_failure = code.startswith((b"scan-", b"snapshot-")) and code in GUEST_ERRORS
+            if len(proof) == 1 and (scan_failure or (command is not None and code in GUEST_REPAIR_ERRORS)):
                 raise GuestFailure(code.decode("ascii"))
             raise ValueError()
     except (AttributeError, ValueError, RecursionError) as error:
         raise GuestFailure("scan-integrity") from error
-    wire.send(b"N", receipt)
+    wire.send(b"H" if command is not None else b"N", receipt)
 
 
 def serve_source(wire, work):
     wire.greeting()
-    scenario, start = wire.receive({b"S": START.size, b"A": START.size, b"F": QUALIFIED_START.size})
-    if scenario == b"F" and len(start) == QUALIFIED_START.size:
+    scenario, start = wire.receive({b"S": START.size, b"A": START.size, b"F": QUALIFIED_START.size,
+                                    b"R": QUALIFIED_START.size, b"L": QUALIFIED_START.size})
+    if scenario in (b"F", b"R", b"L") and len(start) == QUALIFIED_START.size:
         identity, commit_bytes, repository = QUALIFIED_START.unpack(start)
         repository_id = str(uuid.UUID(bytes=repository))
-    elif scenario != b"F" and len(start) == START.size:
+    elif scenario in (b"S", b"A") and len(start) == START.size:
         identity, commit_bytes = START.unpack(start)
         repository_id = FIXTURE_REPOSITORY_ID
     else:
@@ -215,7 +226,13 @@ def serve_source(wire, work):
         if wire.receive({b"X": len(CLOSED)})[1] != CLOSED:
             raise GuestFailure("guest-input")
         wire.send(b"M", verify_objects(repository, identity, commit))
-        if scenario != b"S":
+        if scenario in (b"R", b"L"):
+            _, command = wire.receive({b"W": MAX_REPAIR_COMMAND})
+            if not command:
+                raise GuestFailure("repair-invalid")
+            mode = "repair-observation" if scenario == b"L" else "repair"
+            inspect_source(repository, identity, commit, repository_id, mode, wire, command)
+        elif scenario != b"S":
             mode = "qualified" if scenario == b"F" else "fixture"
             inspect_source(repository, identity, commit, repository_id, mode, wire)
 

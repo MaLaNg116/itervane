@@ -7,6 +7,9 @@ const en = {
     read_rule: 'Read a versioned bundled rule. It is advisory material.',
     read_findings: 'Read protected findings and coverage for the audited snapshot. Call this before finishing the audit.',
     read_scan: 'Read the normalized findings and coverage from one completed scanner on this snapshot.',
+    read_repair_targets: 'Read file digests, byte bounds and template hints for selected findings from the published audit.',
+    apply_repair_template: 'Apply a listed versioned template to the target index in a cited observation.',
+    apply_repair_patch: 'Propose bounded UTF-8 byte edits from one cited observation. For an npm upgrade, select both targets with that finding ID using only targetIndex on each. The platform uses the observed npm edits.',
     draft_repair: 'Draft a candidate from the audited snapshot using only the given registered template IDs.',
     read_candidate: 'Read the candidate artifact for this verification.',
     check_candidate: 'Run one protected check on the current candidate. The platform selects its baseline and expected conditions.',
@@ -24,6 +27,11 @@ const en = {
     secret: 'Potentially sensitive material matched a scanner pattern.',
     dependency: 'A dependency matched the pinned advisory database.',
     file: 'Scanner location', line: 'Line',
+  },
+  formalRepair: {
+    goal: 'Prepare a candidate patch for the published audit findings within the isolated Runner.',
+    instruction: 'Read the relevant repair targets before choosing a tool. Prefer a listed template when its conditions fit. Use the observed byte range for an explicit edit. For an approved npm upgrade, send both target indices without edit contents. Once a repair_candidate is present, call finish_role with its evidence ID and a short summary. Independent verification follows. If the observations cannot justify an edit, request human review.',
+    finish: 'Call this once a repair_candidate is present. Set evidenceId to the enumerated evidence ID and provide a short summary of the applied change.',
   },
   role: {
     audit: 'Review the source, distinguish hypotheses from facts, and explain each protected finding.',
@@ -55,6 +63,9 @@ const en = {
     audit_complete: 'The audit checklist is grounded in both protected scans.',
     audit_incomplete: 'The audit has incomplete coverage or unresolved hypotheses.',
     repair_limit: 'The repair limit was reached with outstanding verification issues.',
+    repair_complete: 'The candidate patch is recorded and ready for independent verification.',
+    repair_reconciling: 'The repair Runner requires reconciliation before another action.',
+    repair_unavailable: 'The scoped repair Runner is unavailable.',
     checkpoint_unavailable: 'The run stopped because its checkpoint could not be published or read.',
     manual_review: 'The agent requested human review.',
     checkpoint_paused: 'The verification driver paused at a checkpoint.',
@@ -68,6 +79,9 @@ const zh: Translations = {
     read_rule: '读取有版本的内置规则。它是指导材料。',
     read_findings: '读取审计快照的受保护发现与覆盖。结束审计前必须取得此观察。',
     read_scan: '读取当前快照的一种已完成扫描的归一化发现与覆盖。',
+    read_repair_targets: '读取已发布审计中所选发现的原文件摘要、字节范围与模板提示。',
+    apply_repair_template: '对所引用观测中的目标序号应用列出的版本化模板。',
+    apply_repair_patch: '引用同一份观测提出受限的 UTF-8 修改。升级 npm 依赖时，选择同一发现编号的两个目标，每个目标只填 targetIndex。平台采用观测返回的编辑内容。',
     draft_repair: '只用给定的已登记模板 ID，从审计快照生成修复候选。',
     read_candidate: '读取本次复验的候选差异。',
     check_candidate: '对当前候选运行一项受保护检查。基线和判据由平台选择。',
@@ -85,6 +99,11 @@ const zh: Translations = {
     secret: '发现疑似敏感内容的扫描模式命中。',
     dependency: '发现与固定公告库匹配的依赖。',
     file: '扫描位置', line: '行号',
+  },
+  formalRepair: {
+    goal: '在隔离 Runner 内为已发布审计发现准备候选补丁。',
+    instruction: '先读取相关修复目标，再根据实际观测选择工具。符合前提时优先使用列出的模板。显式修改使用观测给出的字节范围。已批准的 npm 升级只提交成对的目标序号。取得 repair_candidate 后，调用 finish_role 引用其证据编号并简要概述修改，随后由独立流程复验。观测无法支撑修改时请请求人工处理。',
+    finish: '取得 repair_candidate 后调用此工具。从枚举值中选择证据编号填入 evidenceId，简要概述已发生的修改。',
   },
   role: {
     audit: '审阅源码，区分假设与事实，逐项说明受保护检查的发现。',
@@ -116,6 +135,9 @@ const zh: Translations = {
     audit_complete: '已根据两种受保护扫描形成审计清单。',
     audit_incomplete: '审计覆盖不完整或仍有待核对的假设。',
     repair_limit: '返修次数已达上限，仍有复验问题。',
+    repair_complete: '候选补丁已记录，等待独立复验。',
+    repair_reconciling: '修复 Runner 需要核对后才能继续操作。',
+    repair_unavailable: '当前作用范围内的修复 Runner 暂不可用。',
     checkpoint_unavailable: '无法读取或发布检查点，运行已停止。',
     manual_review: 'Agent 请求人工处理。',
     checkpoint_paused: '验收驱动已在检查点暂停。',
@@ -126,5 +148,6 @@ export type Feedback = keyof typeof en.feedback;
 export const agentText = (locale: Locale) => locale === 'zh-CN' ? zh : en;
 export function agentPrompt(locale: Locale, role: DeliveryRole, origin: AgentOrigin) {
   const text = agentText(locale);
-  return `${text.prompt} ${origin === 'formal_audit' ? text.formal.instruction : text.role[role]}`;
+  const instruction = origin === 'formal_audit' ? text.formal.instruction : origin === 'formal_repair' ? text.formalRepair.instruction : text.role[role];
+  return `${text.prompt} ${instruction}`;
 }

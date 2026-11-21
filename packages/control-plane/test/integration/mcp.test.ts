@@ -62,7 +62,7 @@ it('advertises a fixed canonical MCP resource and rejects wrong audience, missin
 it('serves localized SDK tool discovery and real task start/query/events/cancel across reconnects', async () => {
   const bearer = await token(); const first = await connect(bearer, 'zh-CN');
   const catalog = await first.listTools();
-  expect(catalog.tools.map(tool => tool.name).sort()).toEqual(['cancel_task', 'get_audit', 'get_preaudit', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'list_preaudits', 'list_rules', 'preaudit_text', 'resume_task', 'start_audit']);
+  expect(catalog.tools.map(tool => tool.name).sort()).toEqual(['cancel_task', 'get_audit', 'get_preaudit', 'get_repair', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'list_preaudits', 'list_rules', 'preaudit_text', 'resume_task', 'start_audit']);
   expect(catalog.tools.find(tool => tool.name === 'start_audit')?.description).toBe(translate('zh-CN', 'mcp.start'));
   const accepted = admissionDtoSchema.parse((await first.callTool({ name: 'start_audit', arguments: input })).structuredContent);
   expect(accepted.task).toMatchObject({ locale: 'zh-CN', state: 'queued' });
@@ -121,7 +121,7 @@ it('does not persist stale or executable preaudit requests and does not echo inv
 
 it('enforces read-only scopes even for direct unadvertised write calls and localizes validation errors', async () => {
   const readToken = await token('itervane:read'); const reader = await connect(readToken, 'zh-CN');
-  expect((await reader.listTools()).tools.map(tool => tool.name).sort()).toEqual(['get_audit', 'get_preaudit', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'list_preaudits', 'list_rules']);
+  expect((await reader.listTools()).tools.map(tool => tool.name).sort()).toEqual(['get_audit', 'get_preaudit', 'get_repair', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'list_preaudits', 'list_rules']);
   const write = await fetch(`${address}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${readToken}`,
     'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify(rpc('start_audit', input)) });
   expect(write.status).toBe(403); expect(write.headers.get('www-authenticate')).toContain('scope="itervane:write"');
@@ -144,6 +144,7 @@ it('rechecks database project permissions on every MCP command, including token 
   expect(apiErrorSchema.parse((await client.callTool({ name: 'get_task', arguments: { taskId: accepted.task.id } })).structuredContent).error.code).toBe('not_found');
   expect(apiErrorSchema.parse((await client.callTool({ name: 'get_source_inspection', arguments: { taskId: accepted.task.id } })).structuredContent).error.code).toBe('not_found');
   expect(apiErrorSchema.parse((await client.callTool({ name: 'get_audit', arguments: { taskId: accepted.task.id } })).structuredContent).error.code).toBe('not_found');
+  expect(apiErrorSchema.parse((await client.callTool({ name: 'get_repair', arguments: { taskId: accepted.task.id } })).structuredContent).error.code).toBe('not_found');
   expect((await api.inject({ url: `/v1/tasks/${accepted.task.id}/audit`, headers: { authorization: `Bearer ${await issuer.token('member')}` } })).statusCode).toBe(404);
   const differentProject = (await api.inject({ method: 'POST', url: '/v1/projects', headers, payload: { name: 'other', slug: 'other' } })).json();
   const foreign = await first.callTool({ name: 'start_audit', arguments: { ...input, projectId: differentProject.id, idempotencyKey: randomUUID() } });

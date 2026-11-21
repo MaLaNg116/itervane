@@ -10,6 +10,7 @@ import { formalAuditInputs, formalAuditResults, formalAuditRuntime, runRuntime, 
 import { appendEvent, clearSlot, type ExecutionScope, type TaskRow } from '../runtime/authority.js';
 import { requireActor, requireProject, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
+import { prepareFormalRepairInput } from './formal-repair.js';
 import { currentInspectionAttempt, inspectionCoverage, readInspectionEvidence } from './inspection-evidence.js';
 import { readInspectionPlan } from './inspections.js';
 
@@ -81,7 +82,7 @@ function auditResult(prepared: PreparedAudit, report: FormalAuditReport, provide
 }
 
 export async function publishFormalAudit(tx: Transaction, task: TaskRow, scope: ExecutionScope, prepared: PreparedAudit,
-  report: FormalAuditReport, provider: FormalAuditResult['provider'], signal: AbortSignal) {
+  report: FormalAuditReport, provider: FormalAuditResult['provider'], signal: AbortSignal, allowRepair: boolean) {
   signal.throwIfAborted();
   const [pointer] = await tx.select().from(formalAuditRuntime).where(eq(formalAuditRuntime.runId, scope.runId));
   if (!pointer || pointer.checkpointId !== report.checkpointId || pointer.inputSha256 !== prepared.sha256) throw new DomainError('unavailable');
@@ -90,13 +91,16 @@ export async function publishFormalAudit(tx: Transaction, task: TaskRow, scope: 
   await tx.insert(formalAuditResults).values({ runId: scope.runId, inputSha256: prepared.sha256, checkpointId: pointer.checkpointId,
     finalizedFence: scope.fence, workerId: scope.workerId, sha256: hash, document });
   const completed = document.status === 'completed';
-  const reason = completed ? 'audit_ready' : 'audit_needs_human';
+  const handoff = completed ? await prepareFormalRepairInput(tx, task, scope) : undefined;
+  const continueToRepair = allowRepair && Boolean(handoff?.document.findingIds.length);
+  const reason = continueToRepair ? 'repair_pending' : completed ? 'audit_ready' : 'audit_needs_human';
   await tx.update(runRuntime).set({ reason, resumePending: false, waitingForTaskId: null }).where(eq(runRuntime.runId, scope.runId));
-  await appendEvent(tx, task, 'task.audit_recorded', completed ? 'waiting_input' : 'needs_human', {
+  await appendEvent(tx, task, 'task.audit_recorded', continueToRepair ? 'running' : completed ? 'waiting_input' : 'needs_human', {
     workerId: scope.workerId, reason, audit: { runId: scope.runId, auditResultSha256: hash },
   });
-  await clearSlot(tx);
+  if (!continueToRepair) await clearSlot(tx);
   signal.throwIfAborted();
+  return continueToRepair ? 'repair_pending' as const : 'settled' as const;
 }
 
 export class FormalAuditService {

@@ -5,9 +5,10 @@ import { cancelTaskSchema, resumeTaskSchema, idSchema, listQuerySchema, startTas
   eventReasonMessages, retrySourceInspectionReasonSchema, taskEventReasonSchema, type Locale, type MessageKey } from '@itervane/contracts';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import { queueName, type Database } from '../persistence/database.js';
-import { formalAuditInputs, repositories, runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
+import { formalAuditInputs, formalAuditResults, repositories, runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
 import { requireActor, requireProject, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
+import { isRepairableAudit } from './formal-repair.js';
 import { appendEvent, enqueue, lockSlot } from '../runtime/authority.js';
 
 function presentTask(task: typeof tasks.$inferSelect, runId: string) {
@@ -130,15 +131,24 @@ export class TaskService {
       const [run] = await tx.select().from(taskRuns).where(and(eq(taskRuns.taskId, taskId), eq(taskRuns.generation, task.generation)));
       const [runtime] = run ? await tx.select().from(runRuntime).where(eq(runRuntime.runId, run.id)) : [];
       const readyForAudit = runtime?.reason === 'inspection_ready';
+      const readyForRepair = runtime?.reason === 'audit_ready' || runtime?.reason === 'repair_deferred';
       if (!run || !runtime?.checkpointId || runtime.waitingForTaskId
-        || (!readyForAudit && !retrySourceInspectionReasonSchema.safeParse(runtime.reason).success)) throw new DomainError('unsupported_state');
+        || (!readyForAudit && !readyForRepair && !retrySourceInspectionReasonSchema.safeParse(runtime.reason).success)) throw new DomainError('unsupported_state');
       if (readyForAudit) {
         const [record] = await tx.select({ runId: formalAuditInputs.runId }).from(formalAuditInputs).where(eq(formalAuditInputs.runId, run.id));
         if (!record) throw new DomainError('unsupported_state');
       }
+      if (readyForRepair) {
+        const [record] = await tx.select({ document: formalAuditResults.document }).from(formalAuditResults)
+          .where(eq(formalAuditResults.runId, run.id));
+        if (!isRepairableAudit(record?.document)) throw new DomainError('unsupported_state');
+      }
       if (runtime.resumeCount >= 3) throw new DomainError('resume_limit');
-      await tx.update(runRuntime).set({ resumePending: true, resumeCount: runtime.resumeCount + 1 }).where(eq(runRuntime.runId, run.id));
-      const next = await appendEvent(tx, task, readyForAudit ? 'task.audit_resumed' : 'task.resumed', 'queued', { actorId: actor.principalId });
+      await tx.update(runRuntime).set({ resumePending: true, resumeCount: runtime.resumeCount + 1,
+        ...(readyForRepair ? { reason: 'repair_pending' } : {}),
+      }).where(eq(runRuntime.runId, run.id));
+      const event = readyForRepair ? 'task.repair_resumed' : readyForAudit ? 'task.audit_resumed' : 'task.resumed';
+      const next = await appendEvent(tx, task, event, 'queued', { actorId: actor.principalId, ...(readyForRepair ? { reason: 'repair_pending' } : {}) });
       await enqueue(tx, this.database, next, run.id);
       return taskView(tx, taskId);
     });

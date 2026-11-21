@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { auditFindingsPerScan, auditScannerSchema, idSchema, localeSchema, sourceRefSchema } from '@itervane/contracts';
 import { z } from 'zod';
+import { repairEvidenceDataSchema } from './repair-contracts.js';
 
 export const shaSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const keySchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
@@ -88,9 +89,12 @@ export const formalReceiptSchema = z.strictObject({
   origin: z.literal('formal_audit'), ...receiptBinding, data: z.discriminatedUnion('kind', [ruleEvidenceSchema, scanEvidenceSchema]),
 });
 export type FormalAuditReceipt = z.infer<typeof formalReceiptSchema>;
+export const formalRepairReceiptSchema = z.strictObject({
+  origin: z.literal('formal_repair'), ...receiptBinding, data: repairEvidenceDataSchema,
+});
 
 export const evidenceSchema = z.discriminatedUnion('origin', [
-  receiptSchema.extend({ id: shaSchema }), formalReceiptSchema.extend({ id: shaSchema }),
+  receiptSchema.extend({ id: shaSchema }), formalReceiptSchema.extend({ id: shaSchema }), formalRepairReceiptSchema.extend({ id: shaSchema }),
 ]);
 export type AgentEvidence = z.infer<typeof evidenceSchema>;
 export type AgentOrigin = AgentEvidence['origin'];

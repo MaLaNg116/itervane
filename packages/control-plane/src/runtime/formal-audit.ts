@@ -18,9 +18,9 @@ export function configuredAuditModel(config: NonNullable<ReturnType<typeof worke
 }
 
 export async function runFormalAudit(coordinator: ExecutionCoordinator, scope: ExecutionScope, saver: PostgresSaver,
-  model: AuditModel | undefined, signal: AbortSignal): Promise<boolean> {
+  model: AuditModel | undefined, signal: AbortSignal, allowRepair: boolean) {
   const prepared = await coordinator.withLease(scope, (tx, { task }) => prepareFormalAuditInput(tx, task, scope));
-  if (!model) return false;
+  if (!model) return 'unavailable' as const;
   const checkpointer = new GuardedCheckpointer(coordinator, scope, saver, { auditInputSha256: prepared.sha256, signal });
   const audit = createFormalAudit({ input: prepared, inspection: prepared.inspection, model: model.adapter, providerSha256: model.providerSha256,
     checkpointer, authorize: (_scope, active) => coordinator.withLease(scope, async () => !active.aborted),
@@ -30,6 +30,5 @@ export async function runFormalAudit(coordinator: ExecutionCoordinator, scope: E
   if (!report.checkpointId) await coordinator.withLease(scope, async () => {});
   if (report.reason === 'permission_denied') throw new DomainError('forbidden');
   if (!report.checkpointId) throw new DomainError('unavailable');
-  await coordinator.withLease(scope, (tx, { task }) => publishFormalAudit(tx, task, scope, prepared, report, model.adapter.protocol, signal));
-  return true;
+  return coordinator.withLease(scope, (tx, { task }) => publishFormalAudit(tx, task, scope, prepared, report, model.adapter.protocol, signal, allowRepair));
 }

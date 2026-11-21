@@ -7,19 +7,23 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
-  admissionDtoSchema, auditFindingsPerScan, formalAuditDtoSchema, projectDtoSchema, repositoryDtoSchema, sourceInspectionDtoSchema,
-  taskDtoSchema, taskEventDtoSchema, translate,
+  admissionDtoSchema, auditFindingsPerScan, formalAuditDtoSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema, idSchema, projectDtoSchema,
+  repositoryDtoSchema, sha256Schema, sourceInspectionDtoSchema,
+  qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, taskDtoSchema, taskEventDtoSchema, translate, type FormalAuditResult,
 } from '@itervane/contracts';
+import { sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
 import { bootstrapOwner } from '../../src/service/resources.js';
 import { databaseFixture } from '../helpers/database.js';
 import { identityFixture } from '../helpers/identity.js';
+import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../verification/src/agent/npm-repair-fixture.js';
 import { temporaryPostgres } from '../../../verification/src/postgres-fixture.js';
 import { sourceFingerprint } from '../../../verification/src/report.js';
 import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from './audit-provider.js';
 
 const execute = promisify(execFile);
 const commit = '9167604c888416d7b6518e1c76485d7308cffb5c';
+const repairFixtureCommit = 'f41a940ffe4ec24221b873e1cd74b8ec2125873e';
 const origin = 'https://github.com/MaLaNg116/itervane.git';
 const publicUrl = 'https://itervane.example';
 const controllerAccount = 'itervane-probe';
@@ -63,12 +67,16 @@ async function boundedExit(child: ChildProcess, exit: Promise<number | null>, ti
   } finally { timeout.abort(); }
 }
 
+function sourceWorkerEnvironment(socket: string, controllerUid: string, image: string) {
+  return ['PATH=/usr/bin:/bin', 'LANG=C.UTF-8', `ITERVANE_RUNNER_SOCKET=${socket}`,
+    `ITERVANE_RUNNER_UID=${controllerUid}`, `ITERVANE_RUNNER_IMAGE_SHA256=${image}`, 'ITERVANE_WORKER_LEASE_SECONDS=30'];
+}
+
 async function startWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string, auditURL?: string) {
-  const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', 'PATH=/usr/bin:/bin', 'LANG=C.UTF-8',
-    `ITERVANE_RUNNER_SOCKET=${socket}`, `ITERVANE_RUNNER_UID=${controllerUid}`, `ITERVANE_RUNNER_IMAGE_SHA256=${image}`,
+  const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', ...sourceWorkerEnvironment(socket, controllerUid, image),
     ...(auditURL ? ['ITERVANE_AUDIT_MODEL_PROVIDER=anthropic', `ANTHROPIC_BASE_URL=${auditURL}`,
       `ANTHROPIC_MODEL=${auditFixtureModel}`, `ANTHROPIC_API_KEY=${auditFixtureKey}`] : []),
-    'ITERVANE_WORKER_LEASE_SECONDS=30', 'ITERVANE_WORKER_POLL_MS=100', '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c',
+    'ITERVANE_WORKER_POLL_MS=100', '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c',
     'set -eu; IFS= read -r DATABASE_URL; export DATABASE_URL; printf "%s\\n" "$$"; exec "$@"', 'itervane-worker', process.execPath, bundle,
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
   const exit = exitStatus(child);
@@ -89,6 +97,37 @@ async function startWorker(bundle: string, socket: string, controllerUid: string
       else notEqual(code, 0);
     } };
   } catch (error) { child.kill(); await boundedExit(child, exit, 5_000); throw error; }
+}
+
+async function runRepairWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string, args: string[],
+  variant: 'patch' | 'template' | 'npm') {
+  const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', ...sourceWorkerEnvironment(socket, controllerUid, image),
+    '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c', 'set -eu; IFS= read -r DATABASE_URL; export DATABASE_URL; exec "$@"',
+    'itervane-repair-worker', process.execPath, bundle, ...args, variant,
+  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const exit = exitStatus(child);
+  child.stderr.resume();
+  child.stdin.on('error', () => undefined);
+  child.stdin.end(databaseUrl + '\n');
+  let size = 0;
+  const output: Buffer[] = [];
+  child.stdout.on('data', (chunk: Buffer) => {
+    size += chunk.length;
+    if (size > 32768) child.kill();
+    else output.push(chunk);
+  });
+  equal(await boundedExit(child, exit, 385_000), 0);
+  const response = JSON.parse(Buffer.concat(output).toString('utf8'));
+  const receipt = qualifiedRepairResponseSchema.parse(response.receipt);
+  const observation = qualifiedRepairObservationResponseSchema.parse(response.observation);
+  if (receipt.kind !== 'repair_receipt' || observation.kind !== 'repair_observation') throw new Error('worker_repair_missing_receipt');
+  const { checkpointId, callKeySha256, trace, usage, releaseEligible, resultSha256 } = response.agent;
+  deepStrictEqual(trace, ['read_repair_targets', variant === 'template' ? 'apply_repair_template' : 'apply_repair_patch']);
+  deepStrictEqual(usage, { turns: 3, toolCalls: 2, tokens: 90 });
+  equal(releaseEligible, false);
+  return { receipt, observation, agent: { checkpointId: idSchema.parse(checkpointId), callKeySha256: sha256Schema.parse(callKeySha256),
+    trace, usage, releaseEligible, resultSha256: sha256Schema.parse(resultSha256),
+  } };
 }
 
 async function hostsDomains(controllerUid: string, filter: '--all' | '--state-running') {
@@ -121,11 +160,12 @@ async function watchGuest(controllerUid: string) {
 }
 
 async function probe() {
-  const [bundle, socket, controllerUid, imageSha256, staging, ...extra] = process.argv.slice(2);
+  const [bundle, socket, controllerUid, imageSha256, staging, repairBundle, ...extra] = process.argv.slice(2);
   if (process.platform !== 'linux' || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted' || process.env.DATABASE_URL
     || process.env.ITERVANE_POSTGRES_IMAGE || extra.length || !bundle?.startsWith('/var/lib/libvirt/images/itervane-native.')
     || !socket?.endsWith('/qualified/inspection.sock') || !controllerUid || !/^[1-9][0-9]{0,9}$/.test(controllerUid)
-    || !imageSha256 || !/^[a-f0-9]{64}$/.test(imageSha256) || !staging?.endsWith('/staging')) throw new Error('worker_probe_config');
+    || !imageSha256 || !/^[a-f0-9]{64}$/.test(imageSha256) || !staging?.endsWith('/staging')
+    || repairBundle !== bundle.replace(/\/worker\.mjs$/, '/repair-worker.mjs')) throw new Error('worker_probe_config');
 
   phase = 'postgres';
   const postgres = await temporaryPostgres();
@@ -155,8 +195,8 @@ async function probe() {
     await client.connect(new StreamableHTTPClientTransport(new URL(`${address}/mcp`), {
       requestInit: { headers: { Authorization: `Bearer ${mcpToken}`, 'Accept-Language': 'zh-CN' } },
     }));
-    const start = async (purpose: string) => admissionDtoSchema.parse((await client.callTool({ name: 'start_audit', arguments: {
-      projectId: project.id, source: { repositoryId: repository.id, commit }, dataClass: 'public', purpose, locale: 'zh-CN', idempotencyKey: randomUUID(),
+    const start = async (purpose: string, revision = commit) => admissionDtoSchema.parse((await client.callTool({ name: 'start_audit', arguments: {
+      projectId: project.id, source: { repositoryId: repository.id, commit: revision }, dataClass: 'public', purpose, locale: 'zh-CN', idempotencyKey: randomUUID(),
     } })).structuredContent).task;
     const reached = (taskId: string, state: string) => poll(async () => {
       const row = (await db.admin.query('SELECT state FROM itervane.tasks WHERE id=$1', [taskId])).rows[0];
@@ -293,6 +333,133 @@ async function probe() {
     deepStrictEqual(provider.calls, ['read_scan', 'read_rule', 'read_scan', 'finish_role', 'read_scan', 'unavailable']);
     deepStrictEqual(await attempts(recovered.id), [closed, replacement]);
     await assertDrained(controllerUid, staging);
+
+    phase = 'formal_repair_execution';
+    await worker.stop('TERM'); worker = undefined;
+    const fixture = checklist.findings.find(item => item.scanner === 'gitleaks'
+      && item.path === 'fixtures/runner/inspection-input/original/config.txt');
+    ok(fixture);
+    const audited = taskDtoSchema.parse(await request(`/v1/tasks/${first.id}`));
+    const queuedRepair = taskDtoSchema.parse(await request(`/v1/tasks/${first.id}/resume`, { expectedVersion: audited.version }));
+    equal(queuedRepair.state, 'queued');
+    equal(queuedRepair.runId, audited.runId);
+    const { receipt, observation, agent } = await runRepairWorker(repairBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+      [first.id, first.runId, scan.result.snapshotSha256, fixture.id], 'patch');
+    equal(receipt.scope.taskId, first.id); equal(receipt.scope.runId, first.runId);
+    equal(receipt.snapshot.manifestSha256, scan.result.snapshotSha256);
+    ok(!domains.includes(receipt.domainId));
+    equal(observation.scope.taskId, first.id);
+    equal(observation.scope.runId, first.runId);
+    equal(observation.scope.fence, receipt.scope.fence);
+    equal(observation.snapshot.manifestSha256, scan.result.snapshotSha256);
+    ok(!domains.includes(observation.domainId) && observation.domainId !== receipt.domainId);
+    const [target] = observation.snapshot.observation.targets;
+    ok(target?.range && target.file);
+    equal(target.findingId, fixture.id); equal(target.path, fixture.path); equal(target.line, fixture.line);
+    const expectedRanges = [
+      { startByte: 0, endByte: 64, sha256: '9e731d16ffa25e5ab728cbf80aa67ba3deb9f130f9e30e243dc02b317944360d' },
+      { startByte: 64, endByte: 158, sha256: '50541d94c77cbc185ee497cfcba79834161ad445f55c99466a4c7ece414e5659' },
+    ];
+    ok(fixture.line !== null);
+    deepStrictEqual(target.range, expectedRanges[fixture.line - 1]);
+    const [change] = receipt.snapshot.candidate.changes;
+    const expectedChanges = [
+      { afterBytes: 132, afterSha256: 'fb91303fd77793f09cf354f0640130d40dba8ad64ce3b2e64fc42d4a9b8a8624' },
+      { afterBytes: 102, afterSha256: 'f0d9a041c470d2a1c77ec6ce2a042a3f8eccb2cc98fc3d79ad0770709364a3f9' },
+    ];
+    deepStrictEqual(change, { path: fixture.path, beforeBytes: 158, edits: 1,
+      beforeSha256: '3812bc54c3579d8c67275c573f0ff1bf7dde70bfb4a9150621459ae510a87afc',
+      ...expectedChanges[fixture.line - 1] });
+    const saved = (await db.admin.query(`SELECT operation.command_sha256, operation.finding_ids, operation.call_key_sha256,
+      attempt.state, attempt.receipt_sha256, runtime.checkpoint_id, runtime.published_fence
+      FROM itervane.formal_repair_operations operation JOIN itervane.formal_repair_attempts attempt USING(operation_id)
+      JOIN itervane.formal_repair_runtime runtime ON runtime.run_id=operation.run_id
+      WHERE operation.run_id=$1`, [first.runId])).rows;
+    const receiptSha256 = sha256(JSON.stringify(receipt));
+    deepStrictEqual(saved, [{ command_sha256: receipt.scope.commandSha256, finding_ids: [fixture.id], state: 'recorded',
+      receipt_sha256: receiptSha256, checkpoint_id: agent.checkpointId, published_fence: receipt.scope.fence, call_key_sha256: agent.callKeySha256,
+    }]);
+    const repairUrl = `/v1/tasks/${first.id}/repair`;
+    const repairView = formalRepairDtoSchema.parse(await request(repairUrl));
+    const externalView = formalRepairDtoSchema.parse((await client.callTool({ name: 'get_repair', arguments: { taskId: first.id } })).structuredContent);
+    if (repairView.status !== 'recorded' || externalView.status !== 'recorded'
+      || repairView.result.status !== 'candidate_ready') throw new Error('native_repair_candidate_missing');
+    equal(repairView.sha256, agent.resultSha256);
+    equal(externalView.sha256, repairView.sha256);
+    deepStrictEqual(repairView.result, externalView.result);
+    equal(repairView.result.candidate.receiptSha256, receiptSha256);
+    deepStrictEqual(repairView.result.candidate.changes, receipt.snapshot.candidate.changes);
+    const exported = formalRepairPatchDtoSchema.parse(await request(`${repairUrl}/patch?expectedSha256=${repairView.sha256}`));
+    equal(exported.patchSha256, receipt.snapshot.candidate.patchSha256);
+    equal(sha256(JSON.stringify(exported.patch)), exported.patchSha256);
+    const resultTask = taskDtoSchema.parse(await request(`/v1/tasks/${first.id}`));
+    equal(resultTask.state, 'waiting_input');
+    const repairEvents = (await client.callTool({ name: 'get_task_events', arguments: { taskId: first.id } })).structuredContent as { items: unknown[] };
+    equal(taskEventDtoSchema.parse(repairEvents.items.at(-1)).reason, 'repair_ready');
+    const activeSlot = (await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows[0];
+    equal(activeSlot?.task_id, null);
+    await assertDrained(controllerUid, staging);
+
+    type AuditFinding = NonNullable<FormalAuditResult['checklist']>['findings'][number];
+    const runFixtureRepair = async (variant: 'template' | 'npm', purpose: string, selectFinding: (item: AuditFinding) => boolean) => {
+      phase = `formal_repair_${variant}_audit`;
+      await auditProvider?.close(); auditProvider = undefined;
+      auditProvider = await auditProtocolFixture();
+      worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, auditProvider.baseURL);
+      const task = await start(purpose, repairFixtureCommit);
+      await reached(task.id, 'waiting_input');
+      const audit = formalAuditDtoSchema.parse(await request(`/v1/tasks/${task.id}/audit`));
+      if (audit.status !== 'recorded' || audit.result.status !== 'completed') throw new Error('repair_fixture_audit_missing');
+      const finding = audit.result.checklist?.findings.find(selectFinding);
+      ok(finding);
+      await worker.stop('TERM'); worker = undefined;
+
+      phase = `formal_repair_${variant}_execution`;
+      const awaiting = taskDtoSchema.parse(await request(`/v1/tasks/${task.id}`));
+      equal(taskDtoSchema.parse(await request(`/v1/tasks/${task.id}/resume`, { expectedVersion: awaiting.version })).state, 'queued');
+      const outcome = await runRepairWorker(repairBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+        [task.id, task.runId, audit.result.snapshotSha256, finding.id], variant);
+      equal(outcome.receipt.scope.commit, repairFixtureCommit);
+      equal(outcome.receipt.scope.baseSnapshotSha256, audit.result.snapshotSha256);
+      notEqual(outcome.receipt.domainId, outcome.observation.domainId);
+      await assertDrained(controllerUid, staging);
+      return { ...outcome, audit, finding, task };
+    };
+    const template = await runFixtureRepair('template', 'Audit a synthetic dotenv entry', item => item.scanner === 'gitleaks'
+      && item.path === 'fixtures/runner/repair-input/.env.example' && item.line === 2);
+    const [templateTarget] = template.observation.snapshot.observation.targets;
+    ok(templateTarget?.range);
+    deepStrictEqual(templateTarget.templates, ['remove-env-entry-v1']);
+    deepStrictEqual(templateTarget.range, { startByte: 51, endByte: 126, sha256: '0eb13cfa6f676343b680d004cf9f518bd82ae743c9f7baeff5b80e70a8cc071b' });
+    const [templateChange] = template.receipt.snapshot.candidate.changes;
+    deepStrictEqual(templateChange, { path: template.finding.path, beforeBytes: 141, afterBytes: 66, edits: 1,
+      beforeSha256: '2a521af0e56199ba9686f52434e2097219b9c336a5037a2504c50914b1cfb809',
+      afterSha256: '5fe8da009246c424d55a44cbf111e904ac1394e2f8042b7663d0146b05a3e0bc',
+    });
+
+    const npm = await runFixtureRepair('npm', 'Audit a fixed npm lock file', item => item.scanner === 'trivy'
+      && item.path === npmFixturePaths.lock && item.ruleId === npmFixtureApproval.advisoryId);
+    const { candidate: npmCandidate } = npm.receipt.snapshot;
+    const npmFiles = npmFixtureFiles();
+    deepStrictEqual(npmCandidate.changes, npmFiles.map(({ path, original, expected, edits }) => ({
+      path, beforeBytes: Buffer.byteLength(original), beforeSha256: sha256(original),
+      afterBytes: Buffer.byteLength(expected), afterSha256: sha256(expected), edits: edits.length,
+    })));
+    const npmUrl = `/v1/tasks/${npm.task.id}/repair`;
+    const npmView = formalRepairDtoSchema.parse(await request(npmUrl));
+    if (npmView.status !== 'recorded' || npmView.result.status !== 'candidate_ready') throw new Error('native_npm_candidate_missing');
+    equal(npmView.sha256, npm.agent.resultSha256);
+    deepStrictEqual(npmView.result.candidate.changes, npmCandidate.changes);
+    const npmMcp = formalRepairDtoSchema.parse((await client.callTool({ name: 'get_repair', arguments: { taskId: npm.task.id } })).structuredContent);
+    if (npmMcp.status !== 'recorded') throw new Error('native_npm_candidate_missing');
+    equal(npmMcp.sha256, npmView.sha256);
+    deepStrictEqual(npmMcp.result, npmView.result);
+    equal(npmMcp.locale, 'zh-CN'); equal(npmView.locale, 'en'); notEqual(npmMcp.message, npmView.message);
+    const npmExport = formalRepairPatchDtoSchema.parse(await request(`${npmUrl}/patch?expectedSha256=${npmView.sha256}`));
+    equal(npmExport.patchSha256, npmCandidate.patchSha256);
+    deepStrictEqual(npmExport.patch.files, npmFiles.map(({ path, original, edits }) => ({ path, beforeSha256: sha256(original), edits })));
+    equal((await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows[0]?.task_id, null);
+
     return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, commit, domains,
       initial: scan.result, replacement: recoveredScan.result, previousFence: closed.fence, recoveredFence: replacement.fence,
       cancellation: { processExited: true, closed: true, receiptPublished: false },
@@ -304,6 +471,21 @@ async function probe() {
           coverage: checklist.coverage, findings: checklist.findings.length, trace: reviewed.result.trace.map(item => item.tool), usage: reviewed.result.usage },
         interrupted: { sha256: failed.sha256, inspectionSha256: failed.result.inspectionSha256, reason: failed.result.reason, usage: failed.result.usage },
         httpMcpAgreement: true, reusedRecordedScans: true },
+      repair: { operationId: receipt.scope.operationId, requestId: receipt.scope.requestId, fence: receipt.scope.fence,
+        domainId: receipt.domainId, receiptSha256, baseSnapshotSha256: receipt.scope.baseSnapshotSha256,
+        candidateManifestSha256: receipt.snapshot.candidate.candidateManifestSha256, change, cleanupConfirmed: true,
+        agent: { ...agent, mode: 'deterministic_model_fixture' },
+        candidatePublished: true, queuedThroughApi: true, httpMcpAgreement: true, patchSha256: exported.patchSha256, slotReleased: true,
+        observation: { domainId: observation.domainId, status: target.status, file: target.file, range: target.range, cleanupConfirmed: true } },
+      templateRepair: { commit: repairFixtureCommit, auditSha256: template.audit.sha256, trace: template.agent.trace,
+        resultSha256: template.agent.resultSha256, domainId: template.receipt.domainId, observationDomainId: template.observation.domainId,
+        range: templateTarget.range, change: templateChange, cleanupConfirmed: true,
+      },
+      npmRepair: { commit: repairFixtureCommit, auditSha256: npm.audit.sha256, findingId: npm.finding.id, trace: npm.agent.trace,
+        resultSha256: npmView.sha256, patchSha256: npmExport.patchSha256, changes: npmCandidate.changes,
+        domainId: npm.receipt.domainId, observationDomainId: npm.observation.domainId, cleanupConfirmed: true,
+        httpMcpAgreement: true, slotReleased: true,
+      },
     };
   } finally {
     try { await worker?.stop('TERM'); }

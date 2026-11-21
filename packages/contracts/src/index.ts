@@ -4,9 +4,12 @@ import { localeSchema } from './i18n.js';
 
 export * from './control-plane.js';
 export * from './formal-audit.js';
+export * from './formal-repair.js';
 export * from './i18n.js';
 export * from './inspection.js';
+export * from './npm-repair.js';
 export * from './qualified-inspection.js';
+export * from './qualified-repair.js';
 export * from './preaudit.js';
 export * from './release.js';
 export { idSchema, sourceRefSchema, taskStateSchema, agentRoleSchema, taskStates, agentRoles } from './primitives.js';

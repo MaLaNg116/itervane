@@ -1,4 +1,8 @@
+import { randomUUID } from 'node:crypto';
+import type { QualifiedInspectionReceipt } from '@itervane/contracts';
 import { afterAll, beforeAll, expect, it } from 'vitest';
+import { sha256 } from '../../src/profiles.js';
+import { verifyQualifiedInspectionReceipt } from '../../src/qualified-client.js';
 import { normalizeScan } from '../../src/scans.js';
 import { trustedGitFixture } from '../helpers/trusted-git.js';
 
@@ -37,6 +41,49 @@ it('keeps database identity, known vulnerability IDs and severity while removing
   const result = normalizeScan('trivy', { manifest: fixture.manifest, report: trivy({ Title: 'never-echo-this', PkgName: 'never-echo-this', Code: 'never-echo-this' }), exitCode: 10, database, now });
   expect(result).toMatchObject({ status: 'completed', database, findings: [{ ruleId: 'CVE-2021-23337', severity: 'high' }] });
   expect(JSON.stringify(result)).not.toContain('never-echo-this');
+});
+
+it('retains bounded npm advisory coordinates and distinguishes packages sharing an advisory', () => {
+  const initial = trivy({ PkgName: 'lodash', InstalledVersion: '4.17.20', FixedVersion: '4.17.21, 4.17.21',
+    Title: 'unsupported advisory prose',
+  });
+  const raw = JSON.parse(initial) as { Results: { Vulnerabilities: Record<string, unknown>[] }[] };
+  raw.Results[0]!.Vulnerabilities.push({ ...raw.Results[0]!.Vulnerabilities[0], PkgName: '@demo/dependency',
+    InstalledVersion: '1.0.0', FixedVersion: '>=1.1.0',
+  });
+  const result = normalizeScan('trivy', { manifest: fixture.manifest, report: JSON.stringify(raw), exitCode: 10, database, now });
+  expect(result.status).toBe('completed');
+  expect(new Set(result.findings.map(finding => finding.id)).size).toBe(2);
+  expect(result.findings.find(finding => finding.npm?.name === 'lodash')?.npm)
+    .toEqual({ name: 'lodash', installedVersion: '4.17.20', fixedVersions: ['4.17.21'] });
+  expect(result.findings.find(finding => finding.npm?.name === '@demo/dependency')?.npm)
+    .toEqual({ name: '@demo/dependency', installedVersion: '1.0.0', fixedVersions: [] });
+  expect(JSON.stringify(result)).not.toContain('unsupported advisory prose');
+});
+
+it('accepts receipts with either finding identity and detects changed npm coordinates', () => {
+  const { manifest, source, tree } = fixture;
+  const scope = { version: 1 as const, requestId: randomUUID(), taskId: randomUUID(), runId: randomUUID(), projectId: randomUUID(),
+    ...source, generation: 1, fence: 1, planSha256: sha256('plan'), workspaceSha256: sha256('workspace'),
+  };
+  const binding = { imageSha256: sha256('image'), originSha256: sha256('origin') };
+  const domainId = randomUUID();
+  const gitleaks = normalizeScan('gitleaks', { manifest, report: '[]', exitCode: 0 });
+  const historical = normalizeScan('trivy', { manifest, report: trivy(), exitCode: 10, database, now });
+  const current = normalizeScan('trivy', { manifest, report: trivy({ PkgName: 'lodash', InstalledVersion: '4.17.20',
+    FixedVersion: '4.17.21' }), exitCode: 10, database, now,
+  });
+  const receipt: QualifiedInspectionReceipt = { kind: 'receipt', scope, ...binding, domainId, commitSha256: sha256(fixture.commitObject),
+    cleanupConfirmed: true, sessionVerified: true, snapshot: { ...source, runId: domainId, tree, manifestSha256: manifest.sha256,
+      files: manifest.files.length, totalBytes: manifest.totalBytes, inputsSha256: sha256('scanner inputs'),
+      readOnly: true, offline: true, reports: [gitleaks, historical],
+    },
+  };
+  expect(() => verifyQualifiedInspectionReceipt(receipt, scope, binding)).not.toThrow();
+  receipt.snapshot.reports[1] = current;
+  expect(() => verifyQualifiedInspectionReceipt(receipt, scope, binding)).not.toThrow();
+  current.findings[0]!.npm!.installedVersion = '4.17.19';
+  expect(() => verifyQualifiedInspectionReceipt(receipt, scope, binding)).toThrow('runner_receipt_finding');
 });
 
 it('recognizes zero findings only for a completed supported scan and rejects out-of-snapshot locations', () => {

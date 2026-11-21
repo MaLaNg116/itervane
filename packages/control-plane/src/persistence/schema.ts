@@ -1,8 +1,9 @@
 import { sql } from 'drizzle-orm';
 import { boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
-  agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult, type InspectionPlan,
-  type PreauditRecord, type QualifiedInspectionReceipt, type ReleaseDecision, type ReleaseOperationState,
+  agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
+  type FormalRepairInput, type FormalRepairResult, type InspectionPlan,
+  type PreauditRecord, type QualifiedInspectionReceipt, type QualifiedRepairReceipt, type ReleaseDecision, type ReleaseOperationState,
 } from '@itervane/contracts';
 
 export const domain = pgSchema('itervane');
@@ -117,11 +118,11 @@ export const toolCalls = domain.table('tool_calls', {
 
 // 底层 saver 与领域事务分离：只有已发布的中间写入才参与恢复。
 export const checkpointWrites = domain.table('checkpoint_write_receipts', {
-  runId: uuid('run_id').notNull().references(() => taskRuns.id), graph: text('graph').$type<'preflight' | 'audit'>().notNull().default('preflight'),
+  runId: uuid('run_id').notNull().references(() => taskRuns.id), graph: text('graph').$type<'preflight' | 'audit' | 'repair'>().notNull().default('preflight'),
   checkpointId: text('checkpoint_id').notNull(),
   writeHash: text('write_hash').notNull(),
 }, t => [primaryKey({ columns: [t.runId, t.graph, t.checkpointId, t.writeHash] }),
-  check('checkpoint_write_graph', sql`${t.graph} IN ('preflight', 'audit')`)]);
+  check('checkpoint_write_graph', sql`${t.graph} IN ('preflight', 'audit', 'repair')`)]);
 
 // A prepared intent is not a fetched snapshot or a completed scan. One immutable policy per logical run.
 export const inspectionPlans = domain.table('inspection_plans', {
@@ -207,6 +208,85 @@ export const formalAuditResults = domain.table('formal_audit_results', {
   AND ${t.document}->>'version' = '1' AND ${t.document}->>'runId' = ${t.runId}::text
   AND ${t.document}->>'inputSha256' = ${t.inputSha256} AND ${t.document}->>'checkpointId' = ${t.checkpointId}
   AND octet_length(${t.document}::text) <= 98304) IS TRUE`)]);
+
+export const formalRepairInputs = domain.table('formal_repair_inputs', {
+  runId: uuid('run_id').primaryKey().references(() => formalAuditResults.runId),
+  preparedFence: integer('prepared_fence').notNull(), workerId: uuid('worker_id').notNull(),
+  sha256: text('sha256').notNull(), document: jsonb('document').$type<FormalRepairInput>().notNull(), createdAt: createdAt(),
+}, t => [check('formal_repair_input_binding', sql`(${t.preparedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+  AND ${t.document}->>'version' = '1' AND ${t.document}->>'runId' = ${t.runId}::text
+  AND octet_length(${t.document}::text) <= 8192) IS TRUE`)]);
+
+export const formalRepairRuntime = domain.table('formal_repair_runtime', {
+  runId: uuid('run_id').primaryKey().references(() => formalRepairInputs.runId), inputSha256: text('input_sha256').notNull(),
+  checkpointId: text('checkpoint_id').notNull(), checkpointStep: integer('checkpoint_step').notNull(),
+  publishedFence: integer('published_fence').notNull(), workerId: uuid('worker_id').notNull(),
+}, t => [check('formal_repair_runtime_binding', sql`${t.inputSha256} ~ '^[a-f0-9]{64}$' AND ${t.checkpointStep} >= -1 AND ${t.publishedFence} > 0`)]);
+
+export const formalRepairOperations = domain.table('formal_repair_operations', {
+  operationId: uuid('operation_id').primaryKey(),
+  runId: uuid('run_id').notNull().references(() => formalRepairInputs.runId),
+  callKeySha256: text('call_key_sha256').notNull(), inputSha256: text('input_sha256').notNull(),
+  commandSha256: text('command_sha256').notNull(), command: text('command').notNull(),
+  findingIds: jsonb('finding_ids').$type<string[]>().notNull(),
+  preparedFence: integer('prepared_fence').notNull(), workerId: uuid('worker_id').notNull(), createdAt: createdAt(),
+}, t => [
+  unique('formal_repair_operation_call').on(t.runId, t.callKeySha256),
+  check('formal_repair_operation_command', sql`(${t.preparedFence} > 0 AND ${t.callKeySha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.inputSha256} ~ '^[a-f0-9]{64}$' AND octet_length(${t.command}) BETWEEN 1 AND 2097152
+    AND ${t.commandSha256} = encode(sha256(convert_to(${t.command}, 'UTF8')), 'hex')
+    AND ${t.command}::jsonb#>>'{workspace,operationId}' = ${t.operationId}::text
+    AND ${t.command}::jsonb#>>'{workspace,repairInputSha256}' = ${t.inputSha256}
+    AND jsonb_typeof(${t.findingIds}) = 'array' AND jsonb_array_length(${t.findingIds}) BETWEEN 1 AND 32) IS TRUE`),
+]);
+
+export const formalRepairAttempts = domain.table('formal_repair_attempts', {
+  requestId: uuid('request_id').primaryKey(),
+  operationId: uuid('operation_id').notNull().references(() => formalRepairOperations.operationId),
+  fence: integer('fence').notNull(), workerId: uuid('worker_id').notNull(),
+  workspaceSha256: text('workspace_sha256').notNull(), imageSha256: text('image_sha256').notNull(),
+  originSha256: text('origin_sha256').notNull(),
+  state: text('state').$type<'reserved' | 'closed' | 'uncertain' | 'recorded'>().notNull().default('reserved'),
+  settledFence: integer('settled_fence'), settledWorkerId: uuid('settled_worker_id'),
+  settledAt: timestamp('settled_at', { withTimezone: true }),
+  receiptSha256: text('receipt_sha256'), receipt: jsonb('receipt').$type<QualifiedRepairReceipt>(),
+  createdAt: createdAt(),
+}, t => [
+  unique('formal_repair_attempt_per_fence').on(t.operationId, t.fence),
+  uniqueIndex('formal_repair_open_attempt').on(t.operationId).where(sql`${t.state} <> 'closed'`),
+  check('formal_repair_attempt_coordinates', sql`${t.fence} > 0 AND ${t.workspaceSha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.imageSha256} ~ '^[a-f0-9]{64}$' AND ${t.originSha256} ~ '^[a-f0-9]{64}$'`),
+  check('formal_repair_attempt_state', sql`(
+    (${t.state} = 'reserved' AND ${t.settledFence} IS NULL AND ${t.settledWorkerId} IS NULL AND ${t.settledAt} IS NULL)
+    OR (${t.state} IN ('closed', 'uncertain', 'recorded') AND ${t.settledFence} >= ${t.fence}
+      AND ${t.settledWorkerId} IS NOT NULL AND ${t.settledAt} IS NOT NULL)) IS TRUE`),
+  check('formal_repair_attempt_receipt', sql`(
+    (${t.state} <> 'recorded' AND ${t.receipt} IS NULL AND ${t.receiptSha256} IS NULL)
+    OR (${t.state} = 'recorded' AND ${t.settledFence} = ${t.fence} AND ${t.settledWorkerId} = ${t.workerId}
+      AND ${t.receiptSha256} ~ '^[a-f0-9]{64}$' AND octet_length(${t.receipt}::text) <= 32768
+      AND ${t.receipt}->>'kind' = 'repair_receipt' AND ${t.receipt}->'cleanupConfirmed' = 'true'::jsonb
+      AND ${t.receipt}->'sessionVerified' = 'true'::jsonb AND ${t.receipt}->>'originSha256' = ${t.originSha256}
+      AND ${t.receipt}->>'imageSha256' = ${t.imageSha256}
+      AND ${t.receipt}#>>'{scope,requestId}' = ${t.requestId}::text AND ${t.receipt}#>>'{scope,operationId}' = ${t.operationId}::text
+      AND ${t.receipt}#>>'{scope,workspaceSha256}' = ${t.workspaceSha256} AND ${t.receipt}#>>'{scope,fence}' = ${t.fence}::text
+      AND ${t.receipt}->>'domainId' = ${t.receipt}#>>'{snapshot,runId}'
+      AND ${t.receipt}#>'{snapshot,offline}' = 'true'::jsonb AND ${t.receipt}#>'{snapshot,readOnly}' = 'true'::jsonb)
+  ) IS TRUE`),
+]);
+
+export const formalRepairResults = domain.table('formal_repair_results', {
+  runId: uuid('run_id').primaryKey().references(() => formalRepairRuntime.runId),
+  inputSha256: text('input_sha256').notNull(), checkpointId: text('checkpoint_id').notNull(),
+  requestId: uuid('request_id').references(() => formalRepairAttempts.requestId),
+  finalizedFence: integer('finalized_fence').notNull(), workerId: uuid('worker_id').notNull(),
+  sha256: text('sha256').notNull(), document: jsonb('document').$type<FormalRepairResult>().notNull(), createdAt: createdAt(),
+}, t => [check('formal_repair_result_binding', sql`(${t.finalizedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+  AND ${t.inputSha256} ~ '^[a-f0-9]{64}$' AND ${t.document}->>'version' = '1' AND ${t.document}->>'runId' = ${t.runId}::text
+  AND ${t.document}->>'inputSha256' = ${t.inputSha256} AND ${t.document}->>'checkpointId' = ${t.checkpointId}
+  AND ${t.document}->'releaseEligible' = 'false'::jsonb AND octet_length(${t.document}::text) <= 16384
+  AND ((${t.requestId} IS NOT NULL AND ${t.document}->>'status' = 'candidate_ready' AND ${t.document}->>'reason' = 'repair_complete'
+      AND jsonb_typeof(${t.document}->'candidate') = 'object')
+    OR (${t.requestId} IS NULL AND ${t.document}->>'status' = 'requires_human' AND ${t.document}->'candidate' = 'null'::jsonb))) IS TRUE`)]);
 
 export const preaudits = domain.table('preaudits', {
   id: uuid('id').primaryKey(), projectId: uuid('project_id').notNull().references(() => projects.id),

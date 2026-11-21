@@ -31,6 +31,12 @@ async function prepare(root: string) {
   await build({
     entryPoints: ['packages/runner/src/entries/guest-inspection.ts'],
     outfile: worker, bundle: true, platform: 'node', format: 'esm', target: 'node24',
+    mainFields: ['module', 'main'],
+  });
+  // Load the same standalone bundle that the guest will run, without source or scanner access.
+  preparationPhase = 'bundle-startup';
+  await execute(runtime, [worker, 'self-check'], {
+    env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' }, timeout: 5_000, maxBuffer: 8_192,
   });
   await mkdir(path('policy'));
   await writeFile(path('policy/gitleaks.toml'), gitleaksConfig);

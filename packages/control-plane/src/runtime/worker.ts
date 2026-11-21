@@ -6,10 +6,12 @@ import { eventReasonMessages, sourceInspectionObservationSchema, sourceInspectio
   type SourceInspectionPauseReason, type ToolResult } from '@itervane/contracts';
 import { queueName, type Database } from '../persistence/database.js';
 import { DomainError } from '../service/errors.js';
+import { publishFormalRepair } from '../service/repair-result.js';
 import { BudgetExhausted, ExecutionLost, type ExecutionScope } from './authority.js';
 import { GuardedCheckpointer } from './checkpointer.js';
 import { ExecutionCoordinator } from './coordinator.js';
 import { runFormalAudit, type AuditModel } from './formal-audit.js';
+import { runFormalRepair, type FormalRepairOptions } from './formal-repair.js';
 import { ToolGateway } from './tools.js';
 import type { InspectionRunner } from './source-inspection.js';
 
@@ -37,16 +39,18 @@ export class DurableWorker {
   readonly gateway: ToolGateway;
   private readonly saver: PostgresSaver;
   private readonly auditModel: AuditModel | undefined;
+  private readonly repair: FormalRepairOptions | undefined;
   private active: Promise<boolean> | undefined;
   private abort: AbortController | undefined;
   private closing = false;
   private closePromise: Promise<void> | undefined;
 
   constructor(readonly database: Database, connectionString: string,
-    options: { leaseSeconds?: number; runner?: InspectionRunner; auditModel?: AuditModel } = {}) {
+    options: { leaseSeconds?: number; runner?: InspectionRunner; auditModel?: AuditModel; repair?: FormalRepairOptions } = {}) {
     this.coordinator = new ExecutionCoordinator(database, options);
     this.gateway = new ToolGateway(this.coordinator, options.runner);
     this.auditModel = options.auditModel;
+    this.repair = options.repair;
     const pool = new pg.Pool({ connectionString, max: 2, connectionTimeoutMillis: 3_000, statement_timeout: 5_000, idle_in_transaction_session_timeout: 5_000 });
     pool.on('error', () => console.error(JSON.stringify({ level: 'error', code: 'infrastructure_error', component: 'checkpointer' })));
     this.saver = new PostgresSaver(pool, undefined, { schema: 'itervane_checkpoint' });
@@ -78,9 +82,14 @@ export class DurableWorker {
         .finally(() => { heartbeat = undefined; });
     }, this.coordinator.leaseSeconds * 1_000 / 3);
     timer.unref();
-    let auditing = false;
+    let phase: 'preflight' | 'audit' | 'repair' = 'preflight';
     try {
       const runtime = await this.coordinator.withLease(scope, async (_tx, current) => current.runtime);
+      if (runtime.reason === 'repair_pending') {
+        phase = 'repair';
+        await this.executeRepair(scope, controller.signal);
+        return;
+      }
       const saver = new GuardedCheckpointer(this.coordinator, scope, this.saver);
       const graph = new StateGraph(State)
         .addNode('describe', async () => {
@@ -115,8 +124,13 @@ export class DurableWorker {
       if (!result?.tasks.some(task => task.interrupts?.length)) throw new DomainError('unavailable');
       const reason = sourceInspectionPauseReasonSchema.parse(result.values.inspectionReason ?? 'runner_unavailable');
       if (reason === 'inspection_ready') {
-        auditing = true;
-        if (await runFormalAudit(this.coordinator, scope, this.saver, this.auditModel, controller.signal)) return;
+        phase = 'audit';
+        const next = await runFormalAudit(this.coordinator, scope, this.saver, this.auditModel, controller.signal, this.repair !== undefined);
+        if (next === 'repair_pending') {
+          phase = 'repair';
+          await this.executeRepair(scope, controller.signal);
+        }
+        if (next !== 'unavailable') return;
       }
       await this.coordinator.pause(scope, reason);
     } catch (error) {
@@ -124,13 +138,23 @@ export class DurableWorker {
         const reason = error instanceof BudgetExhausted ? 'budget_exhausted'
           : error instanceof DomainError && ['forbidden', 'not_found'].includes(error.code) ? 'permission_revoked'
           : error instanceof ExecutionLost ? 'cancelled' : controller.signal.aborted ? 'cancelled_or_interrupted'
-          : auditing ? 'audit_failed' : 'execution_error';
+          : phase === 'repair' ? 'repair_failed' : phase === 'audit' ? 'audit_failed' : 'execution_error';
         try { await this.coordinator.stop(scope, reason, error instanceof ExecutionLost); }
         catch (stopError) { if (!(stopError instanceof ExecutionLost)) throw stopError; }
       }
     } finally {
       clearInterval(timer); await heartbeat; this.abort = undefined;
     }
+  }
+
+  private async executeRepair(scope: ExecutionScope, signal: AbortSignal) {
+    const model = this.auditModel;
+    if (!model || !this.repair) {
+      await this.coordinator.pause(scope, 'repair_deferred');
+      return;
+    }
+    const report = await runFormalRepair(this.coordinator, scope, this.saver, model, this.repair, signal);
+    await this.coordinator.withLease(scope, (tx, { task }) => publishFormalRepair(tx, task, scope, report, model.adapter.protocol, signal));
   }
 
   close(): Promise<void> {

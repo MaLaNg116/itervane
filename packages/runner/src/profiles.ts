@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { inspectionPlanSchema, type InspectionPlan } from '@itervane/contracts';
+import { inspectionPlanSchema, sourceContentLimits, type InspectionPlan } from '@itervane/contracts';
 
 export const sha256 = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
-export const sourceLimits = Object.freeze({ maxFiles: 5000, maxFileBytes: 2097152, maxSourceBytes: 33554432, maxCommitBytes: 65536 });
+export const sourceLimits = Object.freeze({ ...sourceContentLimits, maxCommitBytes: 65536 });
 export const gitleaksConfig = 'title = "Itervane protected snapshot profile v1"\n[extend]\nuseDefault = true\n';
 export const trivyConfig = 'scan:\n  scanners:\n    - vuln\n';
 export const scannerProfiles = [
@@ -15,7 +15,7 @@ export function createInspectionPlan(input: Pick<InspectionPlan, 'taskId' | 'run
     isolation: { kind: 'disposable_vm', driver: 'qemu-kvm-libvirt', verification: 'required' },
     network: { fetch: 'registered_https_only', scan: 'deny' },
     limits: { cpu: 2, memoryMiB: 2048, diskMiB: 8192, timeoutSeconds: 180,
-      maxFiles: 5000, maxFileBytes: 2097152, maxSourceBytes: 33554432, maxReportBytes: 4194304 }, scanners: scannerProfiles });
+      ...sourceContentLimits, maxReportBytes: 4194304 }, scanners: scannerProfiles });
   return { document, sha256: inspectionPlanHash(document) };
 }
 export function inspectionPlanHash(input: unknown) { return sha256(JSON.stringify(inspectionPlanSchema.parse(input))); }
