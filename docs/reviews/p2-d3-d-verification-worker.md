@@ -18,4 +18,6 @@
 | 英文健康 | `559192b0b0a01d6881eae858521203d5a89c0264c3c78842e69dcedeb0da3b2a` | `d2b557cae485bbae08451aa821fe58d98f72acb7890a741560da0c1e44f0c7cc` |
 | 中文 503 | `8536b510e9209ae7ff8e019f3c89d7eb0cb00f82ee5f883d4fbeb76b6a3b05bc` | `fd505c6e82501f1a6bf576d6161f9c9bd5da7257661056f06dc460d6031a9a9c` |
 
-D-C2 接续受控返修代次与预算。D-D 提供双语门户及外部 MCP 的结果视图。P2-E 在实际发布前独立核对候选和人工批准。
+四组原生验收完成后，检查最终文档版本 `1329646be83cf6c69d48946c8c99ef88124a281a` 的变更仅涉及导读与索引，并核对该提交的常规 CI。PR 已以 `26f01aca8ccf1edddc91d7d24d03528517a7bb1c` 合入。 [四组原生验收](https://github.com/MaLaNg116/itervane/actions/runs/44905411730) · [合并记录](https://github.com/MaLaNg116/itervane/pull/35)
+
+[D-C2](p2-d3-d-repair-retry.md) 接续受控返修代次与预算。D-D 提供双语门户及外部 MCP 的结果视图。P2-E 在实际发布前独立核对候选和人工批准。
