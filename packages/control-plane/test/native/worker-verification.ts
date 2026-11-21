@@ -14,12 +14,20 @@ import { currentInspectionAttempt } from '../../src/service/inspection-evidence.
 let phase = 'config';
 
 async function verify() {
-  const [taskId, runId, expected, ...extra] = process.argv.slice(2);
+  const [taskId, runId, expected, ...buildArgs] = process.argv.slice(2);
   const config = workerConfig();
-  if (process.platform !== 'linux' || !process.getuid?.() || !config.runner || extra.length
+  if (process.platform !== 'linux' || !process.getuid?.() || !config.runner
       || !/^\/itervane_test_[a-f0-9]{12}$/.test(new URL(config.databaseUrl).pathname)) throw new Error('verification_fixture_config');
   const target = { taskId: idSchema.parse(taskId), runId: idSchema.parse(runId) };
   const findingId = expected === 'original' ? null : sha256Schema.parse(expected);
+  const [profileSha, baselineSha, expectedBuild] = buildArgs;
+  if (buildArgs.length !== 0 && (buildArgs.length !== 3 || findingId !== null
+      || (expectedBuild !== 'built' && expectedBuild !== 'profile_mismatch' && expectedBuild !== 'offline_install'))) {
+    throw new Error('verification_fixture_build_config');
+  }
+  const buildProfile = buildArgs.length ? {
+    buildProfileSha256: sha256Schema.parse(profileSha), baselineSha256: sha256Schema.parse(baselineSha),
+  } : undefined;
   phase = 'claim';
   const database = await openDatabase(config.databaseUrl);
   let heartbeat: NodeJS.Timeout | undefined;
@@ -49,6 +57,7 @@ async function verify() {
     const profile = { id: 'isolated-rescan-fixture', baselineSha256: sha256('reserved for protected baseline'),
       policySha256: sha256(JSON.stringify(scannerProfiles)), scannerInputsSha256: original.snapshot.inputsSha256,
       runnerImageSha256: config.runner.imageSha256,
+      ...buildProfile,
     };
     const runner = new QualifiedInspectionClient(config.runner);
     let dispatches = 0;
@@ -89,6 +98,15 @@ async function verify() {
       equal(snapshot.target, null);
       deepStrictEqual(comparison.totals, { introduced: 0, resolved: 0, remaining: 0 });
     }
+    if (buildProfile) {
+      const evidence = snapshot.build;
+      ok(evidence);
+      const observed = evidence.status === 'built' ? 'built' : evidence.code;
+      phase = `build_${observed}`;
+      equal(observed, expectedBuild);
+      equal(evidence.buildProfileSha256, buildProfile.buildProfileSha256);
+      if (evidence.status === 'built') equal(evidence.isolationVerified, true);
+    } else equal(snapshot.build, undefined);
 
     phase = 'replay';
     deepStrictEqual(await rescan(), result);
@@ -109,7 +127,7 @@ async function verify() {
       originalReportsSha256: sha256(JSON.stringify(snapshot.reports)),
       targetReportsSha256: snapshot.target && sha256(JSON.stringify(snapshot.target.reports)),
       totals: comparison.totals, targetRuleId: targetFinding ? targetFinding.ruleId : null,
-      newFindingGroups, remainingFindingGroups: after.size, dispatches, cleanupConfirmed: true,
+      newFindingGroups, remainingFindingGroups: after.size, dispatches, cleanupConfirmed: true, build: snapshot.build ?? null,
     };
   } finally {
     clearInterval(heartbeat);

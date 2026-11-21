@@ -3,6 +3,7 @@ set -euo pipefail
 
 test "${PROBE_HOST_ENVIRONMENT:-}" = github-hosted
 directory=$(realpath -- "$1")
+scenario=${2:-regression}
 reports="$PWD/.reports/p0"
 runner=itervane-probe
 worker=itervane-inspection-client
@@ -13,6 +14,11 @@ sock="$shared/inspection.sock"
 stage="$directory/staging"
 digest=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["rawSha256"])' "$reports/kvm-image.json")
 node=$(command -v node)
+case "$scenario" in
+  regression) features=(--enable-repair --enable-verification) ;;
+  standard-build|standard-build-missing-cache) features=(--enable-verification --enable-standard-build) ;;
+  *) exit 1 ;;
+esac
 
 sudo -n useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$worker"
 sudo -n install -d -m 0755 -o "$runner" -g "$runner" "$shared"
@@ -25,7 +31,7 @@ sudo -n systemd-run --quiet --unit="$unit" --uid="$runner" --gid="$runner" \
   --property=CapabilityBoundingSet= --property=AmbientCapabilities= \
   --setenv="XDG_CONFIG_HOME=/home/$runner/.config" --setenv="XDG_CACHE_HOME=/home/$runner/.cache" --setenv=LANG=C.UTF-8 \
   /usr/bin/python3 -I -B "$directory/code/packages/runner/host/qualified_controller.py" \
-  "$sock" "$stage" "$directory/probe.raw" "$digest" "$(id -u "$worker")" --enable-repair --enable-verification https://github.com/MaLaNg116/itervane.git
+  "$sock" "$stage" "$directory/probe.raw" "$digest" "$(id -u "$worker")" "${features[@]}" https://github.com/MaLaNg116/itervane.git
 trap 'sudo -n systemctl stop "$unit"' EXIT
 for attempt in {1..100}; do
   if sudo -n test -S "$sock"; then break; fi
@@ -52,6 +58,7 @@ assert_empty() {
   [[ -z "$active" && -z "$staged" ]]
 }
 
+if [[ "$scenario" == regression ]]; then
 sudo -n /usr/bin/python3 -I -B - "$sock" > "$reports/runner-qualified-peer.json" <<'PY'
 import json
 import socket
@@ -128,6 +135,7 @@ assert outcome["domainId"] == sys.argv[2] and outcome["cleanup"] == "confirmed"
 PY
   fi
 done
+fi
 
 pnpm exec esbuild packages/control-plane/src/entries/worker.ts --bundle --platform=node --format=esm --target=node24 \
   '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
@@ -141,7 +149,15 @@ pnpm exec esbuild packages/control-plane/test/native/worker-verification.ts --bu
   '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
   --outfile=.reports/p0/verification-worker.mjs
 sudo -n install -m 0444 .reports/p0/verification-worker.mjs "$shared/verification-worker.mjs"
+extra=()
+report="$reports/runner-worker-inspection.json"
+if [[ "$scenario" != regression ]]; then
+  profile=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["buildProfileSha256"])' "$reports/kvm-build-inputs.json")
+  baseline=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["baselineSha256"])' "$reports/kvm-build-inputs.json")
+  extra=("$scenario" "$profile" "$baseline")
+  report="$reports/runner-worker-build.json"
+fi
 pnpm exec tsx packages/control-plane/test/native/worker-inspection.ts "$shared/worker.mjs" "$sock" "$(id -u "$runner")" "$digest" "$stage" \
-  "$shared/repair-worker.mjs" "$shared/verification-worker.mjs" \
-  > "$reports/runner-worker-inspection.json"
+  "$shared/repair-worker.mjs" "$shared/verification-worker.mjs" "${extra[@]}" \
+  > "$report"
 assert_empty

@@ -4,6 +4,11 @@ set -euo pipefail
 # This test provisions a throwaway account and KVM device permissions.
 test "${PROBE_HOST_ENVIRONMENT:-}" = github-hosted
 directory=$(realpath -- "$1")
+scenario=${2:-regression}
+case "$scenario" in
+  regression|standard-build|standard-build-missing-cache) ;;
+  *) exit 1 ;;
+esac
 runner_user=itervane-probe
 runner_home=/home/itervane-probe
 node=$(command -v node)
@@ -32,6 +37,11 @@ git archive --format=tar HEAD | as_runner tar -xf -
 as_runner "$pnpm" install --frozen-lockfile --ignore-scripts
 as_runner /usr/bin/python3 -I -B packages/runner/host/kvm_preflight.py > "$reports/kvm-session-host.json"
 /usr/bin/python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["result"] == "vm_descriptor_created"' "$reports/kvm-session-host.json"
+
+if [[ "$scenario" != regression ]]; then
+  bash fixtures/runner/run-qualified-session.sh "$directory" "$scenario"
+  exit
+fi
 
 digest=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["rawSha256"])' "$reports/kvm-image.json")
 sudo -n install -d -m 0700 "$directory/root-stage"
