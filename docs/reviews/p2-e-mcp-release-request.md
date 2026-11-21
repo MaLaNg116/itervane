@@ -7,3 +7,5 @@
 - 实际 MCP 连接验证只读 scope 拒绝写入、只读项目角色拒绝申请、撤权后隐藏任务、错项目环境、版本漂移、严格请求字段，以及新候选重放和 HTTP 一致。随后使用人用客户端确认，检查正式队列记录。 [scope 与工具发现](https://github.com/MaLaNg116/itervane/blob/e4c7d0d/packages/control-plane/test/integration/mcp.test.ts) · [实际候选用例](https://github.com/MaLaNg116/itervane/blob/e4c7d0d/packages/control-plane/test/integration/inspections.test.ts)
 
 固定实现版本为 `e4c7d0d8a864890a45f2c6738743c652db77a4eb`。TypeScript 和真实 PostgreSQL 全量 138 项通过。集成测试源码指纹为 `6f456b635d60c3471ddd07a1027f9720aa086d6af6b5fe497dc59a9683d8733a`。E-C 将按已登记目标绑定正式队列、归档导入和下游执行。 [PR #43](https://github.com/MaLaNg116/itervane/pull/43) · [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44917917440)
+
+常规 CI 与四组 KVM 通过。原生流程保留第二代归档、决定版本 1 和完整清理证据，真实 PostgreSQL 套件另外核对 MCP 客户端实际提交与重放。#43 以 `232d71aa5560b30279ba3982f0a7baff103c0fb0` 合入 main。
