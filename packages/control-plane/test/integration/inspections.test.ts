@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
@@ -11,7 +11,7 @@ import { createFormalVerification } from '@itervane/agent';
 import { apiErrorSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseViewSchema, formalRepairRetryContextSchema, formalVerificationResultSchema, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
-  type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
+  type FormalReleaseManifest, type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
 import { canonicalRepairCommand, canonicalRepairObservation, canonicalVerificationCommand, prepareQualifiedVerificationRequest,
@@ -29,6 +29,7 @@ import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-a
 import { runFormalRepair } from '../../src/runtime/formal-repair.js';
 import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
 import { FormalReleaseSteps } from '../../src/runtime/formal-release-steps.js';
+import { FormalReleaseWorker } from '../../src/runtime/formal-release-worker.js';
 import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-rescan.js';
 import { runFormalVerification, type FormalVerificationOptions } from '../../src/runtime/formal-verification.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
@@ -36,6 +37,7 @@ import { GuardedCheckpointer } from '../../src/runtime/checkpointer.js';
 import { FormalRepairExecution, type RepairRunner } from '../../src/runtime/repair-execution.js';
 import { observeFormalRepairTargets, type RepairObservationRunner } from '../../src/runtime/repair-observation.js';
 import { ReleaseRehearsal } from '../../src/runtime/release-rehearsal.js';
+import type { ReleaseRegistryPublisher } from '../../src/runtime/release-registry.js';
 import { ToolGateway } from '../../src/runtime/tools.js';
 import { prepareFormalVerificationInput } from '../../src/runtime/verification-input.js';
 import { projectVerificationEvidence } from '../../src/runtime/verification-evidence.js';
@@ -1338,6 +1340,11 @@ async function readOperation(operationId: string) {
   return row;
 }
 
+function standardRegistryProof({ archive, manifestDigest, configDigest }: FormalReleaseManifest['image']) {
+  return { registryOrigin: releaseOrigin, repository: 'testing/standard', archive, manifestDigest, configDigest,
+    reference: `registry.example.invalid/testing/standard@${manifestDigest}` };
+}
+
 it('claims one formal release atomically, proves its scope and yields the same operation with a fresh wakeup', async () => {
   const { approval, operationId, target, owner, service, taskService } = await queuedFormalRelease();
   const releases = new FormalReleaseCoordinator(coordinator, releaseOrigin);
@@ -1577,20 +1584,16 @@ it('records a fence-bound archive proof and only one registry intent, then confi
   expect(competing.map(item => item.status).sort()).toEqual(['fulfilled', 'rejected']);
   await expect(release.yieldClaim(scope)).rejects.toMatchObject({ code: 'unsupported_state' });
   expect(await readOperation(operationId)).toMatchObject({ state: 'dispatching', wakeupJobId: null });
-  const image = approval.manifest.image;
-  const proof = { registryOrigin: releaseOrigin, repository: 'testing/standard',
-    reference: `registry.example.invalid/testing/standard@${image.manifestDigest}`,
-    manifestDigest: image.manifestDigest, configDigest: image.configDigest, archive: image.archive,
-  };
+  const proof = standardRegistryProof(approval.manifest.image);
+  await expect(release.authorizeRegistryWrite(scope)).resolves.toBeUndefined();
   await expect(steps.confirmRegistry({ ...scope, operationId: randomUUID() }, proof)).rejects.toBeInstanceOf(ExecutionLost);
   await expect(steps.confirmRegistry(scope, { ...proof, configDigest: `sha256:${sha256('different registry config')}` }))
     .rejects.toMatchObject({ code: 'conflict' });
-  await steps.recordRegistryUncertain(scope);
-  await steps.recordRegistryUncertain(scope);
   expect(await steps.readRegistryProof(scope)).toBeNull();
   const persistedRegistry = and(eq(formalReleaseSteps.operationId, operationId), eq(formalReleaseSteps.kind, 'registry'));
   await expect(database.storage.db.update(formalReleaseSteps).set({
     state: 'confirmed', proof: { ...proof, repository: 'testing/other' },
+    settledFence: scope.fence, settledBy: scope.workerId, settledAt: sql`clock_timestamp()`,
   }).where(persistedRegistry)).rejects.toMatchObject({ cause: { code: '23514', message: 'formal_release_step_proof_mismatch' } });
 
   const latest = await taskService.get(identity, task.id);
@@ -1606,13 +1609,12 @@ it('records a fence-bound archive proof and only one registry intent, then confi
   expect(await taskService.get(identity, task.id)).toMatchObject({ state: 'cancel_requested' });
   const events = await taskService.events(identity, task.id, 50, 'zh-CN');
   expect(events.filter(event => event.type === 'task.release_registry_prepared')).toHaveLength(1);
-  expect(events.filter(event => event.type === 'task.release_registry_uncertain')).toHaveLength(1);
   expect(events.filter(event => event.type === 'task.release_registry_confirmed')).toHaveLength(1);
   expect(events.at(-1)).toMatchObject({ state: 'cancel_requested', message: /独立核对获批镜像/ });
 });
 
 it('requeues an expired registry intent for readback while retaining the environment and cancellation', async () => {
-  const { operationId, target, taskService } = await queuedFormalRelease();
+  const { operationId, target, taskService, approval } = await queuedFormalRelease();
   const release = new FormalReleaseCoordinator(coordinator, releaseOrigin);
   const steps = new FormalReleaseSteps(release);
   const initial = await fetchFormalWakeup();
@@ -1623,7 +1625,6 @@ it('requeues an expired registry intent for readback while retaining the environ
   await steps.prepareRegistry(scope);
   const current = await taskService.get(identity, task.id);
   await taskService.cancel(identity, task.id, { expectedVersion: current.version });
-  await steps.recordRegistryUncertain(scope);
   await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
   await coordinator.reconcile(randomUUID());
   const recovered = await readOperation(operationId);
@@ -1634,13 +1635,82 @@ it('requeues an expired registry intent for readback while retaining the environ
     .toMatchObject({ state: 'created', data: { operationId } });
   expect(await database.storage.boss.fetch(queueName)).toEqual([]);
   expect((await database.storage.db.select().from(formalReleaseSteps).where(eq(formalReleaseSteps.kind, 'registry')))[0])
-    .toMatchObject({ operationId, state: 'uncertain', preparedFence: scope.fence });
+    .toMatchObject({ operationId, state: 'prepared', preparedFence: scope.fence, proof: null });
   await expect(steps.readRegistryProof(scope)).rejects.toBeInstanceOf(ExecutionLost);
   await expect(registerReleaseTarget(database.storage, { ...target, runtimeConfigSha256: sha256('new configuration') }))
     .rejects.toMatchObject({ code: 'conflict' });
   expect((await database.admin.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
   expect((await taskService.events(identity, task.id, 50, 'en')).at(-1))
     .toMatchObject({ type: 'task.release_registry_recovered', state: 'cancel_requested', reason: 'lease_expired' });
+  const [oldGrant] = (await database.admin.query('DELETE FROM itervane.workspace_members RETURNING workspace_id, principal_id')).rows;
+  const recovery = await release.claim(await fetchFormalWakeup(), randomUUID());
+  if (!recovery) throw new Error('Expected a read-only recovery lease');
+  expect(recovery).toMatchObject({ operationId, mode: 'registry_recovery', candidateId: approval.id });
+  expect(recovery.fence).toBeGreaterThan(scope.fence);
+  await expect(release.authorizeRegistryWrite(recovery)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(release.authorizeRegistryWrite(scope)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(release.heartbeatRegistryObservation(recovery)).resolves.toBe(true);
+  const proof = standardRegistryProof(approval.manifest.image);
+  expect(await steps.confirmRegistry(recovery, proof)).toEqual(proof);
+  expect(await release.settleRegistryCancellation(recovery)).toBe(true);
+  expect(await readOperation(operationId)).toMatchObject({ state: 'blocked', wakeupJobId: null });
+  await expect(steps.readRegistryProof(recovery)).rejects.toBeInstanceOf(ExecutionLost);
+  expect((await database.storage.db.select().from(formalReleaseSteps).where(eq(formalReleaseSteps.kind, 'registry')))[0])
+    .toMatchObject({ state: 'confirmed', preparedFence: scope.fence, settledFence: recovery.fence, proof });
+  await database.admin.query('INSERT INTO itervane.workspace_members(workspace_id, principal_id) VALUES ($1, $2)',
+    [oldGrant.workspace_id, oldGrant.principal_id]);
+  expect(await taskService.get(identity, task.id)).toMatchObject({ state: 'cancelled' });
+  expect(await database.storage.boss.fetch(formalReleaseQueue)).toEqual([]);
+});
+
+it('bounds registry recovery to three claims and preserves a held unknown result across mismatches and cancellation', async () => {
+  const { operationId, target, taskService, approval, owner, service } = await queuedFormalRelease();
+  const publish = vi.fn<ReleaseRegistryPublisher['publish']>(async (_target, _image, _path, authorize) => {
+    await authorize();
+    throw new Error('simulated_lost_write_response');
+  });
+  const observe = vi.fn<ReleaseRegistryPublisher['observe']>()
+    .mockImplementationOnce(async (_target, _image, authorize) => { await authorize(); return null; })
+    .mockImplementationOnce(async (_target, _image, authorize) => {
+      await authorize();
+      return { ...standardRegistryProof(approval.manifest.image), configDigest: `sha256:${sha256('foreign configuration')}` };
+    });
+  const worker = new FormalReleaseWorker(database.storage, { origin: releaseOrigin, registry: { publish, observe }, runner: {
+    async withRetainedArchive(_archive, authorize, use) {
+      await authorize();
+      return use('/trusted-fixture/approved.oci.tar');
+    },
+  } });
+  const first = await worker.tick();
+  expect(first).toMatchObject({ status: 'requeued', scope: { operationId, mode: 'import' } });
+  const recoveryWorker = new FormalReleaseWorker(database.storage, { origin: releaseOrigin, registry: { publish, observe } });
+  const changedWorker = new FormalReleaseWorker(database.storage, { origin: 'https://other.example.invalid', registry: { publish, observe } });
+  const runWhenDue = (worker: FormalReleaseWorker) => vi.waitFor(async () => {
+    const result = await worker.tick();
+    if (result.status === 'idle') throw new Error('Expected a delayed read-only wakeup');
+    return result;
+  }, { timeout: 5000, interval: 60 });
+  expect(await runWhenDue(changedWorker)).toMatchObject({ status: 'requeued', scope: { mode: 'registry_recovery' } });
+  expect(observe).toHaveBeenCalledTimes(0);
+  expect(await runWhenDue(recoveryWorker)).toMatchObject({ status: 'requeued', scope: { mode: 'registry_recovery' } });
+  expect((await service.getView(owner, task.id, 'zh-CN')).candidate?.message).toMatch(/独立核对/);
+  const current = await taskService.get(identity, task.id);
+  expect(current.state).toBe('reconciling');
+  await taskService.cancel(identity, task.id, { expectedVersion: current.version });
+  expect(await runWhenDue(recoveryWorker)).toMatchObject({ status: 'manual_review', scope: { mode: 'registry_recovery' } });
+  expect(await recoveryWorker.tick()).toEqual({ status: 'idle' });
+  expect(publish).toHaveBeenCalledTimes(1);
+  expect(observe).toHaveBeenCalledTimes(2);
+  expect(await readOperation(operationId)).toMatchObject({ state: 'reconciling', wakeupJobId: null });
+  expect((await database.storage.db.select().from(formalReleaseSteps).where(eq(formalReleaseSteps.kind, 'registry')))[0])
+    .toMatchObject({ state: 'uncertain', proof: null });
+  await expect(registerReleaseTarget(database.storage, { ...target, runtimeConfigSha256: sha256('still held') }))
+    .rejects.toMatchObject({ code: 'conflict' });
+  const events = await taskService.events(identity, task.id, 50, 'en');
+  expect(events.filter(event => event.type === 'task.release_registry_recheck_started')).toHaveLength(3);
+  expect(events.some(event => event.reason === 'release_target_changed')).toBe(true);
+  expect(events.some(event => event.reason === 'release_registry_missing')).toBe(true);
+  expect(events.at(-1)).toMatchObject({ type: 'task.release_registry_manual_review', state: 'cancel_requested', reason: 'release_registry_unavailable' });
 });
 
 it('keeps verification unavailable while an audit finding has no published repair candidate', async () => {
