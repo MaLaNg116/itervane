@@ -1,12 +1,16 @@
-import type { FormalRepairReport } from '@itervane/agent';
-import { formalRepairResultSchema, qualifiedRepairResponseSchema, type FormalRepairResult } from '@itervane/contracts';
-import { sha256 } from '@itervane/runner';
+import { agentText, type FormalRepairReport } from '@itervane/agent';
+import { formalRepairDtoSchema, formalRepairPatchDtoSchema, formalRepairResultSchema, idSchema, qualifiedRepairResponseSchema,
+  repairCommandSchema, sha256Schema, translate, type FormalRepairResult, type Locale } from '@itervane/contracts';
+import { canonicalRepairCommand, sha256 } from '@itervane/runner';
 import { and, eq } from 'drizzle-orm';
-import { formalRepairAttempts, formalRepairOperations, formalRepairResults, formalRepairRuntime, runRuntime } from '../persistence/schema.js';
+import type { VerifiedIdentity } from '../auth/identity.js';
+import type { Database } from '../persistence/database.js';
+import { formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRuntime,
+  runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { appendEvent, clearSlot, type ExecutionScope, type TaskRow } from '../runtime/authority.js';
-import type { Transaction } from './access.js';
-import { DomainError } from './errors.js';
-import { prepareFormalRepairInput } from './formal-repair.js';
+import { requireActor, requireProject, type Transaction } from './access.js';
+import { DomainError, parseInput } from './errors.js';
+import { isRepairableAudit, prepareFormalRepairInput } from './formal-repair.js';
 
 async function recordedCandidate(tx: Transaction, runId: string, inputSha256: string, report: FormalRepairReport) {
   const selection = report.formalRepair;
@@ -59,4 +63,77 @@ export async function publishFormalRepair(tx: Transaction, task: TaskRow, scope:
   await clearSlot(tx);
   signal.throwIfAborted();
   return { document, sha256: hash };
+}
+
+export class FormalRepairService {
+  constructor(private readonly database: Database) {}
+
+  private async current(tx: Transaction, identity: VerifiedIdentity, taskId: string, write = false) {
+    const actor = await requireActor(tx, identity);
+    const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId)).for('share');
+    if (!task) throw new DomainError('not_found');
+    await requireProject(tx, actor, task.projectId, write);
+    const [current] = await tx.select({ runId: taskRuns.id, reason: runRuntime.reason, input: formalRepairInputs.document,
+      inputSha256: formalRepairInputs.sha256, audit: formalAuditResults.document, checkpointId: formalRepairRuntime.checkpointId, row: formalRepairResults })
+      .from(taskRuns).innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id))
+      .leftJoin(formalRepairInputs, eq(formalRepairInputs.runId, taskRuns.id))
+      .leftJoin(formalAuditResults, eq(formalAuditResults.runId, taskRuns.id))
+      .leftJoin(formalRepairRuntime, eq(formalRepairRuntime.runId, taskRuns.id))
+      .leftJoin(formalRepairResults, eq(formalRepairResults.runId, taskRuns.id))
+      .where(and(eq(taskRuns.taskId, taskId), eq(taskRuns.generation, task.generation)));
+    if (!current) throw new DomainError('unavailable');
+    const { row } = current;
+    const result = row ? formalRepairResultSchema.parse(row.document) : null;
+    if (row && result && (result.taskId !== taskId || result.runId !== current.runId || result.projectId !== task.projectId
+      || result.generation !== task.generation || result.locale !== task.locale || result.inputSha256 !== current.inputSha256
+      || result.checkpointId !== current.checkpointId || result.auditResultSha256 !== current.input?.audit.resultSha256
+      || result.baseSnapshotSha256 !== current.input?.inspection.snapshotSha256 || sha256(JSON.stringify(result)) !== row.sha256)) {
+      throw new Error('formal_repair_result_integrity');
+    }
+    return { task, current, result };
+  }
+
+  async get(identity: VerifiedIdentity, taskId: string, locale: Locale) {
+    parseInput(idSchema, taskId);
+    return this.database.db.transaction(async tx => {
+      const { task, current, result } = await this.current(tx, identity, taskId);
+      const base = { taskId, runId: current.runId, locale };
+      if (result && current.row) return formalRepairDtoSchema.parse({ ...base, status: 'recorded', resumeAvailable: false,
+        result, sha256: current.row.sha256, recordedAt: current.row.createdAt.toISOString(), message: agentText(locale).reason[result.reason],
+      });
+      const { reason } = current;
+      const resumeAvailable = task.state === 'waiting_input' && (reason === 'audit_ready' || reason === 'repair_deferred')
+        && isRepairableAudit(current.audit);
+      const message = reason === 'repair_failed' ? 'reason.repair_failed' : reason === 'repair_deferred' ? 'reason.repair_deferred'
+        : reason === 'repair_pending' ? 'reason.repair_pending' : 'repair.pending';
+      return formalRepairDtoSchema.parse({ ...base, status: reason === 'repair_failed' || reason === 'repair_deferred' ? 'unavailable' : 'pending',
+        resumeAvailable, result: null, message: translate(locale, message),
+      });
+    });
+  }
+
+  async exportPatch(identity: VerifiedIdentity, taskId: string, rawExpectedSha256: unknown) {
+    parseInput(idSchema, taskId);
+    const expectedSha256 = parseInput(sha256Schema, rawExpectedSha256);
+    return this.database.db.transaction(async tx => {
+      const { current, result } = await this.current(tx, identity, taskId, true);
+      if (result?.status !== 'candidate_ready' || !current.row?.requestId) throw new DomainError('unsupported_state');
+      if (current.row.sha256 !== expectedSha256) throw new DomainError('conflict');
+      const [entry] = await tx.select({ operation: formalRepairOperations, attempt: formalRepairAttempts })
+        .from(formalRepairAttempts).innerJoin(formalRepairOperations, eq(formalRepairAttempts.operationId, formalRepairOperations.operationId))
+        .where(and(eq(formalRepairAttempts.requestId, current.row.requestId), eq(formalRepairAttempts.state, 'recorded'),
+          eq(formalRepairOperations.runId, current.runId)));
+      if (!entry || entry.operation.operationId !== result.candidate.operationId || entry.operation.inputSha256 !== result.inputSha256
+          || entry.attempt.receiptSha256 !== result.candidate.receiptSha256) throw new Error('formal_repair_export_receipt');
+      const { workspace, patch } = repairCommandSchema.parse(JSON.parse(entry.operation.command));
+      const command = canonicalRepairCommand(workspace, patch);
+      if (command.bytes.toString('utf8') !== entry.operation.command || sha256(command.bytes) !== entry.operation.commandSha256
+          || command.patchSha256 !== result.candidate.patchSha256 || command.patch.baseSnapshotSha256 !== result.baseSnapshotSha256) {
+        throw new Error('formal_repair_export_integrity');
+      }
+      return formalRepairPatchDtoSchema.parse({ taskId, runId: result.runId, resultSha256: current.row.sha256,
+        patchSha256: command.patchSha256, patch: command.patch,
+      });
+    });
+  }
 }

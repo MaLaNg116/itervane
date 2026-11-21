@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
-import { cancelTaskSchema, formalAuditResultSchema, resumeTaskSchema, idSchema, listQuerySchema, startTaskSchema, taskDtoSchema, taskEventDtoSchema, wakeupSchema, translate,
+import { cancelTaskSchema, resumeTaskSchema, idSchema, listQuerySchema, startTaskSchema, taskDtoSchema, taskEventDtoSchema, wakeupSchema, translate,
   eventReasonMessages, retrySourceInspectionReasonSchema, taskEventReasonSchema, type Locale, type MessageKey } from '@itervane/contracts';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import { queueName, type Database } from '../persistence/database.js';
 import { formalAuditInputs, formalAuditResults, repositories, runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
 import { requireActor, requireProject, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
+import { isRepairableAudit } from './formal-repair.js';
 import { appendEvent, enqueue, lockSlot } from '../runtime/authority.js';
 
 function presentTask(task: typeof tasks.$inferSelect, runId: string) {
@@ -140,10 +141,7 @@ export class TaskService {
       if (readyForRepair) {
         const [record] = await tx.select({ document: formalAuditResults.document }).from(formalAuditResults)
           .where(eq(formalAuditResults.runId, run.id));
-        const audit = formalAuditResultSchema.safeParse(record?.document).data;
-        if (audit?.status !== 'completed' || !audit.checklist?.findings.length || audit.checklist.hypotheses.length) {
-          throw new DomainError('unsupported_state');
-        }
+        if (!isRepairableAudit(record?.document)) throw new DomainError('unsupported_state');
       }
       if (runtime.resumeCount >= 3) throw new DomainError('resume_limit');
       await tx.update(runRuntime).set({ resumePending: true, resumeCount: runtime.resumeCount + 1,

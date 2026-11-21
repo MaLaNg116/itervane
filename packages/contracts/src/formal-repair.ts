@@ -129,3 +129,14 @@ export const formalRepairResultSchema = z.discriminatedUnion('status', [
   }),
 ]);
 export type FormalRepairResult = z.infer<typeof formalRepairResultSchema>;
+
+const repairView = { taskId: idSchema, runId: idSchema, locale: localeSchema, message: z.string() };
+export const formalRepairDtoSchema = z.discriminatedUnion('status', [
+  z.strictObject({ ...repairView, status: z.enum(['pending', 'unavailable']), result: z.null(), resumeAvailable: z.boolean() }),
+  z.strictObject({ ...repairView, status: z.literal('recorded'), sha256: sha256Schema, recordedAt: z.iso.datetime(),
+    result: formalRepairResultSchema, resumeAvailable: z.literal(false),
+  }),
+]);
+export const formalRepairPatchDtoSchema = z.strictObject({
+  taskId: idSchema, runId: idSchema, resultSha256: sha256Schema, patchSha256: sha256Schema, patch: repairPatchSchema,
+});

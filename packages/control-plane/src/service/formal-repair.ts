@@ -6,6 +6,12 @@ import type { ExecutionScope, TaskRow } from '../runtime/authority.js';
 import type { Transaction } from './access.js';
 import { DomainError } from './errors.js';
 
+export function isRepairableAudit(document: unknown) {
+  const audit = formalAuditResultSchema.safeParse(document).data;
+  return audit?.status === 'completed' && audit.checklist !== null
+    && audit.checklist.hypotheses.length === 0 && audit.checklist.findings.length > 0;
+}
+
 // The caller holds the current authorized execution lease for this run.
 export async function prepareFormalRepairInput(tx: Transaction, task: TaskRow, scope: ExecutionScope) {
   const [current] = await tx.select({ input: formalAuditInputs, audit: formalAuditResults, stored: formalRepairInputs })

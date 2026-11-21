@@ -7,7 +7,7 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
-import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairInputSchema,
+import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, type QualifiedInspectionReceipt,
   type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt, type RepairPatch } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
@@ -434,6 +434,51 @@ it.each(['continuous', 'reclaimed', 'existing audit'] as const)('continues a sea
   expect(repair).toHaveBeenCalledTimes(1);
   expect(completeAudit).toHaveBeenCalledTimes(3);
   expect(completeRepair).toHaveBeenCalledTimes(3);
+  if (mode === 'continuous') {
+    const publicUrl = 'https://itervane.example';
+    const api = createApi(database.storage, { ...issuer.config, publicUrl }, { logger: false });
+    const client = new Client({ name: 'repair-reader', version: '0.0.0' });
+    try {
+      const address = await api.listen({ host: '127.0.0.1', port: 0 });
+      const token = await issuer.token('owner', { aud: `${publicUrl}/mcp`, scope: 'itervane:read' });
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+        requestInit: { headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'zh-CN' } },
+      }));
+      const observed = await client.callTool({ name: 'get_repair', arguments: { taskId: task.id } });
+      expect(observed.isError).not.toBe(true);
+      const view = formalRepairDtoSchema.parse(observed.structuredContent);
+      const url = `/v1/tasks/${task.id}/repair`;
+      const authorization = `Bearer ${await issuer.token()}`;
+      const zh = await api.inject({ url, headers: { authorization, 'Accept-Language': 'zh-CN' } });
+      const en = await api.inject({ url, headers: { authorization, 'Accept-Language': 'en' } });
+      expect(zh.statusCode).toBe(200);
+      expect(zh.json()).toEqual(view);
+      expect(en.json()).toMatchObject({ status: 'recorded', locale: 'en', result: result!.document,
+        message: 'The candidate patch is recorded and ready for independent verification.',
+      });
+      const patchUrl = `${url}/patch?expectedSha256=${result!.sha256}`;
+      const exported = await api.inject({ url: patchUrl, headers: { authorization } });
+      expect(exported.statusCode).toBe(200);
+      expect(exported.headers['cache-control']).toBe('no-store');
+      const { patch, patchSha256 } = formalRepairPatchDtoSchema.parse(exported.json());
+      expect(patchSha256).toBe(sha256(JSON.stringify(patch)));
+      expect(patch.files).toEqual([{ path: fixtureFindingPath, beforeSha256: sha256(original),
+        edits: [{ startByte: range.startByte, endByte: range.endByte, replacement: '' }],
+      }]);
+      expect(exported.body).not.toContain(line.trim());
+      expect(JSON.stringify(view)).not.toContain('"replacement"');
+      expect((await api.inject({ url: `${url}/patch?expectedSha256=${sha256('different result')}`, headers: { authorization } })).statusCode).toBe(409);
+      const principal = randomUUID();
+      await database.admin.query('INSERT INTO itervane.principals(id,issuer,subject) VALUES($1,$2,$3)', [principal, issuer.config.issuer, 'viewer']);
+      await database.admin.query("INSERT INTO itervane.project_members(project_id,principal_id,role) VALUES($1,$2,'viewer')", [task.projectId, principal]);
+      const viewer = { authorization: `Bearer ${await issuer.token('viewer')}` };
+      expect((await api.inject({ url, headers: viewer })).statusCode).toBe(200);
+      expect((await api.inject({ url: patchUrl, headers: viewer })).statusCode).toBe(403);
+      await database.admin.query('DELETE FROM itervane.workspace_members');
+      expect((await api.inject({ url: patchUrl, headers: { authorization } })).statusCode).toBe(404);
+      expect((await client.callTool({ name: 'get_repair', arguments: { taskId: task.id } })).isError).toBe(true);
+    } finally { await client.close(); await api.close(); }
+  }
 });
 
 it('retains the audited source when there are no findings and does not queue a repair', async () => {
@@ -982,7 +1027,11 @@ it('recovers the repair checkpoint from the published input and filters unacknow
     await expect(database.storage.db.update(formalRepairRuntime).set({ checkpointStep: pointer.checkpointStep })).rejects
       .toMatchObject({ cause: { code: '23514', message: 'formal_repair_pointer_regression' } });
 
-    await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+    const expired = await database.admin.query(
+      "UPDATE itervane.execution_slot SET lease_until=TIMESTAMPTZ '2000-01-01T00:00:00Z' WHERE run_id=$1 AND worker_id=$2 AND fence=$3 RETURNING lease_until < clock_timestamp() AS expired",
+      [scope.runId, scope.workerId, scope.fence],
+    );
+    expect(expired.rows).toEqual([{ expired: true }]);
     await expect(repair.putWrites(bound, [['expired', true]], 'old-node')).rejects.toBeInstanceOf(ExecutionLost);
     await coordinator.reconcile(randomUUID());
     const replacement = new GuardedCheckpointer(coordinator, await claim(), storage, { repairInputSha256: repairInput!.sha256 });
