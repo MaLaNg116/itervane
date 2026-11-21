@@ -11,3 +11,5 @@
 四组托管 Runner 回归通过。报告中的源码指纹与数据库报告一致。隔离回归记录五个临时域，进程中断后接手 fence 从 4 升到 5，HTTP 与 MCP 读取一致。OCI 回归保留已记录更新和更新 ID 丢失两条路径，暂存区完成清理。两组常规检查在合入 #55 后的基线也通过。 [PR #56](https://github.com/MaLaNg116/itervane/pull/56) · [托管 Runner](https://github.com/MaLaNg116/itervane/actions/runs/44947827411) · [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44949067349) · [分支 CI](https://github.com/MaLaNg116/itervane/actions/runs/44949064153)
 
 最终证据入账由 D3-B 交付。正式 Worker 和双语结果读取由 D3-C 接续。同一获批 OCI 从外部 MCP 发起到受保护入口的真实端到端验收在 D3-D。
+
+合入前复核了只读授权、锁顺序、撤权后核对、过期重领和环境占用约束。审查版本 `87eaf4578cae625b601ca27e285bb5a5095ef02f` 保持验收源码一致，两组常规检查通过。已合入 `4aa6959bb899d83736f457a24a0ff809d812a492`。 [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44950935446) · [分支 CI](https://github.com/MaLaNg116/itervane/actions/runs/44950930886)
