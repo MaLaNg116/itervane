@@ -146,3 +146,38 @@ export async function proveUnknownKomodoDispatch(trial: Trial, materializer: str
   return { operationId: trial.operationId, dispatchFence: lost.fence, actualUpdateId, running, retainedForManualReview: true,
     writes: { configuration: 1, dispatch: 1 } };
 }
+
+export async function recoverRecordedReleaseForRollout(trial: Trial, materializer: string) {
+  const imported = await trial.tick(materializer);
+  ok(imported.status === 'komodo_ready');
+  equal(imported.mode, 'import');
+  equal(imported.imports, 1);
+  equal(imported.dispatches, 0);
+
+  const interrupted = await trial.interrupt('update-recorded');
+  ok(interrupted.fence > imported.fence);
+  equal(interrupted.configurationWrites, 1);
+  equal(interrupted.dispatches, 1);
+  const updateId = komodoResourceIdSchema.parse(interrupted.updateId);
+  const prepared = (await readLedger(trial)).find(step => step.kind === 'komodo_dispatch');
+  equal(prepared?.state, 'prepared');
+  equal(prepared?.external_update_id, updateId);
+  await expired(trial, interrupted.fence);
+
+  const recovered = await waitForFixture(async () => {
+    const current = await trial.tick();
+    noWrites(current);
+    if (current.status === 'awaiting_rollout') return current;
+    ok(current.status === 'idle' || current.status === 'requeued');
+  }, 'recorded_update_recovery', 70_000);
+  ok(recovered.fence > interrupted.fence && recovered.updateReads > 0);
+  equal(recovered.mode, 'komodo_recovery');
+  const settled = (await readLedger(trial)).find(step => step.kind === 'komodo_dispatch');
+  ok(settled);
+  equal(settled.state, 'confirmed');
+  equal(settled.prepared_fence, interrupted.fence);
+  equal(settled.settled_fence, recovered.fence);
+  equal(releaseKomodoCompletionSchema.parse(settled.proof).updateId, updateId);
+  await keptEnvironment(trial, 'task.release_komodo_awaiting_rollout');
+  return { updateId, dispatchFence: interrupted.fence, observedFence: recovered.fence, writes: interrupted.dispatches };
+}

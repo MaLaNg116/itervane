@@ -67,7 +67,8 @@
 | 061 | P2-E-D3-D2-A 真实 Keycloak 与自托管入口网络 | [#61](https://github.com/MaLaNg116/itervane/pull/61)，已合入 main | [真实入口夹具导读](p2-e-protected-release-ingress.md) | TypeScript、202 项单元、[七项入口与五项网络证据](https://github.com/MaLaNg116/itervane/actions/runs/44955789630)及[四组 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44955789647)通过 |
 | 062 | P2-E-D3-D2-B 同一任务的真实 KVM 发布 | [#62](https://github.com/MaLaNg116/itervane/pull/62)，已合入 main | [安装态发布导读](p2-e-protected-release-job.md) | TypeScript、202 项单元、常规 CI 和[五组 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44957996813)通过，包含真实受保护上线 |
 | 063 | P2-E-D3-D3-A npm 依赖修复与受保护发布 | [#63](https://github.com/MaLaNg116/itervane/pull/63)，已合入 main | [依赖修复导读](p2-e-protected-release-dependency.md) | TypeScript、202 项单元、常规 CI、补丁字节和目标包摘要及[六组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44958123627)通过，包含两类真实受保护上线 |
-| 064 | P2-E-D3-D3-B 批准后目标与工件变化 | [#64](https://github.com/MaLaNg116/itervane/pull/64)，基于已合入 #63 的 main | [批准对象变化导读](p2-e-protected-release-drift.md) | TypeScript、202 项单元和[真实托管阻断与归档恢复](https://github.com/MaLaNg116/itervane/actions/runs/44960545263/job/137018244593)通过，其它 KVM 回归进行中 |
+| 064 | P2-E-D3-D3-B 批准后目标与工件变化 | [#64](https://github.com/MaLaNg116/itervane/pull/64)，已合入 main | [批准对象变化导读](p2-e-protected-release-drift.md) | TypeScript、202 项单元、常规 CI 及[七组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44960545263)通过，涵盖两项阻断和原归档恢复 |
+| 065 | P2-E-D3-D3-C 真实上线故障与已派发更新恢复 | [#65](https://github.com/MaLaNg116/itervane/pull/65)，基于已合入 #64 的 main | [故障与恢复导读](p2-e-protected-release-faults.md) | TypeScript、202 项单元和[故障及更新恢复验收](https://github.com/MaLaNg116/itervane/actions/runs/44961186575/job/137020213381)通过，托管回归收尾中 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
