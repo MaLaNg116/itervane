@@ -31,3 +31,14 @@ docker build -f fixtures/standard-app/Dockerfile -t itervane-standard-app:local 
 镜像以非 root 用户运行，仅声明容器内部端口。正式参考部署需要受保护入口，不能把该无认证样例直接暴露到公网。Dockerfile 当前只是待验证产物：本轮验证了本机构建和 HTTP 行为，尚未验证镜像构建、Komodo 发布或版本恢复；基础镜像 digest 在 P0.7 实测后锁定。
 
 本机可以运行这份可信基线。评测中的变异代码、依赖安装和未来上传的项目必须进入专用虚拟机 Runner；这个示例容器不承担不可信代码隔离职责。
+
+## 准备隔离构建的依赖
+
+`package-lock.json` 固定脱离工作区的标准样例依赖。开发仓库继续使用根目录的 pnpm 锁。在 Linux amd64 使用 Node 24 官方发行版，从仓库根目录预取样例的包缓存。
+
+```sh
+fixture_staging=$(mktemp -d)
+pnpm exec tsx scripts/prepare-runner-build-dependencies.ts "$fixture_staging/itervane-build-inputs"
+```
+
+预取逐包核对锁定的公开 registry 地址和 SHA-512，使用 npm 生成可校验缓存，并记录包清单和锁文件摘要。实际项目依赖安装、构建和运行仍由后续隔离 Runner 验收。

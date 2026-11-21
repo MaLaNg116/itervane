@@ -3,11 +3,11 @@ import { sha256Schema } from './inspection.js';
 import { npmAdvisoryIdSchema, npmPackageNameSchema, npmStableVersionSchema } from './qualified-inspection.js';
 
 const lockName = /(?:^|\/)package-lock\.json$/;
-const integritySchema = z.string().regex(/^sha512-[A-Za-z0-9+/]{85}[AQgw]==$/);
+export const npmTarballIntegritySchema = z.string().regex(/^sha512-[A-Za-z0-9+/]{85}[AQgw]==$/);
 
 export const npmUpgradeApprovalSchema = z.strictObject({
   advisoryId: npmAdvisoryIdSchema, name: npmPackageNameSchema,
-  installedVersion: npmStableVersionSchema, fixedVersion: npmStableVersionSchema, integrity: integritySchema,
+  installedVersion: npmStableVersionSchema, fixedVersion: npmStableVersionSchema, integrity: npmTarballIntegritySchema,
 }).refine(approval => {
   const before = approval.installedVersion.split('.').map(Number);
   const after = approval.fixedVersion.split('.').map(Number);
