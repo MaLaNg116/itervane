@@ -14,4 +14,6 @@
 
 首次托管全量回归在等锁过期用例触及数据库已有的五秒语句超时。夹具调整为三秒剩余批准时间，保留实际数据库等锁和过期验证。 [首次托管结果](https://github.com/MaLaNg116/itervane/actions/runs/44927137555/job/136915593423)
 
+修正后六项常规检查及四组托管原生验收均通过。已审查版本 `d276b5b5ac1432fc8e3d12c367ccaf42cfd7a201` 合入 `main`。 [合并提交](https://github.com/MaLaNg116/itervane/commit/34de2ef5c15e0ff0166c6fa0479ee0117b19ebbd)
+
 本批的正式阶段为预留执行权。C3-C 接入外部写入意图、同摘要 Registry 导入和结果核对。C4 与 E-D 分别进行正式 Komodo 派发与独立上线核验。 [发布执行计划](../plans/p2-e-formal-release-execution.md)
