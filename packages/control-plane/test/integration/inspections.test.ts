@@ -9,9 +9,9 @@ import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { createFormalVerification } from '@itervane/agent';
 import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
-  qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, type QualifiedInspectionReceipt,
+  qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
-  type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch } from '@itervane/contracts';
+  type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
 import { canonicalRepairCommand, canonicalRepairObservation, canonicalVerificationCommand, prepareQualifiedVerificationRequest,
   scannerProfiles, sha256, verifyQualifiedVerificationReceipt } from '@itervane/runner';
@@ -21,7 +21,7 @@ import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRuntime,
-  formalRescanAttempts, formalVerificationInputs, formalVerificationRuntime, inspectionAttempts } from '../../src/persistence/schema.js';
+  formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
 import { runFormalRepair } from '../../src/runtime/formal-repair.js';
@@ -53,8 +53,10 @@ const imageSha256 = 'a'.repeat(64);
 const workspaceSha256 = 'd'.repeat(64);
 const verificationProfile = { id: 'standard-web-fixture', baselineSha256: sha256('protected baseline'),
   policySha256: sha256('verification policy'), scannerInputsSha256: sha256('verification scanners'), runnerImageSha256: imageSha256 };
+const standardVerificationProfile: StandardVerificationProfile = { ...verificationProfile, buildProfileSha256: sha256('protected build profile'),
+  runStandardBaseline: true, ociInputsSha256: sha256('frozen OCI inputs'), retainStandardImage: true };
 const clearRepairHandoff = () => database.admin.query(
-  'TRUNCATE itervane.formal_verification_runtime, itervane.formal_rescan_attempts, itervane.formal_verification_inputs, '
+  'TRUNCATE itervane.formal_verification_results, itervane.formal_verification_runtime, itervane.formal_rescan_attempts, itervane.formal_verification_inputs, '
   + 'itervane.formal_repair_results, itervane.formal_repair_attempts, '
   + 'itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs',
 );
@@ -429,12 +431,13 @@ it('uses the recorded mutation after a new worker claims a reserved repair whose
   } finally { intercept.mockRestore(); await storage.end(); }
 });
 
-it.each(['continuous', 'reclaimed', 'existing audit'] as const)('continues a sealed audit into a repair candidate through the ordinary queue (%s)', async mode => {
+it.each(['continuous', 'reclaimed', 'existing audit', 'verified candidate'] as const)('continues a sealed audit into a repair candidate through the ordinary queue (%s)', async mode => {
   const prefix = 'header=fixture\nkeep=on\n';
   const line = 'REMOVE=public\n';
   const original = prefix + line;
   const range = { startByte: Buffer.byteLength(prefix), endByte: Buffer.byteLength(original), sha256: sha256(line) };
   let scan: QualifiedInspectionReceipt | undefined;
+  let candidate: QualifiedRepairReceipt['snapshot']['candidate'] | undefined;
   const inspect = vi.fn<InspectionRunner['inspect']>(async (request, authorize) => {
     await authorize();
     scan = testReceipt(request, false, fixtureFindingPath);
@@ -446,7 +449,15 @@ it.each(['continuous', 'reclaimed', 'existing audit'] as const)('continues a sea
   });
   const repair = vi.fn<RepairRunner['repair']>(async (request, workspace, patch, authorize) => {
     await authorize();
-    return repairReceipt(scan!, request, workspace, patch, original);
+    const receipt = repairReceipt(scan!, request, workspace, patch, original);
+    candidate = receipt.snapshot.candidate;
+    return receipt;
+  });
+  const verify = vi.fn<RescanRunner['verify']>(async (coordinates, input, patch, authorize) => {
+    await authorize();
+    if (input.subject.kind !== 'repair' || !candidate || !patch) throw new Error('Missing frozen repair candidate');
+    const request = prepareQualifiedVerificationRequest(coordinates, canonicalVerificationCommand({ input, repair: patch }));
+    return standardVerificationReceipt(scan!, request, input, false, candidate);
   });
   const completeAudit = vi.fn(concludeAudit);
   const completeRepair = vi.fn<ModelAdapter['complete']>(async ({ conversation }) => {
@@ -463,8 +474,9 @@ it.each(['continuous', 'reclaimed', 'existing audit'] as const)('continues a sea
   });
   const model = auditModel(request => {
     const context = request.conversation[0];
-    const repairing = context?.kind === 'user' && JSON.parse(context.text).role === 'repair';
-    return (repairing ? completeRepair : completeAudit)(request);
+    const role = context?.kind === 'user' ? JSON.parse(context.text).role : undefined;
+    if (role === 'verify') return scriptedVerification('zh-CN').complete(request);
+    return (role === 'repair' ? completeRepair : completeAudit)(request);
   });
   const source = inspectionRunner(inspect);
   const tasks = new TaskService(database.storage);
@@ -499,6 +511,8 @@ it.each(['continuous', 'reclaimed', 'existing audit'] as const)('continues a sea
   }
   const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: source, auditModel: model,
     repair: { runner: { observe: async () => idleRepairRunner(), observeRepair, repair }, protectedPaths: [] },
+    ...(mode === 'verified candidate' ? { verification: { runner: { verify, observe: async () => idleRepairRunner() },
+      profile: standardVerificationProfile } } : {}),
   });
   try { expect(await worker.tick()).toBe(true); } finally { await worker.close(); }
   const [result] = await database.storage.db.select().from(formalRepairResults);
@@ -510,10 +524,21 @@ it.each(['continuous', 'reclaimed', 'existing audit'] as const)('continues a sea
     candidate: { changes: [{ path: fixtureFindingPath, beforeSha256: sha256(original), afterSha256: sha256(prefix) }] },
   });
   expect(await tasks.get(identity, task.id)).toMatchObject({ runId: task.runId, state: 'waiting_input' });
-  expect(result!.finalizedFence).toBe(audit!.finalizedFence + (mode === 'continuous' ? 0 : mode === 'reclaimed' ? 1 : 2));
-  expect(events.at(-1)).toMatchObject({ type: 'task.repair_recorded', reason: 'repair_ready',
-    reasonMessage: '修复候选已就绪，等待独立复验。',
-  });
+  expect(result!.finalizedFence).toBe(audit!.finalizedFence + (mode === 'reclaimed' ? 1 : mode === 'existing audit' ? 2 : 0));
+  if (mode === 'verified candidate') {
+    expect(events.at(-2)).toMatchObject({ type: 'task.repair_recorded', reason: 'verification_pending', state: 'running' });
+    expect(events.at(-1)).toMatchObject({ type: 'task.verification_recorded', reason: 'verification_observed', state: 'waiting_input' });
+    const [verified] = await database.storage.db.select().from(formalVerificationResults);
+    expect(verified).toMatchObject({ finalizedFence: result!.finalizedFence, document: { status: 'reviewed', releaseEligible: false,
+      evidence: { binding: { subjectManifestSha256: candidate?.candidateManifestSha256 }, source: { resolved: 1, remaining: 0 } },
+      review: { outcome: 'observed' } } });
+    expect(verify).toHaveBeenCalledTimes(1);
+  } else {
+    expect(events.at(-1)).toMatchObject({ type: 'task.repair_recorded', reason: 'repair_ready',
+      reasonMessage: '修复候选已就绪，等待独立复验。',
+    });
+    expect(verify).not.toHaveBeenCalled();
+  }
   expect(inspect).toHaveBeenCalledTimes(1);
   expect(observeRepair).toHaveBeenCalledTimes(1);
   expect(repair).toHaveBeenCalledTimes(1);
@@ -713,26 +738,19 @@ async function assertVerificationRecovery(scope: ExecutionScope, options: Formal
   } finally { await saver.end(); }
 }
 
-it.each(['build', 'baseline', 'image', 'artifact'] as const)('binds the standard %s proof to the frozen candidate in the lease transaction', async stage => {
-  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(), auditModel: auditModel() });
-  try { expect(await worker.tick()).toBe(true); } finally { await worker.close(); }
-  const scope = await claimAfterAudit();
-  const [inspection] = await database.storage.db.select().from(inspectionAttempts);
-  const original = qualifiedInspectionResponseSchema.parse(inspection?.receipt);
-  if (original.kind !== 'receipt') throw new Error('Missing original inspection');
-  const ociInputs = stage === 'image' || stage === 'artifact' ? sha256('frozen OCI inputs') : undefined;
-  const profile = { ...verificationProfile, buildProfileSha256: sha256('protected build profile'),
-    ...(stage !== 'build' ? { runStandardBaseline: true as const } : {}),
-    ...(ociInputs ? { ociInputsSha256: ociInputs } : {}),
-    ...(stage === 'artifact' ? { retainStandardImage: true as const } : {}),
-  };
+function standardVerificationReceipt(original: QualifiedInspectionReceipt, request: ReturnType<typeof prepareQualifiedVerificationRequest>,
+  input: Parameters<RescanRunner['verify']>[1], regression = false, candidate?: QualifiedRepairReceipt['snapshot']['candidate']): QualifiedVerificationReceipt {
+  const { origin: _origin, ...bound } = request;
+  const domainId = randomUUID();
+  const profile = input.profile;
+  if (!profile.buildProfileSha256) throw new Error('Missing build profile');
   const runtimeInputs = sha256('runtime inputs');
   const databaseEvidence = original.snapshot.reports[1].database;
   if (!databaseEvidence) throw new Error('Missing source database evidence');
   const imageDigest = 'sha256:' + sha256('OCI manifest');
   const configDigest = 'sha256:' + sha256('OCI config');
-  const image: QualifiedStandardImageProof | undefined = ociInputs ? {
-    version: 1, status: 'scanned', ociInputsSha256: ociInputs, runtimeInputsSha256: runtimeInputs,
+  const image: QualifiedStandardImageProof | undefined = profile.ociInputsSha256 && !regression ? {
+    version: 1, status: 'scanned', ociInputsSha256: profile.ociInputsSha256, runtimeInputsSha256: runtimeInputs,
     platform: 'linux/amd64', manifestDigest: imageDigest, configDigest,
     baseManifestDigest: 'sha256:' + sha256('base'), appLayerDigest: 'sha256:' + sha256('app layer'),
     runtimeLayerSha256: sha256('runtime layer'), scan: {
@@ -740,36 +758,60 @@ it.each(['build', 'baseline', 'image', 'artifact'] as const)('binds the standard
       findings: [{ class: 'lang-pkgs', advisory: 'FIXTURE-1', package: 'test-module', version: '1.2.3', severity: 'MEDIUM' }],
       policySha256: sha256('protected image scan'), reportSha256: sha256('image report'), database: databaseEvidence,
     },
-    ...(stage === 'artifact' ? { archive: { format: 'oci-layout-tar' as const, sha256: sha256('retained bytes'), bytes: 613 } } : {}),
+    ...(profile.retainStandardImage ? { archive: { format: 'oci-layout-tar' as const, sha256: sha256('retained bytes'), bytes: 613 } } : {}),
   } : undefined;
+  const target = candidate ? {
+    manifestSha256: candidate.candidateManifestSha256, patchSha256: candidate.patchSha256,
+    totalBytes: original.snapshot.totalBytes + candidate.changes.reduce((sum, change) => sum + change.afterBytes - change.beforeBytes, 0),
+    reports: qualifiedScanReportsSchema.parse(original.snapshot.reports.map(report => ({
+      ...report, snapshotSha256: candidate.candidateManifestSha256, findings: [],
+    }))),
+  } : null;
+  const dist = { sha256: sha256('measured build'), files: 3, bytes: 220 };
+  return {
+    kind: 'verification_receipt', scope: bound, domainId, commitSha256: original.commitSha256, imageSha256,
+    originSha256: original.originSha256, cleanupConfirmed: true, sessionVerified: true,
+    snapshot: {
+      ...original.snapshot, runId: domainId, inputsSha256: bound.scannerInputsSha256, target,
+      commandSha256: bound.commandSha256, verificationInputSha256: bound.verificationInputSha256,
+      build: {
+        status: 'built', version: 1, runId: domainId, buildProfileSha256: profile.buildProfileSha256,
+        verificationInputSha256: bound.verificationInputSha256, baselineSha256: profile.baselineSha256,
+        subjectManifestSha256: input.subject.manifestSha256, projectionSha256: sha256('staged projection'),
+        isolationVerified: true, dist,
+        ...(profile.runStandardBaseline ? { baseline: {
+          version: 1 as const, status: regression ? 'failed' as const : 'passed' as const, appExited: true as const,
+          runtimeInputsSha256: runtimeInputs, baselineSha256: profile.baselineSha256, distSha256: dist.sha256,
+          checks: (['health', 'version', 'synthetic_data', 'page', 'compiled_asset'] as const).map(id => regression && id === 'health'
+            ? { id, status: 'failed' as const, code: 'unexpected_status' as const, statusCode: 503 }
+            : { id, status: 'passed' as const, code: null, statusCode: 200 }),
+          ...(image ? { image } : {}),
+        } } : {}),
+      },
+    },
+  };
+}
+
+it.each(['build', 'baseline', 'image', 'artifact'] as const)('binds the standard %s proof to the frozen candidate in the lease transaction', async stage => {
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(), auditModel: auditModel() });
+  try { expect(await worker.tick()).toBe(true); } finally { await worker.close(); }
+  const scope = await claimAfterAudit();
+  const [inspection] = await database.storage.db.select().from(inspectionAttempts);
+  const original = qualifiedInspectionResponseSchema.parse(inspection?.receipt);
+  if (original.kind !== 'receipt') throw new Error('Missing original inspection');
+  const ociInputs = stage === 'image' || stage === 'artifact' ? standardVerificationProfile.ociInputsSha256 : undefined;
+  const profile = { ...verificationProfile, buildProfileSha256: standardVerificationProfile.buildProfileSha256,
+    ...(stage !== 'build' ? { runStandardBaseline: true as const } : {}),
+    ...(ociInputs ? { ociInputsSha256: ociInputs } : {}),
+    ...(stage === 'artifact' ? { retainStandardImage: true as const } : {}),
+  };
   const verify = vi.fn<RescanRunner['verify']>(async (coordinates, input, repair, authorize) => {
     await authorize();
     const command = canonicalVerificationCommand({ input, repair });
     const request = prepareQualifiedVerificationRequest(coordinates, command);
-    const { origin: _origin, ...bound } = request;
-    const domainId = randomUUID();
-    const dist = { sha256: sha256('measured build'), files: 3, bytes: 220 };
-    const receipt: QualifiedVerificationReceipt = {
-      kind: 'verification_receipt', scope: bound, domainId, commitSha256: original.commitSha256, imageSha256,
-      originSha256: original.originSha256, cleanupConfirmed: true, sessionVerified: true,
-      snapshot: {
-        ...original.snapshot, runId: domainId, inputsSha256: bound.scannerInputsSha256, target: null,
-        commandSha256: bound.commandSha256, verificationInputSha256: bound.verificationInputSha256,
-        build: {
-          status: 'built', version: 1, runId: domainId, buildProfileSha256: profile.buildProfileSha256,
-          verificationInputSha256: bound.verificationInputSha256, baselineSha256: profile.baselineSha256,
-          subjectManifestSha256: input.subject.manifestSha256, projectionSha256: sha256('staged projection'),
-          isolationVerified: true, dist,
-          ...(stage !== 'build' ? { baseline: {
-            version: 1 as const, status: 'passed' as const, appExited: true as const,
-            runtimeInputsSha256: runtimeInputs, baselineSha256: profile.baselineSha256, distSha256: dist.sha256,
-            checks: (['health', 'version', 'synthetic_data', 'page', 'compiled_asset'] as const).map(id =>
-              ({ id, status: 'passed' as const, code: null, statusCode: 200 })),
-            ...(image ? { image } : {}),
-          } } : {}),
-        },
-      },
-    };
+    const receipt = standardVerificationReceipt(original, request, input);
+    const image = receipt.snapshot.build?.status === 'built' && receipt.snapshot.build.baseline?.status === 'passed'
+      ? receipt.snapshot.build.baseline.image : undefined;
     const forged = structuredClone(receipt);
     const build = forged.snapshot.build;
     if (build?.status !== 'built') throw new Error('Missing build fixture');
@@ -784,7 +826,7 @@ it.each(['build', 'baseline', 'image', 'artifact'] as const)('binds the standard
     await expect(database.storage.db.update(formalRescanAttempts).set({
       state: 'recorded', settledFence: scope.fence, settledWorkerId: scope.workerId, settledAt: new Date(),
       receipt: forged, receiptSha256: sha256(JSON.stringify(forged)),
-    }).where(eq(formalRescanAttempts.requestId, bound.requestId))).rejects
+    }).where(eq(formalRescanAttempts.requestId, request.requestId))).rejects
       .toMatchObject({ cause: { code: '23514', message: `standard_${stage}_evidence_binding` } });
     if (stage === 'image' && image && build.baseline?.status === 'passed') {
       const substituted = structuredClone(image);
@@ -794,7 +836,7 @@ it.each(['build', 'baseline', 'image', 'artifact'] as const)('binds the standard
       await expect(database.storage.db.update(formalRescanAttempts).set({
         state: 'recorded', settledFence: scope.fence, settledWorkerId: scope.workerId, settledAt: new Date(),
         receipt: forged, receiptSha256: sha256(JSON.stringify(forged)),
-      }).where(eq(formalRescanAttempts.requestId, bound.requestId))).rejects
+      }).where(eq(formalRescanAttempts.requestId, request.requestId))).rejects
         .toMatchObject({ cause: { code: '23514', message: 'standard_image_evidence_binding' } });
     }
     return receipt;
@@ -803,14 +845,16 @@ it.each(['build', 'baseline', 'image', 'artifact'] as const)('binds the standard
   const result = await rescan();
   expect(result).toMatchObject({ kind: 'scanned', receipt: { snapshot: { build: { status: 'built', isolationVerified: true } } } });
   if (result.kind !== 'scanned') throw new Error('Missing formal rescan result');
+  const originalBuild = result.receipt.snapshot.build;
+  const image = originalBuild?.status === 'built' && originalBuild.baseline?.status === 'passed' ? originalBuild.baseline.image : undefined;
   expect(result.evidence).toMatchObject({
     binding: { taskId: scope.taskId, runId: scope.runId, projectId: original.scope.projectId,
       verificationInputSha256: result.receipt.scope.verificationInputSha256, receiptSha256: sha256(JSON.stringify(result.receipt)) },
     source: { status: 'compared', introduced: 0, remaining: 0, resolved: 0 },
     build: { status: 'built', distSha256: sha256('measured build') },
     baseline: { status: stage === 'build' ? 'not_requested' : 'passed' },
-    image: image ? { status: 'scanned', manifestDigest: imageDigest, findings: { medium: 1 },
-      archive: image.status === 'scanned' ? image.archive ?? null : null }
+    image: ociInputs ? { status: 'scanned', manifestDigest: 'sha256:' + sha256('OCI manifest'), findings: { medium: 1 },
+      archive: image?.status === 'scanned' ? image.archive ?? null : null }
       : { status: 'not_requested' },
   });
   expect(JSON.stringify(result.evidence)).not.toContain('test-module');
@@ -835,6 +879,112 @@ it.each(['build', 'baseline', 'image', 'artifact'] as const)('binds the standard
   }
   expect(verify).toHaveBeenCalledTimes(1);
 });
+
+it.each(['healthy', 'regression', 'reclaimed', 'profile changed', 'revoked', 'cleanup unknown', 'event blocked'] as const)(
+  'continues the frozen source into verification through the ordinary queue (%s)', async mode => {
+    const scan = vi.fn<InspectionRunner['inspect']>(async (request, authorize) => { await authorize(); return testReceipt(request); });
+    const started = Promise.withResolvers<void>();
+    const replacing = ['reclaimed', 'profile changed', 'revoked'].includes(mode);
+    let observes = 0;
+    const observe = async (signal?: AbortSignal) => {
+      if (replacing && ++observes === 1) {
+        started.resolve();
+        await delay(30_000, undefined, { signal });
+      }
+      return idleRepairRunner();
+    };
+    const verify = vi.fn<RescanRunner['verify']>(async (coordinates, input, repair, authorize) => {
+      await authorize();
+      const [stored] = await database.storage.db.select().from(inspectionAttempts);
+      const original = qualifiedInspectionResponseSchema.parse(stored?.receipt);
+      if (original.kind !== 'receipt') throw new Error('Missing verified original');
+      const request = prepareQualifiedVerificationRequest(coordinates, canonicalVerificationCommand({ input, repair }));
+      if (mode === 'cleanup unknown') return {
+        kind: 'rejected', requestId: request.requestId, domainId: null, code: 'cleanup_unproven', cleanup: 'unknown',
+      };
+      return standardVerificationReceipt(original, request, input, mode === 'regression');
+    });
+    const auditing = vi.fn(concludeAudit);
+    const reviewing = vi.fn(scriptedVerification('zh-CN').complete);
+    const model = auditModel(request => {
+      const context = request.conversation[0];
+      return (context?.kind === 'user' && JSON.parse(context.text).role === 'verify' ? reviewing : auditing)(request);
+    });
+    const runner = inspectionRunner(scan);
+    const tasks = new TaskService(database.storage);
+    const openWorker = (profile: StandardVerificationProfile) => new DurableWorker(database.storage, database.runtimeUrl, {
+      runner, auditModel: model, verification: { runner: { observe, verify }, profile },
+    });
+    if (mode === 'event blocked') {
+      await database.admin.query("ALTER TABLE itervane.task_events ADD CONSTRAINT injected_verification_event_failure CHECK(type <> 'task.verification_recorded') NOT VALID");
+    }
+    const first = openWorker(standardVerificationProfile);
+    try {
+      const tick = first.tick();
+      if (replacing) {
+        await Promise.race([started.promise, tick.then(() => { throw new Error('Worker failed before verification handoff'); })]);
+        const [input] = await database.storage.db.select().from(formalVerificationInputs);
+        expect(input?.document).toMatchObject({ subject: { kind: 'original' }, profile: standardVerificationProfile });
+        expect((await tasks.events(identity, task.id, 20)).at(-1)).toMatchObject({ type: 'task.audit_recorded', reason: 'verification_pending' });
+        await first.close();
+        await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+        if (mode === 'revoked') await database.admin.query('DELETE FROM itervane.workspace_members');
+        const profile = mode === 'profile changed'
+          ? { ...standardVerificationProfile, policySha256: sha256('new profile') } : standardVerificationProfile;
+        const replacement = openWorker(profile);
+        try { expect(await replacement.tick()).toBe(true); } finally { await replacement.close(); }
+      }
+      expect(await tick).toBe(true);
+    } finally {
+      await first.close();
+      if (mode === 'event blocked') await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_verification_event_failure');
+    }
+
+    expect(scan).toHaveBeenCalledTimes(1);
+    expect(auditing).toHaveBeenCalledTimes(3);
+    const records = await database.storage.db.select().from(formalVerificationResults);
+    if (mode === 'event blocked') {
+      expect(records).toEqual([]);
+      expect(verify).toHaveBeenCalledTimes(1);
+      expect(reviewing).toHaveBeenCalledTimes(5);
+      const [receipt] = await database.storage.db.select().from(formalRescanAttempts);
+      expect(receipt).toMatchObject({ state: 'recorded' });
+      expect((await tasks.events(identity, task.id, 20)).at(-1)).toMatchObject({ state: 'needs_human', reason: 'verification_unavailable' });
+      return;
+    }
+    if (mode === 'revoked' || mode === 'profile changed' || mode === 'cleanup unknown') {
+      expect(records).toEqual([]);
+      expect(reviewing).not.toHaveBeenCalled();
+      expect(verify).toHaveBeenCalledTimes(mode === 'cleanup unknown' ? 1 : 0);
+      const [event] = (await database.admin.query(
+        'SELECT state, detail FROM itervane.task_events WHERE task_id=$1 ORDER BY sequence DESC LIMIT 1', [task.id],
+      )).rows;
+      expect(event).toMatchObject({ state: mode === 'cleanup unknown' ? 'reconciling' : 'needs_human',
+        detail: { reason: mode === 'cleanup unknown' ? 'verification_reconciling'
+          : mode === 'revoked' ? 'permission_revoked' : 'verification_unavailable' } });
+      return;
+    }
+
+    const [record, ...duplicates] = records;
+    const [rescan] = await database.storage.db.select().from(formalRescanAttempts);
+    const [input] = await database.storage.db.select().from(formalVerificationInputs);
+    const failed = mode === 'regression';
+    expect(duplicates).toEqual([]);
+    expect(record).toMatchObject({ inputSha256: input?.sha256, receiptSha256: rescan?.receiptSha256, requestId: rescan?.requestId,
+      document: { status: 'reviewed', releaseEligible: false, evidence: { baseline: { status: failed ? 'failed' : 'passed' } },
+        review: { outcome: failed ? 'checks_failed' : 'observed' } },
+    });
+    expect(record!.finalizedFence).toBe(input!.preparedFence + (mode === 'reclaimed' ? 1 : 0));
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(reviewing).toHaveBeenCalledTimes(failed ? 4 : 5);
+    const recent = (await tasks.events(identity, task.id, 20, 'zh-CN')).at(-1);
+    expect(recent).toMatchObject({ type: 'task.verification_recorded', state: failed ? 'needs_human' : 'waiting_input',
+      reason: failed ? 'verification_checks_failed' : 'verification_observed', reasonMessage: /复验/ });
+    expect((await database.admin.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
+    await expect(database.storage.db.update(formalVerificationResults).set({ sha256: sha256('different result') }))
+      .rejects.toMatchObject({ cause: { code: '23514', message: 'formal_verification_result_is_immutable' } });
+  },
+);
 
 it('keeps verification unavailable while an audit finding has no published repair candidate', async () => {
   const { scope } = await repairReady();
@@ -1251,7 +1401,9 @@ it('revalidates the same repair input after a new lease and seals existing compl
   try {
     await vi.waitFor(async () => {
       await worker.tick();
-      expect(await tasks.get(identity, task.id)).toMatchObject({ state: 'waiting_input' });
+      const current = await tasks.get(identity, task.id);
+      const reason = current.state === 'needs_human' ? (await tasks.events(identity, task.id, 20)).at(-1)?.reason : undefined;
+      expect(current.state, reason ?? undefined).toBe('waiting_input');
     }, { timeout: 5_000, interval: 50 });
   } finally { await worker.close(); }
   const [sealed] = await database.storage.db.select().from(formalRepairInputs);

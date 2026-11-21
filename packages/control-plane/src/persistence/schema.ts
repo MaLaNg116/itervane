@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
   agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
-  type FormalRepairInput, type FormalRepairResult, type FormalVerificationInput, type InspectionPlan,
+  type FormalRepairInput, type FormalRepairResult, type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
   type PreauditRecord, type QualifiedInspectionReceipt, type QualifiedRepairReceipt, type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState,
 } from '@itervane/contracts';
 
@@ -333,6 +333,21 @@ export const formalRescanAttempts = domain.table('formal_rescan_attempts', {
     AND ${t.receipt}#>>'{scope,verificationInputSha256}' = ${t.inputSha256}
     AND ${t.receipt}#>'{snapshot,offline}' = 'true'::jsonb AND ${t.receipt}#>'{snapshot,readOnly}' = 'true'::jsonb)) IS TRUE`),
 ]);
+
+export const formalVerificationResults = domain.table('formal_verification_results', {
+  runId: uuid('run_id').primaryKey().references(() => formalVerificationRuntime.runId),
+  requestId: uuid('request_id').notNull().references(() => formalRescanAttempts.requestId),
+  inputSha256: text('input_sha256').notNull(), receiptSha256: text('receipt_sha256').notNull(), checkpointId: text('checkpoint_id').notNull(),
+  finalizedFence: integer('finalized_fence').notNull(), workerId: uuid('worker_id').notNull(),
+  sha256: text('sha256').notNull(), document: jsonb('document').$type<FormalVerificationResult>().notNull(), createdAt: createdAt(),
+}, t => [check('formal_verification_result_binding', sql`(${t.finalizedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+  AND ${t.inputSha256} ~ '^[a-f0-9]{64}$' AND ${t.receiptSha256} ~ '^[a-f0-9]{64}$'
+  AND ${t.document}->>'version' = '1' AND ${t.document}->>'runId' = ${t.runId}::text AND ${t.document}->>'requestId' = ${t.requestId}::text
+  AND ${t.document}->>'inputSha256' = ${t.inputSha256} AND ${t.document}->>'receiptSha256' = ${t.receiptSha256}
+  AND ${t.document}->>'checkpointId' = ${t.checkpointId} AND ${t.document}->'releaseEligible' = 'false'::jsonb
+  AND octet_length(${t.document}::text) <= 16384
+  AND ((${t.document}->>'status' = 'reviewed' AND jsonb_typeof(${t.document}->'review') = 'object')
+    OR (${t.document}->>'status' = 'requires_human' AND ${t.document}->'review' = 'null'::jsonb))) IS TRUE`)]);
 
 export const preaudits = domain.table('preaudits', {
   id: uuid('id').primaryKey(), projectId: uuid('project_id').notNull().references(() => projects.id),

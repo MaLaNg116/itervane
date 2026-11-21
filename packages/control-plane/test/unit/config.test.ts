@@ -88,3 +88,19 @@ it('loads reviewed npm upgrades only when formal repair is enabled and rejects a
     expect(() => workerConfig({ ...enabled, ITERVANE_NPM_REPAIR_APPROVALS: JSON.stringify(entries) })).toThrow();
   }
 });
+
+it('requires the complete verification profile to match the configured Runner image', () => {
+  const profile = { id: 'standard-v1', policySha256: 'b'.repeat(64), baselineSha256: 'c'.repeat(64),
+    scannerInputsSha256: 'd'.repeat(64), runnerImageSha256: 'a'.repeat(64), buildProfileSha256: 'e'.repeat(64),
+    runStandardBaseline: true, ociInputsSha256: 'f'.repeat(64), retainStandardImage: true };
+  const environment = { ...configured, ITERVANE_RUNNER_SOCKET: '/run/itervane/inspection.sock',
+    ITERVANE_RUNNER_UID: '1234', ITERVANE_RUNNER_IMAGE_SHA256: profile.runnerImageSha256, ITERVANE_AUDIT_MODEL_PROVIDER: 'anthropic',
+    ANTHROPIC_BASE_URL: 'http://localhost:4312', ANTHROPIC_API_KEY: 'test-credential', ANTHROPIC_MODEL: 'fixture' };
+  expect(workerConfig(environment).verificationProfile).toBeUndefined();
+  const enabled = { ...environment, ITERVANE_VERIFICATION_PROFILE: JSON.stringify(profile) };
+  expect(workerConfig(enabled).verificationProfile).toEqual(profile);
+  for (const overrides of [{ ITERVANE_RUNNER_IMAGE_SHA256: '9'.repeat(64) }, { ITERVANE_AUDIT_MODEL_PROVIDER: undefined },
+    { ITERVANE_VERIFICATION_PROFILE: JSON.stringify({ ...profile, retainStandardImage: undefined }) }]) {
+    expect(() => workerConfig({ ...enabled, ...overrides })).toThrow();
+  }
+});

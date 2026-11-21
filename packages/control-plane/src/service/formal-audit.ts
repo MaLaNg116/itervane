@@ -82,7 +82,7 @@ function auditResult(prepared: PreparedAudit, report: FormalAuditReport, provide
 }
 
 export async function publishFormalAudit(tx: Transaction, task: TaskRow, scope: ExecutionScope, prepared: PreparedAudit,
-  report: FormalAuditReport, provider: FormalAuditResult['provider'], signal: AbortSignal, allowRepair: boolean) {
+  report: FormalAuditReport, provider: FormalAuditResult['provider'], signal: AbortSignal, allowRepair: boolean, allowVerification: boolean) {
   signal.throwIfAborted();
   const [pointer] = await tx.select().from(formalAuditRuntime).where(eq(formalAuditRuntime.runId, scope.runId));
   if (!pointer || pointer.checkpointId !== report.checkpointId || pointer.inputSha256 !== prepared.sha256) throw new DomainError('unavailable');
@@ -92,15 +92,17 @@ export async function publishFormalAudit(tx: Transaction, task: TaskRow, scope: 
     finalizedFence: scope.fence, workerId: scope.workerId, sha256: hash, document });
   const completed = document.status === 'completed';
   const handoff = completed ? await prepareFormalRepairInput(tx, task, scope) : undefined;
-  const continueToRepair = allowRepair && Boolean(handoff?.document.findingIds.length);
-  const reason = continueToRepair ? 'repair_pending' : completed ? 'audit_ready' : 'audit_needs_human';
+  const findings = handoff?.document.findingIds.length ?? 0;
+  const next = allowRepair && findings > 0 ? 'repair_pending'
+    : allowVerification && completed && findings === 0 ? 'verification_pending' : null;
+  const reason = next ?? (completed ? 'audit_ready' : 'audit_needs_human');
   await tx.update(runRuntime).set({ reason, resumePending: false, waitingForTaskId: null }).where(eq(runRuntime.runId, scope.runId));
-  await appendEvent(tx, task, 'task.audit_recorded', continueToRepair ? 'running' : completed ? 'waiting_input' : 'needs_human', {
+  await appendEvent(tx, task, 'task.audit_recorded', next ? 'running' : completed ? 'waiting_input' : 'needs_human', {
     workerId: scope.workerId, reason, audit: { runId: scope.runId, auditResultSha256: hash },
   });
-  if (!continueToRepair) await clearSlot(tx);
+  if (!next) await clearSlot(tx);
   signal.throwIfAborted();
-  return continueToRepair ? 'repair_pending' as const : 'settled' as const;
+  return next ?? 'settled';
 }
 
 export class FormalAuditService {

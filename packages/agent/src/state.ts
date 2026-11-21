@@ -56,7 +56,8 @@ export function restoreState(raw: unknown, spec: AgentSpec, binding: string, ori
   if (!parsed.success) return;
   const state = parsed.data;
   const { limits } = spec;
-  if (state.bindingSha256 !== binding || state.deadlineAt > Date.now() + limits.maxDurationMs
+  // An already stopped graph cannot spend more time. Preserve its result even if the wall clock moved back.
+  if (state.bindingSha256 !== binding || (!state.stop && state.deadlineAt > Date.now() + limits.maxDurationMs)
     || state.usage.turns > limits.maxTurns || state.usage.toolCalls > limits.maxToolCalls
     || (!state.stop && state.usage.tokens > limits.maxTokens)
     || state.evidence.length > state.usage.toolCalls || state.trace.length > state.usage.toolCalls

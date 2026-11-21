@@ -15,6 +15,7 @@ try {
     ...(runner && config.repairProtectedPaths ? { repair: { runner, protectedPaths: config.repairProtectedPaths,
       npmApprovals: config.npmRepairApprovals,
     } } : {}),
+    ...(runner && config.verificationProfile ? { verification: { runner, profile: config.verificationProfile } } : {}),
   });
   const controller = new AbortController();
   const stop = () => { controller.abort(); void worker.close().catch(() => undefined); };

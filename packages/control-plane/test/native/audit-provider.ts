@@ -1,10 +1,11 @@
 import { createServer, type IncomingMessage } from 'node:http';
-import type { AgentEvidence } from '@itervane/agent';
+import { agentText, type AgentEvidence } from '@itervane/agent';
+import { verificationFixtureCall } from '../../../verification/src/agent/verification-fixture.js';
 
 export const auditFixtureKey = 'itervane-native-fixture';
 export const auditFixtureModel = 'itervane-native-audit';
 
-async function auditContext(request: IncomingMessage): Promise<AgentEvidence[]> {
+async function auditContext(request: IncomingMessage) {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
@@ -16,9 +17,9 @@ async function auditContext(request: IncomingMessage): Promise<AgentEvidence[]> 
   const payload = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { model?: string; messages?: Array<{ role: string; content: unknown }> };
   const first = payload.messages?.[0];
   if (payload.model !== auditFixtureModel || first?.role !== 'user' || typeof first.content !== 'string') throw new Error('invalid fixture envelope');
-  const context = JSON.parse(first.content) as { observations: AgentEvidence[]; source?: unknown };
+  const context = JSON.parse(first.content) as { observations: AgentEvidence[]; source?: unknown; role?: unknown; goal?: unknown };
   if (context.source !== undefined || !Array.isArray(context.observations)) throw new Error('invalid fixture context');
-  return context.observations;
+  return context;
 }
 
 function selectTool(observations: AgentEvidence[]) {
@@ -47,13 +48,14 @@ export async function auditProtocolFixture() {
       if (request.method !== 'POST' || request.url !== '/v1/messages' || request.headers.authorization !== `Bearer ${auditFixtureKey}`) {
         throw new Error('unexpected fixture request');
       }
-      const observations = await auditContext(request);
+      const { observations, role, goal } = await auditContext(request);
       if (failAfterObservation && observations.length) {
         calls.push('unavailable');
         response.writeHead(503).end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'fixture unavailable' } }));
         return;
       }
-      const selected = selectTool(observations);
+      const locale = goal === agentText('zh-CN').formalVerification.goal ? 'zh-CN' : 'en';
+      const selected = role === 'verify' ? verificationFixtureCall(observations, locale) : selectTool(observations);
       calls.push(selected.name);
       response.end(JSON.stringify({
         id: `msg_fixture_${calls.length}`, type: 'message', role: 'assistant', model: auditFixtureModel,

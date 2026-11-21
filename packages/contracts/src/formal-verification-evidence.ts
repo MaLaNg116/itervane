@@ -50,3 +50,21 @@ export const formalVerificationEvidenceSchema = z.strictObject({
   ]),
 }).refine(({ baseline, image }) => (image.status !== 'scanned' && image.status !== 'blocked') || baseline.status === 'passed');
 export type FormalVerificationEvidence = z.infer<typeof formalVerificationEvidenceSchema>;
+
+export const verificationSections = ['source', 'build', 'baseline', 'image'] as const;
+export const verificationSectionSchema = z.enum(verificationSections);
+
+export const finishVerificationInputSchema = z.strictObject({
+  summary: z.string().trim().min(1).max(480),
+  evidenceIds: z.array(sha256Schema).min(3).max(4).refine(ids => new Set(ids).size === ids.length),
+  followUps: z.array(z.strictObject({
+    evidenceId: sha256Schema, detail: z.string().trim().min(1).max(320),
+  })).max(4),
+});
+
+export const formalVerificationCompletionSchema = finishVerificationInputSchema.extend({
+  receiptSha256: sha256Schema, candidateManifestSha256: sha256Schema,
+  outcome: z.enum(['observed', 'checks_failed', 'source_findings', 'incomplete']),
+  source: formalVerificationEvidenceSchema.shape.source,
+  unverified: z.array(verificationSectionSchema).max(4),
+});
