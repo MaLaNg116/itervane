@@ -10,4 +10,6 @@
 
 固定源码 `8624abdac5b6eed9e676843fcbbf16fb9ad20cca`。TypeScript、163 项单元和原生 Worker 打包通过。PostgreSQL 17.12 的三项恢复专项及 151 项全量集成测试通过，源码指纹为 `7d8f03f3cc32195ed2dc15196aad87436ff58440bcfcb9490aa5fcc72c94cf7f`。托管源码 `69499d2a8b182e416e36fb097c39f3cdcbee770d` 的差异限于文档。 [PR #49](https://github.com/MaLaNg116/itervane/pull/49) · [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44931283197)
 
+四组托管 Runner 和常规 CI 均通过。回读产物报告中的操作与审批、归档传输及 Registry 记录一致。原导入 fence 为 8，新观察 fence 为 9，共一条导入意图和一次只读认领。实际回读的 manifest、镜像配置及 79,042,560 字节归档摘要一致，进程中断前已清理暂存。复核的交付版本 `01df94c19d958e95ea67f1dc191c3469864a70c5` 已合入主分支。 [合并提交](https://github.com/MaLaNg116/itervane/commit/7b20eb5aaec7b9292fe9055eaad5c9aa096653d5)
+
 C4 在已确认的同摘要 Registry 制品上接续真实 Komodo 派发。E-D 独立核对线上镜像、配置和健康后完成 P2 验收。
