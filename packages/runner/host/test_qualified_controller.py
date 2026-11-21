@@ -211,6 +211,31 @@ class ControllerTest(unittest.TestCase):
         self.assertTrue(controller.build_proof_matches(request, {**snapshot, "build": build}))
         self.assertFalse(controller.build_proof_matches(request, {**snapshot, "build": {**build, "subjectManifestSha256": "0" * 64}}))
 
+    def test_baseline_requires_its_own_flag_and_exact_build_output(self):
+        request, frozen = verification_request()
+        flags = {controller.BUILD_PROFILE: "1" * 64, controller.RUN_BASELINE: True}
+        frozen["profile"].update(flags)
+        command = json.dumps({"input": frozen, "repair": None}).encode()
+        request.update(flags, verificationInputSha256=controller.json_digest(frozen),
+                       commandSha256=hashlib.sha256(command).hexdigest(), commandBytes=len(command))
+        launch = Mock()
+        server, client = socket.socketpair()
+        with server, client:
+            client.sendall(json.dumps(request).encode() + b"\n")
+            response = controller.serve_connection(server, os.getuid(), {ORIGIN: ORIGIN}, WORKSPACE, Mock(),
+                                                   launch, lambda: False, enable_verification=True, enable_standard_build=True)
+        self.assertEqual(response, controller.rejected("not_ready", request["requestId"]))
+        launch.assert_not_called()
+        domain = str(uuid.uuid4())
+        evidence = {"buildProfileSha256": request["buildProfileSha256"], "runId": domain,
+                    "verificationInputSha256": request["verificationInputSha256"], "subjectManifestSha256": request["targetManifestSha256"],
+                    "baselineSha256": "b" * 64, "status": "built", "dist": {"sha256": "a" * 64}}
+        self.assertFalse(controller.build_proof_matches(request, {"runId": domain, "build": evidence}))
+        scoped = {**evidence, "baseline": {"baselineSha256": "b" * 64, "distSha256": "a" * 64}}
+        self.assertTrue(controller.build_proof_matches(request, {"runId": domain, "build": scoped}))
+        self.assertFalse(controller.build_proof_matches({key: val for key, val in request.items() if key != controller.RUN_BASELINE},
+                                                       {"runId": domain, "build": scoped}))
+
     def test_repair_requires_enablement_current_pulse_and_exact_command_before_launch(self):
         data = repair_request()
         scope = {name: data[name] for name in ("operationId", "repairInputSha256", "baseSnapshotSha256")}
