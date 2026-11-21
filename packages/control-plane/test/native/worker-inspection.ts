@@ -315,6 +315,7 @@ async function probe() {
         equal(image.scan.imageDigest, image.manifestDigest);
         equal(image.scan.configDigest, image.configDigest);
         ok(image.scan.osPackages > 0 && image.scan.npmPackages > 0);
+        ok(image.archive && image.archive.bytes > 0);
       } else equal(passing.image, undefined);
       const healthRegression = await buildFixture(standardHealthRegressionCommit, 'built', 'failed');
       ok(healthRegression.build.status === 'built' && healthRegression.build.baseline?.status === 'failed');

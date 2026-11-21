@@ -17,7 +17,11 @@ node=$(command -v node)
 case "$scenario" in
   regression) features=(--enable-repair --enable-verification) ;;
   standard-build) features=(--enable-verification --enable-standard-build --enable-standard-baseline) ;;
-  standard-oci) features=(--enable-verification --enable-standard-build --enable-standard-baseline --enable-standard-oci) ;;
+  standard-oci)
+    artifacts="$directory/artifacts"
+    sudo -n install -d -m 0700 -o "$runner" -g "$runner" "$artifacts"
+    features=(--enable-verification --enable-standard-build --enable-standard-baseline --enable-standard-oci --artifact-store "$artifacts")
+    ;;
   standard-build-missing-cache) features=(--enable-verification --enable-standard-build) ;;
   *) exit 1 ;;
 esac
@@ -167,3 +171,28 @@ pnpm exec tsx packages/control-plane/test/native/worker-inspection.ts "$shared/w
   "$shared/repair-worker.mjs" "$shared/verification-worker.mjs" "${extra[@]}" \
   > "$report"
 assert_empty
+
+if [[ "$scenario" == standard-oci ]]; then
+  read -r archive_sha archive_bytes expected_manifest < <(/usr/bin/python3 - "$report" <<'PY'
+import json
+import re
+import sys
+with open(sys.argv[1]) as stream:
+    receipt = json.load(stream)["built"]["build"]["baseline"]["image"]
+archive = receipt["archive"]
+assert re.fullmatch(r"[a-f0-9]{64}", archive["sha256"])
+assert re.fullmatch(r"sha256:[a-f0-9]{64}", receipt["manifestDigest"])
+assert type(archive["bytes"]) is int and 0 < archive["bytes"] <= 200 * 1024**2
+print(archive["sha256"], archive["bytes"], receipt["manifestDigest"])
+PY
+)
+  archive="$artifacts/$archive_sha.oci.tar"
+  test "$(sudo -n -u "$runner" stat -c '%s %a' -- "$archive")" = "$archive_bytes 400"
+  test "$(sudo -n -u "$runner" sha256sum -- "$archive" | cut -d ' ' -f 1)" = "$archive_sha"
+  measured_manifest=$(sudo -n -u "$runner" /usr/bin/python3 -I -B fixtures/runner/verify-stored-oci.py "$archive" "$expected_manifest")
+  test "$measured_manifest" = "$expected_manifest"
+  test "$(sudo -n -u "$runner" find "$artifacts" -maxdepth 1 -type f -name '*.oci.tar' -printf '.' )" = .
+  test -z "$(sudo -n -u "$runner" find "$artifacts" -maxdepth 1 -name '.pending-*' -print -quit)"
+  printf '{"archiveSha256":"%s","bytes":%s,"manifestDigest":"%s","workspaceAndStagingEmpty":true}\n' \
+    "$archive_sha" "$archive_bytes" "$measured_manifest" > "$reports/runner-oci-artifact.json"
+fi
