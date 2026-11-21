@@ -7,7 +7,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
-  admissionDtoSchema, auditFindingsPerScan, formalAuditDtoSchema, idSchema, projectDtoSchema, repositoryDtoSchema, sha256Schema, sourceInspectionDtoSchema,
+  admissionDtoSchema, auditFindingsPerScan, formalAuditDtoSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema, idSchema, projectDtoSchema,
+  repositoryDtoSchema, sha256Schema, sourceInspectionDtoSchema,
   qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, taskDtoSchema, taskEventDtoSchema, translate,
 } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
@@ -117,12 +118,12 @@ async function runRepairWorker(bundle: string, socket: string, controllerUid: st
   const receipt = qualifiedRepairResponseSchema.parse(response.receipt);
   const observation = qualifiedRepairObservationResponseSchema.parse(response.observation);
   if (receipt.kind !== 'repair_receipt' || observation.kind !== 'repair_observation') throw new Error('worker_repair_missing_receipt');
-  const { checkpointId, callKeySha256, trace, usage, releaseEligible } = response.agent;
+  const { checkpointId, callKeySha256, trace, usage, releaseEligible, resultSha256 } = response.agent;
   deepStrictEqual(trace, ['read_repair_targets', 'apply_repair_patch']);
   deepStrictEqual(usage, { turns: 3, toolCalls: 2, tokens: 90 });
   equal(releaseEligible, false);
   return { receipt, observation, agent: { checkpointId: idSchema.parse(checkpointId), callKeySha256: sha256Schema.parse(callKeySha256),
-    trace, usage, releaseEligible,
+    trace, usage, releaseEligible, resultSha256: sha256Schema.parse(resultSha256),
   } };
 }
 
@@ -335,9 +336,10 @@ async function probe() {
     const fixture = checklist.findings.find(item => item.scanner === 'gitleaks'
       && item.path === 'fixtures/runner/inspection-input/original/config.txt');
     ok(fixture);
-    // The dedicated test database holds the audit. Requeue it for this repair execution check.
-    await db.admin.query("UPDATE itervane.tasks SET state='queued' WHERE id=$1", [first.id]);
-    await db.admin.query("UPDATE itervane.task_runs SET state='queued' WHERE id=$1", [first.runId]);
+    const audited = taskDtoSchema.parse(await request(`/v1/tasks/${first.id}`));
+    const queuedRepair = taskDtoSchema.parse(await request(`/v1/tasks/${first.id}/resume`, { expectedVersion: audited.version }));
+    equal(queuedRepair.state, 'queued');
+    equal(queuedRepair.runId, audited.runId);
     const { receipt, observation, agent } = await runRepairWorker(repairBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
       [first.id, first.runId, scan.result.snapshotSha256, fixture.id]);
     equal(receipt.scope.taskId, first.id); equal(receipt.scope.runId, first.runId);
@@ -374,6 +376,25 @@ async function probe() {
     deepStrictEqual(saved, [{ command_sha256: receipt.scope.commandSha256, finding_ids: [fixture.id], state: 'recorded',
       receipt_sha256: receiptSha256, checkpoint_id: agent.checkpointId, published_fence: receipt.scope.fence, call_key_sha256: agent.callKeySha256,
     }]);
+    const repairUrl = `/v1/tasks/${first.id}/repair`;
+    const repairView = formalRepairDtoSchema.parse(await request(repairUrl));
+    const externalView = formalRepairDtoSchema.parse((await client.callTool({ name: 'get_repair', arguments: { taskId: first.id } })).structuredContent);
+    if (repairView.status !== 'recorded' || externalView.status !== 'recorded'
+      || repairView.result.status !== 'candidate_ready') throw new Error('native_repair_candidate_missing');
+    equal(repairView.sha256, agent.resultSha256);
+    equal(externalView.sha256, repairView.sha256);
+    deepStrictEqual(repairView.result, externalView.result);
+    equal(repairView.result.candidate.receiptSha256, receiptSha256);
+    deepStrictEqual(repairView.result.candidate.changes, receipt.snapshot.candidate.changes);
+    const exported = formalRepairPatchDtoSchema.parse(await request(`${repairUrl}/patch?expectedSha256=${repairView.sha256}`));
+    equal(exported.patchSha256, receipt.snapshot.candidate.patchSha256);
+    equal(sha256(JSON.stringify(exported.patch)), exported.patchSha256);
+    const resultTask = taskDtoSchema.parse(await request(`/v1/tasks/${first.id}`));
+    equal(resultTask.state, 'waiting_input');
+    const repairEvents = (await client.callTool({ name: 'get_task_events', arguments: { taskId: first.id } })).structuredContent as { items: unknown[] };
+    equal(taskEventDtoSchema.parse(repairEvents.items.at(-1)).reason, 'repair_ready');
+    const activeSlot = (await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows[0];
+    equal(activeSlot?.task_id, null);
     await assertDrained(controllerUid, staging);
     return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, commit, domains,
       initial: scan.result, replacement: recoveredScan.result, previousFence: closed.fence, recoveredFence: replacement.fence,
@@ -388,8 +409,9 @@ async function probe() {
         httpMcpAgreement: true, reusedRecordedScans: true },
       repair: { operationId: receipt.scope.operationId, requestId: receipt.scope.requestId, fence: receipt.scope.fence,
         domainId: receipt.domainId, receiptSha256, baseSnapshotSha256: receipt.scope.baseSnapshotSha256,
-        candidateManifestSha256: receipt.snapshot.candidate.candidateManifestSha256, change, reusedReceipt: true, cleanupConfirmed: true,
-        agent: { ...agent, mode: 'deterministic_model_fixture', reusedCheckpoint: true },
+        candidateManifestSha256: receipt.snapshot.candidate.candidateManifestSha256, change, cleanupConfirmed: true,
+        agent: { ...agent, mode: 'deterministic_model_fixture' },
+        candidatePublished: true, queuedThroughApi: true, httpMcpAgreement: true, patchSha256: exported.patchSha256, slotReleased: true,
         observation: { domainId: observation.domainId, status: target.status, file: target.file, range: target.range, cleanupConfirmed: true } },
     };
   } finally {

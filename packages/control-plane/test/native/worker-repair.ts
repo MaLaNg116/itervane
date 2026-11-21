@@ -1,15 +1,15 @@
 import { deepStrictEqual, equal, ok } from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
 import type { AgentEvidence } from '@itervane/agent';
-import { idSchema, sha256Schema, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt, type RepairPatch } from '@itervane/contracts';
+import { formalRepairResultSchema, idSchema, sha256Schema, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
 import { QualifiedInspectionClient, sha256 } from '@itervane/runner';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
+import { eq } from 'drizzle-orm';
 import { workerConfig } from '../../src/config.js';
-import { openDatabase, queueName } from '../../src/persistence/database.js';
-import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
-import { runFormalRepair, type FormalRepairOptions } from '../../src/runtime/formal-repair.js';
-import { FormalRepairExecution } from '../../src/runtime/repair-execution.js';
+import { openDatabase } from '../../src/persistence/database.js';
+import { formalRepairResults } from '../../src/persistence/schema.js';
+import type { FormalRepairOptions } from '../../src/runtime/formal-repair.js';
+import { DurableWorker } from '../../src/runtime/worker.js';
 
 const fixturePath = 'fixtures/runner/inspection-input/original/config.txt';
 const originalSha256 = '3812bc54c3579d8c67275c573f0ff1bf7dde70bfb4a9150621459ae510a87afc';
@@ -45,18 +45,9 @@ async function repair() {
   const database = await openDatabase(config.databaseUrl);
   const saver = PostgresSaver.fromConnString(config.databaseUrl, { schema: 'itervane_checkpoint' });
   try {
-    const workerId = randomUUID();
-    const coordinator = new ExecutionCoordinator(database, { leaseSeconds: config.leaseSeconds });
-    await coordinator.reconcile(workerId);
-    const [job] = await database.boss.fetch(queueName);
-    ok(job);
-    const scope = await coordinator.claim(job, workerId);
-    ok(scope);
-    equal(scope.taskId, target.taskId); equal(scope.runId, target.runId);
     const client = new QualifiedInspectionClient(config.runner);
     let observation: QualifiedRepairObservationReceipt | undefined;
     let receipt: QualifiedRepairReceipt | undefined;
-    let appliedPatch: RepairPatch | undefined;
     const options: FormalRepairOptions = {
       protectedPaths: ['fixtures/runner/inspection-input/updated'],
       runner: {
@@ -74,42 +65,37 @@ async function repair() {
           if (result.kind === 'repair_receipt') {
             ok(!receipt);
             receipt = result;
-            appliedPatch = args[2];
           }
           return result;
         },
       },
     };
-    const model = repairModel(findingId);
-    const controller = new AbortController();
-    let heartbeat: Promise<void> | undefined;
-    const timer = setInterval(() => {
-      if (heartbeat || controller.signal.aborted) return;
-      heartbeat = coordinator.heartbeat(scope).then(live => { if (!live) controller.abort(); }, () => controller.abort())
-        .finally(() => { heartbeat = undefined; });
-    }, config.leaseSeconds * 1_000 / 3);
-    try {
-      const report = await runFormalRepair(coordinator, scope, saver, model, options, controller.signal);
-      equal(report.reason, 'repair_complete');
-      const { checkpointId, formalRepair, trace, usage, releaseEligible } = report;
-      ok(checkpointId && formalRepair && observation && receipt && appliedPatch);
-      const [target] = observation.snapshot.observation.targets;
-      ok(target?.file && target.range);
-      equal(target.path, fixturePath); equal(target.file.sha256, originalSha256); equal(target.file.bytes, 158);
-      equal(receipt.snapshot.candidate.baseSnapshotSha256, baseSnapshotSha256);
-      equal(formalRepair.receiptSha256, sha256(JSON.stringify(receipt)));
-      equal(formalRepair.operationId, receipt.scope.operationId);
-      equal(formalRepair.candidateManifestSha256, receipt.snapshot.candidate.candidateManifestSha256);
-      deepStrictEqual(trace.map(event => event.tool), ['read_repair_targets', 'apply_repair_patch']);
-      deepStrictEqual(usage, { turns: 3, toolCalls: 2, tokens: 90 });
-      equal(releaseEligible, false);
-      deepStrictEqual(await runFormalRepair(coordinator, scope, saver, model, options, controller.signal), report);
-      const callKeySha256 = trace[1]!.operationId;
-      const execution = new FormalRepairExecution(coordinator, options);
-      deepStrictEqual(await execution.apply(scope,
-        { callKeySha256, findingIds: [findingId], patch: appliedPatch }, controller.signal), receipt);
-      return { observation, receipt, agent: { checkpointId, callKeySha256, trace: trace.map(event => event.tool), usage, releaseEligible } };
-    } finally { clearInterval(timer); await heartbeat; }
+    const worker = new DurableWorker(database, config.databaseUrl, { leaseSeconds: config.leaseSeconds, auditModel: repairModel(findingId), repair: options });
+    try { equal(await worker.tick(), true); } finally { await worker.close(); }
+    ok(observation && receipt);
+    const [observed] = observation.snapshot.observation.targets;
+    ok(observed?.file && observed.range);
+    equal(observed.path, fixturePath); equal(observed.file.sha256, originalSha256); equal(observed.file.bytes, 158);
+    equal(receipt.snapshot.candidate.baseSnapshotSha256, baseSnapshotSha256);
+    const [stored] = await database.db.select().from(formalRepairResults).where(eq(formalRepairResults.runId, target.runId));
+    ok(stored);
+    const result = formalRepairResultSchema.parse(stored.document);
+    if (result.status !== 'candidate_ready') throw new Error('repair_fixture_candidate_missing');
+    const { candidate, checkpointId, usage, releaseEligible } = result;
+    equal(result.taskId, target.taskId);
+    equal(candidate.receiptSha256, sha256(JSON.stringify(receipt)));
+    equal(candidate.operationId, receipt.scope.operationId);
+    equal(candidate.manifestSha256, receipt.snapshot.candidate.candidateManifestSha256);
+    deepStrictEqual(usage, { turns: 3, toolCalls: 2, tokens: 90 });
+    equal(releaseEligible, false);
+    const saved = await saver.getTuple({ configurable: { thread_id: `repair:${target.runId}`, checkpoint_ns: '', checkpoint_id: checkpointId } });
+    const state = saved?.checkpoint.channel_values.state as { trace?: { call: { name: string }; operationId: string }[] } | undefined;
+    ok(state?.trace);
+    const trace = state.trace.map(event => event.call.name);
+    deepStrictEqual(trace, ['read_repair_targets', 'apply_repair_patch']);
+    return { observation, receipt, agent: { checkpointId, callKeySha256: state.trace[1]!.operationId, trace, usage, releaseEligible,
+      resultSha256: stored.sha256,
+    } };
   } finally { try { await saver.end(); } finally { await database.close(); } }
 }
 
