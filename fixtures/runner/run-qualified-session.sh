@@ -17,7 +17,7 @@ node=$(command -v node)
 case "$scenario" in
   regression) features=(--enable-repair --enable-verification) ;;
   standard-build) features=(--enable-verification --enable-standard-build --enable-standard-baseline) ;;
-  standard-oci|protected-release|protected-release-npm)
+  standard-oci|protected-release|protected-release-npm|protected-release-drift)
     artifacts="$directory/artifacts"
     sudo -n install -d -m 0700 -o "$runner" -g "$runner" "$artifacts"
     features=(--enable-repair --enable-verification --enable-standard-build --enable-standard-baseline --enable-standard-oci --artifact-store "$artifacts")
@@ -165,6 +165,9 @@ if [[ "$scenario" == protected-release* ]]; then
     --outfile=.reports/p0/qualified-release-worker.mjs
   sudo -n install -m 0444 .reports/p0/qualified-release-worker.mjs "$shared/release-worker.mjs"
 fi
+if [[ "$scenario" == protected-release-drift ]]; then
+  sudo -n install -m 0444 fixtures/runner/release-drift-archive.py "$shared/release-tools/release-drift-archive.py"
+fi
 extra=()
 report="$reports/runner-worker-inspection.json"
 if [[ "$scenario" != regression ]]; then
@@ -214,17 +217,21 @@ PY
     printf '{"archiveSha256":"%s","bytes":%s,"manifestDigest":"%s","workspaceAndStagingEmpty":true}\n' \
       "$archive_sha" "$archive_bytes" "$measured_manifest" > "$output"
   }
-  if [[ "$scenario" == protected-release* ]]; then
+  archive_reports=("$reports/runner-oci-artifact.json")
+  if [[ "$scenario" == protected-release-drift ]]; then
+    check_archive drift.targetBuild "${archive_reports[0]}"
+    archive_reports+=("$reports/runner-drift-oci-artifact.json")
+    check_archive drift.archiveBuild "${archive_reports[1]}"
+  elif [[ "$scenario" == protected-release* ]]; then
     archive_path=retry.after
     if [[ "$scenario" == protected-release-npm ]]; then archive_path=dependency.after; fi
-    check_archive "$archive_path" "$reports/runner-oci-artifact.json"
-    test "$(sudo -n -u "$runner" find "$artifacts" -maxdepth 1 -type f -name '*.oci.tar' -printf '.' | wc -c)" -eq 1
-    test -z "$(sudo -n -u "$runner" find "$artifacts" -maxdepth 1 -name '.pending-*' -print -quit)"
-    exit 0
+    check_archive "$archive_path" "${archive_reports[0]}"
+  else
+    check_archive built "${archive_reports[0]}"
+    archive_reports+=("$reports/runner-retry-oci-artifact.json")
+    check_archive retry.after "${archive_reports[1]}"
   fi
-  check_archive built "$reports/runner-oci-artifact.json"
-  check_archive retry.after "$reports/runner-retry-oci-artifact.json"
-  expected_count=$(/usr/bin/python3 - "$reports/runner-oci-artifact.json" "$reports/runner-retry-oci-artifact.json" <<'PY'
+  expected_count=$(/usr/bin/python3 - "${archive_reports[@]}" <<'PY'
 import json
 import sys
 hashes = set()
@@ -235,5 +242,5 @@ print(len(hashes))
 PY
 )
   test "$(sudo -n -u "$runner" find "$artifacts" -maxdepth 1 -type f -name '*.oci.tar' -printf '.' | wc -c)" -eq "$expected_count"
-  test -z "$(sudo -n -u "$runner" find "$artifacts" -maxdepth 1 -name '.pending-*' -print -quit)"
+  test -z "$(sudo -n -u "$runner" find "$artifacts" -maxdepth 1 \( -name '.pending-*' -o -name '.fixture-held-*' \) -print -quit)"
 fi

@@ -359,6 +359,13 @@ export async function openNativeReleaseKomodo(env: NodeJS.ProcessEnv = process.e
         endpoint: { network: target.network, container: target.name },
         credentials: { ...credentials, actorId: target.actor },
         allowContainerInspection: setup.allowBoundContainerInspection,
+        async assertUnchanged() {
+          await readTarget(client, target, '');
+          const ownedContainer = await docker('FindTargetFixture', [
+            'container', 'ls', '--all', '--filter', 'label=' + labelKey + '=' + mark, '--format', '{{.ID}}',
+          ]);
+          if (ownedContainer) throw new KomodoError('UnexpectedFixtureDeployment', 'binding');
+        },
         async observeContainer(reference: string, configDigest: string) {
           const container = await waitFor('ObserveApprovedContainer', async () => {
             const status = await inspect(target);
