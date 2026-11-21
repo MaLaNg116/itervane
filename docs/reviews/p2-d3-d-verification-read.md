@@ -7,4 +7,6 @@
 3. HTTP `GET /v1/tasks/:taskId/verification` 使用 API 身份，MCP `get_verification` 使用绑定 MCP audience 的 `itervane:read` 权限。两者还校验当前项目成员关系。中文和英文取决于请求语言。响应提供有界状态、检查事实、镜像发现计数和证据摘要。 [HTTP 入口](https://github.com/MaLaNg116/itervane/blob/bc32ee1/packages/control-plane/src/api.ts) · [MCP 入口](https://github.com/MaLaNg116/itervane/blob/bc32ee1/packages/control-plane/src/mcp.ts)
 4. `b1b68d3` 用 PostgreSQL 和真实外部 MCP SDK 检查两代查询、双语结果、独立读 scope、跨项目和已撤权的访问。临时修改测试库中的第一代结果指纹时，HTTP 与 MCP 都按完整性错误响应。 [双代次验证](https://github.com/MaLaNg116/itervane/blob/b1b68d3/packages/control-plane/test/integration/inspections.test.ts) · [协议与授权验证](https://github.com/MaLaNg116/itervane/blob/b1b68d3/packages/control-plane/test/integration/mcp.test.ts)
 
-本机 TypeScript 检查通过，真实 PostgreSQL 全量复跑已启动。本批验收查询权限、响应与历史的完整性。D-D2 接续门户中的双语复验历史和交互验收，P2-E 按同一候选的实际制品与人工决定完成发布验收。
+本机 TypeScript 与 `b1b68d39d7f6655654fd26af481dcddda29299f2` 的 136 项真实 PostgreSQL 17 集成测试通过。源码指纹为 `eb525985491abb0a084a0980d511e0c6d0a6c8964ebe0da94884339039af97ee`。首轮全量 135 项通过，既有制品检查点恢复用例有一次提前停止。该用例独立复跑八次通过，同一固定版本后续整套重跑也通过。本地尚未定位这次偶发的原因。 [托管原生回归](https://github.com/MaLaNg116/itervane/actions/runs/44909041398)
+
+D-D2 接续门户中的双语复验历史和交互验收。P2-E 按同一候选的实际制品与人工决定完成发布验收。
