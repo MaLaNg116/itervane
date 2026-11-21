@@ -9,11 +9,12 @@ import { promisify } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   admissionDtoSchema, auditFindingsPerScan, formalAuditDtoSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema, idSchema, projectDtoSchema,
+  formalVerificationInputSchema, formalVerificationResultSchema, qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
   repositoryDtoSchema, sha256Schema, sourceInspectionDtoSchema,
   qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
-  taskDtoSchema, taskEventDtoSchema, translate, type FormalAuditResult,
+  taskDtoSchema, taskEventDtoSchema, translate, type FormalAuditResult, type StandardVerificationProfile,
 } from '@itervane/contracts';
-import { sha256 } from '@itervane/runner';
+import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
 import { bootstrapOwner } from '../../src/service/resources.js';
 import { databaseFixture } from '../helpers/database.js';
@@ -78,10 +79,12 @@ function sourceWorkerEnvironment(socket: string, controllerUid: string, image: s
     `ITERVANE_RUNNER_UID=${controllerUid}`, `ITERVANE_RUNNER_IMAGE_SHA256=${image}`, 'ITERVANE_WORKER_LEASE_SECONDS=30'];
 }
 
-async function startWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string, auditURL?: string) {
+async function startWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string,
+  auditURL?: string, verification?: StandardVerificationProfile) {
   const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', ...sourceWorkerEnvironment(socket, controllerUid, image),
     ...(auditURL ? ['ITERVANE_AUDIT_MODEL_PROVIDER=anthropic', `ANTHROPIC_BASE_URL=${auditURL}`,
       `ANTHROPIC_MODEL=${auditFixtureModel}`, `ANTHROPIC_API_KEY=${auditFixtureKey}`] : []),
+    ...(verification ? [`ITERVANE_VERIFICATION_PROFILE=${JSON.stringify(verification)}`] : []),
     'ITERVANE_WORKER_POLL_MS=100', '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c',
     'set -eu; IFS= read -r DATABASE_URL; export DATABASE_URL; printf "%s\\n" "$$"; exec "$@"', 'itervane-worker', process.execPath, bundle,
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -223,10 +226,10 @@ async function probe() {
     const start = async (purpose: string, revision = commit, locale: 'en' | 'zh-CN' = 'zh-CN') => admissionDtoSchema.parse((await client.callTool({ name: 'start_audit', arguments: {
       projectId: project.id, source: { repositoryId: repository.id, commit: revision }, dataClass: 'public', purpose, locale, idempotencyKey: randomUUID(),
     } })).structuredContent).task;
-    const reached = (taskId: string, state: string) => poll(async () => {
+    const reached = (taskId: string, state: string, timeoutMs = 190_000) => poll(async () => {
       const row = (await db.admin.query('SELECT state FROM itervane.tasks WHERE id=$1', [taskId])).rows[0];
       return row?.state === state ? true : undefined;
-    }, 190_000, state);
+    }, timeoutMs, state);
     const attempts = async (taskId: string) => (await db.admin.query(`SELECT request_id, state, fence, settled_fence, workspace_sha256,
       receipt_sha256, receipt->>'domainId' AS domain_id, receipt#>>'{snapshot,tree}' AS tree
       FROM itervane.inspection_attempts WHERE task_id=$1 ORDER BY fence`, [taskId])).rows;
@@ -246,7 +249,7 @@ async function probe() {
     };
 
     const rescanFixture = async (task: Awaited<ReturnType<typeof start>>, findingId: string | null, buildArgs: string[] = []) => {
-      // The production worker phase follows in D3-D. This probe still claims a real queued run and lease.
+      // Runner-only subcases use a scoped fixture Worker and a normal database lease.
       equal((await db.admin.query("UPDATE itervane.tasks SET state='queued' WHERE id=$1 AND state='waiting_input'", [task.id])).rowCount, 1);
       equal((await db.admin.query("UPDATE itervane.task_runs SET state='queued' WHERE id=$1 AND state='waiting_input'", [task.runId])).rowCount, 1);
       const result = await runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
@@ -265,13 +268,71 @@ async function probe() {
 
     if (build) {
       const audit = auditProvider = await auditProtocolFixture();
+      const automaticProfile = build.oci ? standardVerificationProfileSchema.parse({
+        id: 'isolated-rescan-fixture', baselineSha256: build.baseline, policySha256: sha256(JSON.stringify(scannerProfiles)),
+        scannerInputsSha256: JSON.parse(readFileSync('.reports/p0/kvm-inspection-inputs.json', 'utf8')).inputsSha256,
+        runnerImageSha256: imageSha256, buildProfileSha256: build.profile, runStandardBaseline: true,
+        ociInputsSha256: build.oci, retainStandardImage: true,
+      }) : undefined;
+      const recordedVerification = async (task: Awaited<ReturnType<typeof start>>, failed: boolean) => {
+        const { rows } = await db.admin.query<{
+          result: unknown; result_sha: string; input: unknown; input_sha: string; receipt: unknown;
+          attempt_fence: number; finalized_fence: number;
+        }>(`SELECT v.document AS result, v.sha256 AS result_sha, i.document AS input, i.sha256 AS input_sha,
+          a.receipt, a.fence AS attempt_fence, v.finalized_fence
+          FROM itervane.formal_verification_results v
+          JOIN itervane.formal_verification_inputs i ON i.run_id=v.run_id
+          JOIN itervane.formal_rescan_attempts a ON a.request_id=v.request_id AND a.state='recorded'
+          WHERE v.run_id=$1`, [task.runId]);
+        equal(rows.length, 1);
+        const stored = rows[0]!;
+        const input = formalVerificationInputSchema.parse(stored.input);
+        const result = formalVerificationResultSchema.parse(stored.result);
+        const receipt = qualifiedVerificationResponseSchema.parse(stored.receipt);
+        if (result.status !== 'reviewed' || receipt.kind !== 'verification_receipt' || result.evidence.source.status !== 'compared') {
+          throw new Error('native_verification_result');
+        }
+        equal(sha256(JSON.stringify(result)), stored.result_sha);
+        equal(sha256(JSON.stringify(input)), stored.input_sha);
+        equal(result.inputSha256, stored.input_sha);
+        equal(result.receiptSha256, sha256(JSON.stringify(receipt)));
+        equal(result.taskId, task.id);
+        equal(input.subject.kind, 'original');
+        equal(receipt.scope.fence, stored.attempt_fence);
+        equal(stored.finalized_fence, stored.attempt_fence);
+        equal(result.review.outcome, failed ? 'checks_failed' : 'observed');
+        const sections = result.observations.map(item => item.section);
+        deepStrictEqual(sections, failed ? ['baseline', 'source', 'build'] : ['baseline', 'image', 'source', 'build']);
+        const [last] = (await db.admin.query(`SELECT type,detail FROM itervane.task_events WHERE task_id=$1 ORDER BY sequence DESC LIMIT 1`,
+          [task.id])).rows;
+        equal(last?.type, 'task.verification_recorded');
+        equal(last?.detail?.reason, failed ? 'verification_checks_failed' : 'verification_observed');
+        equal(last?.detail?.verificationResultSha256, stored.result_sha);
+        const [attempts] = (await db.admin.query('SELECT count(*)::int AS count FROM itervane.formal_rescan_attempts WHERE run_id=$1', [task.runId])).rows;
+        equal(attempts?.count, 1);
+        equal((await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows[0]?.task_id, null);
+        await assertDrained(controllerUid, staging);
+        const { snapshot, scope } = receipt;
+        const { status: _status, ...totals } = result.evidence.source;
+        return {
+          domainId: receipt.domainId, commit: scope.commit, inputSha256: result.inputSha256, receiptSha256: result.receiptSha256,
+          commandSha256: scope.commandSha256, baseSnapshotSha256: scope.baseSnapshotSha256, targetManifestSha256: scope.targetManifestSha256,
+          patchSha256: null, originalReportsSha256: sha256(JSON.stringify(snapshot.reports)), targetReportsSha256: null,
+          totals, targetRuleId: null, newFindingGroups: totals.introduced, remainingFindingGroups: totals.remaining,
+          dispatches: 1, cleanupConfirmed: receipt.cleanupConfirmed, build: snapshot.build ?? null, verificationResultSha256: stored.result_sha,
+          reviewTrial: { input: { sha256: stored.input_sha, document: input }, evidence: result.evidence,
+            report: { sections, usage: result.usage, checkpointId: result.checkpointId, outcome: result.review.outcome } },
+        };
+      };
       const buildFixture = async (revision: string, outcome: 'built' | 'profile_mismatch' | 'offline_install',
         baselineOutcome?: 'passed' | 'failed') => {
         phase = `standard_build_audit_${outcome}`;
-        worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, audit.baseURL);
+        const profile = baselineOutcome ? automaticProfile : undefined;
+        const failed = baselineOutcome === 'failed';
+        worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, audit.baseURL, profile);
         const task = await start('Verify the standard build from this fixed source', revision,
           build.oci && baselineOutcome === 'passed' ? 'en' : 'zh-CN');
-        await reached(task.id, 'waiting_input');
+        await reached(task.id, profile && failed ? 'needs_human' : 'waiting_input', profile ? 380_000 : undefined);
         const reviewed = formalAuditDtoSchema.parse(await request(`/v1/tasks/${task.id}/audit`));
         if (reviewed.status !== 'recorded' || reviewed.result.status !== 'completed') throw new Error('standard_build_audit');
         if (reviewed.result.checklist?.findings.length !== 0) {
@@ -280,8 +341,9 @@ async function probe() {
         }
         await worker.stop('TERM'); worker = undefined;
         phase = baselineOutcome ? `standard_baseline_${baselineOutcome}` : `standard_build_execution_${outcome}`;
-        const fact: Record<string, unknown> = await rescanFixture(task, null, [build.profile, build.baseline, outcome,
-          ...(baselineOutcome ? [baselineOutcome, ...(build.oci ? [build.oci] : [])] : [])]);
+        const fact: Record<string, unknown> = profile ? await recordedVerification(task, failed)
+          : await rescanFixture(task, null, [build.profile, build.baseline, outcome,
+            ...(baselineOutcome ? [baselineOutcome, ...(build.oci ? [build.oci] : [])] : [])]);
         const evidence = qualifiedStandardBuildProofSchema.parse(fact.build);
         equal(evidence.baselineSha256, build.baseline);
         equal(evidence.subjectManifestSha256, reviewed.result.snapshotSha256);

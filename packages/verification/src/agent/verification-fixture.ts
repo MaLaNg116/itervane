@@ -41,26 +41,30 @@ export function verificationFixture(locale: Locale, regression = false) {
 export const verificationDecision = (name: string, input: unknown) =>
   ({ text: '', calls: [{ id: 'decision', name, input }], tokenUsage: 20 });
 
+export function verificationFixtureCall(observations: AgentEvidence[], locale: Locale) {
+  const sections = observations.flatMap(({ data, id }) => data.kind === 'verification_section' ? [{ ...data, id }] : []);
+  const baseline = sections.find(item => item.section === 'baseline');
+  if (!baseline) return { name: 'read_verification', input: { section: 'baseline' } };
+  if (baseline.result.status === 'passed' && !sections.some(item => item.section === 'image')) {
+    return { name: 'read_verification', input: { section: 'image' } };
+  }
+  for (const section of ['source', 'build']) {
+    if (!sections.some(item => item.section === section)) return { name: 'read_verification', input: { section } };
+  }
+  return { name: 'finish_role', input: {
+    summary: locale === 'zh-CN' ? '当前候选的检查事实已汇总。' : 'The observations describe the current candidate.',
+    evidenceIds: sections.map(item => item.id),
+    followUps: baseline.result.status === 'failed' ? [{ evidenceId: baseline.id,
+      detail: locale === 'zh-CN' ? '核对健康端点返回 503 的原因。' : 'Investigate the health endpoint response of 503.' }] : [],
+  } };
+}
+
 export function scriptedVerification(locale: Locale): ModelAdapter {
   return { protocol: 'anthropic', async complete({ conversation }) {
     const message = conversation[0];
     if (message?.kind !== 'user') throw new Error('Missing verification context');
     const { observations } = JSON.parse(message.text) as { observations: AgentEvidence[] };
-    const sections = observations.flatMap(({ data, id }) => data.kind === 'verification_section' ? [{ ...data, id }] : []);
-    const baseline = sections.find(item => item.section === 'baseline');
-    if (!baseline) return verificationDecision('read_verification', { section: 'baseline' });
-    if (baseline.result.status === 'passed' && !sections.some(item => item.section === 'image')) {
-      return verificationDecision('read_verification', { section: 'image' });
-    }
-    for (const section of ['source', 'build']) {
-      if (!sections.some(item => item.section === section)) return verificationDecision('read_verification', { section });
-    }
-    const failed = baseline.result.status === 'failed';
-    return verificationDecision('finish_role', {
-      summary: locale === 'zh-CN' ? '当前候选的检查事实已汇总。' : 'The observations describe the current candidate.',
-      evidenceIds: sections.map(item => item.id),
-      followUps: failed ? [{ evidenceId: baseline.id,
-        detail: locale === 'zh-CN' ? '核对健康端点返回 503 的原因。' : 'Investigate the health endpoint response of 503.' }] : [],
-    });
+    const { name, input } = verificationFixtureCall(observations, locale);
+    return verificationDecision(name, input);
   } };
 }
