@@ -2,18 +2,21 @@ import { and, eq, sql } from 'drizzle-orm';
 import { fromDrizzle, type Job } from 'pg-boss';
 import { idSchema, wakeupSchema, type SourceInspectionPauseReason, type TaskEventReason } from '@itervane/contracts';
 import { queueName, type Database } from '../persistence/database.js';
-import { executionSlot, formalRepairRetries, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
+import { formalRepairRetries, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { requireProjectAccess, requireStoredActor, type Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
-import { appendEvent, clearSlot, enqueue, ExecutionLost, lockSlot, type ExecutionScope, type TaskRow } from './authority.js';
+import { appendEvent, assertLeaseLive, assignSlot, clearSlot, enqueue, ExecutionLost, lockExecution, lockSlot, renewSlot,
+  type ExecutionScope, type TaskRow } from './authority.js';
+import { recoverClaimedRelease } from './release-queue.js';
 
 type Current = { task: TaskRow; runtime: typeof runRuntime.$inferSelect };
 
-async function authorizeRun(tx: Transaction, task: TaskRow, runId: string) {
-  const { grantId } = await requireProjectAccess(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
-  if (task.generation === 1) return;
+export async function authorizeRun(tx: Transaction, task: TaskRow, runId: string) {
+  const access = await requireProjectAccess(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
+  if (task.generation === 1) return access;
   const [retry] = await tx.select({ grantId: formalRepairRetries.grantId }).from(formalRepairRetries).where(eq(formalRepairRetries.runId, runId));
-  if (retry && retry.grantId !== grantId) throw new DomainError('forbidden');
+  if (retry && retry.grantId !== access.grantId) throw new DomainError('forbidden');
+  return access;
 }
 
 export class ExecutionCoordinator {
@@ -25,30 +28,25 @@ export class ExecutionCoordinator {
 
   async withLease<T>(scope: ExecutionScope, action: (tx: Transaction, current: Current) => Promise<T>, options: { allowCancel?: boolean; authorize?: boolean } = {}) {
     return this.database.db.transaction(async tx => {
-      const slot = await lockSlot(tx);
-      const [task] = await tx.select().from(tasks).where(eq(tasks.id, scope.taskId)).for('update');
-      const [run] = await tx.select().from(taskRuns).where(eq(taskRuns.id, scope.runId));
-      const [runtime] = await tx.select().from(runRuntime).where(eq(runRuntime.runId, scope.runId));
-      if (!task || !run || !runtime || !slot.live || slot.taskId !== task.id || slot.runId !== run.id || slot.workerId !== scope.workerId || slot.fence !== scope.fence
-        || task.generation !== scope.generation || run.taskId !== task.id || runtime.taskId !== task.id || run.generation !== scope.generation
-        || (task.state !== 'running' && !(options.allowCancel && task.state === 'cancel_requested'))) throw new ExecutionLost();
-      if (options.authorize !== false) await authorizeRun(tx, task, run.id);
+      const { slot, task, runtime } = await lockExecution(tx, scope, options.allowCancel);
+      if (runtime.reason?.startsWith('release_')) throw new ExecutionLost();
+      if (options.authorize !== false) await authorizeRun(tx, task, scope.runId);
       const result = await action(tx, { task, runtime });
-      // 释放 slot 也不能绕过租约检查；心跳则使用本次延长后的截止时间。
-      const [valid] = await tx.select({ live: sql<boolean>`CASE WHEN ${executionSlot.taskId} IS NULL
-        THEN ${slot.leaseUntil}::timestamptz > clock_timestamp()
-        ELSE ${executionSlot.leaseUntil} > clock_timestamp() END` }).from(executionSlot).where(eq(executionSlot.id, 1));
-      if (!valid?.live) throw new ExecutionLost();
+      await assertLeaseLive(tx, slot.leaseUntil);
       return result;
     });
   }
 
-  private async recoverExpired(tx: Transaction, workerId: string) {
+  async recoverExpired(tx: Transaction, workerId: string) {
     const slot = await lockSlot(tx);
     if (!slot.taskId || slot.live) return;
     const [task] = await tx.select().from(tasks).where(eq(tasks.id, slot.taskId)).for('update');
     if (task && slot.runId) {
-      if (task.state === 'cancel_requested') await appendEvent(tx, task, 'task.cancelled', 'cancelled', { workerId, reason: 'expired_cancel' });
+      const [runtime] = await tx.select({ reason: runRuntime.reason }).from(runRuntime).where(eq(runRuntime.runId, slot.runId));
+      if (runtime?.reason?.startsWith('release_')) {
+        if (runtime.reason !== 'release_claimed') throw new ExecutionLost();
+        await recoverClaimedRelease(tx, this.database, task, slot.runId, workerId, true);
+      } else if (task.state === 'cancel_requested') await appendEvent(tx, task, 'task.cancelled', 'cancelled', { workerId, reason: 'expired_cancel' });
       else if (task.state === 'running') {
         const next = await appendEvent(tx, task, 'task.recovered', 'queued', { workerId, reason: 'lease_expired' });
         await enqueue(tx, this.database, next, slot.runId);
@@ -71,7 +69,7 @@ export class ExecutionCoordinator {
         .innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id)).where(eq(taskRuns.id, input.runId));
       const run = bound?.run;
       if (!task || !run || task.state !== 'queued' || task.generation !== input.generation || run.taskId !== task.id
-        || run.generation !== input.generation || run.wakeupJobId !== job.id || bound?.reason === 'release_queued') { await settle(); return null; }
+        || run.generation !== input.generation || run.wakeupJobId !== job.id || bound?.reason?.startsWith('release_')) { await settle(); return null; }
       if (slot.taskId && slot.live) {
         await settle(); await enqueue(tx, this.database, task, run.id, true); return null;
       }
@@ -84,19 +82,14 @@ export class ExecutionCoordinator {
       const completed = await settle();
       if (completed.affected !== 1) return null;
       await appendEvent(tx, task, 'task.started', 'running', { workerId });
-      const [assignment] = await tx.update(executionSlot).set({ taskId: task.id, runId: run.id, workerId,
-        fence: sql`${executionSlot.fence} + 1`, leaseUntil: sql`clock_timestamp() + ${this.leaseSeconds} * interval '1 second'` })
-        .where(eq(executionSlot.id, 1)).returning();
-      return Object.freeze({ taskId: task.id, runId: run.id, generation: task.generation, workerId, fence: assignment!.fence });
+      return assignSlot(tx, task, run.id, workerId, this.leaseSeconds);
     });
   }
 
   async heartbeat(scope: ExecutionScope): Promise<boolean> {
     return this.withLease(scope, async (tx, { task }) => {
       if (task.state === 'cancel_requested') return false;
-      const [renewed] = await tx.update(executionSlot).set({ leaseUntil: sql`clock_timestamp() + ${this.leaseSeconds} * interval '1 second'` })
-        .where(and(eq(executionSlot.id, 1), sql`${executionSlot.leaseUntil} > clock_timestamp()`)).returning({ id: executionSlot.id });
-      if (!renewed) throw new ExecutionLost();
+      await renewSlot(tx, this.leaseSeconds);
       return true;
     }, { allowCancel: true });
   }
@@ -146,7 +139,7 @@ export class ExecutionCoordinator {
     const candidates = await this.database.db.select({ task: tasks, run: taskRuns }).from(tasks)
       .innerJoin(taskRuns, and(eq(taskRuns.taskId, tasks.id), eq(taskRuns.generation, tasks.generation)))
       .innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id))
-      .where(and(eq(tasks.state, 'queued'), sql`${runRuntime.reason} IS DISTINCT FROM 'release_queued'`)).limit(20);
+      .where(and(eq(tasks.state, 'queued'), sql`left(coalesce(${runRuntime.reason}, ''), 8) <> 'release_'`)).limit(20);
     for (const candidate of candidates) {
       const jobs = candidate.run.wakeupJobId ? await this.database.boss.findJobs(queueName, { id: candidate.run.wakeupJobId }) : [];
       const job = jobs[0];
@@ -159,7 +152,7 @@ export class ExecutionCoordinator {
           .innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id)).where(eq(taskRuns.id, candidate.run.id));
         const run = bound?.run;
         if (!task || !run || task.state !== 'queued' || run.wakeupJobId !== candidate.run.wakeupJobId
-            || slot.taskId === task.id || bound?.reason === 'release_queued') return;
+            || slot.taskId === task.id || bound?.reason?.startsWith('release_')) return;
         if (job) await this.database.boss.cancel(queueName, job, { db: fromDrizzle(tx, sql) });
         await enqueue(tx, this.database, task, run.id);
       });

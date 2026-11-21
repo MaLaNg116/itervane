@@ -38,6 +38,7 @@ export const en = {
   'task.verification_recorded': 'The independent verification outcome was recorded.',
   'task.release_candidate_frozen': 'The release candidate is awaiting a human decision.',
   'task.release_confirmed': 'The owner confirmed this candidate. The release is queued.',
+  'task.release_requeued': 'The release returned to the queue before a downstream change.',
   'task.release_rejected': 'The owner rejected this release candidate.',
   'task.release_revoked': 'The owner revoked approval before dispatch.',
   'task.verification_paused': 'Independent verification paused for Runner reconciliation.',
@@ -137,6 +138,7 @@ export const zhCN: Record<MessageKey, string> = {
   'task.verification_recorded': '独立复验结果已记录。',
   'task.release_candidate_frozen': '发布候选已冻结，等待人工决定。',
   'task.release_confirmed': '所有者已确认此候选，发布操作已入队。',
+  'task.release_requeued': '发布操作在下游变更前已返回队列。',
   'task.release_rejected': '所有者已拒绝此发布候选。',
   'task.release_revoked': '所有者已在派发前撤销确认。',
   'task.verification_paused': '独立复验已暂停，等待核对 Runner 状态。',
@@ -204,7 +206,8 @@ export const messageKeySchema = z.enum(Object.keys(en) as [MessageKey, ...Messag
 export const taskEventTypes = ['task.accepted', 'task.cancelled', 'task.started', 'task.recovered', 'task.paused', 'task.inspection_paused', 'task.resumed',
   'task.cancel_requested', 'task.needs_human', 'task.waiting_child', 'task.tool_observed', 'task.audit_resumed', 'task.audit_recorded',
   'task.repair_recorded', 'task.repair_deferred', 'task.repair_resumed', 'task.verification_recorded', 'task.verification_paused',
-  'task.repair_retry_queued', 'task.release_candidate_frozen', 'task.release_confirmed', 'task.release_rejected', 'task.release_revoked'] as const;
+  'task.repair_retry_queued', 'task.release_candidate_frozen', 'task.release_confirmed', 'task.release_requeued',
+  'task.release_rejected', 'task.release_revoked'] as const;
 
 export const eventReasonMessages = {
   runner_unavailable: 'tool.runner_unavailable', lease_expired: 'reason.lease_expired', expired_cancel: 'reason.expired_cancel',
