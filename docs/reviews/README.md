@@ -70,6 +70,7 @@
 | 064 | P2-E-D3-D3-B 批准后目标与工件变化 | [#64](https://github.com/MaLaNg116/itervane/pull/64)，已合入 main | [批准对象变化导读](p2-e-protected-release-drift.md) | TypeScript、202 项单元、常规 CI 及[七组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44960545263)通过，涵盖两项阻断和原归档恢复 |
 | 065 | P2-E-D3-D3-C 真实上线故障与已派发更新恢复 | [#65](https://github.com/MaLaNg116/itervane/pull/65)，已合入 main | [故障与恢复导读](p2-e-protected-release-faults.md) | TypeScript、202 项单元、常规 CI 及[八组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44961186575)通过 |
 | 066 | P3-A1 固定目标的 Whiskers 只读观察 | [#66](https://github.com/MaLaNg116/itervane/pull/66)，基于已合入 #65 的 main | [运维观察导读](p3-a-whiskers-observation.md) | TypeScript、210 项单元和[十二项原生 Whiskers 检查](https://github.com/MaLaNg116/itervane/actions/runs/44962888962)通过 |
+| 067 | P3-A2-A 核验当前已发布运维目标 | 依赖 #66 | [已发布目标导读](p3-a-observation-evidence.md) | TypeScript 和 210 项单元通过，托管 PostgreSQL 验收待归档 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
