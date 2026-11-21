@@ -7,4 +7,8 @@
 3. `c91c803` 正式入口复用已记录的 Runner 回执，在当前执行租约下发布 `verify:<runId>` 检查点。输入、回执、Worker、fence 和代次均有数据库约束。已保留的一次只读观察可由新 Worker 续作，原执行者和撤权后的调用无法读取进度。 [正式入口](../../packages/control-plane/src/runtime/formal-verification.ts) · [检查点约束](../../packages/control-plane/migrations/0025_formal_verification_checkpoint.sql)
 4. `efb21ac` 用托管 Runner 的真实候选和 503 回归试验正式入口，保存独立模型试验所需的冻结输入及有界事实。持久化角色试验使用脚本适配器，另可用 `pnpm probe:formal-verify --live <runner-worker-build.json>` 在本机已授权的回环模型上复跑。 [原生试验](../../packages/control-plane/test/native/worker-verification.ts) · [真实模型入口](../../packages/verification/src/entries/formal-verification.ts)
 
-本机 TypeScript、51 项 Agent 回归和四条真实 PostgreSQL 回执对照通过。恢复对照确认新 Worker 延续已预留的观察，模型共运行五轮，Runner 只派发一次。托管 Runner 和真实模型结果待归档。D-C 接入 Worker 状态流转和受控返修，D-D 接入双语门户和 MCP。
+本机 Linux 的 TypeScript 检查、157 项单元测试和 121 项真实 PostgreSQL 集成通过。恢复对照确认新 Worker 延续已预留的观察，模型共运行五轮，Runner 只派发一次。首次远端数据库检查发现历史修复夹具清理遗漏复验检查点表，`b0f5704` 补齐夹具清理后已复跑完整数据库套件。 [首次远端检查](https://github.com/MaLaNg116/itervane/actions/runs/44901293414/job/136837551418)
+
+本机回环模型的固定事实样例验证了两条决策路径。英文健康样例在七轮内完成四次读取并观察到镜像，中文 503 样例在五轮内完成三次读取并保留失败结论与建议。对托管 Runner 实际回执的模型试验待复跑。 [原生 Runner 试验](https://github.com/MaLaNg116/itervane/actions/runs/44901293360)
+
+D-C 接入 Worker 状态流转和受控返修，D-D 接入双语门户和 MCP。
