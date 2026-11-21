@@ -42,6 +42,7 @@
 | 036 | P2-D3-D-C2 按核验失败接续有界返修 | [#36](https://github.com/MaLaNg116/itervane/pull/36)，基于已合入 #35 的 main | [受控返修导读](p2-d3-d-repair-retry.md) | 本机 163 项单元和 136 项 PostgreSQL 通过，双代次[原生验收](https://github.com/MaLaNg116/itervane/actions/runs/44908117224)进行中 |
 | 037 | P2-D3-D-D1 正式复验与返修历史的双语查询 | [#37](https://github.com/MaLaNg116/itervane/pull/37)，依赖 #36 | [复验查询导读](p2-d3-d-verification-read.md) | TypeScript 已通过，[原生回归](https://github.com/MaLaNg116/itervane/actions/runs/44909041398)与本地 PostgreSQL 验收进行中 |
 | 038 | P2-D3-D-D2 任务详情展示复验与返修历史 | [#38](https://github.com/MaLaNg116/itervane/pull/38)，依赖 #37 | [复验门户导读](p2-d3-d-verification-portal.md) | TypeScript、本机 Chrome 专项用例及 [24 项 Linux 浏览器回归](https://github.com/MaLaNg116/itervane/actions/runs/44909983933/job/136863611546)通过 |
+| 039 | P2-E-A1 按复验回执核对已留存的 OCI 归档 | [#39](https://github.com/MaLaNg116/itervane/pull/39)，依赖 #38 | [归档读取导读](p2-e-oci-archive-verification.md) | 67 项宿主测试与 TypeScript 通过，[原生验收](https://github.com/MaLaNg116/itervane/actions/runs/44911700913)进行中 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 

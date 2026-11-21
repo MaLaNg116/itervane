@@ -6,4 +6,4 @@
 2. `dde4f1d` 在正式复验通过且有留存描述后读取证明。发布事务继续检查当前租约及权限，并绑定该证明、Runner 镜像和实际复验回执。读取暂时不可用时，已有复验结论仍可查询。候选冻结以实际读取证明为前提。 [Worker](https://github.com/MaLaNg116/itervane/blob/dde4f1d/packages/control-plane/src/runtime/worker.ts) · [迁移 0028](https://github.com/MaLaNg116/itervane/blob/dde4f1d/packages/control-plane/migrations/0028_formal_oci_archive_verification.sql)
 3. `c42ec94` 覆盖真实 PostgreSQL 的证明缺失、长度错配和结果发布回滚。托管 KVM 的正式 Worker 用例将核对第一代 503 和第二代成功归档，并用独立归档读取器比对字节、摘要及镜像清单。 [数据库测试](https://github.com/MaLaNg116/itervane/blob/c42ec94/packages/control-plane/test/integration/inspections.test.ts) · [原生验收](https://github.com/MaLaNg116/itervane/blob/c42ec94/packages/control-plane/test/native/worker-inspection.ts)
 
-67 项 Linux 宿主测试已通过。真实 PostgreSQL 和托管 KVM 报告随本批记录。P2-E-A2 将读取证明与已登记目标、复验规则和时间窗口绑定，P2-E-C 将核对实际上传到镜像仓库的摘要。
+67 项 Linux 宿主测试、TypeScript 和验收脚本语法已通过。真实 PostgreSQL 和托管 KVM 正在验证正式回执与归档读取。P2-E-A2 将读取证明与已登记目标、复验规则和时间窗口绑定，P2-E-C 将核对实际上传到镜像仓库的摘要。 [原生验收](https://github.com/MaLaNg116/itervane/actions/runs/44911700913)
