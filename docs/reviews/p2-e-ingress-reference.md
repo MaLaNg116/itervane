@@ -7,4 +7,6 @@
 
 实际 Docker 29.1.5 与 Compose 5.0.1 上三项均通过，源码指纹 `f1defa3dc1d2bc9dcd5a562454f1b56679fd1ab6c17a71752d182afca2c8a5a4`。初次启动实测出现内部地址争用与降权后挂载权限问题，现配置为独立固定授权端点，夹具保留宿主私有父目录并让容器可读授权的测试资产。维护者的安装与回环验证说明以中英文保留。 [自托管说明](https://github.com/MaLaNg116/itervane/blob/8b419bd/fixtures/ingress/reference/README.md)
 
+托管工作流通过七项真实身份及三项网络检查。隔离报告的源码指纹与本机相同，证明两边都读取了业务 Traefik 的实际管理 API，验证了匿名拒绝和受保护健康，并从应用容器核对认证服务和管理网卡的不可达。 [托管入口与隔离验证](https://github.com/MaLaNg116/itervane/actions/runs/44945649304) · [PR #55](https://github.com/MaLaNg116/itervane/pull/55)
+
 D3 接续真实 Komodo 的获批 OCI、只读运行核验与持久化发布结算，最后用同一正式操作验收。
