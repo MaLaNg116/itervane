@@ -67,6 +67,7 @@
 | 061 | P2-E-D3-D2-A 真实 Keycloak 与自托管入口网络 | [#61](https://github.com/MaLaNg116/itervane/pull/61)，依赖 #60 | [真实入口夹具导读](p2-e-protected-release-ingress.md) | TypeScript 和 202 项单元通过，托管入口验收中 |
 | 062 | P2-E-D3-D2-B 同一任务的真实 KVM 发布 | [#62](https://github.com/MaLaNg116/itervane/pull/62)，依赖 #61 | [安装态发布导读](p2-e-protected-release-job.md) | TypeScript、202 项单元和宿主脚本语法通过，托管场景进行中 |
 | 063 | P2-E-D3-D3-A npm 依赖修复与受保护发布 | [#63](https://github.com/MaLaNg116/itervane/pull/63)，依赖 #62 | [依赖修复导读](p2-e-protected-release-dependency.md) | TypeScript、202 项单元、宿主语法、补丁字节与目标包摘要通过，托管 KVM 进行中 |
+| 064 | P2-E-D3-D3-B 批准后目标与工件变化 | [#64](https://github.com/MaLaNg116/itervane/pull/64)，依赖 #63 | [批准对象变化导读](p2-e-protected-release-drift.md) | TypeScript、202 项单元和临时归档恢复通过，真实托管验收中 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
