@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { sha256Schema } from './inspection.js';
+import { qualifiedStandardImageProofSchema } from './qualified-standard-image.js';
 
 const checkIds = ['health', 'version', 'synthetic_data', 'page', 'compiled_asset'] as const;
 const check = z.strictObject({
@@ -19,7 +20,9 @@ export const qualifiedStandardBaselineProofSchema = z.discriminatedUnion('status
   binding.extend({
     status: z.enum(['passed', 'failed']), appExited: z.literal(true), runtimeInputsSha256: sha256Schema,
     checks: z.array(check).length(checkIds.length),
+    image: qualifiedStandardImageProofSchema.optional(),
   }).refine(result => result.checks.every((item, index) => item.id === checkIds[index])
+    && (!result.image || (result.status === 'passed' && result.runtimeInputsSha256 === result.image.runtimeInputsSha256))
     && (result.status === 'passed' ? result.checks.every(item => item.status === 'passed') : result.checks.some(item => item.status === 'failed'))),
   binding.extend({
     status: z.literal('blocked'),

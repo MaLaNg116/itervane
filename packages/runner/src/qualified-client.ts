@@ -117,6 +117,7 @@ export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificatio
     runnerImageSha256: profile.runnerImageSha256, scannerInputsSha256: profile.scannerInputsSha256,
     buildProfileSha256: profile.buildProfileSha256,
     runStandardBaseline: profile.runStandardBaseline,
+    ociInputsSha256: profile.ociInputsSha256,
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
   };
   if (Object.entries(bindings).some(([key, value]) => scope[key as keyof typeof bindings] !== value)) {
@@ -142,6 +143,17 @@ export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificatio
       || (baseline && (baseline.baselineSha256 !== profile.baselineSha256
         || build?.status !== 'built' || baseline.distSha256 !== build.dist.sha256))) {
     throw new Error('runner_standard_baseline_binding');
+  }
+  const image = baseline?.status === 'passed' ? baseline.image : undefined;
+  if (receipt.scope.ociInputsSha256 !== scope.ociInputsSha256
+      || Boolean(image) !== Boolean(scope.ociInputsSha256 && baseline?.status === 'passed')
+      || (image && image.ociInputsSha256 !== scope.ociInputsSha256)) {
+    throw new Error('runner_standard_image_binding');
+  }
+  const sourceDatabase = snapshot.reports[1].database;
+  if (image?.status === 'scanned' && (image.scan.database.sha256 !== sourceDatabase?.sha256
+      || image.scan.database.updatedAt !== sourceDatabase.updatedAt)) {
+    throw new Error('runner_standard_image_scan_binding');
   }
   const target = snapshot.target;
   if (subject.kind === 'repair'
@@ -170,6 +182,7 @@ export function prepareQualifiedVerificationRequest(coordinates: VerificationCoo
     targetManifestSha256: subject.manifestSha256, runnerImageSha256: profile.runnerImageSha256, scannerInputsSha256: profile.scannerInputsSha256,
     ...(profile.buildProfileSha256 ? { buildProfileSha256: profile.buildProfileSha256 } : {}),
     ...(profile.runStandardBaseline ? { runStandardBaseline: profile.runStandardBaseline } : {}),
+    ...(profile.ociInputsSha256 ? { ociInputsSha256: profile.ociInputsSha256 } : {}),
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
   });
 }

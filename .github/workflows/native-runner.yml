@@ -22,6 +22,7 @@ on:
       - 'fixtures/standard-app/**'
       - 'scripts/prepare-runner-inspection.ts'
       - 'scripts/prepare-runner-build-dependencies.ts'
+      - 'scripts/prepare-runner-oci-inputs.sh'
       - 'scripts/probe-qualified-runner.ts'
       - 'scripts/scanner-tools.ts'
       - 'package.json'
@@ -42,7 +43,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [regression, standard-build, standard-build-missing-cache]
+        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -58,8 +59,10 @@ jobs:
         timeout-minutes: 8
         run: |
           apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          extras=()
+          if [[ "${{ matrix.scenario }}" == standard-oci ]]; then extras+=(skopeo); fi
           sudo -n apt-get "${apt_options[@]}" update -qq
-          sudo -n apt-get "${apt_options[@]}" install -y --no-install-recommends gdisk guestfish guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils
+          sudo -n apt-get "${apt_options[@]}" install -y --no-install-recommends gdisk guestfish guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils "${extras[@]}"
           dpkg-query -W gdisk guestfish guestfs-tools libvirt-daemon-system python3-libvirt qemu-system-x86 > .reports/p0/kvm-packages.txt
           cat .reports/p0/kvm-packages.txt
       - name: Prepare the dedicated KVM session
@@ -92,6 +95,14 @@ jobs:
           test -s "$payload/inputs.json"
           tail -n 1 "$scratch/preparation.log" > .reports/p0/kvm-inspection-inputs.json
           printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
+      - name: Prepare the pinned OCI basis for the image trial
+        id: oci
+        if: steps.capability.outputs.available == 'true' && matrix.scenario == 'standard-oci'
+        run: |
+          payload="$RUNNER_TEMP/itervane-oci-inputs"
+          bash scripts/prepare-runner-oci-inputs.sh "$payload" > .reports/p0/kvm-oci-inputs.json
+          test -s "$payload/inputs.json"
+          printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
       - name: Prepare sealed build inputs for the selected trial
         id: build
         if: steps.capability.outputs.available == 'true' && matrix.scenario != 'regression'
@@ -101,7 +112,12 @@ jobs:
           set -euo pipefail
           scratch=$(mktemp -d "$RUNNER_TEMP/itervane-build.XXXXXXXX")
           payload="$scratch/itervane-build-inputs"
-          pnpm exec tsx scripts/prepare-runner-build-dependencies.ts "$payload" | tee "$scratch/preparation.log"
+          args=("$payload")
+          if [[ "$BUILD_SCENARIO" == standard-oci ]]; then
+            oci=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ociInputsSha256"])' .reports/p0/kvm-oci-inputs.json)
+            args+=("$oci")
+          fi
+          pnpm exec tsx scripts/prepare-runner-build-dependencies.ts "${args[@]}" | tee "$scratch/preparation.log"
           test -s "$payload/profile.json"
           tail -n 1 "$scratch/preparation.log" > .reports/p0/kvm-build-inputs.json
           if [[ "$BUILD_SCENARIO" == standard-build-missing-cache ]]; then
@@ -131,9 +147,11 @@ jobs:
           PROBE_DIRECTORY: ${{ steps.session.outputs.directory }}
           INSPECTION_PAYLOAD: ${{ steps.inspection.outputs.payload }}
           BUILD_PAYLOAD: ${{ steps.build.outputs.payload }}
+          OCI_PAYLOAD: ${{ steps.oci.outputs.payload }}
         run: |
           args=("$PROBE_DIRECTORY" "$INSPECTION_PAYLOAD")
           if [[ -n "$BUILD_PAYLOAD" ]]; then args+=("$BUILD_PAYLOAD"); fi
+          if [[ -n "$OCI_PAYLOAD" ]]; then args+=("$OCI_PAYLOAD"); fi
           sudo -n bash fixtures/runner/prepare-probe-image.sh "${args[@]}"
           sudo -n cat "$PROBE_DIRECTORY/image.json" > .reports/p0/kvm-image.json
           case "$INSPECTION_PAYLOAD" in
@@ -162,6 +180,7 @@ jobs:
             .reports/p0/kvm-image.json
             .reports/p0/kvm-inspection-inputs.json
             .reports/p0/kvm-build-inputs.json
+            .reports/p0/kvm-oci-inputs.json
             .reports/p0/kvm-packages.txt
             .reports/p0/runner-vm*.json
             .reports/p0/runner-qualified-*.json

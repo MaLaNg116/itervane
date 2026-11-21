@@ -1,6 +1,7 @@
 import { lstatSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { qualifiedGuestRepairIssueSchema, verificationProofByteLimit } from '@itervane/contracts';
+import { scanGuestImage } from '../guest-image-scan.js';
 import { repairQualifiedGuestSnapshot } from '../guest-repair.js';
 import { observeQualifiedRepairTargets } from '../guest-repair-observation.js';
 import { publishGuestSnapshot } from '../guest-snapshot.js';
@@ -25,6 +26,9 @@ if (command === 'snapshot' && args.length === 5) {
   try {
     stageGuestStandardBuild(INSPECTION_SOURCE, join(INSPECTION_OUTPUT, 'receipt.json'), STANDARD_BUILD_TOOLS, STANDARD_BUILD_INPUT);
   } catch { process.exitCode = 1; }
+} else if (command === 'image-scan' && args.length === 3) {
+  try { console.log(JSON.stringify(await scanGuestImage(args[0]!, args[1]!, args[2]!))); }
+  catch { process.exitCode = 1; }
 } else if (command === 'scan' && args.length === 0 && process.env.ITERVANE_SCAN_BOUNDARY === 'verified') {
   const repair = lstatSync(join(INSPECTION_SOURCE, 'repair-command.json'), { throwIfNoEntry: false }) !== undefined;
   const observeRepair = lstatSync(join(INSPECTION_SOURCE, 'repair-observation.json'), { throwIfNoEntry: false }) !== undefined;

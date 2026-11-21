@@ -17,6 +17,7 @@ node=$(command -v node)
 case "$scenario" in
   regression) features=(--enable-repair --enable-verification) ;;
   standard-build) features=(--enable-verification --enable-standard-build --enable-standard-baseline) ;;
+  standard-oci) features=(--enable-verification --enable-standard-build --enable-standard-baseline --enable-standard-oci) ;;
   standard-build-missing-cache) features=(--enable-verification --enable-standard-build) ;;
   *) exit 1 ;;
 esac
@@ -156,6 +157,10 @@ if [[ "$scenario" != regression ]]; then
   profile=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["buildProfileSha256"])' "$reports/kvm-build-inputs.json")
   baseline=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["baselineSha256"])' "$reports/kvm-build-inputs.json")
   extra=("$scenario" "$profile" "$baseline")
+  if [[ "$scenario" == standard-oci ]]; then
+    oci=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ociInputsSha256"])' "$reports/kvm-oci-inputs.json")
+    extra+=("$oci")
+  fi
   report="$reports/runner-worker-build.json"
 fi
 pnpm exec tsx packages/control-plane/test/native/worker-inspection.ts "$shared/worker.mjs" "$sock" "$(id -u "$runner")" "$digest" "$stage" \

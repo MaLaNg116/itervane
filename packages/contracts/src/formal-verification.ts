@@ -11,7 +11,9 @@ export const verificationProfileSchema = z.strictObject({
   runnerImageSha256: sha256Schema,
   buildProfileSha256: sha256Schema.optional(),
   runStandardBaseline: z.literal(true).optional(),
-}).refine(profile => !profile.runStandardBaseline || Boolean(profile.buildProfileSha256));
+  ociInputsSha256: sha256Schema.optional(),
+}).refine(profile => (!profile.runStandardBaseline || Boolean(profile.buildProfileSha256))
+  && (!profile.ociInputsSha256 || profile.runStandardBaseline === true));
 export type VerificationProfile = z.infer<typeof verificationProfileSchema>;
 
 const subjectSchema = z.discriminatedUnion('kind', [

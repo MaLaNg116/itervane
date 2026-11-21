@@ -10,7 +10,7 @@ import type { AgentEvidence } from '@itervane/agent';
 import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, type QualifiedInspectionReceipt,
   type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
-  type QualifiedVerificationReceipt, type RepairPatch } from '@itervane/contracts';
+  type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
 import { canonicalRepairCommand, canonicalRepairObservation, canonicalVerificationCommand, prepareQualifiedVerificationRequest,
   scannerProfiles, sha256, verifyQualifiedVerificationReceipt } from '@itervane/runner';
@@ -662,16 +662,32 @@ it('recovers an uncertain rescan only on the original idle Runner and retains th
   expect(verify).toHaveBeenCalledTimes(2);
 });
 
-it.each(['build', 'baseline'] as const)('binds the standard %s proof to the frozen candidate in the lease transaction', async stage => {
+it.each(['build', 'baseline', 'image'] as const)('binds the standard %s proof to the frozen candidate in the lease transaction', async stage => {
   const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(), auditModel: auditModel() });
   try { expect(await worker.tick()).toBe(true); } finally { await worker.close(); }
   const scope = await claimAfterAudit();
   const [inspection] = await database.storage.db.select().from(inspectionAttempts);
   const original = qualifiedInspectionResponseSchema.parse(inspection?.receipt);
   if (original.kind !== 'receipt') throw new Error('Missing original inspection');
+  const ociInputs = stage === 'image' ? sha256('frozen OCI inputs') : undefined;
   const profile = { ...verificationProfile, buildProfileSha256: sha256('protected build profile'),
-    ...(stage === 'baseline' ? { runStandardBaseline: true as const } : {}),
+    ...(stage !== 'build' ? { runStandardBaseline: true as const } : {}),
+    ...(ociInputs ? { ociInputsSha256: ociInputs } : {}),
   };
+  const runtimeInputs = sha256('runtime inputs');
+  const databaseEvidence = original.snapshot.reports[1].database;
+  if (!databaseEvidence) throw new Error('Missing source database evidence');
+  const imageDigest = 'sha256:' + sha256('OCI manifest');
+  const configDigest = 'sha256:' + sha256('OCI config');
+  const image: QualifiedStandardImageProof | undefined = ociInputs ? {
+    version: 1, status: 'scanned', ociInputsSha256: ociInputs, runtimeInputsSha256: runtimeInputs,
+    platform: 'linux/amd64', manifestDigest: imageDigest, configDigest,
+    baseManifestDigest: 'sha256:' + sha256('base'), appLayerDigest: 'sha256:' + sha256('app layer'),
+    runtimeLayerSha256: sha256('runtime layer'), scan: {
+      scanner: 'trivy', version: '0.76.2', imageDigest, configDigest, osPackages: 1, npmPackages: 1, findings: [],
+      policySha256: sha256('protected image scan'), reportSha256: sha256('image report'), database: databaseEvidence,
+    },
+  } : undefined;
   const verify = vi.fn<RescanRunner['verify']>(async (coordinates, input, repair, authorize) => {
     await authorize();
     const command = canonicalVerificationCommand({ input, repair });
@@ -690,11 +706,12 @@ it.each(['build', 'baseline'] as const)('binds the standard %s proof to the froz
           verificationInputSha256: bound.verificationInputSha256, baselineSha256: profile.baselineSha256,
           subjectManifestSha256: input.subject.manifestSha256, projectionSha256: sha256('staged projection'),
           isolationVerified: true, dist,
-          ...(stage === 'baseline' ? { baseline: {
+          ...(stage !== 'build' ? { baseline: {
             version: 1 as const, status: 'passed' as const, appExited: true as const,
-            runtimeInputsSha256: sha256('runtime inputs'), baselineSha256: profile.baselineSha256, distSha256: dist.sha256,
+            runtimeInputsSha256: runtimeInputs, baselineSha256: profile.baselineSha256, distSha256: dist.sha256,
             checks: (['health', 'version', 'synthetic_data', 'page', 'compiled_asset'] as const).map(id =>
               ({ id, status: 'passed' as const, code: null, statusCode: 200 })),
+            ...(image ? { image } : {}),
           } } : {}),
         },
       },
@@ -702,7 +719,9 @@ it.each(['build', 'baseline'] as const)('binds the standard %s proof to the froz
     const forged = structuredClone(receipt);
     const build = forged.snapshot.build;
     if (build?.status !== 'built') throw new Error('Missing build fixture');
-    if (build.baseline) build.baseline.distSha256 = sha256('changed distribution');
+    if (build.baseline?.status === 'passed' && build.baseline.image) {
+      build.baseline.image.ociInputsSha256 = sha256('changed image inputs');
+    } else if (build.baseline) build.baseline.distSha256 = sha256('changed distribution');
     else build.baselineSha256 = sha256('changed protected baseline');
     expect(() => verifyQualifiedVerificationReceipt(forged, request, command)).toThrow(`runner_standard_${stage}_binding`);
     await expect(database.storage.db.update(formalRescanAttempts).set({
@@ -710,14 +729,26 @@ it.each(['build', 'baseline'] as const)('binds the standard %s proof to the froz
       receipt: forged, receiptSha256: sha256(JSON.stringify(forged)),
     }).where(eq(formalRescanAttempts.requestId, bound.requestId))).rejects
       .toMatchObject({ cause: { code: '23514', message: `standard_${stage}_evidence_binding` } });
+    if (image && build.baseline?.status === 'passed') {
+      const substituted = structuredClone(image);
+      if (substituted.status !== 'scanned') throw new Error('Missing scanned image');
+      substituted.scan.imageDigest = 'sha256:' + sha256('unrelated manifest');
+      build.baseline.image = substituted;
+      await expect(database.storage.db.update(formalRescanAttempts).set({
+        state: 'recorded', settledFence: scope.fence, settledWorkerId: scope.workerId, settledAt: new Date(),
+        receipt: forged, receiptSha256: sha256(JSON.stringify(forged)),
+      }).where(eq(formalRescanAttempts.requestId, bound.requestId))).rejects
+        .toMatchObject({ cause: { code: '23514', message: 'standard_image_evidence_binding' } });
+    }
     return receipt;
   });
   const rescan = () => runFormalRescan(coordinator, scope, profile, { observe: async () => idleRepairRunner(), verify });
   const result = await rescan();
   expect(result).toMatchObject({ kind: 'scanned', receipt: { snapshot: { build: { status: 'built', isolationVerified: true } } } });
-  if (stage === 'baseline') {
+  if (stage !== 'build') {
     expect(result).toMatchObject({ receipt: { snapshot: { build: { baseline: { status: 'passed', appExited: true } } } } });
   }
+  if (image) expect(result).toMatchObject({ receipt: { snapshot: { build: { baseline: { image } } } } });
   expect(await rescan()).toEqual(result);
   expect(verify).toHaveBeenCalledTimes(1);
 });

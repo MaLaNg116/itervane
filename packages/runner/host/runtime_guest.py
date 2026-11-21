@@ -155,6 +155,28 @@ def observe_and_stop(plan):
     return outcome
 
 
+def observe_image(plan, request, profile):
+    binding = {"version": 1, "ociInputsSha256": request["ociInputsSha256"],
+               "runtimeInputsSha256": plan["runtimeInputsSha256"]}
+    code = "image_inputs"
+    try:
+        from oci_guest import OUTPUT as image_output, SERVICE as image_service, prepare_image
+
+        if profile.get("ociInputsSha256") != request["ociInputsSha256"]:
+            raise ValueError("formal image profile mismatch")
+        code = "runtime_projection"
+        prepare_image(WORK / "project", plan, request, profile)
+        code = "image_compose"
+        if systemctl("start", image_service, timeout=58).returncode:
+            raise ValueError("image composition")
+        report = json.loads(read_bytes(image_output / "receipt.json", 2 * 1024**2 - 8192))
+        if not isinstance(report, dict) or any(report.get(key) != value for key, value in binding.items()):
+            raise ValueError("image receipt binding")
+        return report
+    except (ImportError, OSError, KeyError, RecursionError, TypeError, ValueError, subprocess.SubprocessError):
+        return {**binding, "status": "blocked", "code": code}
+
+
 def supervise():
     if os.getuid() != 0:
         raise ValueError("invalid runtime controller")
@@ -166,6 +188,8 @@ def supervise():
     if build.get("status") != "built" or any(build.get(key) != value for key, value in binding.items()):
         raise ValueError("runtime build binding")
     request = {**binding, "distSha256": build["dist"]["sha256"]}
+    if "ociInputsSha256" in launch:
+        request.update({name: launch[name] for name in ("ociInputsSha256", "scannerInputsSha256")})
     if launch != request:
         raise ValueError("runtime request binding")
     outcome = {"status": "blocked", "code": "runtime_preparation"}
@@ -178,6 +202,8 @@ def supervise():
             plan = materialize(request, profile)
             if systemctl("start", PREP, timeout=32).returncode == 0:
                 outcome = observe_and_stop(plan)
+                if outcome["status"] == "passed" and "ociInputsSha256" in request:
+                    outcome["image"] = observe_image(plan, request, profile)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError):
         pass
     result = {"version": 1, "baselineSha256": request["baselineSha256"], "distSha256": request["distSha256"], **outcome}

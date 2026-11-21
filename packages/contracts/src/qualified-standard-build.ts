@@ -8,6 +8,7 @@ export const standardBuildProfileSchema = z.strictObject({
   nodeSha256: sha256Schema, npmVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
   baselineSha256: sha256Schema, viteConfigSha256: sha256Schema,
   baselineProbeSha256: sha256Schema.optional(),
+  ociInputsSha256: sha256Schema.optional(),
 });
 export type StandardBuildProfile = z.infer<typeof standardBuildProfileSchema>;
 

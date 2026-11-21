@@ -197,17 +197,20 @@ def read_inspection(receipt, command):
     return proof
 
 
-def observe_standard_baseline(build, wire):
+def observe_standard_baseline(build, profile, wire):
     names = ("runId", "verificationInputSha256", "subjectManifestSha256", "buildProfileSha256", "baselineSha256", "projectionSha256")
     request = {name: build[name] for name in names}
     request["distSha256"] = build["dist"]["sha256"]
+    if "ociInputsSha256" in profile:
+        request.update({name: profile[name] for name in ("ociInputsSha256", "scannerInputsSha256")})
     staged = BUILD_INPUT / "baseline-request.pending"
     with staged.open("xb") as output:
         output.write(json.dumps(request, separators=(",", ":")).encode("ascii"))
         os.fchmod(output.fileno(), 0o440)
     staged.rename(BUILD_INPUT / "baseline-request.json")
     try:
-        published = json.loads(wait_receipt(RUNTIME_RECEIPT, 8192, wire))
+        limit = 2 * 1024**2 if "ociInputsSha256" in request else 8192
+        published = json.loads(wait_receipt(RUNTIME_RECEIPT, limit, wire))
     except (ValueError, RecursionError) as error:
         raise GuestFailure("scan-integrity") from error
     if not isinstance(published, dict) or published.get("request") != request:
@@ -244,7 +247,7 @@ def with_standard_build(receipt, proof, command, wire):
         or outcome.get("runId") != proof["runId"] or outcome.get("subjectManifestSha256") != target):
         raise GuestFailure("scan-integrity")
     if profile.get("runStandardBaseline") is True and outcome.get("status") == "built":
-        outcome["baseline"] = observe_standard_baseline(outcome, wire)
+        outcome["baseline"] = observe_standard_baseline(outcome, profile, wire)
     proof["build"] = outcome
     serialized = json.dumps(proof, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(serialized) > MAX_VERIFICATION_RECEIPT:

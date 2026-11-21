@@ -15,4 +15,6 @@
 
 托管 Linux 固定版本 `5424c982bb77cd144d3d186033e9f706e82da23f` 的三个证据文件已下载复核，封装输入和试验镜像摘要与 WSL 实测一致。 [托管 OCI Inputs](https://github.com/MaLaNg116/itervane/actions/runs/44896141493)
 
+同一代码的既有 [KVM 原生回归](https://github.com/MaLaNg116/itervane/actions/runs/44896141483) 三组通过。原始候选和两种修复路径均确认退出清理，下载证据的源码指纹为 `e083e984ec4c7f2fd86e267847986a6686e7b9e59f24e128d32a9191eaaa2d22`，与本地重算一致。已通过 `ea43d6a1b2896f059bb0a68518a457a880e4b92c` 合入 main。
+
 实际候选的镜像封装及独立扫描进入 C3-B，产物持久化交接进入 C3-C。本批只处理公开基底与可信测试材料。 [OCI 布局规范](https://github.com/opencontainers/image-spec/blob/v1.1.1/image-layout.md) · [umoci 0.6.0 发布](https://github.com/opencontainers/umoci/releases/tag/v0.6.0)

@@ -120,13 +120,14 @@ async function runScopedFixtureWorker(bundle: string, socket: string, controller
   child.stdin.end(databaseUrl + '\n');
   let size = 0;
   const output: Buffer[] = [];
+  const limit = probe === 'verification' ? 2 * 1024 * 1024 : 32768;
   child.stdout.on('data', (chunk: Buffer) => {
     size += chunk.length;
-    if (size > 32768) child.kill();
+    if (size > limit) child.kill();
     else output.push(chunk);
   });
   const status = await boundedExit(child, exit, probe === 'repair' ? 385_000 : 205_000);
-  if (status !== 0 || size > 32768) throw new Error(/\bverification_fixture_phase_[a-z_]{1,56}\b/.exec(diagnostic)?.[0] ?? 'scoped_fixture_worker_failed');
+  if (status !== 0 || size > limit) throw new Error(/\bverification_fixture_phase_[a-z_]{1,56}\b/.exec(diagnostic)?.[0] ?? 'scoped_fixture_worker_failed');
   return JSON.parse(Buffer.concat(output).toString('utf8'));
 }
 
@@ -176,16 +177,20 @@ async function watchGuest(controllerUid: string) {
 
 async function probe() {
   const [bundle, socket, controllerUid, imageSha256, staging, repairBundle, verificationBundle, ...extra] = process.argv.slice(2);
-  const [buildMode, buildProfile, baseline] = extra;
-  const buildRun = buildMode === 'standard-build' || buildMode === 'standard-build-missing-cache';
+  const [buildMode, buildProfile, baseline, oci] = extra;
+  const ociRun = buildMode === 'standard-oci';
+  const buildRun = buildMode === 'standard-build' || buildMode === 'standard-build-missing-cache' || ociRun;
   if (process.platform !== 'linux' || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted' || process.env.DATABASE_URL
-    || process.env.ITERVANE_POSTGRES_IMAGE || (extra.length !== 0 && (extra.length !== 3 || !buildRun))
+    || process.env.ITERVANE_POSTGRES_IMAGE || (extra.length !== 0 && (extra.length !== (ociRun ? 4 : 3) || !buildRun))
     || !bundle?.startsWith('/var/lib/libvirt/images/itervane-native.')
     || !socket?.endsWith('/qualified/inspection.sock') || !controllerUid || !/^[1-9][0-9]{0,9}$/.test(controllerUid)
     || !imageSha256 || !/^[a-f0-9]{64}$/.test(imageSha256) || !staging?.endsWith('/staging')
     || repairBundle !== bundle.replace(/\/worker\.mjs$/, '/repair-worker.mjs')
     || verificationBundle !== bundle.replace(/\/worker\.mjs$/, '/verification-worker.mjs')) throw new Error('worker_probe_config');
-  const build = buildRun ? { profile: sha256Schema.parse(buildProfile), baseline: sha256Schema.parse(baseline) } : undefined;
+  const build = buildRun ? {
+    profile: sha256Schema.parse(buildProfile), baseline: sha256Schema.parse(baseline),
+    oci: ociRun ? sha256Schema.parse(oci) : undefined,
+  } : undefined;
 
   phase = 'postgres';
   const postgres = await temporaryPostgres();
@@ -275,7 +280,7 @@ async function probe() {
         await worker.stop('TERM'); worker = undefined;
         phase = baselineOutcome ? `standard_baseline_${baselineOutcome}` : `standard_build_execution_${outcome}`;
         const fact: Record<string, unknown> = await rescanFixture(task, null, [build.profile, build.baseline, outcome,
-          ...(baselineOutcome ? [baselineOutcome] : [])]);
+          ...(baselineOutcome ? [baselineOutcome, ...(build.oci ? [build.oci] : [])] : [])]);
         const evidence = qualifiedStandardBuildProofSchema.parse(fact.build);
         equal(evidence.baselineSha256, build.baseline);
         equal(evidence.subjectManifestSha256, reviewed.result.snapshotSha256);
@@ -302,10 +307,20 @@ async function probe() {
       ok(passing?.status === 'passed');
       equal(passing.appExited, true);
       equal(passing.distSha256, built.build.dist.sha256);
+      if (build.oci) {
+        const image = passing.image;
+        ok(image?.status === 'scanned');
+        equal(image.ociInputsSha256, build.oci);
+        equal(image.runtimeInputsSha256, passing.runtimeInputsSha256);
+        equal(image.scan.imageDigest, image.manifestDigest);
+        equal(image.scan.configDigest, image.configDigest);
+        ok(image.scan.osPackages > 0 && image.scan.npmPackages > 0);
+      } else equal(passing.image, undefined);
       const healthRegression = await buildFixture(standardHealthRegressionCommit, 'built', 'failed');
       ok(healthRegression.build.status === 'built' && healthRegression.build.baseline?.status === 'failed');
       const failed = healthRegression.build.baseline;
       equal(failed.appExited, true);
+      equal(failed.image, undefined);
       equal(failed.distSha256, passing.distSha256);
       notEqual(failed.runtimeInputsSha256, passing.runtimeInputsSha256);
       deepStrictEqual(failed.checks[0], { id: 'health', status: 'failed', code: 'unexpected_status', statusCode: 503 });

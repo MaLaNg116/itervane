@@ -282,6 +282,7 @@ SystemCallErrorNumber=EPERM
 InaccessiblePaths=-/run/dbus/system_bus_socket -/run/systemd/private
 InaccessiblePaths=/var/lib/itervane-probe-source /var/lib/itervane-inspection-source /var/lib/itervane-inspection-output
 InaccessiblePaths=/var/lib/itervane-build-input /var/lib/itervane-build-work /var/lib/itervane-build-output /var/lib/itervane-runtime-output
+InaccessiblePaths=-/var/lib/itervane-image-input -/var/lib/itervane-image-work -/var/lib/itervane-image-output
 ReadOnlyPaths=/usr/local/libexec/itervane-build /var/lib/itervane-runtime-gate
 MemoryMax=640M
 TasksMax=64
@@ -294,6 +295,63 @@ UMask=0077
 EOF
     done
     ln -sfn /etc/systemd/system/itervane-runtime-control.path /etc/systemd/system/multi-user.target.wants/itervane-runtime-control.path
+    if test -d /usr/local/libexec/itervane-oci-inputs; then
+      useradd --system --user-group --no-create-home --shell /usr/sbin/nologin itervane-image
+      mv -- /usr/local/libexec/itervane-oci-inputs /usr/local/libexec/itervane-oci
+      chown -R root:root /usr/local/libexec/itervane-oci
+      chmod -R a+rX,a-w /usr/local/libexec/itervane-oci
+      install -m 0444 /var/tmp/oci_layout.py /var/tmp/oci_guest.py /usr/local/libexec/itervane/
+      rm -- /var/tmp/oci_layout.py /var/tmp/oci_guest.py
+      install -d -m 2750 -o root -g itervane-image /var/lib/itervane-image-input
+      install -d -m 0700 -o itervane-image -g itervane-image /var/lib/itervane-image-work /var/lib/itervane-image-output
+      install -d -m 0755 /etc/systemd/system/itervane-runtime-control.service.d
+      cat >/etc/systemd/system/itervane-runtime-control.service.d/20-image.conf <<'EOF'
+[Service]
+ReadWritePaths=/var/lib/itervane-image-input
+TimeoutStartSec=120
+EOF
+      cat >/etc/systemd/system/itervane-image-compose.service <<'EOF'
+[Unit]
+BindsTo=itervane-guest-source.service
+After=itervane-guest-source.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/itervane/oci_guest.py
+User=itervane-image
+Group=itervane-image
+NoNewPrivileges=true
+CapabilityBoundingSet=
+PrivateNetwork=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+SystemCallArchitectures=native
+SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register
+SystemCallErrorNumber=EPERM
+InaccessiblePaths=-/run/dbus/system_bus_socket -/run/systemd/private
+InaccessiblePaths=/var/lib/itervane-probe-source /var/lib/itervane-inspection-source /var/lib/itervane-inspection-output
+InaccessiblePaths=/var/lib/itervane-build-input /var/lib/itervane-build-work /var/lib/itervane-build-output
+InaccessiblePaths=/var/lib/itervane-runtime-work /var/lib/itervane-runtime-gate /var/lib/itervane-runtime-output
+ReadOnlyPaths=/usr/local/libexec/itervane-oci /usr/local/libexec/itervane-inspection /var/lib/itervane-image-input
+ReadWritePaths=/var/lib/itervane-image-work /var/lib/itervane-image-output
+MemoryMax=1G
+TasksMax=64
+LimitFSIZE=402653184
+TimeoutStartSec=55
+TimeoutStopSec=5
+KillMode=control-group
+StandardOutput=null
+StandardError=null
+UMask=0077
+EOF
+    fi
   fi
 fi
 cat >/etc/systemd/system/itervane-probe-workload.service <<'EOF'
