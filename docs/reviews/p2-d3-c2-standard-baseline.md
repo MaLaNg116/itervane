@@ -7,3 +7,5 @@
 3. Ubuntu 24.04 上用 Vite 8.3.8 构建维护者的可信夹具，再启动真实 Express 测试服务。7 项测试通过，健康基线五项通过；健康路由返回 503 时，另四项仍通过，整体结果失败。基线文件 SHA-256 为 `a1ee2a313dbbaea17ac3ca5bb012bb183005b20727362ddce0008f24c16966cc`。 [回归测试](https://github.com/MaLaNg116/itervane/blob/3237ea2947a598631bf9853800eb12bea80f7a45/fixtures/standard-app/test/application.test.mjs)
 
 在已安装仓库依赖的可信开发环境执行 `pnpm --filter @itervane/standard-app build` 和 `pnpm --filter @itervane/standard-app test` 可复跑以上检查。实际项目执行与证据绑定仍等待合格客体。
+
+合入前复核了回环请求范围、媒体类型与装入产物的限额，以及各检查对总体结果的影响。托管回归在固定代码 `0f1aa5ad244d70a2941ee4bd3af809d6e30b964c` 完成既有隔离执行，下载的证据与本地源码指纹一致。HTTP 基线的真实样例证据见上文，下一批将接入客体。 [托管 KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44887820849) · [交付 PR](https://github.com/MaLaNg116/itervane/pull/27)
