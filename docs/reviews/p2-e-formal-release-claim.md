@@ -10,6 +10,8 @@
 
 固定运行源码 `a4dc3188b17769c873e88b416217ba3ff6fde520`。TypeScript、163 项单元、70 项 Python 宿主测试和原生 Worker 打包通过。首次全量 PostgreSQL 147 项通过，复验证据负例的夹具初始化被外键拦截。更新夹具后，`b2ce344fb8759731342fa4e877d3026db7e92dfd` 在 PostgreSQL 17.12 全量复跑 148 项通过，指纹为 `aea49ef4a54fc144828220ef4087674b98887e897598bc2675628c5b54fbde53`。
 
-托管源码 `0645c5989f21c96ae4a8db121e828d0f7b989a2a` 正在验证。此后的改动集中在数据库集成测试及文档，正式运行代码与原生探针一致。 [PR #47](https://github.com/MaLaNg116/itervane/pull/47) · [托管原生验收](https://github.com/MaLaNg116/itervane/actions/runs/44926192666)
+托管 OCI 验收通过，核对第二代候选、批准操作、执行 fence、换发唤醒、旧唤醒拒绝以及 79,042,560 字节归档与 Registry 回读。托管版本 `0645c5989f21c96ae4a8db121e828d0f7b989a2a` 的指纹为 `40464447ab26c9cd149bec227e32fb20d8c87788f39af40b45ef5ebac90379c1`。此后的改动集中在数据库集成测试及文档，正式运行代码与原生探针一致。 [PR #47](https://github.com/MaLaNg116/itervane/pull/47) · [托管原生验收](https://github.com/MaLaNg116/itervane/actions/runs/44926192666)
+
+首次托管全量回归在等锁过期用例触及数据库已有的五秒语句超时。夹具调整为三秒剩余批准时间，保留实际数据库等锁和过期验证。 [首次托管结果](https://github.com/MaLaNg116/itervane/actions/runs/44927137555/job/136915593423)
 
 本批的正式阶段为预留执行权。C3-C 接入外部写入意图、同摘要 Registry 导入和结果核对。C4 与 E-D 分别进行正式 Komodo 派发与独立上线核验。 [发布执行计划](../plans/p2-e-formal-release-execution.md)

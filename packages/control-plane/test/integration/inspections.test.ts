@@ -1313,8 +1313,8 @@ async function queuedFormalRelease(options: { separateRequester?: boolean; expir
   const verified = await taskService.get(identity, task.id);
   expect(verified.state).toBe('waiting_input');
   if (options.expiring) {
-    // An old outcome gives this newly frozen candidate only a few seconds of its real PostgreSQL TTL.
-    await adjustFixtureVerification("UPDATE itervane.formal_verification_results SET created_at=clock_timestamp()-interval '55 seconds'");
+    // Exercise expiry below the runtime's five-second statement timeout even on a fast database.
+    await adjustFixtureVerification("UPDATE itervane.formal_verification_results SET created_at=clock_timestamp()-interval '57 seconds'");
   }
   const frozen = (await service.freeze(requester, task.id, { environmentId: environment.id, expectedVersion: verified.version }, 'zh-CN')).candidate;
   const approval = (await service.decide(owner, frozen.id, {
