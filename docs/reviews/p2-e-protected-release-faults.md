@@ -6,4 +6,4 @@
 2. 每项有自己的任务与批准。在真实 Komodo 更新标识已入库后停止执行进程，新执行者持后继代次读回同一标识。Registry 导入、目标设置与派发分别有持久化步骤。记录派发次数、确认代次与保留的环境占用。未知更新的核对继续由 `standard-oci` 原生场景覆盖。 [已派发更新恢复](https://github.com/MaLaNg116/itervane/blob/01ba5e0/packages/control-plane/test/native/komodo-release-proof.ts)
 3. 安装态发布 Worker 在两项故障中分别产生健康失败和凭证服务不可用的人工核验结果。对照中英文 HTTP/MCP、真实 PostgreSQL、原生更新标识和实际镜像，核对工作区及资源回收。 [故障验收](https://github.com/MaLaNg116/itervane/blob/01ba5e0/packages/control-plane/test/native/worker-inspection.ts) · [托管场景](https://github.com/MaLaNg116/itervane/blob/4d7d79a/.github/workflows/native-runner.yml)
 
-本机 202 项单元、TypeScript、宿主 Bash 和合成应用语法检查通过。托管 KVM 运行故障验收待归档。
+本机 202 项单元、TypeScript、宿主 Bash 和合成应用语法检查通过。用固定合成源码在本机回环运行，发送信号后同一进程从 HTTP 200 转为 503，原版本字符串保持一致。托管 KVM 运行故障验收待归档。
