@@ -2,6 +2,7 @@ import { posix } from 'node:path';
 import { z } from 'zod';
 import { auditModelProtocolSchema, sha256Schema } from '@itervane/contracts';
 import { safeEndpoint } from '@itervane/model';
+import { sourcePath } from '@itervane/runner';
 import { validateIdentityConfig } from './auth/identity.js';
 
 const databaseUrl = z.string().min(1).refine(value => {
@@ -38,14 +39,20 @@ export function workerConfig(env: NodeJS.ProcessEnv = process.env) {
     imageSha256: sha256Schema,
   }).parse(address) : undefined;
   const selected = env.ITERVANE_AUDIT_MODEL_PROVIDER;
-  if (selected === undefined) return { ...worker, runner, auditModel: undefined };
+  const repairEnabled = z.enum(['0', '1']).parse(env.ITERVANE_FORMAL_REPAIR ?? '0') === '1';
+  if (repairEnabled && (!runner || !selected)) throw new Error('Formal repair requires a qualified Runner and a configured model');
+  const additionalProtections = repairEnabled
+    ? z.array(z.string()).max(62).parse(JSON.parse(env.ITERVANE_REPAIR_PROTECTED_PATHS ?? '[]')) : [];
+  const repairProtectedPaths = repairEnabled
+    ? [...new Set(['.github', '.itervane', ...additionalProtections].map(path => sourcePath(path).toLowerCase()))] : undefined;
+  if (selected === undefined) return { ...worker, runner, auditModel: undefined, repairProtectedPaths };
   const protocol = auditModelProtocolSchema.parse(selected);
   const prefix = protocol === 'anthropic' ? 'ANTHROPIC' : 'OPENAI';
   const modelConfig = z.strictObject({ apiKey: z.string().min(1).max(4096), model: z.string().trim().min(1).max(240),
     baseURL: z.string().min(1).max(2048).transform(safeEndpoint) }).parse({
     apiKey: env[`${prefix}_API_KEY`], model: env[`${prefix}_MODEL`], baseURL: env[`${prefix}_BASE_URL`],
   });
-  return { ...worker, runner, auditModel: { protocol, ...modelConfig } };
+  return { ...worker, runner, auditModel: { protocol, ...modelConfig }, repairProtectedPaths };
 }
 
 export function migrationConfig(env: NodeJS.ProcessEnv = process.env) {

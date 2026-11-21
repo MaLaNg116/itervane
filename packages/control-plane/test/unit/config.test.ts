@@ -58,3 +58,16 @@ it.each(['anthropic', 'openai'] as const)('configures the %s audit adapter only 
   expect(() => workerConfig({ ...enabled, [`${prefix}_BASE_URL`]: 'http://example.invalid' })).toThrow();
   expect(() => workerConfig({ ...enabled, [`${prefix}_MODEL`]: undefined })).toThrow();
 });
+
+it('requires explicit formal repair, a qualified Runner, a configured model and canonical protected paths', () => {
+  const environment = { ...configured, ITERVANE_RUNNER_SOCKET: '/run/itervane/inspection.sock',
+    ITERVANE_RUNNER_UID: '1234', ITERVANE_RUNNER_IMAGE_SHA256: 'a'.repeat(64), ITERVANE_AUDIT_MODEL_PROVIDER: 'anthropic',
+    ANTHROPIC_BASE_URL: 'http://localhost:4312', ANTHROPIC_API_KEY: 'test-credential', ANTHROPIC_MODEL: 'fixture' };
+  expect(workerConfig(environment).repairProtectedPaths).toBeUndefined();
+  const enabled = { ...environment, ITERVANE_FORMAL_REPAIR: '1' };
+  expect(() => workerConfig({ ...enabled, ITERVANE_AUDIT_MODEL_PROVIDER: undefined })).toThrow();
+  expect(() => workerConfig({ ...enabled, ITERVANE_RUNNER_SOCKET: undefined })).toThrow();
+  expect(() => workerConfig({ ...enabled, ITERVANE_REPAIR_PROTECTED_PATHS: '["../platform-tests"]' })).toThrow();
+  expect(workerConfig({ ...enabled, ITERVANE_REPAIR_PROTECTED_PATHS: '["platform-tests",".GitHub"]' }).repairProtectedPaths)
+    .toEqual(['.github', '.itervane', 'platform-tests']);
+});

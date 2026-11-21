@@ -91,11 +91,11 @@ export class ExecutionCoordinator {
     }, { allowCancel: true });
   }
 
-  async pause(scope: ExecutionScope, reason: SourceInspectionPauseReason = 'runner_unavailable') {
+  async pause(scope: ExecutionScope, reason: SourceInspectionPauseReason | 'repair_deferred' = 'runner_unavailable') {
     await this.withLease(scope, async (tx, { task, runtime }) => {
       if (!runtime.checkpointId) throw new DomainError('unavailable');
       await tx.update(runRuntime).set({ reason, resumePending: false, waitingForTaskId: null }).where(eq(runRuntime.runId, scope.runId));
-      const event = reason === 'runner_unavailable' ? 'task.paused' : 'task.inspection_paused';
+      const event = reason === 'repair_deferred' ? 'task.repair_deferred' : reason === 'runner_unavailable' ? 'task.paused' : 'task.inspection_paused';
       await appendEvent(tx, task, event, 'waiting_input', { workerId: scope.workerId, reason });
       await clearSlot(tx);
     });

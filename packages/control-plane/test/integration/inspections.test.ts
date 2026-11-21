@@ -18,7 +18,7 @@ import { queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRuntime,
   inspectionAttempts } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
-import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
+import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
 import { runFormalRepair } from '../../src/runtime/formal-repair.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
 import { GuardedCheckpointer } from '../../src/runtime/checkpointer.js';
@@ -344,6 +344,116 @@ it('uses the recorded mutation after a new worker claims a reserved repair whose
   } finally { intercept.mockRestore(); await storage.end(); }
 });
 
+it.each(['continuous', 'reclaimed', 'existing audit'] as const)('continues a sealed audit into a repair candidate through the ordinary queue (%s)', async mode => {
+  const prefix = 'header=fixture\nkeep=on\n';
+  const line = 'REMOVE=public\n';
+  const original = prefix + line;
+  const range = { startByte: Buffer.byteLength(prefix), endByte: Buffer.byteLength(original), sha256: sha256(line) };
+  let scan: QualifiedInspectionReceipt | undefined;
+  const inspect = vi.fn<InspectionRunner['inspect']>(async (request, authorize) => {
+    await authorize();
+    scan = testReceipt(request, false, fixtureFindingPath);
+    return scan;
+  });
+  const observeRepair = vi.fn<RepairObservationRunner['observeRepair']>(async (request, workspace, targets, authorize) => {
+    await authorize();
+    return repairObservationReceipt(scan!, request, workspace, targets, original, range);
+  });
+  const repair = vi.fn<RepairRunner['repair']>(async (request, workspace, patch, authorize) => {
+    await authorize();
+    return repairReceipt(scan!, request, workspace, patch, original);
+  });
+  const completeAudit = vi.fn(concludeAudit);
+  const completeRepair = vi.fn<ModelAdapter['complete']>(async ({ conversation }) => {
+    const context = conversation[0];
+    if (context?.kind !== 'user') throw new Error('Missing repair context');
+    const { observations, handoff } = JSON.parse(context.text) as { observations: AgentEvidence[]; handoff: { findings: Array<{ id: string }> } };
+    const candidate = observations.find(item => item.data.kind === 'repair_candidate');
+    if (candidate) return auditTurn('finish_role', { evidenceId: candidate.id, summary: '已清理示例配置项。' });
+    const target = observations.find(item => item.data.kind === 'repair_targets');
+    if (!target || target.data.kind !== 'repair_targets') return auditTurn('read_repair_targets', { findingIds: handoff.findings.map(item => item.id) });
+    return auditTurn('apply_repair_patch', { observationId: target.id, targets: [{ targetIndex: 0,
+      edits: [{ startByte: range.startByte, endByte: range.endByte, replacement: '' }],
+    }] });
+  });
+  const model = auditModel(request => {
+    const context = request.conversation[0];
+    const repairing = context?.kind === 'user' && JSON.parse(context.text).role === 'repair';
+    return (repairing ? completeRepair : completeAudit)(request);
+  });
+  const source = inspectionRunner(inspect);
+  const tasks = new TaskService(database.storage);
+  if (mode === 'reclaimed') {
+    const scanWorker = new DurableWorker(database.storage, database.runtimeUrl, { runner: source });
+    try { expect(await scanWorker.tick()).toBe(true); } finally { await scanWorker.close(); }
+    const current = await tasks.get(identity, task.id);
+    await tasks.resume(identity, task.id, { expectedVersion: current.version });
+    const scope = await claim();
+    const storage = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+    try {
+      await expect(runFormalAudit(coordinator, scope, storage, model, new AbortController().signal, true)).resolves.toBe('repair_pending');
+    } finally { await storage.end(); }
+    expect(await tasks.get(identity, task.id)).toMatchObject({ state: 'running' });
+    await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  }
+  if (mode === 'existing audit') {
+    const auditOnly = new DurableWorker(database.storage, database.runtimeUrl, { runner: source, auditModel: model });
+    try {
+      expect(await auditOnly.tick()).toBe(true);
+      const audited = await tasks.get(identity, task.id);
+      expect((await tasks.events(identity, task.id, 50)).at(-1)).toMatchObject({ reason: 'audit_ready' });
+      // An audit recorded before the repair handoff migration can enter repair as well.
+      await database.admin.query('TRUNCATE itervane.formal_repair_results, itervane.formal_repair_attempts, itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs');
+      await tasks.resume(identity, task.id, { expectedVersion: audited.version });
+      expect(await auditOnly.tick()).toBe(true);
+      const deferred = await tasks.get(identity, task.id);
+      expect((await tasks.events(identity, task.id, 50)).at(-1)).toMatchObject({ reason: 'repair_deferred' });
+      expect(deferred.state).toBe('waiting_input');
+      await tasks.resume(identity, task.id, { expectedVersion: deferred.version });
+    } finally { await auditOnly.close(); }
+  }
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: source, auditModel: model,
+    repair: { runner: { observe: async () => idleRepairRunner(), observeRepair, repair }, protectedPaths: [] },
+  });
+  try { expect(await worker.tick()).toBe(true); } finally { await worker.close(); }
+  const [result] = await database.storage.db.select().from(formalRepairResults);
+  const [audit] = await database.storage.db.select().from(formalAuditResults);
+  const events = await tasks.events(identity, task.id, 50, 'zh-CN');
+  expect(result?.document, JSON.stringify({ reason: events.at(-1)?.reason, auditCalls: completeAudit.mock.calls.length,
+    repairCalls: completeRepair.mock.calls.length, observationCalls: observeRepair.mock.calls.length, patchCalls: repair.mock.calls.length,
+  })).toMatchObject({ status: 'candidate_ready', auditResultSha256: audit?.sha256, releaseEligible: false,
+    candidate: { changes: [{ path: fixtureFindingPath, beforeSha256: sha256(original), afterSha256: sha256(prefix) }] },
+  });
+  expect(await tasks.get(identity, task.id)).toMatchObject({ runId: task.runId, state: 'waiting_input' });
+  expect(result!.finalizedFence).toBe(audit!.finalizedFence + (mode === 'continuous' ? 0 : mode === 'reclaimed' ? 1 : 2));
+  expect(events.at(-1)).toMatchObject({ type: 'task.repair_recorded', reason: 'repair_ready',
+    reasonMessage: '修复候选已就绪，等待独立复验。',
+  });
+  expect(inspect).toHaveBeenCalledTimes(1);
+  expect(observeRepair).toHaveBeenCalledTimes(1);
+  expect(repair).toHaveBeenCalledTimes(1);
+  expect(completeAudit).toHaveBeenCalledTimes(3);
+  expect(completeRepair).toHaveBeenCalledTimes(3);
+});
+
+it('retains the audited source when there are no findings and does not queue a repair', async () => {
+  const observeRepair = vi.fn<RepairObservationRunner['observeRepair']>();
+  const repair = vi.fn<RepairRunner['repair']>();
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, {
+    runner: completedRunner(), auditModel: auditModel(),
+    repair: { runner: { observe: async () => idleRepairRunner(), observeRepair, repair }, protectedPaths: [] },
+  });
+  const tasks = new TaskService(database.storage);
+  try {
+    expect(await worker.tick()).toBe(true);
+    const waiting = await tasks.get(identity, task.id);
+    expect(waiting.state).toBe('waiting_input');
+    await expect(tasks.resume(identity, task.id, { expectedVersion: waiting.version })).rejects.toMatchObject({ code: 'unsupported_state' });
+  } finally { await worker.close(); }
+  expect(observeRepair).not.toHaveBeenCalled();
+  expect(repair).not.toHaveBeenCalled();
+});
+
 it('records one immutable repair command and a checked receipt across concurrent duplicate dispatches', async () => {
   const { scope, proposal, scan, original } = await repairReady();
   const admitted = Promise.withResolvers<void>();
@@ -598,7 +708,7 @@ it('publishes a receipt and its tool event atomically, and reuses the receipt af
   expect((await tasks.events(identity, task.id, 50, 'zh-CN')).at(-1)).toMatchObject({ type: 'task.audit_recorded', reason: 'audit_ready' });
   const events = await database.admin.query("SELECT detail FROM itervane.task_events WHERE type='task.audit_recorded'");
   expect(events.rows).toEqual([{ detail: { runId: scope.runId, reason: 'audit_ready', auditResultSha256: row?.sha256 } }]);
-  await expect(tasks.resume(identity, task.id, { expectedVersion: audited.version })).rejects.toMatchObject({ code: 'unsupported_state' });
+  await expect(tasks.resume(identity, task.id, { expectedVersion: audited.version - 1 })).rejects.toMatchObject({ code: 'version_conflict' });
   await expect(database.storage.pool.query('UPDATE itervane.formal_audit_results SET sha256=sha256')).rejects
     .toMatchObject({ code: '23514', message: 'formal_audit_result_is_retained' });
   await expect(database.storage.pool.query('UPDATE itervane.formal_audit_runtime SET checkpoint_step=checkpoint_step+1')).rejects
