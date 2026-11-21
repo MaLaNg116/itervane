@@ -1849,6 +1849,159 @@ it('records one Komodo configuration and dispatch with separately bound observat
   expect(zh.at(-1)?.message).toMatch(/独立核对/);
 });
 
+it.each(['normal', 'config response lost', 'config unconfirmed', 'dispatch ID lost',
+  'dispatch observation expired', 'registry response lost', 'approval revoked before Komodo'] as const)(
+  'runs formal Komodo through the durable Worker (%s)', async scenario => {
+    const { approval, operationId, target, taskService, owner, service } = await queuedFormalRelease({ komodo: true, separateRequester: true });
+    const image = standardRegistryProof(approval.manifest.image);
+    const previous = { deploymentId: target.deploymentId, serverId: target.serverId,
+      runtimeConfigSha256: target.runtimeConfigSha256, imageReference: 'registry.example.invalid/testing/standard:old' };
+    const approved = { ...previous, imageReference: image.reference };
+    const update = { updateId: '6'.repeat(24), deploymentId: target.deploymentId,
+      actorId: komodoBinding.actorId, status: 'Queued', success: false } as const;
+    let configuration = previous;
+    let expireObservation = scenario === 'dispatch observation expired';
+    type Backend = ConstructorParameters<typeof FormalReleaseWorker>[1];
+    type Komodo = NonNullable<Backend['komodo']>;
+    const publish = vi.fn<Backend['registry']['publish']>(async (_target, _image, _path, authorize) => {
+      await authorize();
+      if (scenario === 'registry response lost') throw new Error('test_registry_response_lost');
+      return image;
+    });
+    const observe = vi.fn<Backend['registry']['observe']>(async (_target, _image, authorize) => {
+      await authorize();
+      return image;
+    });
+    const inspectTarget = vi.fn<Komodo['inspectTarget']>(async (bound, authorize) => {
+      expect(bound).toMatchObject({ komodo: komodoBinding, deploymentId: target.deploymentId, serverId: target.serverId });
+      await authorize();
+      return configuration;
+    });
+    const configureImage = vi.fn<Komodo['configureImage']>(async (_target, requested, authorizeWrite, _signal, authorizeRead) => {
+      expect(requested).toMatchObject({ manifestDigest: image.manifestDigest, previousImage: previous.imageReference });
+      await authorizeWrite();
+      if (scenario !== 'config unconfirmed') configuration = approved;
+      if (scenario === 'config response lost' || scenario === 'config unconfirmed') throw new Error('test_config_response_lost');
+      await authorizeRead?.();
+      return configuration;
+    });
+    const dispatch = vi.fn<Komodo['dispatch']>(async (_target, digest, authorizeWrite, _signal, authorizeRead) => {
+      expect(digest).toBe(image.manifestDigest);
+      expect(configuration).toEqual(approved);
+      await authorizeWrite();
+      if (scenario === 'dispatch ID lost') throw new Error('test_dispatch_id_lost');
+      await authorizeRead?.();
+      return update;
+    });
+    const observeUpdate = vi.fn<Komodo['observeUpdate']>(async (_target, id, authorize) => {
+      expect(id).toBe(update.updateId);
+      await authorize();
+      if (expireObservation) {
+        expireObservation = false;
+        await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+        throw new Error('test_process_interrupted_after_receipt');
+      }
+      return { ...update, status: 'Complete', success: true };
+    });
+    const backend: Backend = { origin: releaseOrigin, registry: { publish, observe }, komodo: { inspectTarget, configureImage, dispatch, observeUpdate } };
+    const importWorker = new FormalReleaseWorker(database.storage, { ...backend, runner: {
+      async withRetainedArchive(_archive, authorize, use) {
+        await authorize();
+        return use('/trusted-fixture/approved.oci.tar');
+      },
+    } });
+    const run = (worker: FormalReleaseWorker) => vi.waitFor(async () => {
+      const result = await worker.tick();
+      if (result.status === 'idle') throw new Error('Waiting for the formal release wakeup');
+      return result;
+    }, { timeout: 5_000, interval: 45 });
+    const newWorker = () => new FormalReleaseWorker(database.storage, backend);
+    const imported = await run(importWorker);
+    expect(imported).toMatchObject({ status: scenario === 'registry response lost' ? 'requeued' : 'komodo_ready', scope: { operationId, mode: 'import' } });
+    if (scenario === 'registry response lost') {
+      expect(await run(newWorker())).toMatchObject({ status: 'komodo_ready', scope: { operationId, mode: 'registry_recovery' } });
+    }
+    expect(configureImage).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(await readOperation(operationId)).toMatchObject({ state: 'reconciling', wakeupJobId: expect.any(String) });
+    expect((await service.getView(owner, task.id, 'zh-CN')).candidate?.message).toMatch(/新的 Komodo 写入租约/);
+    if (scenario === 'approval revoked before Komodo') {
+      const [ownerGrant] = await database.storage.db.delete(workspaceMembers).returning();
+      expect(await newWorker().tick()).toEqual({ status: 'idle' });
+      expect(await readOperation(operationId)).toMatchObject({ state: 'blocked', wakeupJobId: null });
+      expect(inspectTarget).not.toHaveBeenCalled();
+      expect(configureImage).not.toHaveBeenCalled();
+      expect(dispatch).not.toHaveBeenCalled();
+      await database.storage.db.insert(workspaceMembers).values({ principalId: ownerGrant!.principalId, workspaceId: ownerGrant!.workspaceId });
+      expect((await taskService.events(identity, task.id, 50, 'en')).at(-1))
+        .toMatchObject({ type: 'task.release_blocked', state: 'needs_human', reason: 'release_approval_invalid' });
+      return;
+    }
+
+    const competing = await Promise.all([newWorker().tick(), newWorker().tick()]);
+    expect(competing.filter(item => item.status === 'idle')).toHaveLength(1);
+    const first = competing.find(item => item.status !== 'idle');
+    if (!first) throw new Error('Missing Komodo writer');
+    expect(first.scope).toMatchObject({ operationId, mode: 'komodo_write' });
+    expect(first.scope.fence).toBeGreaterThan(imported.scope.fence);
+    let last: typeof first = first;
+    if (scenario === 'config response lost' || scenario === 'config unconfirmed') {
+      expect(first.status).toBe('requeued');
+      expect(dispatch).not.toHaveBeenCalled();
+      const recovery = await run(newWorker());
+      expect(recovery).toMatchObject({ status: scenario === 'config response lost' ? 'komodo_ready' : 'requeued',
+        scope: { operationId, mode: 'komodo_recovery', komodoStep: 'komodo_config' } });
+      if (scenario === 'config unconfirmed') {
+        expect((await run(newWorker())).status).toBe('requeued');
+        last = await run(newWorker());
+      } else {
+        const writer = await run(newWorker());
+        expect(writer.scope).toMatchObject({ operationId, mode: 'komodo_write' });
+        last = writer;
+      }
+    }
+    if (scenario === 'dispatch observation expired') {
+      expect(first.status).toBe('lease_lost');
+      const current = await taskService.get(identity, task.id);
+      await taskService.cancel(identity, task.id, { expectedVersion: current.version });
+      const [ownerGrant] = await database.storage.db.delete(workspaceMembers).returning();
+      const recovered = await run(newWorker());
+      expect(recovered.scope).toMatchObject({ operationId, mode: 'komodo_recovery', komodoStep: 'komodo_dispatch' });
+      expect(recovered.scope.fence).toBeGreaterThan(first.scope.fence);
+      last = recovered;
+      await database.storage.db.insert(workspaceMembers).values({ principalId: ownerGrant!.principalId, workspaceId: ownerGrant!.workspaceId });
+    }
+    const manual = scenario === 'config unconfirmed' || scenario === 'dispatch ID lost';
+    expect(last.status).toBe(manual ? 'manual_review' : 'awaiting_rollout');
+    expect(await readOperation(operationId)).toMatchObject({ state: 'reconciling', wakeupJobId: null, observation: null });
+    expect(await newWorker().tick()).toEqual({ status: 'idle' });
+    await expect(registerReleaseTarget(database.storage, { ...target, rolloutCheckSha256: sha256('conflicting configuration') }))
+      .rejects.toMatchObject({ code: 'conflict' });
+    expect((await database.admin.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(observe).toHaveBeenCalledTimes(scenario === 'registry response lost' ? 1 : 0);
+    expect(configureImage).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledTimes(scenario === 'config unconfirmed' ? 0 : 1);
+    expect(observeUpdate).toHaveBeenCalledTimes(manual ? 0 : scenario === 'dispatch observation expired' ? 2 : 1);
+    const steps = await database.storage.db.select().from(formalReleaseSteps).where(eq(formalReleaseSteps.operationId, operationId));
+    expect(steps.find(step => step.kind === 'komodo_config')).toMatchObject({ preparedFence: first.scope.fence,
+      state: scenario === 'config unconfirmed' ? 'prepared' : 'confirmed' });
+    if (!manual) {
+      expect(steps.find(step => step.kind === 'komodo_dispatch')).toMatchObject({ state: 'confirmed', externalUpdateId: update.updateId,
+        settledFence: last.scope.fence, proof: { ...update, status: 'Complete', success: true } });
+    }
+    const en = await taskService.events(identity, task.id, 50, 'en');
+    const zh = await taskService.events(identity, task.id, 50, 'zh-CN');
+    expect(en.filter(event => event.type === 'task.release_komodo_config_recheck_started'))
+      .toHaveLength(scenario === 'config unconfirmed' ? 3 : scenario === 'config response lost' ? 1 : 0);
+    expect(en.filter(event => event.type === 'task.release_komodo_dispatch_recheck_started'))
+      .toHaveLength(scenario === 'dispatch observation expired' ? 1 : 0);
+    expect(en.at(-1)?.message).toMatch(manual ? /manual review/ : /independent runtime checks/);
+    expect(zh.at(-1)?.message).toMatch(manual ? /人工核对/ : /独立核验/);
+    expect(zh.at(-1)?.state).toBe(scenario === 'dispatch observation expired' ? 'cancel_requested' : 'reconciling');
+  },
+);
+
 it('keeps verification unavailable while an audit finding has no published repair candidate', async () => {
   const { scope } = await repairReady();
   await expect(coordinator.withLease(scope, (tx, current) => prepareFormalVerificationInput(tx, current.task, scope, verificationProfile)))
