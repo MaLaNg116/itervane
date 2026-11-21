@@ -17,7 +17,7 @@ node=$(command -v node)
 case "$scenario" in
   regression) features=(--enable-repair --enable-verification) ;;
   standard-build) features=(--enable-verification --enable-standard-build --enable-standard-baseline) ;;
-  standard-oci)
+  standard-oci|protected-release)
     artifacts="$directory/artifacts"
     sudo -n install -d -m 0700 -o "$runner" -g "$runner" "$artifacts"
     features=(--enable-repair --enable-verification --enable-standard-build --enable-standard-baseline --enable-standard-oci --artifact-store "$artifacts")
@@ -155,9 +155,15 @@ pnpm exec esbuild packages/control-plane/test/native/worker-verification.ts --bu
   '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
   --outfile=.reports/p0/verification-worker.mjs
 sudo -n install -m 0444 .reports/p0/verification-worker.mjs "$shared/verification-worker.mjs"
-if [[ "$scenario" == standard-oci ]]; then
+if [[ "$scenario" == standard-oci || "$scenario" == protected-release ]]; then
   sudo -n install -d -m 0755 "$shared/release-tools"
   sudo -n install -m 0444 packages/runner/host/{materialize_oci,oci_layout,oci_artifacts,source_wire,guest_job}.py "$shared/release-tools/"
+fi
+if [[ "$scenario" == protected-release ]]; then
+  pnpm exec esbuild packages/control-plane/src/entries/release-worker.ts --bundle --platform=node --format=esm --target=node24 \
+    '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
+    --outfile=.reports/p0/qualified-release-worker.mjs
+  sudo -n install -m 0444 .reports/p0/qualified-release-worker.mjs "$shared/release-worker.mjs"
 fi
 extra=()
 report="$reports/runner-worker-inspection.json"
@@ -165,18 +171,21 @@ if [[ "$scenario" != regression ]]; then
   profile=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["buildProfileSha256"])' "$reports/kvm-build-inputs.json")
   baseline=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["baselineSha256"])' "$reports/kvm-build-inputs.json")
   extra=("$scenario" "$profile" "$baseline")
-  if [[ "$scenario" == standard-oci ]]; then
+  if [[ "$scenario" == standard-oci || "$scenario" == protected-release ]]; then
     oci=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ociInputsSha256"])' "$reports/kvm-oci-inputs.json")
     extra+=("$oci")
   fi
   report="$reports/runner-worker-build.json"
+fi
+if [[ "$scenario" == protected-release ]]; then
+  report="$reports/runner-protected-release.json"
 fi
 pnpm exec tsx packages/control-plane/test/native/worker-inspection.ts "$shared/worker.mjs" "$sock" "$(id -u "$runner")" "$digest" "$stage" \
   "$shared/repair-worker.mjs" "$shared/verification-worker.mjs" "${extra[@]}" \
   > "$report"
 assert_empty
 
-if [[ "$scenario" == standard-oci ]]; then
+if [[ "$scenario" == standard-oci || "$scenario" == protected-release ]]; then
   sudo -n install -m 0444 fixtures/runner/verify-stored-oci.py "$shared/verify-stored-oci.py"
   check_archive() {
     local case_path=$1 output=$2 archive_sha archive_bytes expected_manifest archive measured_manifest
@@ -205,6 +214,12 @@ PY
     printf '{"archiveSha256":"%s","bytes":%s,"manifestDigest":"%s","workspaceAndStagingEmpty":true}\n' \
       "$archive_sha" "$archive_bytes" "$measured_manifest" > "$output"
   }
+  if [[ "$scenario" == protected-release ]]; then
+    check_archive retry.after "$reports/runner-oci-artifact.json"
+    test "$(sudo -n -u "$runner" find "$artifacts" -maxdepth 1 -type f -name '*.oci.tar' -printf '.' | wc -c)" -eq 1
+    test -z "$(sudo -n -u "$runner" find "$artifacts" -maxdepth 1 -name '.pending-*' -print -quit)"
+    exit 0
+  fi
   check_archive built "$reports/runner-oci-artifact.json"
   check_archive retry.after "$reports/runner-retry-oci-artifact.json"
   expected_count=$(/usr/bin/python3 - "$reports/runner-oci-artifact.json" "$reports/runner-retry-oci-artifact.json" <<'PY'
