@@ -135,7 +135,7 @@ export const formalRepairResultSchema = z.discriminatedUnion('status', [
   z.strictObject({
     ...formalRepairResultFields, status: z.literal('requires_human'),
     reason: z.enum([
-      'repair_reconciling', 'repair_unavailable', 'manual_review', 'deadline', 'turn_budget', 'tool_budget', 'token_budget',
+      'repair_reconciling', 'repair_unavailable', 'repair_no_progress', 'manual_review', 'deadline', 'turn_budget', 'tool_budget', 'token_budget',
       'context_budget', 'no_progress', 'provider_error', 'invalid_receipt', 'interrupted_action', 'incompatible_checkpoint',
     ]),
     candidate: z.null(),

@@ -1,4 +1,5 @@
 import { Annotation, END, START, StateGraph, type BaseCheckpointSaver } from '@langchain/langgraph';
+import type { FormalRepairRetryContext } from '@itervane/contracts';
 import type { ConversationEntry, ModelAdapter } from '@itervane/model';
 import {
   agentSpecSchema, auditScannerSchema, checkKinds, sha256, type AgentSpec, type AgentEvidence, type AgentOrigin,
@@ -24,7 +25,8 @@ export interface AgentHost {
 export type AgentFixtureHost = AgentHost;
 type HarnessOptions = { model: ModelAdapter; checkpointer: BaseCheckpointSaver; host: AgentHost };
 type FormalAuditProfile = { origin: 'formal_audit'; inputSha256: string; providerSha256: string; ruleIds: readonly string[] };
-type FormalRepairProfile = { origin: 'formal_repair'; inputSha256: string; providerSha256: string; findings: readonly RepairFindingSummary[] };
+type FormalRepairProfile = { origin: 'formal_repair'; inputSha256: string; providerSha256: string; findings: readonly RepairFindingSummary[];
+  previousVerification?: FormalRepairRetryContext };
 type FormalVerificationProfile = {
   origin: 'formal_verification'; inputSha256: string; providerSha256: string;
   sectionSha256: Readonly<Record<VerificationSection, string>>;
@@ -96,6 +98,7 @@ function conversation(spec: AgentSpec, state: AgentState, entries: AgentEvidence
       findings: profile.origin === 'formal_repair' ? profile.findings
         : state.audit?.findings.map(({ id, ruleId, severity, certainty }) => ({ id, ruleId, severity, certainty })) ?? [],
       previousChecks: latestVerification?.checks,
+      previousVerification: profile.origin === 'formal_repair' ? profile.previousVerification : undefined,
     },
     evidenceIndex: entries.map(({ id, data }) => ({
       id, kind: data.kind, check: data.kind === 'check' ? data.result.check : undefined,
