@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage } from 'node:http';
 import { agentText, type AgentEvidence } from '@itervane/agent';
 import { formalRepairRetryContextSchema } from '@itervane/contracts';
 import { verificationFixtureCall } from '../../../verification/src/agent/verification-fixture.js';
+import { npmReleaseApproval } from '../../../verification/src/native/npm-release-fixture.js';
 
 export const auditFixtureKey = 'itervane-native-fixture';
 export const auditFixtureModel = 'itervane-native-audit';
@@ -62,7 +63,23 @@ function selectRetryRepair(observations: AgentEvidence[], handoff: Awaited<Retur
   }] } };
 }
 
-export async function auditProtocolFixture(options: { repairRetry?: boolean } = {}) {
+function selectDependencyRepair(observations: AgentEvidence[], handoff: Awaited<ReturnType<typeof auditContext>>['handoff']) {
+  const candidate = observations.find(item => item.data.kind === 'repair_candidate');
+  if (candidate) return { name: 'finish_role', input: { evidenceId: candidate.id, summary: '已提交成对依赖修复并等待复验。' } };
+  const findings = handoff?.findings;
+  const finding = findings?.find(item => item.scanner === 'trivy' && item.ruleId === npmReleaseApproval.advisoryId);
+  if (!finding || findings?.length !== 1) throw new Error('npm_release_finding');
+  const observed = observations.find(item => item.data.kind === 'repair_targets');
+  if (observed?.data.kind !== 'repair_targets') return { name: 'read_repair_targets', input: { findingIds: [finding.id] } };
+  const { targets } = observed.data.observation;
+  if (targets.length !== 2 || targets.some(target => target.findingId !== finding.id ||
+      target.npm?.name !== npmReleaseApproval.name || target.npm.fixedVersion !== npmReleaseApproval.fixedVersion)) {
+    throw new Error('npm_release_targets');
+  }
+  return { name: 'apply_repair_patch', input: { observationId: observed.id, targets: targets.map((_, targetIndex) => ({ targetIndex })) } };
+}
+
+export async function auditProtocolFixture(options: { repairRetry?: boolean; dependencyRepair?: boolean } = {}) {
   let failAfterObservation = false;
   const calls: string[] = [];
   const server = createServer(async (request, response) => {
@@ -79,6 +96,7 @@ export async function auditProtocolFixture(options: { repairRetry?: boolean } = 
       }
       const locale = goal === agentText('zh-CN').formalVerification.goal ? 'zh-CN' : 'en';
       const selected = role === 'verify' ? verificationFixtureCall(observations, locale)
+        : role === 'repair' && options.dependencyRepair ? selectDependencyRepair(observations, handoff)
         : role === 'repair' && options.repairRetry ? selectRetryRepair(observations, handoff) : selectTool(observations);
       calls.push(selected.name);
       response.end(JSON.stringify({
