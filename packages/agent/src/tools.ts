@@ -2,11 +2,13 @@ import type { Locale } from '@itervane/contracts';
 import type { ToolDefinition } from '@itervane/model';
 import { z } from 'zod';
 import {
-  auditScannerSchema, checkKindSchema, completionSchemas, contextSectionSchema, formalReceiptSchema, formalRepairReceiptSchema, keySchema,
+  auditScannerSchema, checkKindSchema, completionSchemas, contextSectionSchema, formalReceiptSchema, formalRepairReceiptSchema,
+  formalVerificationReceiptSchema, keySchema,
   receiptSchema, sha256, templateIdsSchema, type AgentEvidence, type AgentOrigin, type AuditReport, type Candidate, type DeliveryRole,
 } from './contracts.js';
 import { agentText } from './messages.js';
 import { editableRepairTarget, finishRepairInputSchema, repairToolInputs, repairToolNames } from './repair-contracts.js';
+import { finishVerificationInputSchema, pendingVerificationSections, verificationSectionSchema } from './verification-contracts.js';
 
 export const emptyArguments = z.object({}).strict();
 const inputs = {
@@ -17,14 +19,16 @@ const inputs = {
   draft_repair: z.object({ templateIds: templateIdsSchema }).strict(),
   read_candidate: emptyArguments,
   check_candidate: z.object({ check: checkKindSchema }).strict(),
+  read_verification: z.strictObject({ section: verificationSectionSchema }),
   ...repairToolInputs,
 };
-const names = ['read_context', 'read_rule', 'read_findings', 'read_scan', 'draft_repair', 'read_candidate', 'check_candidate', ...repairToolNames] as const;
+const names = ['read_context', 'read_rule', 'read_findings', 'read_scan', 'draft_repair', 'read_candidate', 'check_candidate',
+  'read_verification', ...repairToolNames] as const;
 export type AgentToolName = typeof names[number];
 const roles: Record<AgentToolName, readonly DeliveryRole[]> = {
   read_context: ['audit', 'repair'], read_rule: ['audit', 'repair'], read_findings: ['audit'], read_scan: [],
   draft_repair: ['repair'], read_candidate: ['verify'], check_candidate: ['verify'],
-  read_repair_targets: [], apply_repair_template: [], apply_repair_patch: [],
+  read_repair_targets: [], apply_repair_template: [], apply_repair_patch: [], read_verification: [],
 };
 export const plannedToolSchema = z.discriminatedUnion('name', [
   z.object({ name: z.literal('read_context'), args: inputs.read_context }).strict(),
@@ -34,6 +38,7 @@ export const plannedToolSchema = z.discriminatedUnion('name', [
   z.object({ name: z.literal('draft_repair'), args: inputs.draft_repair }).strict(),
   z.object({ name: z.literal('read_candidate'), args: inputs.read_candidate }).strict(),
   z.object({ name: z.literal('check_candidate'), args: inputs.check_candidate }).strict(),
+  z.strictObject({ name: z.literal('read_verification'), args: inputs.read_verification }),
   z.strictObject({ name: z.literal('read_repair_targets'), args: inputs.read_repair_targets }),
   z.strictObject({ name: z.literal('apply_repair_template'), args: inputs.apply_repair_template }),
   z.strictObject({ name: z.literal('apply_repair_patch'), args: inputs.apply_repair_patch }),
@@ -42,6 +47,7 @@ export type PlannedTool = z.infer<typeof plannedToolSchema>;
 export function canCall(role: DeliveryRole, name: AgentToolName, origin: AgentOrigin) {
   if (origin === 'formal_audit') return role === 'audit' && (name === 'read_scan' || name === 'read_rule');
   if (origin === 'formal_repair') return role === 'repair' && repairToolNames.some(tool => tool === name);
+  if (origin === 'formal_verification') return role === 'verify' && name === 'read_verification';
   return roles[name].includes(role);
 }
 
@@ -64,6 +70,7 @@ export function hasObservation(evidence: readonly AgentEvidence[], call: Planned
       case 'read_scan': return data.kind === 'scan' && data.scanner === call.args.scanner;
       case 'read_candidate': return data.kind === 'candidate';
       case 'check_candidate': return data.kind === 'check' && data.result.check === call.args.check;
+      case 'read_verification': return data.kind === 'verification_section' && data.section === call.args.section;
       case 'draft_repair': return data.kind === 'candidate' && data.candidate.templateIds.length === call.args.templateIds.length
         && call.args.templateIds.every(id => data.candidate.templateIds.includes(id));
       case 'read_repair_targets': case 'apply_repair_template': case 'apply_repair_patch':
@@ -83,6 +90,15 @@ function formalCompletionSchema(evidence: readonly AgentEvidence[], hypothesisGu
   });
 }
 
+function verificationCompletionInputs(evidence: readonly AgentEvidence[]) {
+  const ids = evidence.map(item => item.id);
+  const schema = finishVerificationInputSchema;
+  return schema.extend({
+    evidenceIds: z.array(z.enum(ids)).length(ids.length),
+    followUps: z.array(schema.shape.followUps.element.extend({ evidenceId: z.enum(ids) })).max(4),
+  });
+}
+
 export function toolDefinitions(locale: Locale, role: DeliveryRole, evidence: readonly AgentEvidence[],
   origin: AgentOrigin, ruleIds: readonly string[] = [], repairFindingIds: readonly string[] = []): ToolDefinition[] {
   const messages = agentText(locale);
@@ -92,6 +108,7 @@ export function toolDefinitions(locale: Locale, role: DeliveryRole, evidence: re
   const checks = checkKindSchema.options.filter(check => !hasObservation(evidence, { name: 'check_candidate', args: { check } }));
   const scanners = auditScannerSchema.options.filter(scanner => !hasObservation(evidence, { name: 'read_scan', args: { scanner } }));
   const rules = ruleIds.filter(ruleId => !hasObservation(evidence, { name: 'read_rule', args: { ruleId } }));
+  const pendingVerification = origin === 'formal_verification' ? pendingVerificationSections(evidence) : [];
   const observations = evidence.flatMap(({ id, data }) => data.kind === 'repair_targets' ? [{ id, targets: data.observation.targets }] : []);
   const candidates = evidence.flatMap(({ id, data }) => data.kind === 'repair_candidate' ? [id] : []);
   const remaining = repairFindingIds.filter(id => !observations.some(item => item.targets.some(target => target.findingId === id)));
@@ -105,6 +122,7 @@ export function toolDefinitions(locale: Locale, role: DeliveryRole, evidence: re
     read_scan: scanners.length ? z.strictObject({ scanner: z.enum(scanners) }) : null,
     read_candidate: hasObservation(evidence, { name: 'read_candidate', args: {} }) ? null : inputs.read_candidate,
     check_candidate: checks.length ? z.object({ check: z.enum(checks) }).strict() : null,
+    read_verification: pendingVerification.length ? z.strictObject({ section: z.enum(pendingVerification) }) : null,
     read_repair_targets: remaining.length && !candidates.length ? inputs.read_repair_targets.extend({
       findingIds: z.array(z.enum(remaining)).min(1).max(4),
     }) : null,
@@ -115,26 +133,38 @@ export function toolDefinitions(locale: Locale, role: DeliveryRole, evidence: re
     const schema = availableInputs[name];
     return canCall(role, name, origin) && schema ? [{ name, description: text[name], inputSchema: z.toJSONSchema(schema, { io: 'input' }) }] : [];
   });
-  const finish = formal
-    ? (role === 'audit' && scanners.length === 0 ? formalCompletionSchema(evidence, messages.formal.hypotheses) : null)
-    : origin === 'formal_repair'
-      ? candidates.length ? finishRepairInputSchema.extend({ evidenceId: z.enum(candidates) }) : null
-      : completionSchemas[role];
+  let finish: z.ZodType | null;
+  let finishDescription: string = text.finish_role;
+  if (formal) {
+    finish = role === 'audit' && scanners.length === 0 ? formalCompletionSchema(evidence, messages.formal.hypotheses) : null;
+    finishDescription = messages.formal.finish;
+  } else if (origin === 'formal_repair') {
+    finish = candidates.length ? finishRepairInputSchema.extend({ evidenceId: z.enum(candidates) }) : null;
+    finishDescription = messages.formalRepair.finish;
+  } else if (origin === 'formal_verification') {
+    finish = role === 'verify' && evidence.length >= 3 && pendingVerification.length === 0 ? verificationCompletionInputs(evidence) : null;
+    finishDescription = messages.formalVerification.finish;
+  } else finish = completionSchemas[role];
   return [
     ...available,
-    ...(finish ? [{ name: 'finish_role', description: formal ? messages.formal.finish
-      : origin === 'formal_repair' ? messages.formalRepair.finish : text.finish_role,
+    ...(finish ? [{ name: 'finish_role', description: finishDescription,
       inputSchema: z.toJSONSchema(finish, { io: 'input' }) }] : []),
     { name: 'request_human', description: text.request_human, inputSchema: z.toJSONSchema(emptyArguments, { io: 'input' }) },
   ];
 }
 
+const receipts = {
+  trusted_fixture: receiptSchema,
+  formal_audit: formalReceiptSchema,
+  formal_repair: formalRepairReceiptSchema,
+  formal_verification: formalVerificationReceiptSchema,
+};
+
 export function acceptReceipt(raw: unknown, expected: {
   origin: AgentOrigin; bindingSha256: string; snapshotSha256: string; call: PlannedTool; audit: AuditReport | null; candidate: Candidate | null;
   evidence?: readonly AgentEvidence[];
 }): AgentEvidence | undefined {
-  const schema = expected.origin === 'formal_audit' ? formalReceiptSchema : expected.origin === 'formal_repair' ? formalRepairReceiptSchema : receiptSchema;
-  const result = schema.safeParse(raw);
+  const result = receipts[expected.origin].safeParse(raw);
   if (!result.success) return;
   const receipt = result.data;
   if (receipt.bindingSha256 !== expected.bindingSha256 || receipt.snapshotSha256 !== expected.snapshotSha256) return;
@@ -155,6 +185,7 @@ export function acceptReceipt(raw: unknown, expected: {
     }
     case 'read_candidate': if (data.kind !== 'candidate' || !candidate || JSON.stringify(data.candidate) !== JSON.stringify(candidate)) return; break;
     case 'check_candidate': if (data.kind !== 'check' || data.result.check !== call.args.check) return; break;
+    case 'read_verification': if (data.kind !== 'verification_section' || data.section !== call.args.section) return; break;
     case 'read_repair_targets': {
       if (data.kind === 'repair_failure' && data.action === call.name && data.actionSha256 === repairActionSha256(call)) break;
       if (data.kind !== 'repair_targets' || data.actionSha256 !== repairActionSha256(call)
