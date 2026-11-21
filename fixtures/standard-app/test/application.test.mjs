@@ -3,6 +3,7 @@ import { once } from 'node:events';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { checkStandardWebApp } from '../../runner/standard-web-baseline.mjs';
 import { createApp } from '../server/app.mjs';
 
 async function withServer(options, run) {
@@ -58,5 +59,26 @@ test('built React page and compiled assets are served by the same Express applic
     const script = /src="(\/assets\/[^\"]+\.js)"/.exec(html)?.[1];
     assert.ok(script);
     assert.equal((await fetch(`${base}${script}`)).status, 200);
+  });
+});
+
+test('the protected baseline observes the real health, version, data, page and asset', async () => {
+  const expectedVersion = 'protected-baseline';
+  await withServer({ version: expectedVersion }, async base => {
+    const report = await checkStandardWebApp({ port: Number(new URL(base).port), expectedVersion });
+    assert.equal(report.status, 'passed');
+    assert.deepEqual(report.checks.map(({ id, status }) => [id, status]), [
+      ['health', 'passed'], ['version', 'passed'], ['synthetic_data', 'passed'], ['page', 'passed'], ['compiled_asset', 'passed'],
+    ]);
+  });
+});
+
+test('the protected baseline blocks a health regression even when the remaining routes respond', async () => {
+  const expectedVersion = 'regression-control';
+  await withServer({ mode: 'unhealthy', version: expectedVersion }, async base => {
+    const report = await checkStandardWebApp({ port: Number(new URL(base).port), expectedVersion });
+    assert.equal(report.status, 'failed');
+    assert.deepEqual(report.checks[0], { id: 'health', status: 'failed', code: 'unexpected_status', statusCode: 503 });
+    assert.ok(report.checks.slice(1).every(result => result.status === 'passed'));
   });
 });
