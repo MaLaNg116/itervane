@@ -116,6 +116,7 @@ export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificatio
     baseSnapshotSha256: inspection.snapshotSha256, targetManifestSha256: subject.manifestSha256,
     runnerImageSha256: profile.runnerImageSha256, scannerInputsSha256: profile.scannerInputsSha256,
     buildProfileSha256: profile.buildProfileSha256,
+    runStandardBaseline: profile.runStandardBaseline,
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
   };
   if (Object.entries(bindings).some(([key, value]) => scope[key as keyof typeof bindings] !== value)) {
@@ -134,6 +135,13 @@ export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificatio
       && (build.runId !== receipt.domainId || build.verificationInputSha256 !== scope.verificationInputSha256
         || build.subjectManifestSha256 !== subject.manifestSha256 || build.baselineSha256 !== profile.baselineSha256))) {
     throw new Error('runner_standard_build_binding');
+  }
+  const baseline = build?.status === 'built' ? build.baseline : undefined;
+  if (receipt.scope.runStandardBaseline !== scope.runStandardBaseline
+      || Boolean(baseline) !== Boolean(scope.runStandardBaseline && build?.status === 'built')
+      || (baseline && (baseline.baselineSha256 !== profile.baselineSha256
+        || build?.status !== 'built' || baseline.distSha256 !== build.dist.sha256))) {
+    throw new Error('runner_standard_baseline_binding');
   }
   const target = snapshot.target;
   if (subject.kind === 'repair'
@@ -161,6 +169,7 @@ export function prepareQualifiedVerificationRequest(coordinates: VerificationCoo
     verificationInputSha256: command.inputSha256, baseSnapshotSha256: inspection.snapshotSha256,
     targetManifestSha256: subject.manifestSha256, runnerImageSha256: profile.runnerImageSha256, scannerInputsSha256: profile.scannerInputsSha256,
     ...(profile.buildProfileSha256 ? { buildProfileSha256: profile.buildProfileSha256 } : {}),
+    ...(profile.runStandardBaseline ? { runStandardBaseline: profile.runStandardBaseline } : {}),
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
   });
 }

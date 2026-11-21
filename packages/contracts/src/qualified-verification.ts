@@ -19,6 +19,7 @@ const scope = qualifiedInspectionScopeSchema.omit({ planSha256: true }).extend({
   baseSnapshotSha256: sha256Schema, targetManifestSha256: sha256Schema,
   runnerImageSha256: sha256Schema, scannerInputsSha256: sha256Schema,
   buildProfileSha256: sha256Schema.optional(),
+  runStandardBaseline: z.literal(true).optional(),
   commandSha256: sha256Schema, commandBytes: z.int().positive().max(verificationCommandByteLimit),
 });
 export const qualifiedVerificationRequestSchema = scope.extend({ origin: z.string().min(1).max(768) });

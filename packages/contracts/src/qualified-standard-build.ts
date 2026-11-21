@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { sha256Schema } from './inspection.js';
+import { qualifiedStandardBaselineProofSchema } from './qualified-standard-baseline.js';
 
 export const standardBuildProfileSchema = z.strictObject({
   version: z.literal(1), platform: z.literal('linux/amd64'),
@@ -21,6 +22,7 @@ export const qualifiedStandardBuildProofSchema = z.discriminatedUnion('status', 
     dist: z.strictObject({
       sha256: sha256Schema, files: z.int().min(1).max(1024), bytes: z.int().min(1).max(64 * 1024 * 1024),
     }),
+    baseline: qualifiedStandardBaselineProofSchema.optional(),
   }),
   binding.extend({
     status: z.literal('blocked'),
