@@ -53,9 +53,11 @@ it('advertises a fixed canonical MCP resource and rejects wrong audience, missin
   const bearer = await token();
   expect((await fetch(`${address}/v1/me`, { headers: { authorization: `Bearer ${bearer}` } })).status).toBe(401);
   expect((await fetch(`${address}/mcp`, { headers: { authorization: `Bearer ${await token('')}` } })).status).toBe(403);
-  expect((await api.inject({ method: 'POST', url: '/mcp', headers: { authorization: `Bearer ${await token('itervane:write')}` },
-    payload: rpc('get_verification', { taskId: randomUUID() }),
-  })).statusCode).toBe(403);
+  for (const tool of ['get_verification', 'get_release_candidate']) {
+    expect((await api.inject({ method: 'POST', url: '/mcp', headers: { authorization: `Bearer ${await token('itervane:write')}` },
+      payload: rpc(tool, { taskId: randomUUID() }),
+    })).statusCode).toBe(403);
+  }
   for (const extra of [{ origin: 'https://untrusted.invalid' }, { origin: 'null' }, { host: 'untrusted.invalid' }]) {
     expect((await api.inject({ method: 'POST', url: '/mcp', headers: { ...extra, authorization: `Bearer ${bearer}` }, payload: rpc('start_audit', input) })).statusCode).toBe(403);
   }
@@ -65,14 +67,18 @@ it('advertises a fixed canonical MCP resource and rejects wrong audience, missin
 it('serves localized SDK tool discovery and real task start/query/events/cancel across reconnects', async () => {
   const bearer = await token(); const first = await connect(bearer, 'zh-CN');
   const catalog = await first.listTools();
-  expect(catalog.tools.map(tool => tool.name).sort()).toEqual(['cancel_task', 'get_audit', 'get_preaudit', 'get_repair', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'get_verification', 'list_preaudits', 'list_rules', 'preaudit_text', 'resume_task', 'start_audit']);
+  expect(catalog.tools.map(tool => tool.name).sort()).toEqual(['cancel_task', 'get_audit', 'get_preaudit', 'get_release_candidate', 'get_repair', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'get_verification', 'list_preaudits', 'list_rules', 'preaudit_text', 'resume_task', 'start_audit']);
   expect(catalog.tools.find(tool => tool.name === 'start_audit')?.description).toBe(translate('zh-CN', 'mcp.start'));
   expect(catalog.tools.find(tool => tool.name === 'get_verification')).toMatchObject({ description: translate('zh-CN', 'mcp.verification'), annotations: { readOnlyHint: true } });
+  expect(catalog.tools.find(tool => tool.name === 'get_release_candidate')).toMatchObject({ description: translate('zh-CN', 'mcp.release_candidate'), annotations: { readOnlyHint: true } });
   const accepted = admissionDtoSchema.parse((await first.callTool({ name: 'start_audit', arguments: input })).structuredContent);
   expect(accepted.task).toMatchObject({ locale: 'zh-CN', state: 'queued' });
   await first.close(); const second = await connect(bearer);
   const queried = taskDtoSchema.parse((await second.callTool({ name: 'get_task', arguments: { taskId: accepted.task.id } })).structuredContent);
   expect(queried).toEqual(accepted.task);
+  const noCandidate = await second.callTool({ name: 'get_release_candidate', arguments: { taskId: accepted.task.id } });
+  expect(noCandidate.isError).toBe(true);
+  expect(apiErrorSchema.parse(noCandidate.structuredContent).error.code).toBe('not_found');
   const inspection = sourceInspectionDtoSchema.parse((await second.callTool({ name: 'get_source_inspection', arguments: { taskId: accepted.task.id } })).structuredContent);
   expect(inspection).toMatchObject({ status: 'not_prepared', plan: null, sourceFetched: false, snapshotVerified: false, scanCompleted: false });
   expect((await api.inject({ url: `/v1/tasks/${accepted.task.id}/source-inspection`, headers })).json()).toEqual(inspection);
@@ -129,7 +135,7 @@ it('does not persist stale or executable preaudit requests and does not echo inv
 
 it('enforces read-only scopes even for direct unadvertised write calls and localizes validation errors', async () => {
   const readToken = await token('itervane:read'); const reader = await connect(readToken, 'zh-CN');
-  expect((await reader.listTools()).tools.map(tool => tool.name).sort()).toEqual(['get_audit', 'get_preaudit', 'get_repair', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'get_verification', 'list_preaudits', 'list_rules']);
+  expect((await reader.listTools()).tools.map(tool => tool.name).sort()).toEqual(['get_audit', 'get_preaudit', 'get_release_candidate', 'get_repair', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'get_verification', 'list_preaudits', 'list_rules']);
   const write = await fetch(`${address}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${readToken}`,
     'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify(rpc('start_audit', input)) });
   expect(write.status).toBe(403); expect(write.headers.get('www-authenticate')).toContain('scope="itervane:write"');

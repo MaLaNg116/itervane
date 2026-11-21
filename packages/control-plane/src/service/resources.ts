@@ -8,7 +8,7 @@ import {
 import type { VerifiedIdentity } from '../auth/identity.js';
 import type { Database } from '../persistence/database.js';
 import { applications, environments, principals, projectMembers, projects, repositories, workspaceMembers, workspaces } from '../persistence/schema.js';
-import { requireActor, requireProject } from './access.js';
+import { requireActor, requireProject, requireProjectAccess } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 
 const projectView = (row: typeof projects.$inferSelect) => projectDtoSchema.parse({ ...row, createdAt: row.createdAt.toISOString() });
@@ -61,10 +61,7 @@ export class ResourceService {
   async projectAccess(identity: VerifiedIdentity, projectId: string) {
     parseInput(idSchema, projectId);
     return this.database.db.transaction(async tx => {
-      const actor = await requireActor(tx, identity); const project = await requireProject(tx, actor, projectId);
-      const [member] = await tx.select().from(projectMembers)
-        .where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.principalId, actor.principalId)));
-      const role = actor.workspaceId === project.workspaceId ? 'owner' : member!.role;
+      const { role } = await requireProjectAccess(tx, await requireActor(tx, identity), projectId);
       return projectAccessDtoSchema.parse({ projectId, role, canWrite: role !== 'viewer' });
     });
   }

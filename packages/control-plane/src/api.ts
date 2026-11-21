@@ -192,6 +192,10 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
     const { taskId } = parseInput(taskParam, request.params);
     return verification.get(identity(request), taskId, request.locale);
   });
+  app.get('/v1/tasks/:taskId/release', async request => {
+    const { taskId } = parseInput(taskParam, request.params);
+    return release.getView(identity(request), taskId, request.locale);
+  });
   app.get('/v1/tasks/:taskId/release-candidate', async request => {
     const { taskId } = parseInput(taskParam, request.params);
     return release.get(identity(request), taskId, request.locale);

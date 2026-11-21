@@ -14,6 +14,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, Di
 import { TaskAudit } from './task-audit.js';
 import { TaskRepair } from './task-repair.js';
 import { TaskVerification } from './task-verification.js';
+import { TaskRelease } from './task-release.js';
 
 const controlText = {
   cancel: { title: 'cancelTitle', help: 'cancelHelp', confirm: 'confirmCancel' },
@@ -92,6 +93,7 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
     <TaskRepair taskId={task.id} canWrite={canWrite} disabled={control.isPending}
       onResume={() => setConfirmation({ action: 'repair', expectedVersion: task.version })} />
     <TaskVerification taskId={task.id} runId={task.runId} revision={task.version} />
+    <TaskRelease task={task} />
     {canWrite && <Dialog open={confirmation !== null} disablePointerDismissal onOpenChange={(open, event) => {
       if (open) return;
       if (inFlight.current) event.cancel();
