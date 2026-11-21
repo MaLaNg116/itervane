@@ -56,7 +56,7 @@ const verificationProfile = { id: 'standard-web-fixture', baselineSha256: sha256
 const standardVerificationProfile: StandardVerificationProfile = { ...verificationProfile, buildProfileSha256: sha256('protected build profile'),
   runStandardBaseline: true, ociInputsSha256: sha256('frozen OCI inputs'), retainStandardImage: true };
 const clearRepairHandoff = () => database.admin.query(
-  'TRUNCATE itervane.formal_verification_results, itervane.formal_verification_runtime, itervane.formal_rescan_attempts, itervane.formal_verification_inputs, '
+  'TRUNCATE itervane.formal_repair_retries, itervane.formal_verification_results, itervane.formal_verification_runtime, itervane.formal_rescan_attempts, itervane.formal_verification_inputs, '
   + 'itervane.formal_repair_results, itervane.formal_repair_attempts, '
   + 'itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs',
 );
