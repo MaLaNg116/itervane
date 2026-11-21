@@ -11,7 +11,9 @@ export async function enqueueReleaseOperation(tx: Transaction, database: Databas
   candidateId: string; environmentId: string; approvalVersion: number;
 }) {
   const id = randomUUID();
-  await tx.insert(releaseOperations).values({ id, ...scope });
+  await tx.insert(releaseOperations).values({
+    id, ...scope, wakeupJobId: queue === formalReleaseQueue ? id : null,
+  });
   const jobId = await database.boss.send(queue, releaseWakeupSchema.parse({ operationId: id }), {
     id, db: fromDrizzle(tx, sql),
   });
@@ -20,9 +22,11 @@ export async function enqueueReleaseOperation(tx: Transaction, database: Databas
 }
 
 export async function blockQueuedRelease(tx: Transaction, database: Database, operationId: string, now: Date) {
-  const [blocked] = await tx.update(releaseOperations).set({ state: 'blocked', updatedAt: now })
-    .where(and(eq(releaseOperations.id, operationId), eq(releaseOperations.state, 'queued'))).returning({ id: releaseOperations.id });
-  if (!blocked) return false;
-  await database.boss.cancel(formalReleaseQueue, blocked.id, { db: fromDrizzle(tx, sql) });
+  const [queued] = await tx.select({ wakeupJobId: releaseOperations.wakeupJobId }).from(releaseOperations)
+    .where(and(eq(releaseOperations.id, operationId), eq(releaseOperations.state, 'queued'))).for('update');
+  if (!queued?.wakeupJobId) return false;
+  await tx.update(releaseOperations).set({ state: 'blocked', wakeupJobId: null, updatedAt: now })
+    .where(eq(releaseOperations.id, operationId));
+  await database.boss.cancel(formalReleaseQueue, queued.wakeupJobId, { db: fromDrizzle(tx, sql) });
   return true;
 }
