@@ -190,6 +190,8 @@ def supervise():
     request = {**binding, "distSha256": build["dist"]["sha256"]}
     if "ociInputsSha256" in launch:
         request.update({name: launch[name] for name in ("ociInputsSha256", "scannerInputsSha256")})
+        if launch.get("retainStandardImage") is True:
+            request["retainStandardImage"] = True
     if launch != request:
         raise ValueError("runtime request binding")
     outcome = {"status": "blocked", "code": "runtime_preparation"}

@@ -21,7 +21,7 @@ from guest_job import ProtocolError, verify_workload_receipt
 from source_wire import (
     CLOSED, GUEST_ERRORS, GUEST_REPAIR_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_QUALIFIED_RECEIPT,
     MAX_REPAIR_COMMAND, MAX_REPAIR_RECEIPT, MAX_REQUEST_BYTES, MAX_TRANSFER_BYTES, MAX_VERIFICATION_COMMAND,
-    MAX_VERIFICATION_RECEIPT, PACK_TYPE, QUALIFIED_START, RECEIPT,
+    MAX_VERIFICATION_RECEIPT, MAX_OCI_ARCHIVE_BYTES, MAX_OCI_CHUNK_BYTES, PACK_TYPE, QUALIFIED_START, RECEIPT,
     REFS_TYPE, SOURCE_PORT, START, UPLOAD_TYPE, SourceWire,
 )
 
@@ -36,6 +36,7 @@ INSPECTION_RECEIPT = Path("/var/lib/itervane-inspection-output/receipt.json")
 BUILD_INPUT = Path("/var/lib/itervane-build-input")
 BUILD_RECEIPT = Path("/var/lib/itervane-build-output/receipt.json")
 RUNTIME_RECEIPT = Path("/var/lib/itervane-runtime-output/receipt.json")
+IMAGE_ARCHIVE = Path("/var/lib/itervane-image-output/image.oci.tar")
 FIXTURE_REPOSITORY_ID = "a955164f-7cf2-45c5-8a53-7cdb556db805"
 GIT_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"}
@@ -203,6 +204,8 @@ def observe_standard_baseline(build, profile, wire):
     request["distSha256"] = build["dist"]["sha256"]
     if "ociInputsSha256" in profile:
         request.update({name: profile[name] for name in ("ociInputsSha256", "scannerInputsSha256")})
+        if profile.get("retainStandardImage") is True:
+            request["retainStandardImage"] = True
     staged = BUILD_INPUT / "baseline-request.pending"
     with staged.open("xb") as output:
         output.write(json.dumps(request, separators=(",", ":")).encode("ascii"))
@@ -293,6 +296,31 @@ def inspect_source(repository, identity, commit, repository_id, mode, wire, comm
         if command_written:
             command_path.unlink()
     wire.send(receipt_frame, receipt)
+    if mode == "verification":
+        image = proof.get("build", {}).get("baseline", {}).get("image")
+        if image and image.get("status") == "scanned" and "archive" in image:
+            send_image_archive(wire, image["archive"])
+
+
+def send_image_archive(wire, archive):
+    requested = archive["bytes"]
+    if type(requested) is not int or not 0 < requested <= MAX_OCI_ARCHIVE_BYTES:
+        raise GuestFailure("scan-integrity")
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    with os.fdopen(os.open(IMAGE_ARCHIVE, flags), "rb") as contents:
+        info = os.fstat(contents.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != requested:
+            raise GuestFailure("scan-integrity")
+        remaining = requested
+        while remaining:
+            chunk = contents.read(min(remaining, MAX_OCI_CHUNK_BYTES))
+            if not chunk:
+                raise GuestFailure("scan-integrity")
+            wire.send(b"J", chunk)
+            remaining -= len(chunk)
+        if contents.read(1):
+            raise GuestFailure("scan-integrity")
+    wire.send(b"Q")
 
 
 def serve_source(wire, work):

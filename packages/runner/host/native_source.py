@@ -11,7 +11,7 @@ from native_job import JobRejected, open_channel, stream_io
 from source_gateway import RegisteredOrigin, SourceGateway, SourceRejected
 from source_wire import (
     CLOSED, GUEST_ERRORS, GUEST_REPAIR_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_QUALIFIED_RECEIPT,
-    MAX_REPAIR_COMMAND, MAX_REPAIR_RECEIPT, MAX_REQUEST_BYTES, MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT,
+    MAX_REPAIR_COMMAND, MAX_REPAIR_RECEIPT, MAX_REQUEST_BYTES, MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT, MAX_OCI_CHUNK_BYTES,
     QUALIFIED_START, RECEIPT, SOURCE_PORT, START, SourceWire,
 )
 
@@ -39,7 +39,7 @@ class SourceProbe:
     port = SOURCE_PORT
 
     def __init__(self, gateway, inspect=False, repository_id=None, repair_command=None, repair_observation=False,
-                 verification_command=None):
+                 verification_command=None, artifact_store=None):
         if repair_command is not None and (repository_id is None or not 0 < len(repair_command) <= MAX_REPAIR_COMMAND):
             raise ValueError("invalid repair command")
         if repair_observation and repair_command is None:
@@ -54,6 +54,10 @@ class SourceProbe:
         self.repair_command = repair_command
         self.repair_observation = repair_observation
         self.verification_command = verification_command
+        if artifact_store is not None and verification_command is None:
+            raise ValueError("OCI storage requires a verification command")
+        self.artifact_store = artifact_store
+        self.pending_archive = None
         self.inspection = None
         self.repair = None
         self.scan_deadline = None
@@ -117,11 +121,12 @@ class SourceProbe:
         )
         if self.verification_command is not None:
             self.phase = "verification-results"
-            self.scan_deadline = time.monotonic() + INSPECTION_SECONDS
+            self.scan_deadline = time.monotonic() + (120 if self.artifact_store else INSPECTION_SECONDS)
             wire.send(b"W", self.verification_command)
             proof = self.read_proof(wire, run_id, b"Y", MAX_VERIFICATION_RECEIPT)
             if proof.get("commandSha256") != hashlib.sha256(self.verification_command).hexdigest():
                 raise ProtocolError("invalid verification command digest")
+            self.receive_image_archive(wire, proof)
             self.inspection = proof
             return "inspection_passed"
         if self.repair_command is not None:
@@ -140,6 +145,32 @@ class SourceProbe:
         size = MAX_QUALIFIED_RECEIPT if self.repository_id is not None else MAX_INSPECTION_RECEIPT
         self.inspection = self.read_proof(wire, run_id, b"N", size)
         return "inspection_passed"
+
+    def receive_image_archive(self, wire, proof):
+        build = proof.get("build")
+        baseline = build.get("baseline") if isinstance(build, dict) else None
+        image = baseline.get("image") if isinstance(baseline, dict) else None
+        image = image if isinstance(image, dict) else {}
+        expected = self.artifact_store is not None and image.get("status") == "scanned"
+        if ("archive" in image) != expected:
+            raise ProtocolError("unexpected OCI archive declaration")
+        if not expected:
+            return
+        if baseline.get("status") != "passed" or baseline.get("appExited") is not True:
+            raise ProtocolError("OCI archive without successful runtime verification")
+        self.phase = "image-artifact"
+        descriptor = image["archive"]
+        try:
+            def chunks():
+                while True:
+                    kind, payload = self.receive(wire, {b"J": MAX_OCI_CHUNK_BYTES, b"Q": 0})
+                    if kind == b"Q":
+                        return
+                    yield payload
+
+            self.pending_archive = self.artifact_store.stage(descriptor, chunks())
+        except (OSError, ValueError) as error:
+            raise ProtocolError("invalid OCI archive transfer") from error
 
     def read_proof(self, wire, run_id, frame, size):
         _, response = self.receive(wire, {frame: size})
