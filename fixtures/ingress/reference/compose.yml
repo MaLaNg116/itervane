@@ -1,0 +1,85 @@
+services:
+  traefik:
+    image: docker.io/library/traefik:v3.7.18@sha256:9c437ac4f09ce6f4980a8544902d3475fdf70a1a7c578729581d2535dfa7d635
+    command:
+      - --entrypoints.websecure.address=:8443
+      - --entrypoints.management.address=${ITERVANE_TRAEFIK_MANAGEMENT_IP:-172.31.92.2}:8080
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --api=true
+      - --api.dashboard=false
+      - --api.insecure=false
+    ports:
+      - "${ITERVANE_INGRESS_BIND:-127.0.0.1}:${ITERVANE_INGRESS_PORT:-8443}:8443"
+    volumes:
+      - type: bind
+        source: ${ITERVANE_TRAEFIK_CONFIG_DIR:?Install the application routes}
+        target: /etc/traefik/dynamic
+        read_only: true
+      - type: bind
+        source: ${ITERVANE_INGRESS_TLS_DIR:?Install the certificate and key}
+        target: /etc/traefik/tls
+        read_only: true
+    networks:
+      management:
+        ipv4_address: ${ITERVANE_TRAEFIK_MANAGEMENT_IP:-172.31.92.2}
+        aliases: [application-ingress-management]
+      authorization:
+        ipv4_address: ${ITERVANE_TRAEFIK_AUTH_IP:-172.31.93.2}
+      application: {}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  management-gateway:
+    image: docker.io/library/traefik:v3.7.18@sha256:9c437ac4f09ce6f4980a8544902d3475fdf70a1a7c578729581d2535dfa7d635
+    command:
+      - --entrypoints.observe.address=:8080
+      - --providers.file.filename=/etc/traefik/management.yml
+    ports:
+      - "127.0.0.1:${ITERVANE_INGRESS_MANAGEMENT_PORT:-8180}:8080"
+    volumes:
+      - type: bind
+        source: ./management.yml
+        target: /etc/traefik/management.yml
+        read_only: true
+    networks:
+      management:
+        ipv4_address: ${ITERVANE_MANAGEMENT_GATEWAY_IP:-172.31.92.3}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.6@sha256:c3415e8660af553f5e18f5d90db050614c02493c0ac6260ac59442f6d9b12048
+    command: [--config=/etc/itervane/oauth2-proxy.cfg]
+    env_file: ${ITERVANE_OAUTH2_SECRETS_FILE:?Configure application OIDC credentials}
+    volumes:
+      - type: bind
+        source: ${ITERVANE_OAUTH2_CONFIG:?Install the application identity configuration}
+        target: /etc/itervane/oauth2-proxy.cfg
+        read_only: true
+    networks:
+      authorization:
+        ipv4_address: ${ITERVANE_OAUTH2_AUTH_IP:-172.31.93.3}
+        aliases: [application-access]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+networks:
+  management:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${ITERVANE_INGRESS_MANAGEMENT_SUBNET:-172.31.92.0/28}
+  authorization:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${ITERVANE_INGRESS_AUTH_SUBNET:-172.31.93.0/28}
+  application:
+    external: true
+    name: ${ITERVANE_APPLICATION_NETWORK:?Select a dedicated internal application network}

@@ -1,0 +1,11 @@
+http:
+  routers:
+    observations:
+      entryPoints: [observe]
+      rule: "Host(`127.0.0.1`) && Method(`GET`) && (PathPrefix(`/api/http/`) || PathPrefix(`/api/tcp/`))"
+      service: application-traefik
+  services:
+    application-traefik:
+      loadBalancer:
+        servers:
+          - url: http://application-ingress-management:8080
