@@ -8,4 +8,6 @@
 
 本机 TypeScript、九项真实 PostgreSQL 专项和 138 项全量集成已通过。数据库测试固定 `9718a6aabe1b9af391e87b2f2a94b3de440a35e1`，源码指纹为 `028830020f3fcde6d43c1097a356ba5b25b389dde363a710242c5a0af545e89d`。 [托管验收](https://github.com/MaLaNg116/itervane/actions/runs/44914829105)
 
+托管 KVM 四组通过，OCI 与源代码回归工件的源码指纹均与本机记录一致。真实归档再次核对第二代候选的复验、回执、补丁与镜像摘要。原生流程记录一个正式操作及决定版本 1，源任务队列没有重复唤醒，宿主暂存已清理。#41 以 `51a739beeaadc2079606a4a4d07d124739759f08` 合入 main。 [PR #41](https://github.com/MaLaNg116/itervane/pull/41)
+
 B2 添加人用门户与外部 MCP 的同源投影。C 接续制品导入、Komodo 派发和实际运行核对。

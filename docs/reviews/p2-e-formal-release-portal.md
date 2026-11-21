@@ -7,6 +7,6 @@
 3. `17f2fc2` 在任务详情展示候选指纹、目标版本、期限、镜像风险、复验证据和决定历史。任务版本、运行代次、候选指纹或可用权限变化都会清除待确认界面。确认、拒绝和撤销使用相同的键盘可操作对话框。一次网络失败后重试仍使用原来的幂等键。批准状态在后端记录后显示为已入队。证据折叠遵循减少动效设置。 [任务发布面板](https://github.com/MaLaNg116/itervane/blob/17f2fc2/packages/portal/src/pages/task-release.tsx)
 4. `d718aa1` 使用 Chrome、真实 Keycloak 登录与 PostgreSQL 项目权限验证两项浏览器流程。审批对话框核对完整指纹、取消、失效、重试、本人确认记录和撤销，另一个流程覆盖只读成员和撤权。冻结与决定响应在浏览器内使用固定契约样本。HTTP、MCP 的同源记录和正式队列由 PostgreSQL 套件验证，真实 KVM 回执与队列证据在前置批次及托管回归验证。 [浏览器场景](https://github.com/MaLaNg116/itervane/blob/d718aa1/packages/portal/test/browser/portal.spec.ts)
 
-本机 TypeScript、163 项单元与两项浏览器专项通过。首轮真实 PostgreSQL 集成的新增覆盖通过，共 137 项通过，现有 Agent 检查点续跑用例返回 `requires_human`，该用例待复核。全量复跑在固定版本 `d718aa1e5c5dd156ba42a559f73d8f4f55ca9c48` 进行。 [PR #42](https://github.com/MaLaNg116/itervane/pull/42) · [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44917062529)
+本机 TypeScript、163 项单元与两项浏览器专项通过。首轮真实 PostgreSQL 集成的新增覆盖通过，共 137 项通过，现有 Agent 检查点续跑用例返回 `requires_human`。固定 `d718aa1e5c5dd156ba42a559f73d8f4f55ca9c48` 全量复跑 138 项通过，源码指纹为 `56747ad6a4b9fc4a14d2d38b01fbde23b78cd5c651dd6be5735331539afbe472`。该次波动的原因仍待确认。 [PR #42](https://github.com/MaLaNg116/itervane/pull/42) · [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44917062529)
 
 蓝图中的外部 MCP 发布申请继续复用冻结命令。E-C 和 E-D 负责制品导入、Komodo 执行、对端核对与 P2 真实出口。
