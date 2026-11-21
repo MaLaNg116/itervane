@@ -23,15 +23,37 @@ type PendingDecision = {
   candidateId: string; action: ReleaseDecision; fingerprint: string; expectedVersion: number; idempotencyKey: string;
 };
 
-function CandidateDetails({ candidate, target }: {
-  candidate: NonNullable<FormalReleaseView['candidate']>; target: FormalReleaseView['candidateTarget'];
+function ReleaseResult({ result }: { result: NonNullable<FormalReleaseView['result']> }) {
+  const { locale } = usePortal();
+  const t = useText();
+  return <section className="space-y-2" data-testid="release-result">
+    <h3 className="text-sm font-semibold">{t('releaseResult')}</h3>
+    <div role="status" aria-atomic="true">
+      <p>{result.message}</p>
+      {(result.status === 'manual_review' || result.status === 'blocked') && result.reasonMessage &&
+        <p className="muted">{result.reasonMessage}</p>}
+    </div>
+    {result.updateId && <dl className="detail-grid">
+      <div><dt>{t('releaseNativeUpdate')}</dt><dd><code className="break-text">{result.updateId}</code></dd></div>
+      {result.status === 'verified' && <>
+        <div><dt>{t('releaseObservedImage')}</dt><dd><code className="break-text">{result.evidence.manifestDigest}</code></dd></div>
+        <div><dt>{t('releaseObservedVersion')}</dt><dd><code className="break-text">{result.evidence.version}</code></dd></div>
+        <div><dt>{t('releaseCheckedAt')}</dt><dd><time dateTime={result.evidence.checkedAt}>
+          {formatTime(result.evidence.checkedAt, locale)}</time></dd></div>
+      </>}
+    </dl>}
+  </section>;
+}
+
+function CandidateDetails({ candidate, target, result }: {
+  candidate: NonNullable<FormalReleaseView['candidate']>; target: FormalReleaseView['candidateTarget']; result: FormalReleaseView['result'];
 }) {
   const { locale } = usePortal();
   const t = useText();
   const numbers = new Intl.NumberFormat(locale);
   const { manifest } = candidate;
   return <div className="space-y-3">
-    <p role="status" aria-atomic="true">{candidate.message}</p>
+    {result ? <ReleaseResult result={result} /> : <p role="status" aria-atomic="true">{candidate.message}</p>}
     <dl className="detail-grid">
       <div><dt>{t('releaseTarget')}</dt><dd>{target ? `${target.applicationName} / ${target.environmentName}`
         : <code className="break-text">{manifest.target.environmentId}</code>}</dd></div>
@@ -103,7 +125,7 @@ export function TaskRelease({ task }: { task: Pick<TaskDto, 'id' | 'runId' | 've
   return <Panel title={t('formalRelease')} className="section-gap" data-testid="formal-release">
     {query.error ? <Failure error={query.error} locale={locale} retry={() => { void query.refetch(); }} />
       : !view ? <Loading locale={locale} /> : <div className="space-y-4">
-        {candidate ? <CandidateDetails key={candidate.id} candidate={candidate} target={view.candidateTarget} />
+        {candidate ? <CandidateDetails key={candidate.id} candidate={candidate} target={view.candidateTarget} result={view.result} />
           : <p className="muted" role="status">{t('releaseNoCandidate')}</p>}
         {targets.length > 0 && <form className="flex flex-wrap items-end gap-3" onSubmit={event => {
           event.preventDefault();
