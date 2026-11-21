@@ -6,6 +6,12 @@ export const ociArchiveByteLimit = 200 * 1024 * 1024;
 export const qualifiedImageArchiveSchema = z.strictObject({
   format: z.literal('oci-layout-tar'), sha256: sha256Schema, bytes: z.int().positive().max(ociArchiveByteLimit),
 });
+export type QualifiedImageArchive = z.infer<typeof qualifiedImageArchiveSchema>;
+
+export const qualifiedOciArchiveVerificationSchema = z.strictObject({
+  kind: z.literal('archive_verified'), version: z.literal(1), runnerImageSha256: sha256Schema, archive: qualifiedImageArchiveSchema,
+});
+export type QualifiedOciArchiveVerification = z.infer<typeof qualifiedOciArchiveVerificationSchema>;
 const imageFindingSchema = z.strictObject({
   class: z.enum(['os-pkgs', 'lang-pkgs']),
   advisory: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/),

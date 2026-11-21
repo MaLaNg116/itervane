@@ -126,3 +126,8 @@ class ArtifactStore:
                 os.unlink(pending.name, dir_fd=root)
             os.fsync(root)
         return pending.archive
+
+    def verify_retained(self, descriptor):
+        archive = Archive.parse(descriptor)
+        with self.directory() as root:
+            self.verify(root, archive.sha256 + ".oci.tar", archive)
