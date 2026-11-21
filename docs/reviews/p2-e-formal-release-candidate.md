@@ -8,4 +8,6 @@
 
 安装维护者通过 `pnpm register:release-target <目标配置 JSON>` 登记目标。配置字段以 `formalReleaseTargetSchema` 为准。默认阻断严重、高和严重度未知的镜像发现，冻结窗口 30 分钟，正式复验最多使用 24 小时。候选有效期取两个期限的较早值。 [目标契约](https://github.com/MaLaNg116/itervane/blob/64cc0c1/packages/contracts/src/release.ts)
 
-本机 TypeScript 和九项真实 PostgreSQL 专项通过，正在跑全量数据库和原生验收。本批的实际 Komodo 目标由测试声明配置代表，原生重点是当前 OCI 证据与持久化候选的匹配。E-B 继续接入本人确认、有效期和正式队列事务，E-C 按目标版本派发并核对真实 Komodo。
+本机 TypeScript、九项真实 PostgreSQL 专项和同版本的 138 项全量集成通过。数据库测试固定在 `fab7d8516c9047586f13c1b422e264a9a91618f1`，源码指纹为 `b809bb323ac89cf6da7f799f7eba33c6417bc9598f61ba2b795cbadf9c7e6b82`。 [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44913480850)
+
+托管验收使用声明式的测试目标，核对当前 OCI 证据与持久化候选。E-B 接入本人确认、有效期和正式队列事务。E-C 按目标版本派发并核对真实 Komodo。

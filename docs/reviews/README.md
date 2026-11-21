@@ -43,6 +43,7 @@
 | 037 | P2-D3-D-D1 正式复验与返修历史的双语查询 | [#37](https://github.com/MaLaNg116/itervane/pull/37)，已合入 main | [复验查询导读](p2-d3-d-verification-read.md) | TypeScript、136 项真实 PostgreSQL 与[四组原生回归](https://github.com/MaLaNg116/itervane/actions/runs/44909041398)通过 |
 | 038 | P2-D3-D-D2 任务详情展示复验与返修历史 | [#38](https://github.com/MaLaNg116/itervane/pull/38)，已合入 main | [复验门户导读](p2-d3-d-verification-portal.md) | TypeScript、本机 Chrome 专项用例及 [24 项 Linux 浏览器回归](https://github.com/MaLaNg116/itervane/actions/runs/44909983933/job/136863611546)通过 |
 | 039 | P2-E-A1 按复验回执核对已留存的 OCI 归档 | [#39](https://github.com/MaLaNg116/itervane/pull/39)，基于已合入 #38 的 main | [归档读取导读](p2-e-oci-archive-verification.md) | 67 项宿主测试、138 项 PostgreSQL 与[正式归档原生验收](https://github.com/MaLaNg116/itervane/actions/runs/44911700913/job/136868700544)通过 |
+| 040 | P2-E-A2 冻结当前复验候选与版本化发布目标 | [#40](https://github.com/MaLaNg116/itervane/pull/40)，依赖 #39 | [候选冻结导读](p2-e-formal-release-candidate.md) | TypeScript、138 项真实 PostgreSQL 通过，[托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44913480850)进行中 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
