@@ -20,7 +20,9 @@ on:
       - 'packages/verification/src/report.ts'
       - 'fixtures/runner/**'
       - 'fixtures/komodo/**'
+      - 'fixtures/ingress/**'
       - 'packages/verification/src/native/komodo*.ts'
+      - 'packages/verification/src/native/rollout-realm.ts'
       - 'fixtures/standard-app/**'
       - 'scripts/prepare-runner-inspection.ts'
       - 'scripts/prepare-runner-build-dependencies.ts'
@@ -45,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci]
+        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci, protected-release]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -62,7 +64,7 @@ jobs:
         run: |
           apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
           extras=()
-          if [[ "${{ matrix.scenario }}" == standard-oci ]]; then extras+=(skopeo); fi
+          if [[ "${{ matrix.scenario }}" == standard-oci || "${{ matrix.scenario }}" == protected-release ]]; then extras+=(skopeo); fi
           sudo -n apt-get "${apt_options[@]}" update -qq
           sudo -n apt-get "${apt_options[@]}" install -y --no-install-recommends gdisk guestfish guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils "${extras[@]}"
           dpkg-query -W gdisk guestfish guestfs-tools libvirt-daemon-system python3-libvirt qemu-system-x86 > .reports/p0/kvm-packages.txt
@@ -99,7 +101,7 @@ jobs:
           printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
       - name: Prepare the pinned OCI basis for the image trial
         id: oci
-        if: steps.capability.outputs.available == 'true' && matrix.scenario == 'standard-oci'
+        if: steps.capability.outputs.available == 'true' && (matrix.scenario == 'standard-oci' || matrix.scenario == 'protected-release')
         run: |
           payload="$RUNNER_TEMP/itervane-oci-inputs"
           bash scripts/prepare-runner-oci-inputs.sh "$payload" > .reports/p0/kvm-oci-inputs.json
@@ -115,7 +117,7 @@ jobs:
           scratch=$(mktemp -d "$RUNNER_TEMP/itervane-build.XXXXXXXX")
           payload="$scratch/itervane-build-inputs"
           args=("$payload")
-          if [[ "$BUILD_SCENARIO" == standard-oci ]]; then
+          if [[ "$BUILD_SCENARIO" == standard-oci || "$BUILD_SCENARIO" == protected-release ]]; then
             oci=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ociInputsSha256"])' .reports/p0/kvm-oci-inputs.json)
             args+=("$oci")
           fi
@@ -170,7 +172,18 @@ jobs:
           NATIVE_SCENARIO: ${{ matrix.scenario }}
         run: |
           test -s .reports/p0/kvm-inspection-inputs.json
+          if [[ "$NATIVE_SCENARIO" == protected-release ]]; then
+            export ITERVANE_NATIVE_RELEASE_PROXIES="$RUNNER_TEMP/itervane-release-proxies"
+            bash fixtures/ingress/prepare-proxies.sh "$ITERVANE_NATIVE_RELEASE_PROXIES"
+          fi
           bash fixtures/runner/run-native-session.sh "$PROBE_DIRECTORY" "$NATIVE_SCENARIO"
+      - name: Require the verified protected release on the dedicated scenario
+        if: matrix.scenario == 'protected-release'
+        env:
+          KVM_AVAILABLE: ${{ steps.capability.outputs.available }}
+        run: |
+          test "$KVM_AVAILABLE" = true
+          jq -e '.release.healthStatus == 200 and .release.httpMcpAgreement == true' .reports/p0/runner-protected-release.json >/dev/null
       - name: Retain independent KVM evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -188,6 +201,7 @@ jobs:
             .reports/p0/runner-qualified-*.json
             .reports/p0/runner-worker-inspection.json
             .reports/p0/runner-worker-build.json
+            .reports/p0/runner-protected-release.json
             .reports/p0/runner-oci-artifact.json
             .reports/p0/runner-retry-oci-artifact.json
           if-no-files-found: error

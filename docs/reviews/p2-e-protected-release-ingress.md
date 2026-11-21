@@ -8,4 +8,4 @@
 
 本机 TypeScript 与 202 项单元测试通过。托管入口在 `2003be9` 通过七项既有检查与五项实际网络检查，两份报告源码指纹均为 `0d208db45a79123d567faac46b54596bd416d8b89af6bbcd9ce7740dae00bb08`。实际 Traefik 仅在回环提供只读管理观察，Keycloak 身份经过 TLS 获取短时令牌，只有匹配应用组的令牌在健康路径被接受。检查了认证和管理网不可达，以及所有本轮资源回收。 [托管入口报告](https://github.com/MaLaNg116/itervane/actions/runs/44955789630)
 
-四组托管 KVM 复跑仍在进行。D2-B 会把入口接到 KVM 源码任务的同一正式发布操作。 [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44955789647)
+四组托管 KVM 全部通过，回归与 OCI 报告的源码指纹和入口证据一致。审查复核了证书来源、探测凭证范围、应用网络绑定和资源清理。`66267470a0c70fa57e7b1129a0e1c39a6031233e` 的六项常规检查均通过，生产及测试代码与托管验收版本一致，已合入 `98f5142ca615a099fd5b520d203eae7e4c077cbd`。 [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44955789647) · [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44958291563) · [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44958286853)

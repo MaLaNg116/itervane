@@ -356,7 +356,9 @@ export async function openNativeReleaseKomodo(env: NodeJS.ProcessEnv = process.e
       return {
         binding: { deploymentId: target.id, serverId: target.server, runtimeConfigSha256: komodoRuntimeConfigSha256(raw),
           komodo: { origin: coreOrigin, actorId: target.actor } },
+        endpoint: { network: target.network, container: target.name },
         credentials: { ...credentials, actorId: target.actor },
+        allowContainerInspection: setup.allowBoundContainerInspection,
         async observeContainer(reference: string, configDigest: string) {
           const container = await waitFor('ObserveApprovedContainer', async () => {
             const status = await inspect(target);
@@ -365,7 +367,7 @@ export async function openNativeReleaseKomodo(env: NodeJS.ProcessEnv = process.e
           if (container.Config.Labels[labelKey] !== mark || container.Config.Image !== reference || container.Image !== configDigest) {
             throw new KomodoError('ApprovedRuntimeIdentity', 'binding');
           }
-          return { reference: container.Config.Image, configDigest: container.Image };
+          return { reference: container.Config.Image, configDigest: container.Image, containerId: container.Id };
         },
       };
     },
