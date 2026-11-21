@@ -24,7 +24,8 @@ from native_source import SourceProbe
 from oci_artifacts import ArtifactStore
 from session_boundary import SESSION_URI, SessionRejected, prepare_session
 from source_gateway import COMMIT, RegisteredOrigin, SourceGateway, SourceRejected
-from source_wire import GUEST_REPAIR_ERRORS, MAX_QUALIFIED_RECEIPT, MAX_REPAIR_COMMAND, MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT, OCI_ARCHIVE_FORMAT
+from source_wire import (GUEST_REPAIR_ERRORS, MAX_OCI_CHUNK_BYTES, MAX_QUALIFIED_RECEIPT, MAX_REPAIR_COMMAND,
+                         MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT, OCI_ARCHIVE_FORMAT)
 
 
 REQUEST_LIMIT = 2048
@@ -32,7 +33,8 @@ HANDSHAKE_SECONDS = 3
 PULSE_SECONDS = 2
 READY = b"READY 1\n"
 STATUS = b"STATUS 1\n"
-ARCHIVE_REQUEST = re.compile(rb"ARCHIVE 1 ([0-9a-f]{64}) ([1-9][0-9]{0,8})\n")
+ARCHIVE_REQUEST = re.compile(rb"(ARCHIVE|ARCHIVE_READ) 1 ([0-9a-f]{64}) ([1-9][0-9]{0,8})\n")
+ARCHIVE_READ_SECONDS = 60
 IDS = ("requestId", "taskId", "runId", "projectId", "repositoryId")
 COUNTERS = ("generation", "fence")
 FIELDS = {*IDS, *COUNTERS, "version", "planSha256", "workspaceSha256", "commit", "origin"}
@@ -350,9 +352,39 @@ def response_for(request, result):
     return rejected("not_ready", request_id)
 
 
+def archive_verification(image_sha256, archive):
+    return {"kind": "archive_verified", "version": 1, "runnerImageSha256": image_sha256, "archive": archive}
+
+
+def stream_archive(connection, store, archive, image_sha256, stopping):
+    with store.open_retained(archive) as file:
+        connection.sendall(f"ARCHIVE_READY 1 {image_sha256}\n".encode("ascii"))
+        if connection.recv(1) != b"K" or stopping():
+            return rejected("lease_lost")
+        deadline = time.monotonic() + ARCHIVE_READ_SECONDS
+        digest = hashlib.sha256()
+        remaining = archive["bytes"]
+        while remaining:
+            chunk = file.read(min(MAX_OCI_CHUNK_BYTES, remaining))
+            if not chunk:
+                raise ValueError("truncated OCI archive")
+            timeout = min(HANDSHAKE_SECONDS, deadline - time.monotonic())
+            if timeout <= 0 or stopping():
+                raise TimeoutError("OCI stream expired")
+            connection.settimeout(timeout)
+            connection.sendall(chunk)
+            remaining -= len(chunk)
+            digest.update(chunk)
+        if file.read(1) or digest.hexdigest() != archive["sha256"]:
+            raise ValueError("stored OCI archive differs from receipt")
+        if stopping() or time.monotonic() >= deadline:
+            raise TimeoutError("OCI stream expired")
+    return archive_verification(image_sha256, archive)
+
+
 def serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping,
                      enable_repair=False, enable_verification=False, enable_standard_build=False, enable_baseline=False,
-                     enable_oci=False, enable_retention=False, verify_archive=None):
+                     enable_oci=False, enable_retention=False, verify_archive=None, read_archive=None):
     connection.settimeout(HANDSHAKE_SECONDS)
     _, uid, _ = PEER.unpack(connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, PEER.size))
     if uid != worker_uid:
@@ -363,11 +395,13 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
             return observe()
         archive_request = ARCHIVE_REQUEST.fullmatch(frame)
         if archive_request:
-            if verify_archive is None or stopping():
+            command, sha256, size = archive_request.groups()
+            if stopping() or (read_archive if command == b"ARCHIVE_READ" else verify_archive) is None:
                 return rejected("not_ready")
-            sha256, size = archive_request.groups()
             archive = {"format": OCI_ARCHIVE_FORMAT, "sha256": sha256.decode("ascii"), "bytes": int(size)}
             try:
+                if command == b"ARCHIVE_READ":
+                    return read_archive(connection, archive)
                 return verify_archive(archive)
             except (OSError, ValueError):
                 return rejected("not_ready")
@@ -413,7 +447,7 @@ def socket_parent(path):
 
 
 def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping, enable_repair, enable_verification,
-               enable_standard_build, enable_baseline, enable_oci, enable_retention, verify_archive):
+               enable_standard_build, enable_baseline, enable_oci, enable_retention, verify_archive, read_archive):
     socket_parent(path)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(os.fspath(path))
@@ -430,7 +464,7 @@ def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping
                     try:
                         result = serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping,
                                                   enable_repair, enable_verification, enable_standard_build, enable_baseline,
-                                                  enable_oci, enable_retention, verify_archive)
+                                                  enable_oci, enable_retention, verify_archive, read_archive)
                         encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
                         limit = MAX_VERIFICATION_RECEIPT if result["kind"] == "verification_receipt" else MAX_QUALIFIED_RECEIPT
                         if len(encoded) > limit + 8192:
@@ -504,7 +538,10 @@ def main():
 
         def verify_archive(archive):
             artifact_store.verify_retained(archive)
-            return {"kind": "archive_verified", "version": 1, "runnerImageSha256": digest, "archive": archive}
+            return archive_verification(digest, archive)
+
+        def read_archive(connection, archive):
+            return stream_archive(connection, artifact_store, archive, digest, stopped)
 
         def launch(request, origin, cancelled, command):
             verification = request.get("operation") == VERIFY_SOURCE
@@ -535,7 +572,7 @@ def main():
         run_server(path, worker_uid, origins, fingerprint, observe, launch, stopped,
                    "--enable-repair" in features, "--enable-verification" in features, "--enable-standard-build" in features,
                    "--enable-standard-baseline" in features, "--enable-standard-oci" in features, artifact_store is not None,
-                   verify_archive if artifact_store else None)
+                   verify_archive if artifact_store else None, read_archive if artifact_store else None)
     except (ImportError, OSError, ValueError, Rejected, SessionRejected, SourceRejected):
         print("Qualified inspection controller could not start.", file=sys.stderr)
         return 1

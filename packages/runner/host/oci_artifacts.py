@@ -70,12 +70,19 @@ class ArtifactStore:
             os.close(fd)
 
     @staticmethod
-    def verify(root, name, archive):
+    @contextmanager
+    def open_checked(root, name, archive):
         with os.fdopen(os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root), "rb") as file:
             info = os.fstat(file.fileno())
             if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid()
-                or info.st_size != archive.size or stat.S_IMODE(info.st_mode) != 0o400
-                or hashlib.file_digest(file, "sha256").hexdigest() != archive.sha256):
+                or info.st_size != archive.size or stat.S_IMODE(info.st_mode) != 0o400):
+                raise ValueError("stored OCI archive differs from receipt")
+            yield file
+
+    @classmethod
+    def verify(cls, root, name, archive):
+        with cls.open_checked(root, name, archive) as file:
+            if hashlib.file_digest(file, "sha256").hexdigest() != archive.sha256:
                 raise ValueError("stored OCI archive differs from receipt")
 
     def stage(self, descriptor, chunks):
@@ -127,7 +134,13 @@ class ArtifactStore:
             os.fsync(root)
         return pending.archive
 
-    def verify_retained(self, descriptor):
+    @contextmanager
+    def open_retained(self, descriptor):
         archive = Archive.parse(descriptor)
-        with self.directory() as root:
-            self.verify(root, archive.sha256 + ".oci.tar", archive)
+        with self.directory() as root, self.open_checked(root, archive.sha256 + ".oci.tar", archive) as file:
+            yield file
+
+    def verify_retained(self, descriptor):
+        with self.open_retained(descriptor) as file:
+            if hashlib.file_digest(file, "sha256").hexdigest() != descriptor["sha256"]:
+                raise ValueError("stored OCI archive differs from receipt")

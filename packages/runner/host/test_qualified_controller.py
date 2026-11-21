@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 
 import qualified_controller as controller
 from libvirt_probe import Result, locked_workspace
+from oci_artifacts import ArtifactStore
 
 
 ORIGIN = "https://example.invalid/project.git"
@@ -106,6 +107,67 @@ class ControllerTest(unittest.TestCase):
                                                      verify_archive=verification)
                 self.assertEqual(reply, controller.rejected(expected) if expected else accepted)
         reader.assert_called_once_with({"format": controller.OCI_ARCHIVE_FORMAT, "sha256": digest, "bytes": 20})
+        observe.assert_not_called()
+        launch.assert_not_called()
+
+    def test_streams_fixed_oci_bytes_only_after_worker_handshake_and_current_host_hash(self):
+        launch, observe = Mock(), Mock()
+        image = "1" * 64
+        chunk = bytes(range(256)) * 2048
+        body = chunk + chunk
+        digest = hashlib.sha256(body).hexdigest()
+        descriptor = {"format": controller.OCI_ARCHIVE_FORMAT, "sha256": digest, "bytes": len(body)}
+        command = f"ARCHIVE_READ 1 {digest} {len(body)}\n".encode("ascii")
+        ready = f"ARCHIVE_READY 1 {image}\n".encode("ascii")
+        with TemporaryDirectory() as temporary, ThreadPoolExecutor(max_workers=1) as pool:
+            store = ArtifactStore(temporary)
+            pending = store.stage(descriptor, (chunk, chunk))
+
+            def stream(connection, archive):
+                return controller.stream_archive(connection, store, archive, image, lambda: False)
+
+            for uid, frame, reader, reason in (
+                (os.getuid() + 1, command, stream, "peer_denied"),
+                (os.getuid(), command, None, "not_ready"),
+                (os.getuid(), command, stream, "not_ready"),
+                (os.getuid(), b"ARCHIVE_READ 1 ../layout.oci.tar 20\n", stream, "invalid_request"),
+                (os.getuid(), f"ARCHIVE_READ 1 {digest} 999999999\n".encode("ascii"), stream, "not_ready"),
+            ):
+                server, client = socket.socketpair()
+                with self.subTest(reason=reason), server, client:
+                    client.sendall(frame)
+                    result = controller.serve_connection(server, uid, {}, WORKSPACE, observe, launch, lambda: False,
+                                                         read_archive=reader)
+                    self.assertEqual(result, controller.rejected(reason))
+
+            store.retain(pending)
+            retained = Path(temporary) / (digest + ".oci.tar")
+            for acknowledgement, expected_body, reason in ((b"C", b"", "lease_lost"), (b"K", body, None),
+                                                            (b"K", b"x" + body[1:], "not_ready")):
+                if reason == "not_ready":
+                    retained.chmod(0o600)
+                    retained.write_bytes(expected_body)
+                    retained.chmod(0o400)
+                server, client = socket.socketpair()
+                with self.subTest(reason=reason), server, client, client.makefile("rb") as file:
+                    client.settimeout(2)
+                    future = pool.submit(controller.serve_connection, server, os.getuid(), {}, WORKSPACE, observe, launch,
+                                         lambda: False, read_archive=stream)
+                    client.sendall(command)
+                    self.assertEqual(file.readline(), ready)
+                    client.sendall(acknowledgement)
+                    self.assertEqual(file.read(len(expected_body)), expected_body)
+                    result = future.result(timeout=2)
+                    self.assertEqual(result, controller.rejected(reason) if reason else controller.archive_verification(image, descriptor))
+
+            retained.rename(Path(temporary) / "other.oci.tar")
+            retained.symlink_to(Path(temporary) / "other.oci.tar")
+            server, client = socket.socketpair()
+            with server, client:
+                client.sendall(command)
+                result = controller.serve_connection(server, os.getuid(), {}, WORKSPACE, observe, launch, lambda: False,
+                                                     read_archive=stream)
+                self.assertEqual(result, controller.rejected("not_ready"))
         observe.assert_not_called()
         launch.assert_not_called()
 
