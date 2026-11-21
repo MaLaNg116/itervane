@@ -10,6 +10,8 @@ TypeScript、202 项单元和真实 Chrome、Keycloak 与控制面会话上的 3
 
 首轮 PostgreSQL 全量复跑中，两个旧用例的精确响应断言缺少新增字段。`7cfb133` 和 `73d695f` 补上冻结前、待审批及不满足冻结条件时的 `result: null`。固定版本 `73d695f` 在 PostgreSQL 17.12 通过 5 项专项和 173 项全量测试，源码指纹 `09a499819544a947bb06da39ae203e60239b1192376065e91b5610db6678153b`。
 
-`bf42c6d` 通过六项常规 CI。原生工作流使用 `0e57448`，两个提交间只有交付材料和 PostgreSQL 测试断言发生变化。该版本的原生 Komodo 与受保护入口已通过，托管 KVM 回归进行中。 [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44953704967) · [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44953700338) · [Komodo](https://github.com/MaLaNg116/itervane/actions/runs/44953165620) · [受保护入口](https://github.com/MaLaNg116/itervane/actions/runs/44953165580) · [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44953165652)
+原生工作流使用 `0e57448`，与最终交付之间只有文档和 PostgreSQL 测试断言变化。Komodo、受保护入口和四组托管 KVM 均已通过。源码指纹 `a96e2ad022062d4bccc15a0953a144db0f3e586e1d25a526ba4c44d3dc21b325` 的报告记录了实际崩溃重领、API 与 MCP 一致、已知和未知 Komodo 更新。 [Komodo](https://github.com/MaLaNg116/itervane/actions/runs/44953165620) · [受保护入口](https://github.com/MaLaNg116/itervane/actions/runs/44953165580) · [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44953165652)
+
+合入前复核了项目授权、当前任务与候选绑定、核验回执查验以及门户刷新后的运行隔离。最终审查版本 `077983c28b3719bf87ee50c20d389c62902b174d` 的六项常规检查通过，合入 `7d492e3cc74c87cd52ba999dd31ae4eddbc4d6fc`。 [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44954671172) · [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44954665928)
 
 D3-D 在托管 KVM 上用同一操作验收外部 MCP 接入、修复和复验、人工确认、真实发布与受保护入口结果。
