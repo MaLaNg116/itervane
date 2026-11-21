@@ -9,6 +9,7 @@ export * from './formal-repair-retry.js';
 export * from './formal-verification.js';
 export * from './formal-verification-evidence.js';
 export * from './formal-verification-result.js';
+export * from './verification-view.js';
 export * from './i18n.js';
 export * from './inspection.js';
 export * from './npm-repair.js';

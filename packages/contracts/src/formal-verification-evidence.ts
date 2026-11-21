@@ -5,6 +5,7 @@ import { ociDigestSchema, qualifiedImageArchiveSchema } from './qualified-standa
 
 const count = z.int().min(0).max(4_000);
 export const verificationComparisonCountsSchema = z.strictObject({ introduced: count, resolved: count, remaining: count });
+export const verificationImageFindingCountsSchema = z.strictObject({ critical: count, high: count, medium: count, low: count, unknown: count });
 export const verificationBaselineFailuresSchema = z.array(z.strictObject({
   id: z.enum(['health', 'version', 'synthetic_data', 'page', 'compiled_asset']),
   code: z.enum(['unexpected_status', 'unexpected_content', 'timeout', 'unavailable', 'missing_page_asset']),
@@ -46,7 +47,7 @@ export const formalVerificationEvidenceSchema = z.strictObject({
       status: z.literal('scanned'), manifestDigest: ociDigestSchema, configDigest: ociDigestSchema,
       databaseSha256: sha256Schema, scanReportSha256: sha256Schema, scanPolicySha256: sha256Schema,
       osPackages: z.int().min(1).max(5_000), npmPackages: z.int().min(1).max(15_000),
-      findings: z.strictObject({ critical: count, high: count, medium: count, low: count, unknown: count }),
+      findings: verificationImageFindingCountsSchema,
       archive: qualifiedImageArchiveSchema.nullable(),
     }),
   ]),

@@ -18,6 +18,7 @@ import { registerPortal } from './portal.js';
 import { InspectionService } from './service/inspections.js';
 import { FormalAuditService } from './service/formal-audit.js';
 import { FormalRepairService } from './service/repair-result.js';
+import { VerificationViewService } from './service/verification-view.js';
 import { PreauditService, RuleService } from './service/preaudits.js';
 
 declare module 'fastify' {
@@ -39,6 +40,7 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
   const resources = new ResourceService(database); const tasks = new TaskService(database);
   const inspections = new InspectionService(database); const audits = new FormalAuditService(database);
   const repairs = new FormalRepairService(database);
+  const verification = new VerificationViewService(database);
   const rules = new RuleService(database); const preaudits = new PreauditService(database);
   const app = Fastify({
     logger: options.logger === false ? false : { level: 'info' },
@@ -182,6 +184,10 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
     const { taskId } = parseInput(taskParam, request.params);
     const { expectedSha256 } = parseInput(z.strictObject({ expectedSha256: sha256Schema }), request.query);
     return repairs.exportPatch(identity(request), taskId, expectedSha256);
+  });
+  app.get('/v1/tasks/:taskId/verification', async request => {
+    const { taskId } = parseInput(taskParam, request.params);
+    return verification.get(identity(request), taskId, request.locale);
   });
   app.post('/v1/tasks/:taskId/cancel', async request => {
     const { taskId } = parseInput(taskParam, request.params); return taskDtoSchema.parse(await tasks.cancel(identity(request), taskId, request.body));

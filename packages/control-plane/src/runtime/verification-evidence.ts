@@ -1,5 +1,5 @@
-import { formalVerificationEvidenceSchema, type FormalVerificationEvidence, type QualifiedVerificationReceipt } from '@itervane/contracts';
-import { sha256, type compareVerificationScans } from '@itervane/runner';
+import { formalVerificationEvidenceSchema, qualifiedVerificationResponseSchema, type FormalVerificationEvidence, type QualifiedVerificationReceipt } from '@itervane/contracts';
+import { compareVerificationScans, sha256 } from '@itervane/runner';
 
 function pending(requested: boolean) {
   return { status: requested ? 'not_reached' : 'not_requested' } as const;
@@ -55,4 +55,14 @@ export function projectVerificationEvidence(receipt: QualifiedVerificationReceip
     baseline: summarizeBaseline(baseline, Boolean(scope.runStandardBaseline)),
     image: summarizeImage(image, Boolean(scope.ociInputsSha256)),
   });
+}
+
+export function recordedVerificationEvidence(raw: unknown, receiptSha256: string) {
+  const receipt = qualifiedVerificationResponseSchema.parse(raw);
+  if (receipt.kind !== 'verification_receipt' || sha256(JSON.stringify(receipt)) !== receiptSha256) {
+    throw new Error('formal_verification_recorded_receipt');
+  }
+  const { snapshot } = receipt;
+  const evidence = projectVerificationEvidence(receipt, compareVerificationScans(snapshot, snapshot.target ?? snapshot));
+  return { receipt, evidence };
 }

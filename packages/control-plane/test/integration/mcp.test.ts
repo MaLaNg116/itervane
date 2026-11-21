@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { admissionDtoSchema, apiErrorSchema, catalogDtoSchema, formalAuditDtoSchema, preauditAdmissionSchema, preauditDtoSchema, ruleDtoSchema, sourceInspectionDtoSchema, taskDtoSchema, translate } from '@itervane/contracts';
+import { admissionDtoSchema, apiErrorSchema, catalogDtoSchema, formalAuditDtoSchema, preauditAdmissionSchema, preauditDtoSchema, ruleDtoSchema, sourceInspectionDtoSchema, taskDtoSchema, translate, verificationViewSchema } from '@itervane/contracts';
 import { createApi } from '../../src/api.js';
 import { openDatabase } from '../../src/persistence/database.js';
 import { bootstrapOwner } from '../../src/service/resources.js';
@@ -53,6 +53,9 @@ it('advertises a fixed canonical MCP resource and rejects wrong audience, missin
   const bearer = await token();
   expect((await fetch(`${address}/v1/me`, { headers: { authorization: `Bearer ${bearer}` } })).status).toBe(401);
   expect((await fetch(`${address}/mcp`, { headers: { authorization: `Bearer ${await token('')}` } })).status).toBe(403);
+  expect((await api.inject({ method: 'POST', url: '/mcp', headers: { authorization: `Bearer ${await token('itervane:write')}` },
+    payload: rpc('get_verification', { taskId: randomUUID() }),
+  })).statusCode).toBe(403);
   for (const extra of [{ origin: 'https://untrusted.invalid' }, { origin: 'null' }, { host: 'untrusted.invalid' }]) {
     expect((await api.inject({ method: 'POST', url: '/mcp', headers: { ...extra, authorization: `Bearer ${bearer}` }, payload: rpc('start_audit', input) })).statusCode).toBe(403);
   }
@@ -62,8 +65,9 @@ it('advertises a fixed canonical MCP resource and rejects wrong audience, missin
 it('serves localized SDK tool discovery and real task start/query/events/cancel across reconnects', async () => {
   const bearer = await token(); const first = await connect(bearer, 'zh-CN');
   const catalog = await first.listTools();
-  expect(catalog.tools.map(tool => tool.name).sort()).toEqual(['cancel_task', 'get_audit', 'get_preaudit', 'get_repair', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'list_preaudits', 'list_rules', 'preaudit_text', 'resume_task', 'start_audit']);
+  expect(catalog.tools.map(tool => tool.name).sort()).toEqual(['cancel_task', 'get_audit', 'get_preaudit', 'get_repair', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'get_verification', 'list_preaudits', 'list_rules', 'preaudit_text', 'resume_task', 'start_audit']);
   expect(catalog.tools.find(tool => tool.name === 'start_audit')?.description).toBe(translate('zh-CN', 'mcp.start'));
+  expect(catalog.tools.find(tool => tool.name === 'get_verification')).toMatchObject({ description: translate('zh-CN', 'mcp.verification'), annotations: { readOnlyHint: true } });
   const accepted = admissionDtoSchema.parse((await first.callTool({ name: 'start_audit', arguments: input })).structuredContent);
   expect(accepted.task).toMatchObject({ locale: 'zh-CN', state: 'queued' });
   await first.close(); const second = await connect(bearer);
@@ -84,6 +88,10 @@ it('serves localized SDK tool discovery and real task start/query/events/cancel 
   expect((await api.inject({ url: `/v1/tasks/${accepted.task.id}`, headers })).json()).toEqual(queried);
   const cancelled = taskDtoSchema.parse((await second.callTool({ name: 'cancel_task', arguments: { taskId: accepted.task.id, expectedVersion: queried.version } })).structuredContent);
   expect(cancelled.state).toBe('cancelled');
+  const verification = verificationViewSchema.parse((await second.callTool({ name: 'get_verification', arguments: { taskId: accepted.task.id } })).structuredContent);
+  expect(verification).toMatchObject({ current: { runId: accepted.task.runId, generation: 1, status: 'cancelled' }, previous: null });
+  expect((await api.inject({ url: `/v1/tasks/${accepted.task.id}/verification`, headers })).json()).toEqual(verification);
+  expect((await api.inject(`/v1/tasks/${accepted.task.id}/verification`)).statusCode).toBe(401);
 });
 
 it('shares versioned rules and a source-free preaudit record across real MCP and HTTP with locale-independent retries', async () => {
@@ -121,7 +129,7 @@ it('does not persist stale or executable preaudit requests and does not echo inv
 
 it('enforces read-only scopes even for direct unadvertised write calls and localizes validation errors', async () => {
   const readToken = await token('itervane:read'); const reader = await connect(readToken, 'zh-CN');
-  expect((await reader.listTools()).tools.map(tool => tool.name).sort()).toEqual(['get_audit', 'get_preaudit', 'get_repair', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'list_preaudits', 'list_rules']);
+  expect((await reader.listTools()).tools.map(tool => tool.name).sort()).toEqual(['get_audit', 'get_preaudit', 'get_repair', 'get_rule', 'get_source_inspection', 'get_task', 'get_task_events', 'get_verification', 'list_preaudits', 'list_rules']);
   const write = await fetch(`${address}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${readToken}`,
     'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify(rpc('start_audit', input)) });
   expect(write.status).toBe(403); expect(write.headers.get('www-authenticate')).toContain('scope="itervane:write"');
@@ -137,7 +145,21 @@ it('rechecks database project permissions on every MCP command, including token 
   await database.admin.query('INSERT INTO itervane.principals(id,issuer,subject) VALUES($1,$2,$3)', [principalId, issuer.config.issuer, 'member']);
   await database.admin.query("INSERT INTO itervane.project_members(project_id,principal_id,role) VALUES($1,$2,'viewer')", [input.projectId, principalId]);
   const client = await connect(await token('itervane:read itervane:write', 'member'));
+  const memberHeaders = { authorization: `Bearer ${await issuer.token('member')}` };
+  const verificationUrl = `/v1/tasks/${accepted.task.id}/verification`;
   expect((await client.callTool({ name: 'get_task', arguments: { taskId: accepted.task.id } })).isError).not.toBe(true);
+  expect(verificationViewSchema.parse((await client.callTool({ name: 'get_verification', arguments: { taskId: accepted.task.id } })).structuredContent))
+    .toMatchObject({ current: { status: 'pending' }, previous: null });
+  expect((await api.inject({ url: verificationUrl, headers: memberHeaders })).statusCode).toBe(200);
+
+  const differentProject = (await api.inject({ method: 'POST', url: '/v1/projects', headers, payload: { name: 'other', slug: 'other' } })).json();
+  const differentRepo = (await api.inject({ method: 'POST', url: `/v1/projects/${differentProject.id}/repositories`, headers,
+    payload: { name: 'other', url: 'https://example.invalid/other.git' } })).json();
+  const differentTask = admissionDtoSchema.parse((await first.callTool({ name: 'start_audit', arguments: { ...input,
+    projectId: differentProject.id, source: { ...input.source, repositoryId: differentRepo.id }, idempotencyKey: randomUUID() },
+  })).structuredContent).task;
+  expect(apiErrorSchema.parse((await client.callTool({ name: 'get_verification', arguments: { taskId: differentTask.id } })).structuredContent).error.code).toBe('not_found');
+  expect((await api.inject({ url: `/v1/tasks/${differentTask.id}/verification`, headers: memberHeaders })).statusCode).toBe(404);
   const denied = await client.callTool({ name: 'cancel_task', arguments: { taskId: accepted.task.id, expectedVersion: 1 } });
   expect(apiErrorSchema.parse(denied.structuredContent).error.code).toBe('forbidden');
   await database.admin.query('DELETE FROM itervane.project_members WHERE principal_id=$1', [principalId]);
@@ -145,8 +167,9 @@ it('rechecks database project permissions on every MCP command, including token 
   expect(apiErrorSchema.parse((await client.callTool({ name: 'get_source_inspection', arguments: { taskId: accepted.task.id } })).structuredContent).error.code).toBe('not_found');
   expect(apiErrorSchema.parse((await client.callTool({ name: 'get_audit', arguments: { taskId: accepted.task.id } })).structuredContent).error.code).toBe('not_found');
   expect(apiErrorSchema.parse((await client.callTool({ name: 'get_repair', arguments: { taskId: accepted.task.id } })).structuredContent).error.code).toBe('not_found');
-  expect((await api.inject({ url: `/v1/tasks/${accepted.task.id}/audit`, headers: { authorization: `Bearer ${await issuer.token('member')}` } })).statusCode).toBe(404);
-  const differentProject = (await api.inject({ method: 'POST', url: '/v1/projects', headers, payload: { name: 'other', slug: 'other' } })).json();
+  expect(apiErrorSchema.parse((await client.callTool({ name: 'get_verification', arguments: { taskId: accepted.task.id } })).structuredContent).error.code).toBe('not_found');
+  expect((await api.inject({ url: `/v1/tasks/${accepted.task.id}/audit`, headers: memberHeaders })).statusCode).toBe(404);
+  expect((await api.inject({ url: verificationUrl, headers: memberHeaders })).statusCode).toBe(404);
   const foreign = await first.callTool({ name: 'start_audit', arguments: { ...input, projectId: differentProject.id, idempotencyKey: randomUUID() } });
   expect(apiErrorSchema.parse(foreign.structuredContent).error.code).toBe('not_found');
 });

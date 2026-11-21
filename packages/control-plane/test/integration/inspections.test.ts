@@ -8,8 +8,8 @@ import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { createFormalVerification } from '@itervane/agent';
-import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
-  formalRepairRetryContextSchema,
+import { apiErrorSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
+  formalRepairRetryContextSchema, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
@@ -44,6 +44,7 @@ import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
 import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { publishFormalRepair } from '../../src/service/repair-result.js';
 import { TaskService } from '../../src/service/tasks.js';
+import { VerificationViewService } from '../../src/service/verification-view.js';
 import { databaseFixture } from '../helpers/database.js';
 import { identityFixture } from '../helpers/identity.js';
 import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from '../native/audit-provider.js';
@@ -964,6 +965,11 @@ it.each(['healthy', 'regression', 'reclaimed', 'profile changed', 'revoked', 'cl
       expect(event).toMatchObject({ state: mode === 'cleanup unknown' ? 'reconciling' : 'needs_human',
         detail: { reason: mode === 'cleanup unknown' ? 'verification_reconciling'
           : mode === 'revoked' ? 'permission_revoked' : 'verification_unavailable' } });
+      if (mode === 'cleanup unknown') {
+        expect(await new VerificationViewService(database.storage).get(identity, task.id, 'zh-CN')).toMatchObject({
+          current: { status: 'reconciling', message: /清理/ }, previous: null,
+        });
+      }
       return;
     }
 
@@ -1089,6 +1095,10 @@ it.each(['reclaimed change', 'remaining finding', 'repeat patch', 'budget exhaus
       workerId: previousResult!.workerId }, async () => true)).rejects.toBeInstanceOf(ExecutionLost);
 
     if (mode === 'reclaimed change') {
+      const waiting = await new VerificationViewService(database.storage).get(identity, task.id, 'en');
+      expect(waiting).toMatchObject({ current: { runId: ready.runId, generation: 2, status: 'pending' },
+        previous: { runId: task.runId, generation: 1, status: 'recorded', outcome: 'checks_failed', resultSha256: previousResult!.sha256 },
+      });
       const interrupted = await claim();
       expect(interrupted).toMatchObject({ runId: ready.runId, generation: 2 });
       await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
@@ -1129,11 +1139,62 @@ it.each(['reclaimed change', 'remaining finding', 'repeat patch', 'budget exhaus
       expect((await tasks.events(identity, task.id, 50)).at(-1)).toMatchObject({
         reason: exhausted ? 'repair_retry_limit' : 'verification_observed', type: 'task.verification_recorded',
       });
+      if (mode === 'reclaimed change') await verifyRetryView(ready.runId, review!.sha256, previousResult!.sha256);
     }
     expect(await database.storage.db.select().from(taskRuns)).toHaveLength(2);
     expect(await database.storage.db.select().from(formalRepairRetries)).toHaveLength(1);
   },
 );
+
+async function verifyRetryView(currentRunId: string, currentSha256: string, previousSha256: string) {
+  const publicUrl = 'https://itervane.example';
+  const api = createApi(database.storage, { ...issuer.config, publicUrl }, { logger: false });
+  const client = new Client({ name: 'verification-reader', version: '0.0.0' });
+  const url = `/v1/tasks/${task.id}/verification`;
+  const authorization = `Bearer ${await issuer.token()}`;
+  try {
+    const address = await api.listen({ host: '127.0.0.1', port: 0 });
+    const token = await issuer.token('owner', { aud: `${publicUrl}/mcp`, scope: 'itervane:read' });
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+      requestInit: { headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'zh-CN' } },
+    }));
+    const read = async (locale: string) => api.inject({ url, headers: { authorization, 'Accept-Language': locale } });
+    const zh = await read('zh-CN');
+    const en = await read('en');
+    const mcp = await client.callTool({ name: 'get_verification', arguments: { taskId: task.id } });
+    expect(zh.statusCode).toBe(200);
+    expect(zh.headers['cache-control']).toBe('no-store');
+    expect(mcp.isError).not.toBe(true);
+    const view = verificationViewSchema.parse(mcp.structuredContent);
+    expect(zh.json()).toEqual(view);
+    expect(view).toMatchObject({ locale: 'zh-CN',
+      current: { runId: currentRunId, generation: 2, outcome: 'observed', resultSha256: currentSha256,
+        message: /复验/, image: { status: 'scanned', manifestDigest: /sha256:/ } },
+      previous: { runId: task.runId, generation: 1, outcome: 'checks_failed', resultSha256: previousSha256,
+        baseline: { status: 'failed', failures: [{ id: 'health', statusCode: 503 }] } },
+    });
+    expect(verificationViewSchema.parse(en.json())).toMatchObject({ locale: 'en',
+      current: { resultSha256: view.current.status === 'recorded' ? view.current.resultSha256 : null, message: /verification/ },
+      previous: { resultSha256: previousSha256, message: /verification/ },
+    });
+    expect(JSON.stringify(mcp)).not.toMatch(/workspaceSha256|archive|checkpointId|followUps|grantId|releaseEligible|REMOVE=/);
+    expect(JSON.stringify(mcp)).not.toContain(fixtureFindingPath);
+
+    await database.admin.query('ALTER TABLE itervane.formal_verification_results DISABLE TRIGGER formal_verification_result_authority');
+    try {
+      await database.admin.query('UPDATE itervane.formal_verification_results SET sha256=$1 WHERE run_id=$2', [sha256('different prior result'), task.runId]);
+      const rejected = await read('zh-CN');
+      expect(rejected.statusCode).toBe(500);
+      expect(apiErrorSchema.parse(rejected.json()).error).toMatchObject({ code: 'internal_error', locale: 'zh-CN' });
+      const rejectedMcp = await client.callTool({ name: 'get_verification', arguments: { taskId: task.id } });
+      expect(rejectedMcp.isError).toBe(true);
+      expect(apiErrorSchema.parse(rejectedMcp.structuredContent).error.code).toBe('internal_error');
+    } finally {
+      await database.admin.query('UPDATE itervane.formal_verification_results SET sha256=$1 WHERE run_id=$2', [previousSha256, task.runId]);
+      await database.admin.query('ALTER TABLE itervane.formal_verification_results ENABLE TRIGGER formal_verification_result_authority');
+    }
+  } finally { await client.close(); await api.close(); }
+}
 
 it('records one immutable repair command and a checked receipt across concurrent duplicate dispatches', async () => {
   const { scope, proposal, scan, original } = await repairReady();

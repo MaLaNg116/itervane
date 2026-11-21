@@ -30,3 +30,5 @@
 独立读取器记录第二代 OCI 归档 79,042,560 字节，归档 SHA-256 `490f3fd541d0c833ef319904e43d47860a96ca15d2972f6ca9744831ca2aa717`。归档清单、复验扫描和 Worker 结果的镜像摘要均为 `sha256:fec63e836dff748cbcb90c06726a8a84f3ed7afebc803e469c95f1ffb3a14f43`。
 
 同一固定源码用本机真实 Anthropic 协议接入复验角色，分别回放两代有界事实。第 1 代 6 轮读取 3 个证据区，确认 `checks_failed`。第 2 代 7 轮读取 4 个证据区，补读镜像后给出 `observed`。两次意见均为中文并引用各自实际回执。模型回放使用内存检查点，托管 Worker 验收负责实际隔离与持久化。
+
+四组原生验收通过，既有 Worker 回归的源码指纹一致且暂存区清理完成。核对最后评审提交 `ef1c2f30a60227609fa56bcc9a125d278d250490` 与原生源码的文档差异及该版本的常规 CI 后，以 `367bc89a457d23be370d6e8ce588965aaf1b4b39` 合入 `main`。 [最终评审](https://github.com/MaLaNg116/itervane/pull/36) · [既有路径的原生回归](https://github.com/MaLaNg116/itervane/actions/runs/44908117224/job/136857950806)
