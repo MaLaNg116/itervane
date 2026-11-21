@@ -59,7 +59,12 @@ function noWrites(tick: Tick, registryReads = 0) {
 
 export async function proveKnownKomodoRecovery(trial: Trial, registryFence: number) {
   await expired(trial, registryFence);
-  const handoff = await trial.tick();
+  // The preceding Registry observation used a recovery attempt. Reconciliation schedules its next wakeup with a delay.
+  const handoff = await waitForFixture(async () => {
+    const current = await trial.tick();
+    if (current.status !== 'idle') return current;
+    noWrites(current);
+  }, 'komodo_registry_handoff');
   ok(handoff.status === 'komodo_ready');
   equal(handoff.mode, 'registry_recovery');
   ok(handoff.fence > registryFence);
