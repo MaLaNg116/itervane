@@ -33,7 +33,7 @@ async function verifiedTarball(url: string, integrity: string, remainingBytes: n
   return Buffer.concat(chunks, size);
 }
 
-async function prepare(destination: string) {
+async function prepare(destination: string, ociInputsSha256?: string) {
   if (process.platform !== 'linux' || process.arch !== 'x64' || basename(destination) !== 'itervane-build-inputs') {
     throw new Error('build_input_target');
   }
@@ -88,6 +88,7 @@ async function prepare(destination: string) {
       version: 1, platform: 'linux/amd64', packageSha256: inputs.packageSha256, lockSha256,
       dependenciesSha256: sha256(dependencies), npmVersion, nodeSha256: await fileDigest(process.execPath, 180 * 1024 * 1024),
       baselineSha256: sha256(baseline), viteConfigSha256: sha256(viteConfig), baselineProbeSha256: sha256(baselineProbe),
+      ...(ociInputsSha256 ? { ociInputsSha256 } : {}),
     });
     const profileBytes = JSON.stringify(profile);
     await writeFile(join(destination, 'profile.json'), profileBytes, { flag: 'wx', mode: 0o600 });
@@ -96,9 +97,11 @@ async function prepare(destination: string) {
 }
 
 try {
-  const [target, ...extra] = process.argv.slice(2);
-  if (!target || extra.length) throw new Error('build_input_arguments');
-  await prepare(resolve(target));
+  const [target, ociInputsSha256, ...extra] = process.argv.slice(2);
+  if (!target || extra.length || (ociInputsSha256 !== undefined && !/^[a-f0-9]{64}$/.test(ociInputsSha256))) {
+    throw new Error('build_input_arguments');
+  }
+  await prepare(resolve(target), ociInputsSha256);
 } catch (error) {
   const code = error instanceof Error && /^build_[a-z_]+$/.test(error.message) ? error.message : 'preparation_failed';
   console.error(`Trusted build dependency preparation failed at ${phase} (${code}).`);

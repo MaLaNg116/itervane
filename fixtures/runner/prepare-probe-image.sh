@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
-[[ $# -ge 1 && $# -le 3 ]]
+[[ $# -ge 1 && $# -le 4 ]]
 
 work=$(realpath -- "$1")
 image_base='https://cloud-images.ubuntu.com/releases/noble/release-20261017'
@@ -21,7 +21,7 @@ if [[ $# -ge 2 ]]; then
   test -f "$inputs/cache/db/trivy.db"
   extra=(--mkdir /usr/local/libexec --copy-in "$inputs:/usr/local/libexec")
 fi
-if [[ $# -eq 3 ]]; then
+if [[ $# -ge 3 ]]; then
   build_inputs=$(realpath -- "$3")
   test "$(basename -- "$build_inputs")" = itervane-build-inputs
   test -f "$build_inputs/profile.json"
@@ -29,6 +29,17 @@ if [[ $# -eq 3 ]]; then
   extra+=(--copy-in "$build_inputs:/usr/local/libexec"
     --upload "$recipe_dir/../../packages/runner/host/build_guest.py:/var/tmp/build_guest.py"
     --upload "$recipe_dir/../../packages/runner/host/runtime_guest.py:/var/tmp/runtime_guest.py")
+fi
+if [[ $# -eq 4 ]]; then
+  oci_inputs=$(realpath -- "$4")
+  test "$(basename -- "$oci_inputs")" = itervane-oci-inputs
+  test -x "$oci_inputs/umoci"
+  expected_oci=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ociInputsSha256"])' "$build_inputs/profile.json")
+  [[ "$expected_oci" =~ ^[0-9a-f]{64}$ ]]
+  printf '%s  %s\n' "$expected_oci" "$oci_inputs/inputs.json" | sha256sum --check --status
+  extra+=(--copy-in "$oci_inputs:/usr/local/libexec"
+    --upload "$recipe_dir/../../packages/runner/host/oci_layout.py:/var/tmp/oci_layout.py"
+    --upload "$recipe_dir/../../packages/runner/host/oci_guest.py:/var/tmp/oci_guest.py")
 fi
 
 download() {

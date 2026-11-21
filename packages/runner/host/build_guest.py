@@ -160,7 +160,7 @@ def standard_env(work):
 
 
 def install_dependencies(project, cache, config, *, production=False):
-    npm_args = ["--omit=dev"] if production else []
+    npm_args = ["--omit=dev", "--no-bin-links"] if production else []
     return subprocess.run(
         [NODE, TOOLS / "npm/bin/npm-cli.js", "ci", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
          "--no-update-notifier", "--userconfig=/dev/null", f"--globalconfig={config}", f"--cache={cache}", *npm_args],
