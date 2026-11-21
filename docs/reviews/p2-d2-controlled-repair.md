@@ -45,10 +45,12 @@
 2. 候选发布核对当前执行权、检查点、已锁定的审计、补丁操作和已入库回执。PostgreSQL 检查候选元数据来自同一操作与回执，并使结果和最终检查点不可更改。任务状态、结果、时间线与执行槽位在同一事务结算。测试注入时间线写入失败，验证事务回滚并能重新发布。 [发布服务](https://github.com/MaLaNg116/itervane/blob/40209362817bdc88a15c12801a3e95c540b77b9b/packages/control-plane/src/service/repair-result.ts#L38) · [数据约束](https://github.com/MaLaNg116/itervane/blob/40209362817bdc88a15c12801a3e95c540b77b9b/packages/control-plane/migrations/0018_formal_repair_result.sql)
 3. HTTP 与外部 MCP 读取同一份已授权结果。已观察的候选变更显示文件路径、编辑数和指纹。补丁下载检查项目写权限与预期结果指纹，重新核对持久操作后返回规范化 JSON。已撤权的身份无法继续读取，项目只读成员可查看候选。 [授权读面及导出](https://github.com/MaLaNg116/itervane/blob/191df4eb9d8a5d3c867de207ffdcfa214510e8ae/packages/control-plane/src/service/repair-result.ts#L68) · [MCP 接入](https://github.com/MaLaNg116/itervane/blob/191df4eb9d8a5d3c867de207ffdcfa214510e8ae/packages/control-plane/src/mcp.ts)
 4. 门户复用现有组件和确认对话框，保存动作打开时的任务版本。界面语言可切换，Agent 的说明继续使用任务语言。通过 139 项 Linux 单元测试、42 项宿主测试、114 项 PostgreSQL 集成及 23 项浏览器测试。浏览器覆盖双语、版本化恢复、规范补丁下载、动效偏好和 CSP。 [门户候选组件](https://github.com/MaLaNg116/itervane/blob/c04f017b4e3252b53dcece501a03d349c3c967d6/packages/portal/src/pages/task-repair.tsx) · [浏览器验收](https://github.com/MaLaNg116/itervane/blob/c04f017b4e3252b53dcece501a03d349c3c967d6/packages/portal/test/browser/portal.spec.ts)
-5. 新的托管用例通过公开任务 API 恢复已记录的审计，由正式队列 Worker 写入候选。验收会核对 HTTP、MCP、导出指纹、数据库检查点与清理状态。该版本的托管运行待归档。 [正式队列原生验收](https://github.com/MaLaNg116/itervane/blob/9dd9e142189467c426fd1461e6982600051ddd06/packages/control-plane/test/native/worker-inspection.ts#L334)
+5. 在 `a2ad9b4` 上，托管验收通过任务 API 恢复已记录的审计，由正式队列 Worker 在一次性客体内应用修改并原子发布候选。下载的 PostgreSQL 17.12 证据确认了同一原快照、158 到 102 字节的改动、检查点、HTTP 与 MCP 结果一致、补丁指纹匹配、执行槽位释放与域清理。 [正式队列原生验收](https://github.com/MaLaNg116/itervane/actions/runs/44875327356) · [常规 CI](https://github.com/MaLaNg116/itervane/actions/runs/44875330499)
 
 ## D2.5 模型决策与缺陷样例
 
 在 `fe9f1c7` 使用本机已配置的 Anthropic 兼容模型执行 `pnpm probe:formal-repair --live-template`。模型依次读取合成 dotenv 目标、选择 `remove-env-entry-v1`，再引用实际产生的样例回执。3 个模型回合、2 次工具调用、5,810 tokens，修改前后指纹、保留字节及候选状态符合预期。本次使用合成观测与内存补丁，隔离执行另以托管产物验收。 [可复现评测](https://github.com/MaLaNg116/itervane/blob/fe9f1c73501b4a102719c00661252e8308ca0b0c/packages/verification/src/entries/formal-repair.ts)
 
-凭据模板的真实客体回执、依赖修复的成对变更及对应真实模型轨迹仍待验收。P2-D3 使用独立环境复验补丁、扫描和平台基线，P2-E 负责人工审批及发布核对。
+固定提交 `f41a940` 包含合成 dotenv 与成对的 npm 清单、锁文件。使用受保护 Gitleaks 配置核对样例，第 51 至 126 字节的删除将 141 字节变为 66 字节，原文件有命中，修改后的单文件复扫无命中。托管用例使用同一固定提交执行审计、模板选择、候选生成及清理，运行结果待归档。 [固定样例](https://github.com/MaLaNg116/itervane/commit/f41a940ffe4ec24221b873e1cd74b8ec2125873e) · [托管验收入口](https://github.com/MaLaNg116/itervane/blob/ab847f30c49e829b164a7289d9c639aafa836ddf/packages/control-plane/test/native/worker-inspection.ts)
+
+Trivy 归一化保留经过格式约束的 npm 包名、安装版本和公告版本备选。同一公告下的不同依赖保留独立编号，含范围或无法解析的修复版本留给后续判断。通过 140 项 Linux 单元测试及 114 项真实 PostgreSQL 集成测试。后续将接入受控版本选择和锁文件成对修改，再跑对应真实模型与客体验收。P2-D3 验证候选的扫描、构建和平台基线，P2-E 负责人工审批及发布核对。 [归一化与回归](https://github.com/MaLaNg116/itervane/commit/6077917e6c122c739d0553f58dd0327186796867)
