@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, readdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { qualifiedRepairRequestSchema, repairCandidateManifestSchema, repairPatchLimits, repairPatchSchema,
   type QualifiedRepairReceipt } from '@itervane/contracts';
 import { describe, expect, it } from 'vitest';
-import { publishGuestRepair, repairQualifiedGuestSnapshot } from '../../src/guest-repair.js';
+import { publishGuestRepair, readGuestCandidate, repairQualifiedGuestSnapshot } from '../../src/guest-repair.js';
 import { publishGuestSnapshot, readGuestSnapshot } from '../../src/guest-snapshot.js';
 import { sha256 } from '../../src/profiles.js';
 import { verifyQualifiedRepairReceipt } from '../../src/qualified-client.js';
@@ -76,7 +76,9 @@ describe.runIf(process.platform === 'linux')('repair publication from verified g
     const text = Buffer.from('first\r\n示例\r\nlast\r\n');
     const script = Buffer.from('#!/bin/sh\nprintf old\n');
     const binary = Buffer.from([0, 255, 10]);
-    const sample = await trustedGitFixture('sha1', { 'src/value.txt': text, 'check.sh': script, 'baseline/data': binary });
+    const lock = Buffer.from('{"name":"test-fixture","lockfileVersion":3,"packages":{}}\n');
+    const lockPath = 'example/package-lock.json';
+    const sample = await trustedGitFixture('sha1', { 'src/value.txt': text, 'check.sh': script, 'baseline/data': binary, [lockPath]: lock });
     try {
       const base = join(sample.root, 'published'); const first = join(sample.root, 'first'); const second = join(sample.root, 'second');
       await Promise.all([mkdir(base), mkdir(first), mkdir(second)]);
@@ -101,10 +103,19 @@ describe.runIf(process.platform === 'linux')('repair publication from verified g
       const manifest = repairCandidateManifestSchema.parse(JSON.parse(await readFile(join(candidate, 'manifest.json'), 'utf8')));
       expect(manifest.files.find(file => file.path === 'check.sh')?.mode).toBe('100755');
       expect(sha256(JSON.stringify(manifest))).toBe(firstReceipt.candidateManifestSha256);
+      expect(readGuestCandidate(candidate, firstReceipt.candidateManifestSha256).manifest).toEqual(manifest);
+      expect(() => readGuestCandidate(candidate, sha256('another manifest'))).toThrow('repair-candidate-integrity');
+      const projected = join(candidate, 'npm', lockPath);
+      expect((await lstat(projected)).ino).toBe((await lstat(join(candidate, 'worktree', lockPath))).ino);
       const exported = await readFile(join(candidate, 'patch.json'), 'utf8');
       expect(sha256(exported)).toBe(firstReceipt.patchSha256);
       expect(exported).not.toContain('示例');
       expect(() => publishGuestRepair(ready, first, workspace, patch)).toThrow('repair-publication-exists');
+      await chmod(join(second, 'candidate/worktree/check.sh'), 0o440);
+      expect(() => readGuestCandidate(join(second, 'candidate'), firstReceipt.candidateManifestSha256)).toThrow('repair-candidate-integrity');
+      await unlink(projected);
+      await writeFile(projected, lock, { mode: 0o440 });
+      expect(() => readGuestCandidate(candidate, firstReceipt.candidateManifestSha256)).toThrow('snapshot-inventory');
     } finally { await sample.close(); }
   });
 

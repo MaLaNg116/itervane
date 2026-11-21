@@ -24,6 +24,7 @@ import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from './audi
 const execute = promisify(execFile);
 const commit = '9167604c888416d7b6518e1c76485d7308cffb5c';
 const repairFixtureCommit = 'f41a940ffe4ec24221b873e1cd74b8ec2125873e';
+const cleanVerificationCommit = '49799e18f4f63cf22767a9cd8054cab979b9b6d2';
 const origin = 'https://github.com/MaLaNg116/itervane.git';
 const publicUrl = 'https://itervane.example';
 const controllerAccount = 'itervane-probe';
@@ -99,14 +100,17 @@ async function startWorker(bundle: string, socket: string, controllerUid: string
   } catch (error) { child.kill(); await boundedExit(child, exit, 5_000); throw error; }
 }
 
-async function runRepairWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string, args: string[],
-  variant: 'patch' | 'template' | 'npm') {
+async function runScopedFixtureWorker(bundle: string, socket: string, controllerUid: string, image: string,
+  databaseUrl: string, probe: 'repair' | 'verification', args: string[]) {
   const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', ...sourceWorkerEnvironment(socket, controllerUid, image),
     '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c', 'set -eu; IFS= read -r DATABASE_URL; export DATABASE_URL; exec "$@"',
-    'itervane-repair-worker', process.execPath, bundle, ...args, variant,
+    'itervane-fixture-worker', process.execPath, bundle, ...args,
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
   const exit = exitStatus(child);
-  child.stderr.resume();
+  let diagnostic = '';
+  child.stderr.on('data', (chunk: Buffer) => {
+    if (probe === 'verification' && diagnostic.length < 256) diagnostic += chunk.subarray(0, 256).toString('utf8');
+  });
   child.stdin.on('error', () => undefined);
   child.stdin.end(databaseUrl + '\n');
   let size = 0;
@@ -116,8 +120,14 @@ async function runRepairWorker(bundle: string, socket: string, controllerUid: st
     if (size > 32768) child.kill();
     else output.push(chunk);
   });
-  equal(await boundedExit(child, exit, 385_000), 0);
-  const response = JSON.parse(Buffer.concat(output).toString('utf8'));
+  const status = await boundedExit(child, exit, probe === 'repair' ? 385_000 : 205_000);
+  if (status !== 0 || size > 32768) throw new Error(/\bverification_fixture_phase_[a-z_]{1,56}\b/.exec(diagnostic)?.[0] ?? 'scoped_fixture_worker_failed');
+  return JSON.parse(Buffer.concat(output).toString('utf8'));
+}
+
+async function runRepairWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string, args: string[],
+  variant: 'patch' | 'template' | 'npm') {
+  const response = await runScopedFixtureWorker(bundle, socket, controllerUid, image, databaseUrl, 'repair', [...args, variant]);
   const receipt = qualifiedRepairResponseSchema.parse(response.receipt);
   const observation = qualifiedRepairObservationResponseSchema.parse(response.observation);
   if (receipt.kind !== 'repair_receipt' || observation.kind !== 'repair_observation') throw new Error('worker_repair_missing_receipt');
@@ -160,12 +170,13 @@ async function watchGuest(controllerUid: string) {
 }
 
 async function probe() {
-  const [bundle, socket, controllerUid, imageSha256, staging, repairBundle, ...extra] = process.argv.slice(2);
+  const [bundle, socket, controllerUid, imageSha256, staging, repairBundle, verificationBundle, ...extra] = process.argv.slice(2);
   if (process.platform !== 'linux' || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted' || process.env.DATABASE_URL
     || process.env.ITERVANE_POSTGRES_IMAGE || extra.length || !bundle?.startsWith('/var/lib/libvirt/images/itervane-native.')
     || !socket?.endsWith('/qualified/inspection.sock') || !controllerUid || !/^[1-9][0-9]{0,9}$/.test(controllerUid)
     || !imageSha256 || !/^[a-f0-9]{64}$/.test(imageSha256) || !staging?.endsWith('/staging')
-    || repairBundle !== bundle.replace(/\/worker\.mjs$/, '/repair-worker.mjs')) throw new Error('worker_probe_config');
+    || repairBundle !== bundle.replace(/\/worker\.mjs$/, '/repair-worker.mjs')
+    || verificationBundle !== bundle.replace(/\/worker\.mjs$/, '/verification-worker.mjs')) throw new Error('worker_probe_config');
 
   phase = 'postgres';
   const postgres = await temporaryPostgres();
@@ -460,6 +471,55 @@ async function probe() {
     deepStrictEqual(npmExport.patch.files, npmFiles.map(({ path, original, edits }) => ({ path, beforeSha256: sha256(original), edits })));
     equal((await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows[0]?.task_id, null);
 
+    const rescanFixture = async (task: typeof npm.task, findingId: string | null) => {
+      // The production worker phase follows in D3-D. This probe still claims a real queued run and lease.
+      equal((await db.admin.query("UPDATE itervane.tasks SET state='queued' WHERE id=$1 AND state='waiting_input'", [task.id])).rowCount, 1);
+      equal((await db.admin.query("UPDATE itervane.task_runs SET state='queued' WHERE id=$1 AND state='waiting_input'", [task.runId])).rowCount, 1);
+      const result = await runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+        'verification', [task.id, task.runId, findingId ?? 'original']);
+      equal(result.commit, task.source.commit);
+      idSchema.parse(result.domainId);
+      for (const value of [result.inputSha256, result.receiptSha256, result.commandSha256, result.baseSnapshotSha256,
+        result.targetManifestSha256, result.originalReportsSha256]) sha256Schema.parse(value);
+      equal(result.cleanupConfirmed, true);
+      equal(result.dispatches, 1);
+      equal(result.newFindingGroups, 0);
+      equal((await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows[0]?.task_id, null);
+      await assertDrained(controllerUid, staging);
+      return result;
+    };
+    const rescanRepair = async (fixture: typeof npm) => {
+      const result = await rescanFixture(fixture.task, fixture.finding.id);
+      const { receipt: published, observation: observed } = fixture;
+      equal(result.baseSnapshotSha256, published.scope.baseSnapshotSha256);
+      equal(result.targetManifestSha256, published.snapshot.candidate.candidateManifestSha256);
+      equal(result.patchSha256, published.snapshot.candidate.patchSha256);
+      equal(result.targetRuleId, fixture.finding.ruleId);
+      sha256Schema.parse(result.targetReportsSha256);
+      notEqual(result.domainId, published.domainId); notEqual(result.domainId, observed.domainId);
+      return result;
+    };
+    phase = 'verification_template';
+    const templateRescan = await rescanRepair(template);
+    phase = 'verification_npm';
+    const npmRescan = await rescanRepair(npm);
+
+    phase = 'verification_original_audit';
+    ok(auditProvider);
+    worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, auditProvider.baseURL);
+    const originalTask = await start('Audit a clean original lock file', cleanVerificationCommit);
+    await reached(originalTask.id, 'waiting_input');
+    const originalAudit = formalAuditDtoSchema.parse(await request(`/v1/tasks/${originalTask.id}/audit`));
+    if (originalAudit.status !== 'recorded' || originalAudit.result.status !== 'completed') throw new Error('verification_fixture_audit_missing');
+    equal(originalAudit.result.checklist?.findings.length, 0);
+    await worker.stop('TERM'); worker = undefined;
+    phase = 'verification_original_rescan';
+    const originalRescan = await rescanFixture(originalTask, null);
+    equal(originalRescan.baseSnapshotSha256, originalAudit.result.snapshotSha256);
+    equal(originalRescan.targetManifestSha256, originalRescan.baseSnapshotSha256);
+    equal(originalRescan.patchSha256, null); equal(originalRescan.targetReportsSha256, null);
+    equal(originalRescan.targetRuleId, null); equal(originalRescan.remainingFindingGroups, 0);
+
     return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, commit, domains,
       initial: scan.result, replacement: recoveredScan.result, previousFence: closed.fence, recoveredFence: replacement.fence,
       cancellation: { processExited: true, closed: true, receiptPublished: false },
@@ -486,6 +546,7 @@ async function probe() {
         domainId: npm.receipt.domainId, observationDomainId: npm.observation.domainId, cleanupConfirmed: true,
         httpMcpAgreement: true, slotReleased: true,
       },
+      verification: { template: templateRescan, npm: npmRescan, original: originalRescan },
     };
   } finally {
     try { await worker?.stop('TERM'); }
@@ -497,7 +558,8 @@ async function probe() {
 
 try { console.log(JSON.stringify(await probe())); }
 catch (error) {
-  const message = error instanceof Error && /^[a-z_]+_timeout$/.test(error.message) ? ` (${error.message})` : '';
+  const message = error instanceof Error && /^(?:[a-z_]+_timeout|verification_fixture_phase_[a-z_]{1,56})$/.test(error.message)
+    ? ` (${error.message})` : '';
   console.error(`Native Worker inspection failed during ${phase}${message}.`);
   process.exitCode = 1;
 }

@@ -25,7 +25,7 @@ sudo -n systemd-run --quiet --unit="$unit" --uid="$runner" --gid="$runner" \
   --property=CapabilityBoundingSet= --property=AmbientCapabilities= \
   --setenv="XDG_CONFIG_HOME=/home/$runner/.config" --setenv="XDG_CACHE_HOME=/home/$runner/.cache" --setenv=LANG=C.UTF-8 \
   /usr/bin/python3 -I -B "$directory/code/packages/runner/host/qualified_controller.py" \
-  "$sock" "$stage" "$directory/probe.raw" "$digest" "$(id -u "$worker")" --enable-repair https://github.com/MaLaNg116/itervane.git
+  "$sock" "$stage" "$directory/probe.raw" "$digest" "$(id -u "$worker")" --enable-repair --enable-verification https://github.com/MaLaNg116/itervane.git
 trap 'sudo -n systemctl stop "$unit"' EXIT
 for attempt in {1..100}; do
   if sudo -n test -S "$sock"; then break; fi
@@ -137,7 +137,11 @@ pnpm exec esbuild packages/control-plane/test/native/worker-repair.ts --bundle -
   '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
   --outfile=.reports/p0/repair-worker.mjs
 sudo -n install -m 0444 .reports/p0/repair-worker.mjs "$shared/repair-worker.mjs"
+pnpm exec esbuild packages/control-plane/test/native/worker-verification.ts --bundle --platform=node --format=esm --target=node24 \
+  '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
+  --outfile=.reports/p0/verification-worker.mjs
+sudo -n install -m 0444 .reports/p0/verification-worker.mjs "$shared/verification-worker.mjs"
 pnpm exec tsx packages/control-plane/test/native/worker-inspection.ts "$shared/worker.mjs" "$sock" "$(id -u "$runner")" "$digest" "$stage" \
-  "$shared/repair-worker.mjs" \
+  "$shared/repair-worker.mjs" "$shared/verification-worker.mjs" \
   > "$reports/runner-worker-inspection.json"
 assert_empty

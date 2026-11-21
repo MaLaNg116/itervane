@@ -106,7 +106,7 @@ ReadWritePaths=/var/lib/itervane-inspection-output
 InaccessiblePaths=/var/lib/itervane-probe-source
 MemoryMax=1G
 TasksMax=48
-LimitFSIZE=4194304
+LimitFSIZE=8388608
 TimeoutStartSec=90
 UMask=0027
 EOF

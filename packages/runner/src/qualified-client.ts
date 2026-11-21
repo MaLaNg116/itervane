@@ -7,16 +7,19 @@ import {
   qualifiedInspectionRequestSchema, qualifiedInspectionResponseSchema, qualifiedInspectionStatusSchema, qualifiedRunnerRejectionSchema,
   qualifiedRepairObservationRequestSchema, qualifiedRepairObservationResponseSchema,
   qualifiedRepairRequestSchema, qualifiedRepairResponseSchema, sha256Schema,
+  qualifiedVerificationRequestSchema, qualifiedVerificationResponseSchema, verificationProofByteLimit, type FormalVerificationInput,
   type QualifiedInspectionReceipt, type QualifiedInspectionRequest, type QualifiedInspectionResponse,
   type InspectionPlan, type QualifiedInspectionScope, type QualifiedInspectionStatus,
   type QualifiedRepairReceipt, type QualifiedRepairRequest, type QualifiedRepairResponse, type RepairPatch, type RepairWorkspace,
   type QualifiedRepairObservationReceipt, type QualifiedRepairObservationRequest, type QualifiedRepairObservationResponse,
   type RepairObservationWorkspace, type RepairTarget,
+  type QualifiedVerificationReceipt, type QualifiedVerificationRequest, type QualifiedVerificationResponse,
 } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from './profiles.js';
 import { canonicalRepairCommand, canonicalRepairObservation, protectedRepairPath } from './repair-command.js';
 import { scanFindingId } from './scan-finding-id.js';
 import { sourcePath } from './snapshot.js';
+import { canonicalVerificationCommand } from './verification-command.js';
 
 const requestLimit = 2048;
 const responseLimit = 4 * 1024 * 1024 + 8192;
@@ -30,6 +33,8 @@ type Rejected = Extract<QualifiedInspectionResponse, { kind: 'rejected' }>;
 type RepairCoordinates = Omit<QualifiedRepairRequest, 'operation' | 'commandBytes' | 'commandSha256'>;
 type RepairRequest = QualifiedRepairRequest | QualifiedRepairObservationRequest;
 type RepairReceipt = QualifiedRepairReceipt | QualifiedRepairObservationReceipt;
+type VerificationCoordinates = Pick<QualifiedVerificationRequest, 'requestId' | 'fence' | 'workspaceSha256' | 'origin'>;
+type VerificationCommand = ReturnType<typeof canonicalVerificationCommand>;
 
 class Lines {
   private readonly iterator;
@@ -82,19 +87,69 @@ export function verifyQualifiedInspectionReceipt(receipt: QualifiedInspectionRec
       || receipt.domainId !== snapshot.runId || snapshot.commit !== scope.commit || snapshot.repositoryId !== scope.repositoryId) {
     throw new Error('runner_receipt_binding');
   }
+  verifyReportBindings(snapshot.reports, snapshot.manifestSha256, profiles);
+}
+
+function verifyReportBindings(reports: QualifiedInspectionReceipt['snapshot']['reports'], manifestSha256: string,
+  profiles: readonly InspectionPlan['scanners'][number][] = scannerProfiles) {
   for (const [index, expected] of profiles.entries()) {
-    const report = snapshot.reports[index]!;
+    const report = reports[index]!;
     if (report.scanner !== expected.scanner || report.version !== expected.version || report.policySha256 !== expected.policySha256
-        || report.snapshotSha256 !== snapshot.manifestSha256) throw new Error('runner_receipt_profile');
+        || report.snapshotSha256 !== manifestSha256) throw new Error('runner_receipt_profile');
     const ids = new Set<string>();
     for (const finding of report.findings) {
       const path = sourcePath(finding.path);
-      if (ids.has(finding.id) || finding.id !== scanFindingId(report.scanner, snapshot.manifestSha256, { ...finding, path })) {
+      if (ids.has(finding.id) || finding.id !== scanFindingId(report.scanner, manifestSha256, { ...finding, path })) {
         throw new Error('runner_receipt_finding');
       }
       ids.add(finding.id);
     }
   }
+}
+
+export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificationReceipt, request: QualifiedVerificationRequest,
+  command: VerificationCommand) {
+  const { origin, ...scope } = request;
+  const { snapshot } = receipt;
+  const { subject, inspection, source, profile, taskId, runId, projectId, generation } = command.input;
+  const bindings = { taskId, runId, projectId, generation, ...source, verificationInputSha256: command.inputSha256,
+    baseSnapshotSha256: inspection.snapshotSha256, targetManifestSha256: subject.manifestSha256,
+    runnerImageSha256: profile.runnerImageSha256, scannerInputsSha256: profile.scannerInputsSha256,
+    commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
+  };
+  if (Object.entries(bindings).some(([key, value]) => scope[key as keyof typeof bindings] !== value)) {
+    throw new Error('runner_verification_request_binding');
+  }
+  if (Object.entries(scope).some(([key, value]) => receipt.scope[key as keyof typeof scope] !== value)
+      || receipt.imageSha256 !== scope.runnerImageSha256 || receipt.originSha256 !== sha256(origin)
+      || receipt.domainId !== snapshot.runId || snapshot.commit !== scope.commit || snapshot.repositoryId !== scope.repositoryId
+      || snapshot.manifestSha256 !== scope.baseSnapshotSha256 || snapshot.commandSha256 !== scope.commandSha256
+      || snapshot.verificationInputSha256 !== command.inputSha256 || snapshot.inputsSha256 !== scope.scannerInputsSha256) {
+    throw new Error('runner_verification_receipt_binding');
+  }
+  const target = snapshot.target;
+  if (subject.kind === 'repair'
+    ? target?.patchSha256 !== subject.patchSha256 || target?.manifestSha256 !== subject.manifestSha256
+    : target !== null || snapshot.manifestSha256 !== subject.manifestSha256) throw new Error('runner_verification_target_binding');
+  verifyReportBindings(snapshot.reports, snapshot.manifestSha256);
+  if (target) {
+    const difference = command.repair!.patch.files.flatMap(file => file.edits).reduce((total, edit) =>
+      total + Buffer.byteLength(edit.replacement) - (edit.endByte - edit.startByte), 0);
+    if (target.totalBytes !== snapshot.totalBytes + difference) throw new Error('runner_verification_target_binding');
+    verifyReportBindings(target.reports, target.manifestSha256);
+    if (snapshot.reports[1].database && target.reports[1].database
+      && snapshot.reports[1].database.sha256 !== target.reports[1].database.sha256) throw new Error('runner_verification_database_binding');
+  }
+}
+
+export function prepareQualifiedVerificationRequest(coordinates: VerificationCoordinates, command: VerificationCommand) {
+  const { taskId, runId, projectId, generation, source, profile, inspection, subject } = command.input;
+  return qualifiedVerificationRequestSchema.parse({
+    ...coordinates, version: 1, operation: 'verify_source', taskId, runId, projectId, generation, ...source,
+    verificationInputSha256: command.inputSha256, baseSnapshotSha256: inspection.snapshotSha256,
+    targetManifestSha256: subject.manifestSha256, runnerImageSha256: profile.runnerImageSha256, scannerInputsSha256: profile.scannerInputsSha256,
+    commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
+  });
 }
 
 function requireRepairSource(receipt: RepairReceipt, request: RepairRequest, imageSha256: string) {
@@ -231,9 +286,22 @@ export class QualifiedInspectionClient {
     }, command.bytes);
   }
 
-  private async execute<Response extends QualifiedInspectionResponse | QualifiedRepairResponse | QualifiedRepairObservationResponse>(
-    request: QualifiedInspectionRequest | RepairRequest, authorize: () => Promise<void>, signal: AbortSignal | undefined,
+  async verify(coordinates: VerificationCoordinates, input: FormalVerificationInput, repair: VerificationCommand['repair'],
+    authorize: () => Promise<void>, signal?: AbortSignal): Promise<QualifiedVerificationResponse> {
+    const command = canonicalVerificationCommand({ input, repair });
+    const request = prepareQualifiedVerificationRequest(coordinates, command);
+    if (request.runnerImageSha256 !== this.imageSha256) throw new Error('runner_verification_image_binding');
+    return this.execute(request, authorize, signal, line => {
+      const response = qualifiedVerificationResponseSchema.parse(JSON.parse(line));
+      if (response.kind === 'verification_receipt') verifyQualifiedVerificationReceipt(response, request, command);
+      return response;
+    }, command.bytes, verificationProofByteLimit + 8192);
+  }
+
+  private async execute<Response extends QualifiedInspectionResponse | QualifiedRepairResponse | QualifiedRepairObservationResponse | QualifiedVerificationResponse>(
+    request: QualifiedInspectionRequest | RepairRequest | QualifiedVerificationRequest, authorize: () => Promise<void>, signal: AbortSignal | undefined,
     decode: (line: string) => Response, command?: Buffer,
+    maximum = command ? repairResponseLimit : responseLimit,
   ): Promise<Response | Rejected> {
     const requestFrame = Buffer.from(JSON.stringify(request) + '\n');
     let admitted = false;
@@ -279,7 +347,7 @@ export class QualifiedInspectionClient {
       signal?.addEventListener('abort', cancel, { once: true });
       if (signal?.aborted) cancel();
       else pulses = pulse();
-      const response = decode(await lines.read(command ? repairResponseLimit : responseLimit));
+      const response = decode(await lines.read(maximum));
       if (response.kind === 'rejected' && (response.requestId !== request.requestId || (response.cleanup === 'confirmed' && !response.domainId)
           || (response.cleanup === 'not_started' && response.domainId))) throw new Error('runner_response_binding');
       return response;

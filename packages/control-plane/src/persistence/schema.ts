@@ -3,7 +3,7 @@ import { boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey
 import {
   agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
   type FormalRepairInput, type FormalRepairResult, type FormalVerificationInput, type InspectionPlan,
-  type PreauditRecord, type QualifiedInspectionReceipt, type QualifiedRepairReceipt, type ReleaseDecision, type ReleaseOperationState,
+  type PreauditRecord, type QualifiedInspectionReceipt, type QualifiedRepairReceipt, type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState,
 } from '@itervane/contracts';
 
 export const domain = pgSchema('itervane');
@@ -295,6 +295,35 @@ export const formalVerificationInputs = domain.table('formal_verification_inputs
 }, t => [check('formal_verification_input_binding', sql`(${t.preparedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
   AND ${t.document}->>'version' = '1' AND ${t.document}->>'runId' = ${t.runId}::text
   AND octet_length(${t.document}::text) <= 8192) IS TRUE`)]);
+
+export const formalRescanAttempts = domain.table('formal_rescan_attempts', {
+  requestId: uuid('request_id').primaryKey(),
+  runId: uuid('run_id').notNull().references(() => formalVerificationInputs.runId),
+  inputSha256: text('input_sha256').notNull(), fence: integer('fence').notNull(), workerId: uuid('worker_id').notNull(),
+  workspaceSha256: text('workspace_sha256').notNull(), imageSha256: text('image_sha256').notNull(),
+  originSha256: text('origin_sha256').notNull(),
+  state: text('state').$type<'reserved' | 'uncertain' | 'closed' | 'recorded'>().notNull().default('reserved'),
+  settledFence: integer('settled_fence'), settledWorkerId: uuid('settled_worker_id'), settledAt: timestamp('settled_at', { withTimezone: true }),
+  receiptSha256: text('receipt_sha256'), receipt: jsonb('receipt').$type<QualifiedVerificationReceipt>(), createdAt: createdAt(),
+}, t => [
+  unique('formal_rescan_attempt_per_fence').on(t.runId, t.fence),
+  uniqueIndex('formal_rescan_open_attempt').on(t.runId).where(sql`${t.state} <> 'closed'`),
+  check('formal_rescan_attempt_coordinates', sql`${t.fence} > 0 AND ${t.inputSha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.workspaceSha256} ~ '^[a-f0-9]{64}$' AND ${t.imageSha256} ~ '^[a-f0-9]{64}$' AND ${t.originSha256} ~ '^[a-f0-9]{64}$'`),
+  check('formal_rescan_attempt_state', sql`((${t.state} = 'reserved' AND ${t.settledFence} IS NULL
+    AND ${t.settledWorkerId} IS NULL AND ${t.settledAt} IS NULL) OR (${t.state} IN ('closed', 'uncertain', 'recorded')
+    AND ${t.settledFence} >= ${t.fence} AND ${t.settledWorkerId} IS NOT NULL AND ${t.settledAt} IS NOT NULL)) IS TRUE`),
+  check('formal_rescan_attempt_receipt', sql`((${t.state} <> 'recorded' AND ${t.receiptSha256} IS NULL AND ${t.receipt} IS NULL) OR (
+    ${t.state} = 'recorded' AND ${t.settledFence} = ${t.fence} AND ${t.settledWorkerId} = ${t.workerId}
+    AND ${t.receiptSha256} ~ '^[a-f0-9]{64}$' AND octet_length(${t.receipt}::text) <= 9437184
+    AND ${t.receipt}->>'kind' = 'verification_receipt' AND ${t.receipt}->'cleanupConfirmed' = 'true'::jsonb
+    AND ${t.receipt}->'sessionVerified' = 'true'::jsonb AND ${t.receipt}->>'originSha256' = ${t.originSha256}
+    AND ${t.receipt}->>'imageSha256' = ${t.imageSha256} AND ${t.receipt}->>'domainId' = ${t.receipt}#>>'{snapshot,runId}'
+    AND ${t.receipt}#>>'{scope,requestId}' = ${t.requestId}::text AND ${t.receipt}#>>'{scope,runId}' = ${t.runId}::text
+    AND ${t.receipt}#>>'{scope,fence}' = ${t.fence}::text AND ${t.receipt}#>>'{scope,workspaceSha256}' = ${t.workspaceSha256}
+    AND ${t.receipt}#>>'{scope,verificationInputSha256}' = ${t.inputSha256}
+    AND ${t.receipt}#>'{snapshot,offline}' = 'true'::jsonb AND ${t.receipt}#>'{snapshot,readOnly}' = 'true'::jsonb)) IS TRUE`),
+]);
 
 export const preaudits = domain.table('preaudits', {
   id: uuid('id').primaryKey(), projectId: uuid('project_id').notNull().references(() => projects.id),

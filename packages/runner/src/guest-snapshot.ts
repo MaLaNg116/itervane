@@ -13,7 +13,7 @@ const regularMode = z.enum(['100644', '100755']);
 const entrySchema = z.strictObject({ path: z.string().min(1).max(240), mode: regularMode });
 const publicationSchema = z.strictObject({
   runId: z.uuidv4(), source: sourceRefSchema, manifestSha256: sha256Schema,
-  mode: z.enum(['fixture', 'qualified', 'repair', 'repair-observation']),
+  mode: z.enum(['fixture', 'qualified', 'repair', 'repair-observation', 'verification']),
   entries: z.array(entrySchema).min(1).max(sourceLimits.maxFiles),
 });
 const publicationBytes = 3 * 1024 * 1024;
@@ -95,7 +95,7 @@ export function isNpmLock(path: string) {
 /** The caller is the sealed acquisition service and provides the bare Git store. */
 export function publishGuestSnapshot(
   base: string, repository: string, runId: string, rawSource: Source,
-  mode: 'fixture' | 'qualified' | 'repair' | 'repair-observation' = 'fixture',
+  mode: z.infer<typeof publicationSchema>['mode'] = 'fixture',
 ) {
   const source = sourceRefSchema.parse(rawSource);
   const { commitObject, files } = readGitObjects(repository, source);
@@ -150,21 +150,20 @@ function snapshotPaths(root: string) {
   return files.sort();
 }
 
-function assertPaths(root: string, expected: Entry[]) {
+function assertPaths(root: string, expected: readonly Entry[]) {
   const paths = snapshotPaths(root);
   if (paths.length !== expected.length || JSON.stringify(paths) !== JSON.stringify(expected.map(entry => entry.path).sort())) {
     throw new Error('snapshot-file');
   }
 }
 
-/** Recheck the published bytes in the scanner namespace, where the mount is read-only. */
-export function readGuestSnapshotData(ready: string) {
-  const publication = publicationSchema.parse(JSON.parse(readBoundedFile(join(ready, 'snapshot.json'), publicationBytes).toString('utf8')));
+/** Read the entire published tree and verify its restricted npm scan view. */
+export function readPublishedWorktree(ready: string, entries: readonly Entry[]) {
   const tree = join(ready, 'worktree');
   const npm = join(ready, 'npm');
-  for (const entry of publication.entries) sourcePath(entry.path);
-  const locks = publication.entries.filter(entry => isNpmLock(entry.path));
-  assertPaths(tree, publication.entries);
+  for (const entry of entries) sourcePath(entry.path);
+  const locks = entries.filter(entry => isNpmLock(entry.path));
+  assertPaths(tree, entries);
   assertPaths(npm, locks);
   for (const lock of locks) {
     const original = lstatSync(join(tree, lock.path));
@@ -172,11 +171,17 @@ export function readGuestSnapshotData(ready: string) {
     if (!projected.isFile() || projected.dev !== original.dev || projected.ino !== original.ino) throw new Error('snapshot-inventory');
   }
   let total = 0;
-  const files = publication.entries.map(entry => {
+  return entries.map(entry => {
     const content = readBoundedFile(join(tree, entry.path), Math.min(sourceLimits.maxFileBytes, sourceLimits.maxSourceBytes - total));
     total += content.length;
     return { ...entry, content };
   });
+}
+
+/** Recheck the published bytes in the scanner namespace, where the mount is read-only. */
+export function readGuestSnapshotData(ready: string) {
+  const publication = publicationSchema.parse(JSON.parse(readBoundedFile(join(ready, 'snapshot.json'), publicationBytes).toString('utf8')));
+  const files = readPublishedWorktree(ready, publication.entries);
   const commitObject = readBoundedFile(join(ready, 'commit.object'), sourceLimits.maxCommitBytes);
   const manifest = verifySourceSnapshot({ source: publication.source, commitObject, files });
   if (manifest.sha256 !== publication.manifestSha256) throw new Error('snapshot-manifest');

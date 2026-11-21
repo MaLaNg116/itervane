@@ -11,16 +11,18 @@ import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, 
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, type QualifiedInspectionReceipt,
   type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt, type RepairPatch } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
-import { canonicalRepairCommand, canonicalRepairObservation, scannerProfiles, sha256 } from '@itervane/runner';
+import { canonicalRepairCommand, canonicalRepairObservation, canonicalVerificationCommand, prepareQualifiedVerificationRequest,
+  scannerProfiles, sha256 } from '@itervane/runner';
 import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../verification/src/agent/npm-repair-fixture.js';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRuntime,
-  formalVerificationInputs, inspectionAttempts } from '../../src/persistence/schema.js';
+  formalRescanAttempts, formalVerificationInputs, inspectionAttempts } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
 import { runFormalRepair } from '../../src/runtime/formal-repair.js';
+import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-rescan.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
 import { GuardedCheckpointer } from '../../src/runtime/checkpointer.js';
 import { FormalRepairExecution, type RepairRunner } from '../../src/runtime/repair-execution.js';
@@ -47,7 +49,7 @@ const workspaceSha256 = 'd'.repeat(64);
 const verificationProfile = { id: 'standard-web-fixture', baselineSha256: sha256('protected baseline'),
   policySha256: sha256('verification policy'), scannerInputsSha256: sha256('verification scanners'), runnerImageSha256: imageSha256 };
 const clearRepairHandoff = () => database.admin.query(
-  'TRUNCATE itervane.formal_verification_inputs, itervane.formal_repair_results, itervane.formal_repair_attempts, '
+  'TRUNCATE itervane.formal_rescan_attempts, itervane.formal_verification_inputs, itervane.formal_repair_results, itervane.formal_repair_attempts, '
   + 'itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs',
 );
 beforeAll(async () => { database = await databaseFixture(); issuer = await identityFixture(); identity = await createIdentityVerifier(issuer.config)(await issuer.token()); });
@@ -605,6 +607,58 @@ it('retains the audited source when there are no findings and does not queue a r
   await expect(prepare(scope)).rejects.toBeInstanceOf(ExecutionLost);
   await expect(prepare(current)).resolves.toEqual(first);
   expect(await database.storage.db.select().from(formalVerificationInputs)).toHaveLength(1);
+});
+
+it('recovers an uncertain rescan only on the original idle Runner and retains the checked receipt', async () => {
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: completedRunner(), auditModel: auditModel() });
+  try { expect(await worker.tick()).toBe(true); } finally { await worker.close(); }
+  const scope = await claimAfterAudit();
+  const [inspection] = await database.storage.db.select().from(inspectionAttempts);
+  const original = qualifiedInspectionResponseSchema.parse(inspection?.receipt);
+  if (original.kind !== 'receipt') throw new Error('Missing original inspection');
+  let status = idleRepairRunner();
+  const verify = vi.fn<RescanRunner['verify']>(async (coordinates, input, repair, authorize) => {
+    await authorize();
+    const { origin: _origin, ...bound } = prepareQualifiedVerificationRequest(coordinates, canonicalVerificationCommand({ input, repair }));
+    if (bound.fence === scope.fence) {
+      return { kind: 'rejected', requestId: bound.requestId, domainId: null, code: 'cleanup_unproven', cleanup: 'unknown' };
+    }
+    const domainId = randomUUID();
+    return { kind: 'verification_receipt', scope: bound, domainId, commitSha256: original.commitSha256,
+      imageSha256, originSha256: original.originSha256, cleanupConfirmed: true, sessionVerified: true,
+      snapshot: { ...original.snapshot, runId: domainId, inputsSha256: bound.scannerInputsSha256, target: null,
+        commandSha256: bound.commandSha256, verificationInputSha256: bound.verificationInputSha256 },
+    };
+  });
+  const run = (lease: ExecutionScope) => runFormalRescan(coordinator, lease, verificationProfile, { observe: async () => status, verify });
+  const unknown = await run(scope);
+  expect(unknown).toMatchObject({ kind: 'rejected', code: 'cleanup_unproven' });
+  expect(await run(scope)).toEqual(unknown);
+  expect(verify).toHaveBeenCalledTimes(1);
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await coordinator.reconcile(randomUUID());
+  const recovered = await claim();
+  await expect(run(scope)).rejects.toBeInstanceOf(ExecutionLost);
+  status = { ...status, workspaceSha256: sha256('different Runner workspace') };
+  expect(await run(recovered)).toEqual(unknown);
+  expect(verify).toHaveBeenCalledTimes(1);
+  status = idleRepairRunner();
+  const result = await run(recovered);
+  if (result.kind !== 'scanned') throw new Error('Missing recovered rescan');
+  expect(result.comparison).toEqual({ status: 'compared', groups: [], totals: { introduced: 0, resolved: 0, remaining: 0 } });
+  expect(await run(recovered)).toEqual(result);
+  expect(verify).toHaveBeenCalledTimes(2);
+  const attempts = await database.storage.db.select().from(formalRescanAttempts);
+  expect(attempts).toHaveLength(2);
+  expect(attempts).toEqual(expect.arrayContaining([
+    expect.objectContaining({ fence: scope.fence, state: 'closed', settledFence: recovered.fence, receipt: null }),
+    expect.objectContaining({ fence: recovered.fence, state: 'recorded', receipt: result.receipt, receiptSha256: sha256(JSON.stringify(result.receipt)) }),
+  ]));
+  await expect(database.storage.db.delete(formalRescanAttempts)).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'formal_rescan_attempt_is_retained' } });
+  await database.admin.query('DELETE FROM itervane.workspace_members');
+  await expect(run(recovered)).rejects.toMatchObject({ code: 'not_found' });
+  expect(verify).toHaveBeenCalledTimes(2);
 });
 
 it('keeps verification unavailable while an audit finding has no published repair candidate', async () => {

@@ -21,11 +21,10 @@ from libvirt_probe import IMAGE_DIGEST, Rejected, Result, check_kvm, closed, con
 from native_source import SourceProbe
 from session_boundary import SESSION_URI, SessionRejected, prepare_session
 from source_gateway import COMMIT, RegisteredOrigin, SourceGateway, SourceRejected
-from source_wire import GUEST_REPAIR_ERRORS, MAX_REPAIR_COMMAND
+from source_wire import GUEST_REPAIR_ERRORS, MAX_QUALIFIED_RECEIPT, MAX_REPAIR_COMMAND, MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT
 
 
 REQUEST_LIMIT = 2048
-RESPONSE_LIMIT = 4 * 1024 * 1024 + 8192
 HANDSHAKE_SECONDS = 3
 PULSE_SECONDS = 2
 READY = b"READY 1\n"
@@ -35,9 +34,13 @@ COUNTERS = ("generation", "fence")
 FIELDS = {*IDS, *COUNTERS, "version", "planSha256", "workspaceSha256", "commit", "origin"}
 REPAIR = "apply_repair"
 OBSERVE_REPAIR = "observe_repair"
+VERIFY_SOURCE = "verify_source"
 REPAIR_OPERATIONS = (REPAIR, OBSERVE_REPAIR)
 REPAIR_DIGESTS = ("repairInputSha256", "baseSnapshotSha256", "commandSha256")
 REPAIR_FIELDS = (FIELDS - {"planSha256"}) | {"operation", "operationId", "commandBytes", *REPAIR_DIGESTS}
+VERIFY_DIGESTS = ("verificationInputSha256", "baseSnapshotSha256", "targetManifestSha256",
+                  "runnerImageSha256", "scannerInputsSha256", "commandSha256")
+VERIFY_FIELDS = (FIELDS - {"planSha256"}) | {"operation", "commandBytes", *VERIFY_DIGESTS}
 PEER = struct.Struct("3i")
 
 
@@ -64,21 +67,26 @@ def parse_request(line):
     data = json.loads(line, object_pairs_hook=unique_fields)
     if not isinstance(data, dict):
         raise ValueError("invalid request fields")
-    repair = data.get("operation") in REPAIR_OPERATIONS
-    if data.keys() != (REPAIR_FIELDS if repair else FIELDS) or type(data["version"]) is not int or data["version"] != 1:
+    operation = data.get("operation")
+    repair = operation in REPAIR_OPERATIONS
+    verification = operation == VERIFY_SOURCE
+    fields = VERIFY_FIELDS if verification else REPAIR_FIELDS if repair else FIELDS
+    if data.keys() != fields or type(data["version"]) is not int or data["version"] != 1:
         raise ValueError("invalid request fields")
     if not all(is_v4(data[name]) for name in IDS) or (repair and not is_v4(data["operationId"])):
         raise ValueError("invalid request identity")
     if not all(type(data[name]) is int and 0 < data[name] <= 2147483647 for name in COUNTERS):
         raise ValueError("invalid request authority")
-    digests = (*REPAIR_DIGESTS, "workspaceSha256") if repair else ("planSha256", "workspaceSha256")
-    patterns = {name: IMAGE_DIGEST for name in digests}
+    digests = VERIFY_DIGESTS if verification else REPAIR_DIGESTS if repair else ("planSha256",)
+    patterns = {name: IMAGE_DIGEST for name in (*digests, "workspaceSha256")}
     patterns["commit"] = COMMIT
     for name, pattern in patterns.items():
         if not isinstance(data[name], str) or not pattern.fullmatch(data[name]):
             raise ValueError("invalid fixed reference")
-    if repair and (type(data["commandBytes"]) is not int or not 0 < data["commandBytes"] <= MAX_REPAIR_COMMAND):
-        raise ValueError("invalid command size")
+    if repair or verification:
+        limit = MAX_VERIFICATION_COMMAND if verification else MAX_REPAIR_COMMAND
+        if type(data["commandBytes"]) is not int or not 0 < data["commandBytes"] <= limit:
+            raise ValueError("invalid command size")
     if not isinstance(data["origin"], str) or not 0 < len(data["origin"]) <= 768:
         raise ValueError("invalid source")
     return data
@@ -101,6 +109,37 @@ def read_frame(connection):
     return bytes(line)
 
 
+def json_digest(value):
+    canonical = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def require_verification_command(command, request):
+    if not isinstance(command, dict) or command.keys() != {"input", "repair"}:
+        raise ValueError("invalid verification command")
+    frozen = command["input"]
+    source = {"repositoryId": request["repositoryId"], "commit": request["commit"]}
+    if (not isinstance(frozen, dict) or frozen.get("source") != source
+        or any(frozen.get(field) != request[field] for field in ("version", "taskId", "runId", "projectId", "generation"))
+        or json_digest(frozen) != request["verificationInputSha256"]):
+        raise ValueError("verification command authority mismatch")
+    inspection, profile, subject = (frozen.get(key) for key in ("inspection", "profile", "subject"))
+    if (not all(isinstance(value, dict) for value in (inspection, profile, subject))
+        or inspection.get("snapshotSha256") != request["baseSnapshotSha256"]
+        or subject.get("manifestSha256") != request["targetManifestSha256"]
+        or any(profile.get(key) != request[key] for key in ("runnerImageSha256", "scannerInputsSha256"))):
+        raise ValueError("verification command evidence mismatch")
+    repair = command["repair"]
+    same_snapshot = request["baseSnapshotSha256"] == request["targetManifestSha256"]
+    if subject.get("kind") == "original" and same_snapshot and repair is None:
+        return
+    if (subject.get("kind") != "repair" or same_snapshot or not isinstance(repair, dict)
+        or repair.keys() != {"workspace", "patch"}
+        or json_digest(repair) != subject.get("commandSha256")
+        or json_digest(repair["patch"]) != subject.get("patchSha256")):
+        raise ValueError("verification repair evidence mismatch")
+
+
 def read_command(connection, request):
     expires = time.monotonic() + HANDSHAKE_SECONDS
     size = request["commandBytes"]
@@ -112,11 +151,14 @@ def read_command(connection, request):
         connection.settimeout(remaining)
         block = connection.recv(min(65536, size - len(data)))
         if not block:
-            raise ValueError("truncated repair command")
+            raise ValueError("truncated runner command")
         data.extend(block)
     if hashlib.sha256(data).hexdigest() != request["commandSha256"]:
-        raise ValueError("repair command digest mismatch")
+        raise ValueError("runner command digest mismatch")
     command = json.loads(data, object_pairs_hook=unique_fields)
+    if request["operation"] == VERIFY_SOURCE:
+        require_verification_command(command, request)
+        return bytes(data)
     field = "patch" if request["operation"] == REPAIR else "targets"
     if not isinstance(command, dict) or command.keys() != {"workspace", field}:
         raise ValueError("invalid repair command")
@@ -199,9 +241,24 @@ def rejected(code, request_id=None, cleanup="not_started", domain_id=None):
     return {"kind": "rejected", "requestId": request_id, "code": code, "cleanup": cleanup, "domainId": domain_id}
 
 
+def verification_proof_matches(request, snapshot, image_sha256):
+    target = snapshot.get("target")
+    same_snapshot = request["baseSnapshotSha256"] == request["targetManifestSha256"]
+    return (
+        image_sha256 == request["runnerImageSha256"]
+        and snapshot.get("manifestSha256") == request["baseSnapshotSha256"]
+        and snapshot.get("inputsSha256") == request["scannerInputsSha256"]
+        and snapshot.get("verificationInputSha256") == request["verificationInputSha256"]
+        and snapshot.get("commandSha256") == request["commandSha256"]
+        and (("target" in snapshot and target is None) if same_snapshot
+             else isinstance(target, dict) and target.get("manifestSha256") == request["targetManifestSha256"])
+    )
+
+
 def response_for(request, result):
     request_id = request["requestId"]
     repair = request.get("operation") in REPAIR_OPERATIONS
+    verification = request.get("operation") == VERIFY_SOURCE
     observation = request.get("operation") == OBSERVE_REPAIR
     expected_code = "repair_passed" if repair else "inspection_passed"
     snapshot = result.repair if repair else result.inspection
@@ -210,12 +267,14 @@ def response_for(request, result):
         and result.runId and result.imageSha256 and result.source and isinstance(snapshot, dict) and snapshot
     ):
         evidence = snapshot.get("observation" if observation else "candidate") if repair else None
-        if not repair or (
+        repair_matches = not repair or (
             snapshot.get("commandSha256") == request["commandSha256"] and isinstance(evidence, dict)
             and snapshot.get("manifestSha256") == evidence.get("baseSnapshotSha256") == request["baseSnapshotSha256"]
             and evidence.get("repairInputSha256") == request["repairInputSha256"] and evidence.get("operationId") == request["operationId"]
-        ):
-            kind = "repair_observation" if observation else "repair_receipt" if repair else "receipt"
+        )
+        if repair_matches and (not verification or verification_proof_matches(request, snapshot, result.imageSha256)):
+            kind = ("verification_receipt" if verification else "repair_observation" if observation
+                    else "repair_receipt" if repair else "receipt")
             return {
                 "kind": kind,
                 "scope": {key: value for key, value in request.items() if key != "origin"},
@@ -235,7 +294,8 @@ def response_for(request, result):
     return rejected("not_ready", request_id)
 
 
-def serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping, enable_repair=False):
+def serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping,
+                     enable_repair=False, enable_verification=False):
     connection.settimeout(HANDSHAKE_SECONDS)
     _, uid, _ = PEER.unpack(connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, PEER.size))
     if uid != worker_uid:
@@ -248,7 +308,9 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
     except (OSError, ValueError, RecursionError):
         return rejected("invalid_request")
     repair = request.get("operation") in REPAIR_OPERATIONS
-    if request["workspaceSha256"] != fingerprint or (repair and not enable_repair):
+    verification = request.get("operation") == VERIFY_SOURCE
+    if (request["workspaceSha256"] != fingerprint or (repair and not enable_repair)
+        or (verification and not enable_verification)):
         return rejected("not_ready", request["requestId"])
     origin = origins.get(request["origin"])
     if origin is None:
@@ -262,7 +324,7 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
     if first != b"K" or stopping():
         return rejected("lease_lost", request["requestId"])
     try:
-        command = read_command(connection, request) if repair else None
+        command = read_command(connection, request) if repair or verification else None
     except (OSError, ValueError, RecursionError):
         return rejected("invalid_request", request["requestId"])
     if stopping():
@@ -281,7 +343,7 @@ def socket_parent(path):
         raise ValueError("invalid socket directory")
 
 
-def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping, enable_repair):
+def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping, enable_repair, enable_verification):
     socket_parent(path)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(os.fspath(path))
@@ -296,9 +358,11 @@ def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping
                     continue
                 with connection:
                     try:
-                        result = serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping, enable_repair)
+                        result = serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping,
+                                                  enable_repair, enable_verification)
                         encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
-                        if len(encoded) > RESPONSE_LIMIT:
+                        limit = MAX_VERIFICATION_RECEIPT if result["kind"] == "verification_receipt" else MAX_QUALIFIED_RECEIPT
+                        if len(encoded) > limit + 8192:
                             encoded = b'{"kind":"rejected","requestId":null,"code":"cleanup_unproven","cleanup":"unknown","domainId":null}\n'
                         connection.settimeout(HANDSHAKE_SECONDS)
                         connection.sendall(encoded)
@@ -330,9 +394,12 @@ def main():
         path, root, image = map(Path, sys.argv[1:4])
         digest, name = sys.argv[4:6]
         allowed = sys.argv[6:]
-        enable_repair = allowed[:1] == ["--enable-repair"]
-        if enable_repair:
-            allowed = allowed[1:]
+        features = set()
+        while allowed and allowed[0] in ("--enable-repair", "--enable-verification"):
+            flag = allowed.pop(0)
+            if flag in features:
+                raise ValueError("duplicate capability")
+            features.add(flag)
         worker_uid = int(name)
         if (
             not 0 < worker_uid < 2**31 or worker_uid == os.geteuid()
@@ -356,13 +423,18 @@ def main():
                     "imageSha256": digest, "state": "idle" if idle else "blocked"}
 
         def launch(request, origin, cancelled, command):
+            verification = request.get("operation") == VERIFY_SOURCE
+            if verification and request["runnerImageSha256"] != digest:
+                return Result("config_required")
             if not workspace_idle(libvirt, root, image, fingerprint):
                 return Result("pending_cleanup")
             job = SourceProbe(SourceGateway(origin, request["commit"]), repository_id=request["repositoryId"],
-                              repair_command=command, repair_observation=request.get("operation") == OBSERVE_REPAIR)
+                              repair_command=None if verification else command, repair_observation=request.get("operation") == OBSERVE_REPAIR,
+                              verification_command=command if verification else None)
             return probe(libvirt, libvirt_qemu, root, image, digest, cancelled, "inspect", True, source_override=job)
 
-        run_server(path, worker_uid, origins, fingerprint, observe, launch, stopped, enable_repair)
+        run_server(path, worker_uid, origins, fingerprint, observe, launch, stopped,
+                   "--enable-repair" in features, "--enable-verification" in features)
     except (ImportError, OSError, ValueError, Rejected, SessionRejected, SourceRejected):
         print("Qualified inspection controller could not start.", file=sys.stderr)
         return 1
