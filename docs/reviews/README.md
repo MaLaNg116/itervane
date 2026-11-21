@@ -54,7 +54,7 @@
 | 048 | P2-E-C3-C1 归档凭据与唯一 Registry 导入意图 | [#48](https://github.com/MaLaNg116/itervane/pull/48)，已合入 main | [发布步骤导读](p2-e-formal-release-registry-steps.md) | 149 项真实 PostgreSQL、163 项单元、常规 CI 与[四组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44928454610)通过，核对实际 Registry 摘要及暂存清理 |
 | 049 | P2-E-C3-C2 Registry 导入 Worker 与中断恢复 | [#49](https://github.com/MaLaNg116/itervane/pull/49)，已合入 main | [Registry 恢复导读](p2-e-formal-release-registry-recovery.md) | 151 项真实 PostgreSQL、163 项单元和[四组托管 Runner](https://github.com/MaLaNg116/itervane/actions/runs/44931283197)通过，确认中断后从同一操作完成只读回读 |
 | 050 | P2-E-C4-A 版本化 Komodo 目标与受限适配 | [#50](https://github.com/MaLaNg116/itervane/pull/50)，基于已合入 #49 的 main | [正式适配器导读](p2-e-formal-komodo-target.md) | 178 项单元、152 项真实 PostgreSQL 全量复跑、[六项原生 Komodo 检查](https://github.com/MaLaNg116/itervane/actions/runs/44932748682)及[四组 Runner](https://github.com/MaLaNg116/itervane/actions/runs/44932748615)通过 |
-| 051 | P2-E-C4-B1 Komodo 配置与派发意图、原生更新证明 | [#51](https://github.com/MaLaNg116/itervane/pull/51)，基于 #50 | [Komodo 步骤导读](p2-e-formal-komodo-ledger.md) | 178 项单元、三项 PostgreSQL 专项通过，数据库全量与[托管 Runner](https://github.com/MaLaNg116/itervane/actions/runs/44935345510)进行中 |
+| 051 | P2-E-C4-B1 Komodo 配置与派发意图、原生更新证明 | [#51](https://github.com/MaLaNg116/itervane/pull/51)，基于 #50 | [Komodo 步骤导读](p2-e-formal-komodo-ledger.md) | 178 项单元、154 项真实 PostgreSQL 与[六项原生 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/44935345371)通过，[托管 Runner](https://github.com/MaLaNg116/itervane/actions/runs/44935345510)进行中 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
