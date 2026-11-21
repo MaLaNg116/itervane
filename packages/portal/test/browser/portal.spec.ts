@@ -375,6 +375,7 @@ test('shows the bilingual release result as it changes and clears evidence from 
   const project = await seedProject(stack);
   const authorization = authorizationFrom(page);
   await login(page, stack);
+  await expect(page.getByRole('link', { name: project.title, exact: true })).toBeVisible();
   const task = await admit(stack, authorization(), project);
   const { candidate, target } = frozenReleaseFixture(task);
   const base = `${stack.origin}/v1/tasks/${task.id}`;
