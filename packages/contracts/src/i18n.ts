@@ -60,6 +60,8 @@ export const en = {
   'task.release_komodo_dispatch_recheck_started': 'A worker started a read-only check of the recorded Komodo deployment update.',
   'task.release_komodo_manual_review': 'The Komodo outcome still requires manual review. The environment remains reserved.',
   'task.release_komodo_awaiting_rollout': 'The recorded Komodo outcome is ready for independent runtime checks.',
+  'task.release_rollout_claimed': 'A worker reserved a read-only lease to check the recorded deployment.',
+  'task.release_rollout_manual_review': 'The deployment still requires manual verification. The environment remains reserved.',
   'task.release_requeued': 'The release returned to the queue before a downstream change.',
   'task.release_rejected': 'The owner rejected this release candidate.',
   'task.release_revoked': 'The owner revoked approval before dispatch.',
@@ -101,6 +103,7 @@ export const en = {
   'reason.release_registry_missing': 'The approved image digest was not found in the registry.',
   'reason.release_registry_unavailable': 'The approved image could not be independently confirmed in the registry.',
   'reason.release_komodo_unavailable': 'The approved Komodo operation could not be completed or independently checked.',
+  'reason.release_rollout_limit': 'The independent rollout check used all of its automatic attempts.',
   'reason.release_evidence_changed': 'The current verification evidence does not match the approved candidate.',
   'reason.repair_retry_configuration_changed': 'The retry requires the verified source, rules and Worker configuration from its handoff.',
   'reason.repair_retry_limit': 'The automatic retry was used. The remaining verification issues require human review.',
@@ -190,6 +193,8 @@ export const zhCN: Record<MessageKey, string> = {
   'task.release_komodo_dispatch_recheck_started': 'Worker 已开始只读核对已记录的 Komodo 部署更新。',
   'task.release_komodo_manual_review': 'Komodo 结果仍需人工核对，目标环境继续保留占用。',
   'task.release_komodo_awaiting_rollout': '已记录 Komodo 终态，等待独立核验实际运行情况。',
+  'task.release_rollout_claimed': 'Worker 已取得只读租约，核对已记录的部署。',
+  'task.release_rollout_manual_review': '部署仍需人工核验，目标环境继续保留占用。',
   'task.release_requeued': '发布操作在下游变更前已返回队列。',
   'task.release_rejected': '所有者已拒绝此发布候选。',
   'task.release_revoked': '所有者已在派发前撤销确认。',
@@ -231,6 +236,7 @@ export const zhCN: Record<MessageKey, string> = {
   'reason.release_registry_missing': 'Registry 中未找到获批镜像摘要。',
   'reason.release_registry_unavailable': '无法从 Registry 独立确认获批镜像。',
   'reason.release_komodo_unavailable': '无法完成获批 Komodo 操作或独立核对其结果。',
+  'reason.release_rollout_limit': '上线核验的自动尝试次数已用完。',
   'reason.release_evidence_changed': '当前复验证据与获批候选不一致。',
   'reason.repair_retry_configuration_changed': '返修需要继续使用交接时核验的源码、规则与 Worker 配置。',
   'reason.repair_retry_limit': '自动返修额度已用完，剩余问题需要人工处理。',
@@ -274,7 +280,8 @@ export const taskEventTypes = ['task.accepted', 'task.cancelled', 'task.started'
   'task.release_komodo_config_prepared', 'task.release_komodo_configured', 'task.release_komodo_dispatch_prepared',
   'task.release_komodo_update_recorded', 'task.release_komodo_dispatch_observed', 'task.release_komodo_reconciling',
   'task.release_komodo_config_recheck_started', 'task.release_komodo_dispatch_recheck_started',
-  'task.release_komodo_manual_review', 'task.release_komodo_awaiting_rollout'] as const;
+  'task.release_komodo_manual_review', 'task.release_komodo_awaiting_rollout',
+  'task.release_rollout_claimed', 'task.release_rollout_manual_review'] as const;
 
 export const eventReasonMessages = {
   runner_unavailable: 'tool.runner_unavailable', lease_expired: 'reason.lease_expired', expired_cancel: 'reason.expired_cancel',
@@ -294,6 +301,7 @@ export const eventReasonMessages = {
   release_archive_unavailable: 'reason.release_archive_unavailable', release_registry_missing: 'reason.release_registry_missing',
   release_registry_unavailable: 'reason.release_registry_unavailable',
   release_komodo_unavailable: 'reason.release_komodo_unavailable',
+  release_rollout_limit: 'reason.release_rollout_limit',
   repair_retry_configuration_changed: 'reason.repair_retry_configuration_changed', repair_retry_limit: 'reason.repair_retry_limit',
   permission_revoked: 'reason.permission_revoked', budget_exhausted: 'reason.budget_exhausted', cancelled: 'reason.cancelled',
   cancelled_or_interrupted: 'reason.cancelled_or_interrupted', execution_error: 'reason.execution_error', child_task: 'reason.child_task',

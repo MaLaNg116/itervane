@@ -120,6 +120,9 @@ async function verifyTarget(tx: Transaction, task: TaskRow, { candidate, environ
   return { target, mapping: { ...mapping, registryOrigin: workerOrigin } };
 }
 
+export { readLink as readFormalReleaseLink, lockRelease as lockLinkedRelease, verifyTarget as verifyFormalReleaseTarget,
+  lockRegistryIntent, decisionBinding as releaseDecisionBinding };
+
 async function verifyAuthority(tx: Transaction, task: TaskRow, release: LockedRelease, workerOrigin: string) {
   const { operation, candidate } = release;
   const manifest = readReleaseManifest(candidate);

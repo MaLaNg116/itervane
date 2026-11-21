@@ -21,7 +21,7 @@ const preparedPhase = {
 type KomodoStep = KomodoStepKind;
 type Phase = typeof komodoReleasePhases[number];
 
-function targetForKomodo(mapping: FormalReleaseTarget & { registryOrigin: string }): KomodoReleaseTarget {
+export function targetForKomodo(mapping: FormalReleaseTarget & { registryOrigin: string }): KomodoReleaseTarget {
   const { komodo, registryOrigin, deploymentId, serverId, imageRepository, runtimeConfigSha256 } = mapping;
   if (!komodo) throw new ReleaseAuthorityRejected('release_target_changed');
   return { komodo, registryOrigin, deploymentId, serverId, imageRepository, runtimeConfigSha256 };

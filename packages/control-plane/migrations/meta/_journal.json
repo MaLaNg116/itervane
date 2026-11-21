@@ -253,6 +253,13 @@
       "when": 1795286560707,
       "tag": "0035_formal_komodo_worker",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1795292953970,
+      "tag": "0036_formal_release_rollout_attempts",
+      "breakpoints": true
     }
   ]
 }
