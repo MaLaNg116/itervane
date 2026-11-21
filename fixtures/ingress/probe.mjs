@@ -9,6 +9,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 import { createKeycloakRolloutTokenSource, ReleaseRolloutVerifier } from '../../packages/control-plane/src/runtime/release-rollout.ts';
 import { fingerprintRolloutCheck } from '../../packages/control-plane/src/service/release-targets.ts';
+import { createRolloutRealm } from '../../packages/verification/src/native/rollout-realm.ts';
 import { report, saveReport } from '../../packages/verification/src/report.ts';
 
 const versions = JSON.parse(await readFile(new URL('versions.json', import.meta.url), 'utf8'));
@@ -108,31 +109,9 @@ try {
 
   phase = 'keycloak';
   const realm = 'rollout-' + uid;
-  const appClient = 'demo';
-  const probeClient = 'demo-health';
-  const otherClient = 'other-health';
-  const appSecret = randomBytes(28).toString('hex');
-  const probeSecret = randomBytes(28).toString('hex');
-  const otherSecret = randomBytes(28).toString('hex');
-  const probeId = randomUUID();
-  const otherId = randomUUID();
-  const groups = { name: 'groups', protocol: 'openid-connect', protocolMapper: 'oidc-group-membership-mapper', config: {
-    'full.path': 'true', 'claim.name': 'groups', 'id.token.claim': 'true', 'access.token.claim': 'true', 'userinfo.token.claim': 'true',
-  } };
-  const audience = { name: 'app-only', protocol: 'openid-connect', protocolMapper: 'oidc-audience-mapper', config: {
-    'included.client.audience': appClient, 'access.token.claim': 'true', 'id.token.claim': 'false',
-  } };
-  const machine = (clientId, secret) => ({ clientId, secret, serviceAccountsEnabled: true, standardFlowEnabled: false,
-    publicClient: false, protocol: 'openid-connect', fullScopeAllowed: false, protocolMappers: [groups,audience] });
-  const principal = (id, clientId, authorized) => ({ id, username: 'service-account-' + clientId, enabled: true,
-    serviceAccountClientId: clientId, email: clientId + '@example.invalid', emailVerified: true, groups: authorized ? ['/demo'] : [] });
+  const { appClient, appSecret, probe: healthPrincipal, other, document } = createRolloutRealm(realm, origin);
   await mkdir(dir+'/idp', { mode: 0o700 });
-  await writeFile(dir+'/idp/realm.json',JSON.stringify({ realm, enabled:true, sslRequired:'none', accessTokenLifespan:120,
-    groups:[{name:'demo'}],
-    clients:[{ clientId:appClient, secret:appSecret, enabled: true, publicClient:false, standardFlowEnabled:true, protocol:'openid-connect',
-      redirectUris:[origin+'/oauth2/callback'], protocolMappers:[groups] }, machine(probeClient,probeSecret), machine(otherClient,otherSecret)],
-    users:[principal(probeId,probeClient,true),principal(otherId,otherClient,false)],
-  }), { mode: 0o644 });
+  await writeFile(dir+'/idp/realm.json', JSON.stringify(document), { mode: 0o644 });
   docker = true;
   await exec('docker',['run','--detach','--rm','--name',name,'--label','io.itervane.ingress-test='+uid,'--publish','127.0.0.1::8080',
     '--mount','type=bind,source='+dir+'/idp/realm.json,target=/opt/keycloak/data/import/itervane.json,readonly',
@@ -174,14 +153,14 @@ try {
   await until(async () => (await fetch(apiOrigin+'/api/http/routers/demo@file')).ok,edge);
   const check = { version: 1, origin, healthPath: '/health', network: 'demo-private', backendPort: appPort,
     traefik:{ apiOrigin, entryPoint:'websecure', routeName:'demo', forwardAuthAddress:authOrigin+'/oauth2/auth' },
-    probeIdentity:{ issuer, audience:appClient, clientId:probeClient, subject:probeId },
+    probeIdentity:{ issuer, audience:appClient, clientId:healthPrincipal.clientId, subject:healthPrincipal.subject },
   };
   const runtime = { deploymentId:'a'.repeat(24),serverId:'b'.repeat(24),runtimeConfigSha256:'c'.repeat(64),
     containerId:'d'.repeat(64),containerName:'localhost',configDigest:'sha256:'+'e'.repeat(64),
     imageReference:'fixture@sha256:'+'f'.repeat(64),network:'demo-private' };
   let runtimeReads = 0;
   const observer = { inspectRuntime:async () => { runtimeReads++; return runtime; } };
-  const access = createKeycloakRolloutTokenSource(check.probeIdentity,probeSecret);
+  const access = createKeycloakRolloutTokenSource(check.probeIdentity,healthPrincipal.secret);
   const verifier = new ReleaseRolloutVerifier(observer, access);
   const subject = { check, rolloutCheckSha256:fingerprintRolloutCheck(check), target:{}, image:{} };
   const authorize = async () => {};
@@ -203,8 +182,8 @@ try {
   assert.equal(authorizedReachesApp,1);
   passed('probe-scope', 'The enrolled bearer did not authorize another path or an HTTP write method.');
   phase = 'wrong-app-role';
-  const wrongIdentity = { ...check.probeIdentity, clientId:otherClient, subject:otherId };
-  const wrongRole = createKeycloakRolloutTokenSource(wrongIdentity,otherSecret);
+  const wrongIdentity = { ...check.probeIdentity, clientId:other.clientId, subject:other.subject };
+  const wrongRole = createKeycloakRolloutTokenSource(wrongIdentity,other.secret);
   const token = await wrongRole(wrongIdentity,AbortSignal.timeout(5000));
   const wrong = await fetch(origin+'/health',{headers:{authorization:'Bearer '+token}, redirect:'manual'});
   await wrong.body?.cancel();
