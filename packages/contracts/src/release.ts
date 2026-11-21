@@ -141,6 +141,27 @@ export type ReleaseKomodoIntent = z.infer<typeof releaseKomodoIntentSchema>;
 export type ReleaseKomodoConfiguration = z.infer<typeof releaseKomodoConfigurationSchema>;
 export type ReleaseKomodoCompletion = z.infer<typeof releaseKomodoCompletionSchema>;
 
+export const releaseRuntimeObservationSchema = z.strictObject({
+  rolloutCheckSha256: sha256Schema, containerId: sha256Schema, configDigest: imageDigest,
+  imageReference: releaseRegistryImageProofSchema.shape.reference, runtimeConfigSha256: sha256Schema, network: ingressNetwork,
+  anonymousStatus: z.union([z.literal(401), z.literal(403)]), healthStatus: z.literal(200),
+  version: z.string().min(1).max(64).regex(/^[a-zA-Z0-9_.-]+$/),
+});
+export const releaseRolloutProofSchema = z.strictObject({
+  version: z.literal(1), operationId: idSchema, rolloutFence: z.int().min(1).max(3),
+  candidateId: idSchema, fingerprint: sha256Schema, decisionVersion: version.min(1), generation: version.min(1),
+  targetRevision: version.min(1), mappingSha256: sha256Schema, manifestDigest: imageDigest,
+  update: releaseKomodoCompletionSchema.extend({ success: z.literal(true) }),
+  runtime: releaseRuntimeObservationSchema,
+});
+export type ReleaseRolloutProof = z.infer<typeof releaseRolloutProofSchema>;
+
+export const releaseRolloutFailureSchema = z.enum([
+  'release_rollout_update_failed', 'release_rollout_update_changed', 'release_rollout_runtime_changed',
+  'release_rollout_ingress_changed', 'release_rollout_health_failed', 'release_rollout_unavailable',
+]);
+export type ReleaseRolloutFailure = z.infer<typeof releaseRolloutFailureSchema>;
+
 export const komodoReleasePhases = ['release_komodo_ready', 'release_komodo_config_prepared', 'release_komodo_configured',
   'release_komodo_dispatch_prepared', 'release_komodo_update_recorded', 'release_komodo_dispatch_observed',
   'release_komodo_reconciling', 'release_komodo_awaiting_rollout'] as const;
@@ -248,10 +269,10 @@ export const fixtureReleaseObservationSchema = z.object({
   healthy: z.boolean(),
   accessProtected: z.boolean(),
 }).strict();
-export const releaseOperationStateSchema = z.enum(['queued', 'dispatching', 'reconciling', 'verified_fixture', 'blocked']);
+export const releaseOperationStateSchema = z.enum(['queued', 'dispatching', 'reconciling', 'verified_fixture', 'verified_formal', 'blocked']);
 export const fixtureReleaseOperationSchema = z.object({
   id: idSchema, candidateId: idSchema, environmentId: idSchema,
-  state: releaseOperationStateSchema,
+  state: releaseOperationStateSchema.exclude(['verified_formal']),
   origin: z.literal('trusted_fixture'), releaseEligible: z.literal(false),
   observation: fixtureReleaseObservationSchema.nullable(),
   createdAt: timestamp, updatedAt: timestamp,

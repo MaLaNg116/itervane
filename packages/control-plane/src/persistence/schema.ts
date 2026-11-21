@@ -6,7 +6,7 @@ import {
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
   type PreauditRecord, type QualifiedInspectionReceipt, type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
-  type ReleaseKomodoCompletion, type ReleaseKomodoConfiguration, type ReleaseKomodoIntent,
+  type ReleaseKomodoCompletion, type ReleaseKomodoConfiguration, type ReleaseKomodoIntent, type ReleaseRolloutFailure, type ReleaseRolloutProof,
 } from '@itervane/contracts';
 
 export const domain = pgSchema('itervane');
@@ -460,7 +460,7 @@ export const releaseOperations = domain.table('release_operations', {
   unique('release_operation_wakeup_unique').on(t.wakeupJobId),
   uniqueIndex('release_operation_environment_hold').on(t.environmentId).where(sql`${t.state} IN ('dispatching', 'reconciling')`),
   check('release_operation_single_approval', sql`${t.approvalVersion} = 1`),
-  check('release_operation_state', sql`${t.state} IN ('queued', 'dispatching', 'reconciling', 'verified_fixture', 'blocked')`),
+  check('release_operation_state', sql`${t.state} IN ('queued', 'dispatching', 'reconciling', 'verified_fixture', 'verified_formal', 'blocked')`),
   check('release_operation_wakeup_recoverable', sql`${t.wakeupJobId} IS NULL OR ${t.state} IN ('queued', 'reconciling')`),
   check('release_operation_observation', sql`(
     (${t.state} <> 'verified_fixture' AND ${t.observation} IS NULL) OR
@@ -517,15 +517,28 @@ export const formalReleaseRolloutAttempts = domain.table('formal_release_rollout
   operationId: uuid('operation_id').notNull().references(() => releaseOperations.id),
   fence: integer('fence').notNull(),
   workerId: uuid('worker_id').notNull(),
-  state: text('state').$type<'observing' | 'expired' | 'manual_review'>().notNull().default('observing'),
+  state: text('state').$type<'observing' | 'expired' | 'manual_review' | 'verified' | 'rejected'>().notNull().default('observing'),
   leaseUntil: timestamp('lease_until', { withTimezone: true }).notNull(),
+  proof: jsonb('proof').$type<ReleaseRolloutProof>(),
+  failure: text('failure').$type<ReleaseRolloutFailure>(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
   createdAt: createdAt(),
 }, t => [
   primaryKey({ columns: [t.operationId, t.fence] }),
   uniqueIndex('one_formal_rollout_observer').on(sql`(1)`).where(sql`${t.state} = 'observing'`),
   check('formal_rollout_fence', sql`${t.fence} BETWEEN 1 AND 3`),
-  check('formal_rollout_state', sql`(${t.state} = 'observing' OR (${t.state} = 'expired' AND ${t.fence} < 3)
+  check('formal_rollout_state', sql`(${t.state} IN ('observing', 'verified', 'rejected') OR (${t.state} = 'expired' AND ${t.fence} < 3)
     OR (${t.state} = 'manual_review' AND ${t.fence} = 3))`),
   check('formal_rollout_lease', sql`${t.leaseUntil} > ${t.createdAt}
     AND ${t.leaseUntil} <= ${t.createdAt} + interval '45 seconds'`),
+  check('formal_rollout_outcome', sql`(
+    (${t.state} NOT IN ('verified', 'rejected') AND ${t.proof} IS NULL AND ${t.failure} IS NULL AND ${t.completedAt} IS NULL)
+    OR (${t.completedAt} >= ${t.createdAt} AND ${t.completedAt} < ${t.leaseUntil} AND (
+      (${t.state} = 'verified' AND jsonb_typeof(${t.proof}) = 'object' AND octet_length(${t.proof}::text) <= 8192 AND ${t.failure} IS NULL)
+      OR (${t.state} = 'rejected' AND ${t.proof} IS NULL AND ${t.failure} IN (
+        'release_rollout_update_failed', 'release_rollout_update_changed', 'release_rollout_runtime_changed',
+        'release_rollout_ingress_changed', 'release_rollout_health_failed', 'release_rollout_unavailable'
+      ))
+    ))
+  ) IS TRUE`),
 ]);
