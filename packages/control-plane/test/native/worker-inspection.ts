@@ -47,6 +47,7 @@ const standardHealthRegressionCommit = '1eac5c8776c6e81613cfb5adf6edd2cd6b163ba3
 const repairRetryCommit = '39e9b7f34fdd01ec55fe4dda5358ffce5d68cbf8';
 const origin = 'https://github.com/MaLaNg116/itervane.git';
 const publicUrl = 'https://itervane.example';
+const standardRuntimePort = 38171; // The port sealed in the OCI runtime plan by runtime_guest.py.
 const controllerAccount = 'itervane-probe';
 const workerAccount = 'itervane-inspection-client';
 const domainName = /^itervane-d2-[a-f0-9-]{36}$/;
@@ -477,7 +478,7 @@ async function probe() {
         await target.allowContainerInspection();
 
         phase = 'protected_release_ingress';
-        const ingress = protectedIngress = await openProtectedIngress({ ...target.endpoint, port: 3000 }, {
+        const ingress = protectedIngress = await openProtectedIngress({ ...target.endpoint, port: standardRuntimePort }, {
           traefik: join(proxyDir, 'traefik'), oauth2: join(proxyDir, 'oauth2-proxy'),
         });
         const rolloutCheckSha256 = fingerprintRolloutCheck(ingress.check);
