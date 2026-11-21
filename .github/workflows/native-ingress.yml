@@ -1,0 +1,71 @@
+name: Native Protected Ingress
+
+on:
+  push:
+    branches: [main, 'feat/**']
+    paths:
+      - '.github/workflows/native-ingress.yml'
+      - 'fixtures/ingress/**'
+      - 'packages/contracts/src/release.ts'
+      - 'packages/control-plane/src/auth/identity.ts'
+      - 'packages/control-plane/src/runtime/release-rollout.ts'
+      - 'packages/control-plane/src/runtime/release-traefik.ts'
+      - 'packages/control-plane/src/service/release-targets.ts'
+      - 'packages/verification/src/report.ts'
+      - 'pnpm-lock.yaml'
+      - 'package.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-ingress-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-ingress:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.14.0
+      - name: Install the locked dependencies
+        run: |
+          npm install --global pnpm@11.9.0 --ignore-scripts
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify the trusted proxy releases
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/itervane-ingress"
+          mkdir -m 0700 "$work"
+          versions=fixtures/ingress/versions.json
+          traefik="$(jq -er '.traefik.version' "$versions")"
+          oauth="$(jq -er '.oauth2Proxy.version' "$versions")"
+          [[ "$traefik" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$oauth" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          edge_file="traefik_${traefik}_linux_amd64.tar.gz"
+          auth_dir="oauth2-proxy-${oauth}.linux-amd64"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 180 \
+            "https://github.com/traefik/traefik/releases/download/$traefik/$edge_file" --output "$work/traefik.tgz"
+          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 180 \
+            "https://github.com/oauth2-proxy/oauth2-proxy/releases/download/$oauth/$auth_dir.tar.gz" --output "$work/oauth.tgz"
+          printf '%s  %s\n' "$(jq -er '.traefik.archiveSha256' "$versions")" "$work/traefik.tgz" | sha256sum --check --strict
+          tar -xOzf "$work/traefik.tgz" traefik > "$work/traefik"
+          tar -xOzf "$work/oauth.tgz" "$auth_dir/oauth2-proxy" > "$work/oauth2-proxy"
+          chmod 0500 "$work/traefik" "$work/oauth2-proxy"
+      - name: Exercise TLS, identity, routing and health
+        run: |
+          work="$RUNNER_TEMP/itervane-ingress"
+          node --import tsx fixtures/ingress/probe.mjs "$work/traefik" "$work/oauth2-proxy"
+      - name: Retain sanitized ingress evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: protected-ingress-evidence
+          path: .reports/p0/protected-ingress.json
+          if-no-files-found: ignore
+          retention-days: 14

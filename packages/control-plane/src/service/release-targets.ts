@@ -1,19 +1,27 @@
-import { formalReleaseTargetSchema } from '@itervane/contracts';
+import { formalReleaseTargetSchema, releaseRolloutCheckSchema } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Database } from '../persistence/database.js';
 import { environments, formalReleaseTargets, releaseOperations } from '../persistence/schema.js';
 import { DomainError, parseInput } from './errors.js';
 
+export function fingerprintRolloutCheck(input: unknown) {
+  return sha256(JSON.stringify(releaseRolloutCheckSchema.parse(input)));
+}
+
 export function readReleaseTarget(row: typeof formalReleaseTargets.$inferSelect) {
   const document = formalReleaseTargetSchema.parse(row.document);
   if (document.environmentId !== row.environmentId || document.deploymentId !== row.deploymentId
+      || (document.rolloutCheck && fingerprintRolloutCheck(document.rolloutCheck) !== document.rolloutCheckSha256)
       || sha256(JSON.stringify(document)) !== row.sha256) throw new Error('formal_release_target_integrity');
   return document;
 }
 
 export async function registerReleaseTarget(database: Database, rawTarget: unknown) {
   const document = parseInput(formalReleaseTargetSchema, rawTarget);
+  if (document.rolloutCheck && fingerprintRolloutCheck(document.rolloutCheck) !== document.rolloutCheckSha256) {
+    throw new DomainError('invalid_input');
+  }
   const { environmentId, deploymentId } = document;
   const fingerprint = sha256(JSON.stringify(document));
   return database.db.transaction(async tx => {

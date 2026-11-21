@@ -139,10 +139,10 @@ it('returns an already issued update under observation authority after write per
 const approvedRuntime = { manifestDigest, configDigest: 'sha256:' + '9'.repeat(64) };
 const runtimeNetwork = 'protected-demo';
 const container = {
-  Id: 'f'.repeat(64), Image: approvedRuntime.configDigest,
+  Id: 'f'.repeat(64), Name: '/demo-container', Image: approvedRuntime.configDigest,
   State: { Status: 'running', Running: true, Paused: false, Restarting: false, Dead: false },
   Config: { Image: approved, Env: ['PRIVATE_FIXTURE=should-not-be-returned'] },
-  HostConfig: { NetworkMode: runtimeNetwork, Privileged: false, PortBindings: null },
+  HostConfig: { NetworkMode: runtimeNetwork, Privileged: false, PublishAllPorts: false, PortBindings: null },
   NetworkSettings: { Networks: { [runtimeNetwork]: { EndpointID: 'private-fixture-value' } } },
 };
 
@@ -150,7 +150,7 @@ it('independently reads the running image identity and keeps only the enrolled r
   fetchKomodo.mockResolvedValueOnce(Response.json(configured)).mockResolvedValueOnce(Response.json(container));
   await expect(release.inspectRuntime(target, approvedRuntime, runtimeNetwork, authorization)).resolves.toEqual({
     deploymentId, serverId, runtimeConfigSha256: target.runtimeConfigSha256, imageReference: approved,
-    containerId: container.Id, configDigest: approvedRuntime.configDigest, network: runtimeNetwork,
+    containerId: container.Id, containerName: 'demo-container', configDigest: approvedRuntime.configDigest, network: runtimeNetwork,
   });
   expect(fetchKomodo.mock.calls.map(([url, request]) => [url, JSON.parse(String(request?.body))])).toEqual([
     [origin + '/read/GetDeployment', { deployment: deploymentId }],
@@ -163,6 +163,7 @@ it.each([
   ['reported image reference', { Config: { Image: previousImage } }, 'binding'],
   ['an additional network', { NetworkSettings: { Networks: { [runtimeNetwork]: {}, other: {} } } }, 'binding'],
   ['a host port', { HostConfig: { ...container.HostConfig, PortBindings: { '3000/tcp': [{ HostPort: '3000' }] } } }, 'response'],
+  ['automatic host ports', { HostConfig: { ...container.HostConfig, PublishAllPorts: true } }, 'response'],
   ['a stopped app', { State: { ...container.State, Status: 'exited', Running: false } }, 'response'],
 ] as const)('refuses runtime evidence for %s', async (_description, changed, reason) => {
   fetchKomodo.mockResolvedValueOnce(Response.json(configured)).mockResolvedValueOnce(Response.json({ ...container, ...changed }));

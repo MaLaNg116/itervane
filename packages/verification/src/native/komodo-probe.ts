@@ -24,6 +24,7 @@ const digestManifest = z.object({
 
 const actualContainer = z.object({
   Id: z.string().regex(/^[a-f0-9]{64}$/),
+  Name: z.string(),
   Image: dockerDigest,
   Config: z.object({ Image: z.string(), Labels: z.record(z.string(), z.string()) }),
   State: z.object({ Running: z.boolean() }),
@@ -252,7 +253,9 @@ async function verifyFormalAdapter(setup: Awaited<ReturnType<typeof bootstrap>>,
     adapter.inspectRuntime(binding, runningImage, 'none', authorize));
   await setup.allowBoundContainerInspection();
   const runtime = await adapter.inspectRuntime(binding, runningImage, 'none', authorize);
-  if (runtime.containerId !== observed.Id || runtime.configDigest !== observed.Image) throw new KomodoError('FormalAdapterRunningImage', 'binding');
+  if (runtime.containerId !== observed.Id || '/' + runtime.containerName !== observed.Name || runtime.configDigest !== observed.Image) {
+    throw new KomodoError('FormalAdapterRunningImage', 'binding');
+  }
   return { updateId, runtimeConfigSha256: binding.runtimeConfigSha256, observed };
 }
 
