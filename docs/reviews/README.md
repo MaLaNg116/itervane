@@ -28,7 +28,7 @@
 | 022 | P2-D1 正式证据驱动的审计 Agent | [#22](https://github.com/MaLaNg116/itervane/pull/22)，已合入 main | [正式审计导读](p2-d1-formal-audit.md) | 最新提交[通过托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44788702741)，本机真实模型验证两条双语审计路径 |
 | 023 | P2-D2 受控修复与候选制品 | [#23](https://github.com/MaLaNg116/itervane/pull/23)，基于已合入 #22 的 main | [受控修复导读](p2-d2-controlled-repair.md) | 正式队列、dotenv 模板与 npm 成对修复的 [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44880952837) 通过，真实模型也已验证两条样例决策 |
 | 024 | P2-D3-A 复验输入与候选来源核验 | [#24](https://github.com/MaLaNg116/itervane/pull/24)，基于 P2-D2 #23 | [复验输入导读](p2-d3-a-verification-input.md) | Linux 146 项单元与 116 项 PostgreSQL 集成测试通过。重放、复扫与镜像证据独立验收 |
-| 025 | P2-D3-B 隔离重放与独立复扫 | [#25](https://github.com/MaLaNg116/itervane/pull/25)，基于已合入 #24 | [独立复扫导读](p2-d3-b-independent-rescan.md) | Linux 149 项单元、44 项宿主与 117 项 PostgreSQL 集成测试通过。托管 KVM 复扫尚在验收 |
+| 025 | P2-D3-B 隔离重放与独立复扫 | [#25](https://github.com/MaLaNg116/itervane/pull/25)，基于已合入 #24 | [独立复扫导读](p2-d3-b-independent-rescan.md) | 两类修复及无发现原稿的 [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44887116357) 通过，149 项单元、44 项宿主与 117 项 PostgreSQL 集成通过 |
 | 026 | P2-D3-C1 标准应用离线依赖 | [#26](https://github.com/MaLaNg116/itervane/pull/26)，依赖 #25 | [离线依赖导读](p2-d3-c1-build-dependencies.md) | Linux 156 项单元测试通过，91 份 tarball 已验证并写入缓存。客体构建在后续批次验收 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
