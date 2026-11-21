@@ -8,6 +8,6 @@
 
 固定源码 `d8666cf4ed3b1ee6776eb34952756149caf10a25`。TypeScript、163 项单元及原生 Worker 打包通过。本机非 root 的 Distribution 3.1.2 试验验证缺失返回、导入后清理暂存、独立回读、来源或配置不符与读后失去执行权。真实仓库是专用临时 Registry。
 
-步骤账本专项在 PostgreSQL 17.12 通过。全量数据库验收和托管 OCI 证据随本批 PR 更新。
+步骤专项及 PostgreSQL 17.12 全量 149 项通过，源码指纹为 `57c6ac20c6b468569bd696525536d9d8422c49a2138a1f2b6ceef22aaf7f6f65`。托管源码 `d890ccbd61ae0e2a158a84944c845d00acfcc73c` 的改动为托管前导读，运行代码和集成测试一致。 [PR #48](https://github.com/MaLaNg116/itervane/pull/48) · [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44928454610)
 
 C3-C2 接线正式 Worker 的传输、导入和待核对调度，让新 fence 能用原始导入意图恢复只读核对。完整发布继续等待 Komodo 与运行版本独立验收。
