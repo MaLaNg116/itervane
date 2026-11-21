@@ -1,9 +1,10 @@
-import { formalReleaseManifestSchema, idSchema, releaseRegistryOriginSchema, releaseWakeupSchema } from '@itervane/contracts';
+import { formalReleaseManifestSchema, idSchema, releaseRegistryOriginSchema, releaseWakeupSchema, type FormalReleaseManifest,
+  type FormalReleaseTarget } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { fromDrizzle, type Job } from 'pg-boss';
 import { formalReleaseQueue } from '../persistence/database.js';
-import { environments, formalReleaseTargets, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
+import { environments, formalReleaseSteps, formalReleaseTargets, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskRuns, tasks } from '../persistence/schema.js';
 import { requireStoredActor, type Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
@@ -60,13 +61,34 @@ async function lockQueuedRelease(tx: Transaction, operationId: string) {
 }
 
 type LockedRelease = Awaited<ReturnType<typeof lockRelease>>;
+type ReleasePhase = 'release_claimed' | 'release_registry_prepared' | 'release_registry_verified';
+type ReleaseAuthority = Awaited<ReturnType<typeof verifyAuthority>>;
+type RegistryObservation = {
+  phase: Exclude<ReleasePhase, 'release_claimed'>;
+  manifest: FormalReleaseManifest;
+  mapping: FormalReleaseTarget;
+  intent: typeof formalReleaseSteps.$inferSelect;
+};
 
 function decisionBinding({ operation, candidate }: LockedRelease) {
   return { operationId: operation.id, candidateId: candidate.id, fingerprint: candidate.fingerprint, decisionVersion: operation.approvalVersion };
 }
 
+async function verifyTarget(tx: Transaction, task: TaskRow, { candidate, environment }: LockedRelease,
+  manifest: FormalReleaseManifest, workerOrigin: string) {
+  const [target] = await tx.select().from(formalReleaseTargets).where(eq(formalReleaseTargets.environmentId, environment.id)).for('share');
+  if (!target || environment.access !== 'protected' || target.projectId !== task.projectId || environment.projectId !== task.projectId
+      || target.applicationId !== environment.applicationId || target.applicationId !== candidate.applicationId
+      || target.revision !== manifest.target.revision || target.sha256 !== manifest.target.mappingSha256) {
+    throw new ReleaseAuthorityRejected('release_target_changed');
+  }
+  const mapping = readReleaseTarget(target);
+  if (mapping.registryOrigin !== workerOrigin) throw new ReleaseAuthorityRejected('release_target_changed');
+  return { target, mapping };
+}
+
 async function verifyAuthority(tx: Transaction, task: TaskRow, release: LockedRelease, workerOrigin: string) {
-  const { operation, candidate, environment } = release;
+  const { operation, candidate } = release;
   const manifest = readReleaseManifest(candidate);
   if (manifest.generation !== task.generation || candidate.requestedBy !== task.requestedBy || candidate.projectId !== task.projectId
       || (await latestReleaseCandidate(tx, task.id))?.id !== candidate.id) throw new ReleaseAuthorityRejected('release_evidence_changed');
@@ -86,15 +108,7 @@ async function verifyAuthority(tx: Transaction, task: TaskRow, release: LockedRe
     throw new ReleaseAuthorityRejected('release_approval_invalid');
   }
 
-  const [target] = await tx.select().from(formalReleaseTargets).where(eq(formalReleaseTargets.environmentId, environment.id)).for('share');
-  if (!target || environment.access !== 'protected' || target.projectId !== task.projectId || environment.projectId !== task.projectId
-      || target.applicationId !== environment.applicationId || target.applicationId !== candidate.applicationId
-      || target.revision !== manifest.target.revision || target.sha256 !== manifest.target.mappingSha256) {
-    throw new ReleaseAuthorityRejected('release_target_changed');
-  }
-  const mapping = readReleaseTarget(target);
-  if (mapping.registryOrigin !== workerOrigin) throw new ReleaseAuthorityRejected('release_target_changed');
-
+  const { target, mapping } = await verifyTarget(tx, task, release, manifest, workerOrigin);
   const proof = await readPublishedVerification(tx, task, { runId: candidate.runId, generation: task.generation });
   const evidence = proof ? describeVerifiedRelease(proof, target, mapping) : null;
   if (!evidence) throw new ReleaseAuthorityRejected('release_evidence_changed');
@@ -158,24 +172,47 @@ export class FormalReleaseCoordinator {
     });
   }
 
-  private async withClaim<T>(scope: FormalReleaseScope, action: (tx: Transaction, task: TaskRow, release: LockedRelease) => Promise<T>,
+  private async withClaim<T>(scope: FormalReleaseScope, action: (tx: Transaction, task: TaskRow, release: LockedRelease, phase: ReleasePhase) => Promise<T>,
     allowCancel = false) {
     return this.coordinator.database.db.transaction(async tx => {
       const { slot, task, runtime } = await lockExecution(tx, scope, allowCancel);
-      if (runtime.reason !== 'release_claimed') throw new ExecutionLost();
+      const phase = runtime.reason;
+      if (phase !== 'release_claimed' && phase !== 'release_registry_prepared' && phase !== 'release_registry_verified') throw new ExecutionLost();
       const link = await readLink(tx, scope.operationId);
       if (!link || link.candidate.taskId !== task.id || link.candidate.runId !== scope.runId || link.candidate.id !== scope.candidateId
           || link.candidate.fingerprint !== scope.fingerprint || link.operation.approvalVersion !== scope.decisionVersion) throw new ExecutionLost();
       const release = await lockRelease(tx, link);
       if (release.operation.state !== 'dispatching') throw new ExecutionLost();
-      const result = await action(tx, task, release);
+      const result = await action(tx, task, release, phase);
       await assertLeaseLive(tx, slot.leaseUntil);
       return result;
     });
   }
 
   async authorize(scope: FormalReleaseScope) {
-    return this.withClaim(scope, (tx, task, release) => verifyAuthority(tx, task, release, this.workerOrigin));
+    return this.withAuthorizedRelease(scope, async (_tx, _task, _phase, authority) => authority);
+  }
+
+  async withAuthorizedRelease<T>(scope: FormalReleaseScope,
+    action: (tx: Transaction, task: TaskRow, phase: ReleasePhase, authority: ReleaseAuthority) => Promise<T>) {
+    return this.withClaim(scope, async (tx, task, release, phase) => {
+      const authority = await verifyAuthority(tx, task, release, this.workerOrigin);
+      return action(tx, task, phase, authority);
+    });
+  }
+
+  async withRegistryObservation<T>(scope: FormalReleaseScope,
+    action: (tx: Transaction, task: TaskRow, observation: RegistryObservation) => Promise<T>) {
+    return this.withClaim(scope, async (tx, task, release, phase) => {
+      if (phase === 'release_claimed') throw new DomainError('unsupported_state');
+      const [intent] = await tx.select().from(formalReleaseSteps)
+        .where(and(eq(formalReleaseSteps.operationId, scope.operationId), eq(formalReleaseSteps.kind, 'registry'))).for('update');
+      if (!intent || intent.preparedFence !== scope.fence) throw new ExecutionLost();
+      const manifest = readReleaseManifest(release.candidate);
+      const { mapping } = await verifyTarget(tx, task, release, manifest, this.workerOrigin);
+      // The recorded intent permits outcome checks even if the original permission to write has since ended.
+      return action(tx, task, { phase, manifest, mapping, intent });
+    }, true);
   }
 
   async heartbeat(scope: FormalReleaseScope) {
@@ -188,7 +225,8 @@ export class FormalReleaseCoordinator {
   }
 
   async yieldClaim(scope: FormalReleaseScope) {
-    await this.withClaim(scope, async (tx, task) => {
+    await this.withClaim(scope, async (tx, task, _release, phase) => {
+      if (phase !== 'release_claimed') throw new DomainError('unsupported_state');
       await recoverClaimedRelease(tx, this.coordinator.database, task, scope.runId, scope.workerId, false);
       await clearSlot(tx);
     }, true);

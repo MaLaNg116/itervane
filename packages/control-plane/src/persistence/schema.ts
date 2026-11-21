@@ -4,7 +4,8 @@ import {
   agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairInput, type FormalRepairResult, type FormalRepairRetry,
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
-  type PreauditRecord, type QualifiedInspectionReceipt, type QualifiedRepairReceipt, type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState,
+  type PreauditRecord, type QualifiedInspectionReceipt, type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
+  type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
 } from '@itervane/contracts';
 
 export const domain = pgSchema('itervane');
@@ -467,5 +468,30 @@ export const releaseOperations = domain.table('release_operations', {
       AND ${t.observation}->>'environmentId' = ${t.environmentId}::text
       AND ${t.observation}->'healthy' = 'true'::jsonb AND ${t.observation}->'accessProtected' = 'true'::jsonb
       AND octet_length(${t.observation}::text) <= 4096)
+  ) IS TRUE`),
+]);
+
+export const formalReleaseSteps = domain.table('formal_release_steps', {
+  operationId: uuid('operation_id').notNull().references(() => releaseOperations.id),
+  kind: text('kind').$type<'archive' | 'registry'>().notNull(),
+  preparedFence: integer('prepared_fence').notNull(),
+  preparedBy: uuid('prepared_by').notNull(),
+  state: text('state').$type<'prepared' | 'confirmed' | 'uncertain'>().notNull().default('prepared'),
+  proof: jsonb('proof').$type<QualifiedOciArchiveVerification | ReleaseRegistryImageProof>(),
+  settledFence: integer('settled_fence'),
+  settledBy: uuid('settled_by'),
+  settledAt: timestamp('settled_at', { withTimezone: true }),
+  createdAt: createdAt(),
+}, t => [
+  primaryKey({ columns: [t.operationId, t.kind, t.preparedFence] }),
+  uniqueIndex('formal_release_single_registry_intent').on(t.operationId).where(sql`${t.kind} = 'registry'`),
+  check('formal_release_step_kind', sql`${t.kind} IN ('archive', 'registry') AND ${t.preparedFence} > 0`),
+  check('formal_release_step_state', sql`(
+    (${t.state} = 'prepared' AND ${t.proof} IS NULL AND ${t.settledFence} IS NULL AND ${t.settledBy} IS NULL AND ${t.settledAt} IS NULL)
+    OR (${t.state} IN ('confirmed', 'uncertain') AND ${t.settledFence} >= ${t.preparedFence}
+      AND ${t.settledBy} IS NOT NULL AND ${t.settledAt} IS NOT NULL AND (
+        (${t.state} = 'confirmed' AND ${t.proof} IS NOT NULL AND octet_length(${t.proof}::text) <= 8192)
+        OR (${t.kind} = 'registry' AND ${t.state} = 'uncertain' AND ${t.proof} IS NULL)
+      ))
   ) IS TRUE`),
 ]);

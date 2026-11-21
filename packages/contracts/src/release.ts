@@ -37,6 +37,21 @@ export const formalReleaseTargetSchema = z.strictObject({
 });
 export type FormalReleaseTarget = z.infer<typeof formalReleaseTargetSchema>;
 
+export function releaseRegistryHost(origin: string) {
+  const url = new URL(origin);
+  // A bare host needs an explicit port in a Docker reference to avoid being read as a repository namespace.
+  return url.hostname === 'localhost' || url.hostname.includes('.') || url.hostname.includes(':') || url.port
+    ? url.host : `${url.hostname}:443`;
+}
+
+export const releaseRegistryImageProofSchema = z.strictObject({
+  registryOrigin: releaseRegistryOriginSchema,
+  repository: formalReleaseTargetSchema.shape.imageRepository,
+  reference: z.string().max(2400),
+  manifestDigest: imageDigest, configDigest: imageDigest, archive: qualifiedImageArchiveSchema,
+}).refine(proof => proof.reference === `${releaseRegistryHost(proof.registryOrigin)}/${proof.repository}@${proof.manifestDigest}`);
+export type ReleaseRegistryImageProof = Readonly<z.infer<typeof releaseRegistryImageProofSchema>>;
+
 export const freezeFormalReleaseSchema = z.strictObject({ environmentId: idSchema, expectedVersion: version.min(1) });
 
 export const formalReleaseManifestSchema = z.strictObject({

@@ -2,8 +2,8 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import { formalReleaseTargetSchema, ociDigestSchema, qualifiedImageArchiveSchema, releaseRegistryOriginSchema,
-  type QualifiedImageArchive } from '@itervane/contracts';
+import { formalReleaseTargetSchema, ociDigestSchema, qualifiedImageArchiveSchema, releaseRegistryHost, releaseRegistryOriginSchema,
+  type ReleaseRegistryImageProof } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { z } from 'zod';
 
@@ -23,10 +23,6 @@ const credentialsSchema = z.strictObject({
 });
 type RegistryConfiguration = { origin: string; credentials?: z.input<typeof credentialsSchema> };
 type RegistryTools = Readonly<{ materializer: string; skopeo: string }>;
-export type RegistryImageProof = Readonly<{
-  registryOrigin: string; repository: string; reference: string;
-  manifestDigest: string; configDigest: string; archive: QualifiedImageArchive;
-}>;
 const deadline = (milliseconds: number, signal?: AbortSignal) => {
   const limit = AbortSignal.timeout(milliseconds);
   return signal ? AbortSignal.any([limit, signal]) : limit;
@@ -92,30 +88,44 @@ export class ReleaseRegistryPublisher {
     }
     this.origin = url;
     this.tools = { ...tools };
-    // A bare hostname in a Docker reference would otherwise be a repository namespace.
-    this.registryHost = url.hostname === 'localhost' || url.hostname.includes('.') || url.hostname.includes(':') || url.port
-      ? url.host : `${url.hostname}:443`;
+    this.registryHost = releaseRegistryHost(origin.data);
     if (credentials) this.#authorization = Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64');
   }
 
-  async publish(rawTarget: z.input<typeof registryTargetSchema>, raw: z.input<typeof frozenImageSchema>, archivePath: string,
-    authorize: () => Promise<void>, signal?: AbortSignal): Promise<RegistryImageProof> {
+  private approvedImage(rawTarget: z.input<typeof registryTargetSchema>, raw: z.input<typeof frozenImageSchema>): ReleaseRegistryImageProof {
     const { imageRepository: repository, registryOrigin } = registryTargetSchema.parse(rawTarget);
     if (this.origin.origin !== registryOrigin) throw new Error('release_registry_drift');
     const image = frozenImageSchema.parse(raw);
+    return { registryOrigin, repository, reference: `${this.registryHost}/${repository}@${image.manifestDigest}`, ...image };
+  }
+
+  async observe(rawTarget: z.input<typeof registryTargetSchema>, raw: z.input<typeof frozenImageSchema>,
+    authorize: () => Promise<void>, signal?: AbortSignal): Promise<ReleaseRegistryImageProof | null> {
+    const image = this.approvedImage(rawTarget, raw);
+    signal?.throwIfAborted();
+    await authorize();
+    signal?.throwIfAborted();
+    const found = await this.readBack(image.repository, image, true, signal);
+    await authorize();
+    signal?.throwIfAborted();
+    return found ? image : null;
+  }
+
+  async publish(rawTarget: z.input<typeof registryTargetSchema>, raw: z.input<typeof frozenImageSchema>, archivePath: string,
+    authorize: () => Promise<void>, signal?: AbortSignal): Promise<ReleaseRegistryImageProof> {
+    const image = this.approvedImage(rawTarget, raw);
     if (process.platform !== 'linux' || !process.getuid?.() || !isAbsolute(archivePath)) throw new Error('invalid_release_archive_path');
     signal?.throwIfAborted();
     await authorize();
     const directory = await mkdtemp(join(tmpdir(), 'itervane-registry-'));
     const layout = join(directory, 'layout');
-    const reference = `${this.registryHost}/${repository}@${image.manifestDigest}`;
     try {
       if (layout.includes(':')) throw new Error('invalid_oci_layout_path');
       const evidence = layoutProofSchema.parse(JSON.parse((await runTool('/usr/bin/python3',
         ['-I', '-B', this.tools.materializer, archivePath, layout, image.archive.sha256, String(image.archive.bytes),
           image.manifestDigest, image.configDigest], directory, 30_000, signal)).toString('utf8')));
       if (evidence.manifestDigest !== image.manifestDigest || evidence.configDigest !== image.configDigest) throw new Error('registry_layout_binding');
-      if (!await this.readBack(repository, image, true, signal)) {
+      if (!await this.readBack(image.repository, image, true, signal)) {
         const auth = join(directory, 'auth.json');
         const policy = join(directory, 'policy.json');
         await writeFile(auth, JSON.stringify({ auths: this.#authorization
@@ -127,18 +137,18 @@ export class ReleaseRegistryPublisher {
         signal?.throwIfAborted();
         // A lost copy response may follow a successful write. Always check the immutable reference.
         await runTool(this.tools.skopeo, ['--policy', policy, 'copy', '--quiet', '--preserve-digests', '--retry-times', '0',
-          '--dest-authfile', auth, `--dest-tls-verify=${this.origin.protocol === 'https:'}`, `oci:${layout}`, `docker://${reference}`],
+          '--dest-authfile', auth, `--dest-tls-verify=${this.origin.protocol === 'https:'}`, `oci:${layout}`, `docker://${image.reference}`],
         directory, 120_000, signal).catch(() => undefined);
         signal?.throwIfAborted();
-        await this.readBack(repository, image, false, signal);
+        await this.readBack(image.repository, image, false, signal);
       }
       await authorize();
       signal?.throwIfAborted();
-      return { registryOrigin: this.origin.origin, repository, reference, ...image };
+      return image;
     } finally { await rm(directory, { recursive: true, force: true }); }
   }
 
-  private async readBack(repository: string, image: z.output<typeof frozenImageSchema>, allowMissing: boolean, signal?: AbortSignal) {
+  private async readBack(repository: string, image: z.output<typeof layoutProofSchema>, allowMissing: boolean, signal?: AbortSignal) {
     const read = async (kind: 'manifests' | 'blobs', digest: string) => {
       const response = await fetch(new URL(`/v2/${repository}/${kind}/${digest}`, this.origin), {
         headers: { ...(kind === 'manifests' ? { Accept: manifestType } : {}),

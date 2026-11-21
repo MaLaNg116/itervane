@@ -225,6 +225,13 @@
       "when": 1795277624453,
       "tag": "0031_formal_release_wakeup",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1795280233171,
+      "tag": "0032_formal_release_steps",
+      "breakpoints": true
     }
   ]
 }

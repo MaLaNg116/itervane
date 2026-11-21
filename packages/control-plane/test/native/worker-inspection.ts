@@ -527,12 +527,13 @@ async function probe() {
         phase = 'standard_formal_release_archive_transport';
         const transferred = await runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
           'verification', ['read-approved-archive', operationId, registry.origin, join(dirname(bundle), 'release-tools/materialize_oci.py')]);
-        const { registry: imported, ...transport } = transferred;
+        const { registry: imported, registryReadOnly, ...transport } = transferred;
         const { archive, manifestDigest, configDigest } = candidate.manifest.image;
         deepStrictEqual(transport, { operationId, fingerprint: candidate.fingerprint, archiveSha256: archive.sha256,
           bytes: archive.bytes, wrongRunnerDenied: true, wrongSizeDenied: true, revokedDenied: true, stagedFilesRemaining: false });
         deepStrictEqual(imported, { registryOrigin: registry.origin, repository: 'testing/standard',
           reference: `${new URL(registry.origin).host}/testing/standard@${manifestDigest}`, archive, manifestDigest, configDigest });
+        deepStrictEqual(registryReadOnly, { initiallyAbsent: true, matchedAfterCleanup: true });
         await assertDrained(controllerUid, staging);
         retry = { before, after, retrySha256, generation: handoff.generation, candidate, claim, archiveTransport: transferred,
           approval: { operationId, decisionVersion: confirmed.decisionVersion } };

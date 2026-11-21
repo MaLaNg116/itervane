@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
@@ -21,13 +21,14 @@ import { scriptedVerification } from '../../../verification/src/agent/verificati
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
-import { formalAuditInputs, formalAuditResults, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
+import { formalAuditInputs, formalAuditResults, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
 import { runFormalRepair } from '../../src/runtime/formal-repair.js';
 import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
+import { FormalReleaseSteps } from '../../src/runtime/formal-release-steps.js';
 import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-rescan.js';
 import { runFormalVerification, type FormalVerificationOptions } from '../../src/runtime/formal-verification.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
@@ -1541,6 +1542,73 @@ it('checks approval expiry on the database clock after waiting for the environme
   expect((await taskService.events(identity, task.id, 50, 'en')).at(-1)).toMatchObject({
     type: 'task.release_blocked', reason: 'release_approval_invalid', state: 'needs_human', workerId: worker,
   });
+});
+
+it('records a fence-bound archive proof and only one registry intent, then confirms the same bounded observation', async () => {
+  const { approval, operationId, taskService } = await queuedFormalRelease();
+  const release = new FormalReleaseCoordinator(coordinator, releaseOrigin);
+  const steps = new FormalReleaseSteps(release);
+  const initial = await release.claim(await fetchFormalWakeup(), randomUUID());
+  if (!initial) throw new Error('Expected an approved lease');
+  const insertRegistry = (preparedFence: number, preparedBy: string) => database.storage.db.insert(formalReleaseSteps).values({
+    operationId, kind: 'registry', preparedFence, preparedBy,
+  });
+  await expect(insertRegistry(initial.fence, initial.workerId))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'formal_release_archive_required' } });
+  const archive = await steps.prepareArchive(initial);
+  await steps.confirmArchive(initial, archive);
+  await release.yieldClaim(initial);
+  const scope = await release.claim(await fetchFormalWakeup(), randomUUID());
+  if (!scope) throw new Error('Expected a replacement lease');
+  expect(scope.fence).toBeGreaterThan(initial.fence);
+  await expect(steps.confirmArchive(initial, archive)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(steps.prepareRegistry(scope)).rejects.toMatchObject({ code: 'unsupported_state' });
+  await expect(insertRegistry(scope.fence, scope.workerId))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'formal_release_archive_required' } });
+  expect(await steps.prepareArchive(scope)).toEqual(archive);
+  expect(await steps.prepareArchive(scope)).toEqual(archive);
+  await expect(steps.confirmArchive(scope, { ...archive, archive: { ...archive.archive, sha256: sha256('different archive') } }))
+    .rejects.toMatchObject({ code: 'conflict' });
+  await steps.confirmArchive(scope, archive);
+  await steps.confirmArchive(scope, archive);
+  await expect(insertRegistry(initial.fence, initial.workerId))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'formal_release_step_authority' } });
+  const competing = await Promise.allSettled([steps.prepareRegistry(scope), steps.prepareRegistry(scope)]);
+  expect(competing.map(item => item.status).sort()).toEqual(['fulfilled', 'rejected']);
+  await expect(release.yieldClaim(scope)).rejects.toMatchObject({ code: 'unsupported_state' });
+  expect(await readOperation(operationId)).toMatchObject({ state: 'dispatching', wakeupJobId: null });
+  const image = approval.manifest.image;
+  const proof = { registryOrigin: releaseOrigin, repository: 'testing/standard',
+    reference: `registry.example.invalid/testing/standard@${image.manifestDigest}`,
+    manifestDigest: image.manifestDigest, configDigest: image.configDigest, archive: image.archive,
+  };
+  await expect(steps.confirmRegistry({ ...scope, operationId: randomUUID() }, proof)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(steps.confirmRegistry(scope, { ...proof, configDigest: `sha256:${sha256('different registry config')}` }))
+    .rejects.toMatchObject({ code: 'conflict' });
+  await steps.recordRegistryUncertain(scope);
+  await steps.recordRegistryUncertain(scope);
+  expect(await steps.readRegistryProof(scope)).toBeNull();
+  const persistedRegistry = and(eq(formalReleaseSteps.operationId, operationId), eq(formalReleaseSteps.kind, 'registry'));
+  await expect(database.storage.db.update(formalReleaseSteps).set({
+    state: 'confirmed', proof: { ...proof, repository: 'testing/other' },
+  }).where(persistedRegistry)).rejects.toMatchObject({ cause: { code: '23514', message: 'formal_release_step_proof_mismatch' } });
+
+  const latest = await taskService.get(identity, task.id);
+  await taskService.cancel(identity, task.id, { expectedVersion: latest.version });
+  await expect(release.authorize(scope)).rejects.toBeInstanceOf(ExecutionLost);
+  expect(await steps.confirmRegistry(scope, proof)).toEqual(proof);
+  expect(await steps.confirmRegistry(scope, proof)).toEqual(proof);
+  expect(await steps.readRegistryProof(scope)).toEqual(proof);
+  expect((await database.storage.db.select().from(formalReleaseSteps).where(persistedRegistry))[0])
+    .toMatchObject({ state: 'confirmed', preparedFence: scope.fence, settledFence: scope.fence, proof });
+  await expect(database.storage.db.delete(formalReleaseSteps).where(persistedRegistry))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'formal_release_step_is_immutable' } });
+  expect(await taskService.get(identity, task.id)).toMatchObject({ state: 'cancel_requested' });
+  const events = await taskService.events(identity, task.id, 50, 'zh-CN');
+  expect(events.filter(event => event.type === 'task.release_registry_prepared')).toHaveLength(1);
+  expect(events.filter(event => event.type === 'task.release_registry_uncertain')).toHaveLength(1);
+  expect(events.filter(event => event.type === 'task.release_registry_confirmed')).toHaveLength(1);
+  expect(events.at(-1)).toMatchObject({ state: 'cancel_requested', message: /独立核对获批镜像/ });
 });
 
 it('keeps verification unavailable while an audit finding has no published repair candidate', async () => {
