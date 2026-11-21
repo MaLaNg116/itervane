@@ -11,6 +11,8 @@ on:
       - 'packages/control-plane/src/runtime/release-rollout.ts'
       - 'packages/control-plane/src/runtime/release-traefik.ts'
       - 'packages/control-plane/src/service/release-targets.ts'
+      - 'packages/control-plane/test/native/protected-ingress*.ts'
+      - 'packages/verification/src/native/rollout-realm.ts'
       - 'packages/verification/src/report.ts'
       - 'pnpm-lock.yaml'
       - 'package.json'
@@ -64,7 +66,7 @@ jobs:
       - name: Verify that application containers cannot bypass the protected ingress
         run: |
           work="$RUNNER_TEMP/itervane-ingress"
-          bash fixtures/ingress/reference/probe-network.sh "$work/traefik"
+          pnpm exec tsx packages/control-plane/test/native/protected-ingress-smoke.ts "$work/traefik" "$work/oauth2-proxy"
       - name: Retain sanitized ingress evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
