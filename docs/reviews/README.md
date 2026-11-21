@@ -27,6 +27,7 @@
 | 021 | P1-D3-C2 正式 Worker 源码检查、回执发布和恢复 | [#21](https://github.com/MaLaNg116/itervane/pull/21)，基于已合入 #20 的 main | [正式源码检查导读](p1-d3-worker-inspection.md) | [正式 Worker 扫描、取消、撤权和崩溃重领通过](https://github.com/MaLaNg116/itervane/actions/runs/44771579026)，[108 单元、39 Runner、91 PG 和 21 浏览器通过](https://github.com/MaLaNg116/itervane/actions/runs/44771587898) |
 | 022 | P2-D1 正式证据驱动的审计 Agent | [#22](https://github.com/MaLaNg116/itervane/pull/22)，已合入 main | [正式审计导读](p2-d1-formal-audit.md) | 最新提交[通过托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44788702741)，本机真实模型验证两条双语审计路径 |
 | 023 | P2-D2 受控修复与候选制品 | [#23](https://github.com/MaLaNg116/itervane/pull/23)，基于已合入 #22 的 main | [受控修复导读](p2-d2-controlled-repair.md) | 正式队列、dotenv 模板与 npm 成对修复的 [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44880952837) 通过，真实模型也已验证两条样例决策 |
+| 024 | P2-D3-A 复验输入与候选来源核验 | [#24](https://github.com/MaLaNg116/itervane/pull/24)，基于 P2-D2 #23 | [复验输入导读](p2-d3-a-verification-input.md) | Linux 146 项单元与 116 项 PostgreSQL 集成测试通过。重放、复扫与镜像证据独立验收 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
