@@ -12,7 +12,8 @@ export function createApp({ mode = 'healthy', version = '0.1.0' } = {}) {
     next();
   });
   app.get('/health', (_request, response) => {
-    response.status(mode === 'healthy' ? 200 : 503).json({ status: mode, version });
+    const status = app.locals.fixtureUnhealthy ? 'unhealthy' : mode;
+    response.status(status === 'healthy' ? 200 : 503).json({ status, version });
   });
   app.get('/api/version', (_request, response) => response.json({ version }));
   app.get('/api/demo', (_request, response) => response.json({
