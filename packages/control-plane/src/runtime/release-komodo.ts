@@ -99,7 +99,7 @@ export class KomodoReleaseClient {
   }
 
   private async call<Shape extends z.ZodType>(method: Method, params: Record<string, unknown>, schema: Shape,
-    authorize: Authorize, signal?: AbortSignal): Promise<z.output<Shape>> {
+    authorize: Authorize, signal?: AbortSignal, authorizeReceipt: Authorize = authorize): Promise<z.output<Shape>> {
     signal?.throwIfAborted();
     await authorize();
     signal?.throwIfAborted();
@@ -120,7 +120,7 @@ export class KomodoReleaseClient {
     let result: z.output<Shape>;
     try { result = schema.parse(JSON.parse((await readBody(response)).toString('utf8'))); }
     catch { throw new KomodoReleaseError(method, 'response'); }
-    await authorize();
+    await authorizeReceipt();
     signal?.throwIfAborted();
     return result;
   }
@@ -153,29 +153,30 @@ export class KomodoReleaseClient {
   }
 
   async configureImage(raw: KomodoReleaseTarget, release: { previousImage: string; manifestDigest: string },
-    authorize: Authorize, signal?: AbortSignal) {
+    authorizeWrite: Authorize, signal?: AbortSignal, authorizeObservation: Authorize = authorizeWrite) {
     const target = this.binding(raw);
     const approved = this.approvedReference(target, release.manifestDigest);
-    const before = await this.inspectTarget(target, authorize, signal);
+    const before = await this.inspectTarget(target, authorizeObservation, signal);
     if (before.imageReference === approved) return before;
     if (before.imageReference !== release.previousImage) throw new KomodoReleaseError('UpdateDeployment', 'binding');
     const configured = await this.call('UpdateDeployment', {
       id: target.deploymentId, config: { image: { type: 'Image', params: { image: approved } } },
-    }, deployment, authorize, signal);
+    }, deployment, authorizeWrite, signal, authorizeObservation);
     if (this.verifyDeployment('UpdateDeployment', target, configured).imageReference !== approved) {
       throw new KomodoReleaseError('UpdateDeployment', 'binding');
     }
-    const checked = await this.inspectTarget(target, authorize, signal);
+    const checked = await this.inspectTarget(target, authorizeObservation, signal);
     if (checked.imageReference !== approved) throw new KomodoReleaseError('UpdateDeployment', 'binding');
     return checked;
   }
 
-  async dispatch(raw: KomodoReleaseTarget, manifestDigest: string, authorize: Authorize, signal?: AbortSignal) {
+  async dispatch(raw: KomodoReleaseTarget, manifestDigest: string, authorizeWrite: Authorize, signal?: AbortSignal,
+    authorizeObservation: Authorize = authorizeWrite) {
     const target = this.binding(raw);
     const approved = this.approvedReference(target, manifestDigest);
-    const checked = await this.inspectTarget(target, authorize, signal);
+    const checked = await this.inspectTarget(target, authorizeObservation, signal);
     if (checked.imageReference !== approved) throw new KomodoReleaseError('Deploy', 'binding');
-    const received = await this.call('Deploy', { deployment: target.deploymentId }, update, authorize, signal);
+    const received = await this.call('Deploy', { deployment: target.deploymentId }, update, authorizeWrite, signal, authorizeObservation);
     return this.verifyUpdate('Deploy', target, received);
   }
 
