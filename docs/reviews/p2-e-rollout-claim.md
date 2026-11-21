@@ -6,6 +6,8 @@
 2. `064a7cc` 先锁任务及其环境操作，再核对代次、冻结候选、目标修订、人工确认、Registry 证据和已记录的 Komodo 更新。认领有独立调度锁，观察不占模型工作流的单执行槽。只读取证允许在派发后的取消或撤权发生后继续核对既成结果。第三次超时转人工并保留环境占用。认领和转人工事件都有中英文消息。 [认领协调器](https://github.com/MaLaNg116/itervane/blob/064a7cc540e9395e9c08a9a9c4d110cbc4709bc7/packages/control-plane/src/runtime/formal-rollout-claim.ts)
 3. `d10ab2c` 通过正常冻结、人工确认、制品导入与 Komodo 派发账本把操作推进到待核验。用两个并发事务核验只有一个租约获签，验证接手后旧 fence 失效、撤权后禁止继续写入，并用直接 SQL 回归确认越阶段认领、超时限或删除历史被拒绝。 [真实 PostgreSQL 专项](https://github.com/MaLaNg116/itervane/blob/d10ab2ca07874210f70cebba063cd91f28d94440/packages/control-plane/test/integration/inspections.test.ts)
 
-固定代码通过 TypeScript 和 200 项单元测试。Linux 上真实 PostgreSQL 17.12 通过三项租约专项和 164 项全量集成测试，报告 `.reports/p0/database.json` 的源码指纹为 `50ebeb2229dcd2caf8025d65bafc63e4c0910a332d9727c4ac7617a3c1024316`。从仓库运行 `pnpm check` 与 `pnpm probe:p0 database` 可复核。 [实施计划](../implementation-plan-v2-ts-postgresql.md)
+固定代码通过 TypeScript 和 200 项单元测试。Linux 上真实 PostgreSQL 17.12 通过三项租约专项和 164 项全量集成测试，报告 `.reports/p0/database.json` 的源码指纹为 `50ebeb2229dcd2caf8025d65bafc63e4c0910a332d9727c4ac7617a3c1024316`。从仓库运行 `pnpm check` 与 `pnpm test:integration` 可复核。 [实施计划](../implementation-plan-v2-ts-postgresql.md)
+
+四组托管 Runner 回归通过。报告中的源码指纹与数据库报告一致。隔离回归记录五个临时域，进程中断后接手 fence 从 4 升到 5，HTTP 与 MCP 读取一致。OCI 回归保留已记录更新和更新 ID 丢失两条路径，暂存区完成清理。两组常规检查在合入 #55 后的基线也通过。 [PR #56](https://github.com/MaLaNg116/itervane/pull/56) · [托管 Runner](https://github.com/MaLaNg116/itervane/actions/runs/44947827411) · [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44949067349) · [分支 CI](https://github.com/MaLaNg116/itervane/actions/runs/44949064153)
 
 最终证据入账由 D3-B 交付。正式 Worker 和双语结果读取由 D3-C 接续。同一获批 OCI 从外部 MCP 发起到受保护入口的真实端到端验收在 D3-D。
