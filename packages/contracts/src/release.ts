@@ -3,7 +3,7 @@ import { applicationDtoSchema, environmentDtoSchema } from './control-plane.js';
 import { verificationComparisonCountsSchema, verificationImageFindingCountsSchema } from './formal-verification-evidence.js';
 import { sha256Schema } from './inspection.js';
 import { localeSchema, taskEventReasonSchema } from './i18n.js';
-import { idSchema, sourceRefSchema } from './primitives.js';
+import { idSchema, serviceOriginSchema, sourceRefSchema } from './primitives.js';
 import { qualifiedImageArchiveSchema } from './qualified-standard-image.js';
 
 const version = z.number().int().min(0).max(2_147_483_647);
@@ -14,21 +14,8 @@ const imageSeverity = z.enum(['critical', 'high', 'medium', 'low', 'unknown']);
 const imageBlockers = z.array(imageSeverity).min(1).max(5)
   .refine(values => new Set(values).size === values.length).transform(values => [...values].sort());
 
-function releaseServiceOrigin(service: string) {
-  return z.string().max(2048).transform((input, context) => {
-    const url = URL.parse(input);
-    const loopback = url?.protocol === 'http:' && url.hostname === '127.0.0.1' && url.port;
-    if (!url || url.username || url.password || url.pathname !== '/' || url.search || url.hash
-        || (!loopback && url.protocol !== 'https:')) {
-      context.addIssue({ code: 'custom', message: `Expected a bare HTTPS ${service} origin or an explicit loopback endpoint` });
-      return z.NEVER;
-    }
-    return url.origin;
-  });
-}
-
-export const releaseRegistryOriginSchema = releaseServiceOrigin('Registry');
-export const releaseKomodoOriginSchema = releaseServiceOrigin('Komodo');
+export const releaseRegistryOriginSchema = serviceOriginSchema('Registry');
+export const releaseKomodoOriginSchema = serviceOriginSchema('Komodo');
 
 const ingressHostname = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/;
 const ingressName = z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9_-]*$/);
@@ -60,7 +47,7 @@ export const releaseRolloutCheckSchema = z.strictObject({
   network: ingressNetwork,
   backendPort: z.int().min(1).max(65_535),
   traefik: z.strictObject({
-    apiOrigin: releaseServiceOrigin('Traefik management'),
+    apiOrigin: serviceOriginSchema('Traefik management'),
     entryPoint: ingressName, routeName: ingressName, forwardAuthAddress,
   }),
   probeIdentity: rolloutProbeIdentity,
