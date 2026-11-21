@@ -85,7 +85,7 @@ async function publishFixture(version: Version) {
   return { version, digest, config: local, reference: repository + '@' + digest } satisfies Manifest;
 }
 
-async function bootstrap(password: string, sample: Manifest, name: string, mark: string) {
+async function bootstrap(password: string, reference: string, name: string, mark: string) {
   const session = await waitFor('CoreLogin', () => loginLocalAdmin(
     new KomodoNativeClient(coreOrigin), 'itervane-bootstrap', password,
   ), 75_000);
@@ -102,13 +102,13 @@ async function bootstrap(password: string, sample: Manifest, name: string, mark:
   const created = await admin.call('write', 'CreateDeployment', {
     name,
     config: {
-      server_id: serverId, image: configImage(sample.reference), network: 'none', restart: 'no',
+      server_id: serverId, image: configImage(reference), network: 'none', restart: 'no',
       labels: labelKey + '=' + mark, auto_update: false, poll_for_updates: false, send_alerts: false,
     },
   }, deployment);
   const foreign = await admin.call('write', 'CreateDeployment', { name: name + '-other' }, resource);
   const user = await admin.call('write', 'CreateServiceUser', {
-    username: 'itervane-release-probe', description: 'This disposable Komodo test target',
+    username: name + '-worker', description: 'This disposable Komodo test target',
   }, z.object({ _id: resource.shape._id, admin: z.literal(false), enabled: z.literal(true) }));
   const actor = user._id.$oid;
   const id = created._id.$oid;
@@ -122,7 +122,7 @@ async function bootstrap(password: string, sample: Manifest, name: string, mark:
   }, z.object({ key: z.string().min(1).max(512), secret: z.string().min(1).max(512) }));
   const client = new KomodoNativeClient(coreOrigin, credentials);
   const target = { id, server: serverId, name, actor, label: labelKey + '=' + mark };
-  await readTarget(client, target, sample.reference);
+  await readTarget(client, target, reference);
   try {
     await client.call('read', 'GetDeployment', { deployment: foreign._id.$oid }, z.unknown());
   } catch (error) {
@@ -258,6 +258,73 @@ const text = {
   failure: ['Verification interrupted at', '验证中止于'],
 } as const;
 
+function nativeStack(name: string, env: NodeJS.ProcessEnv) {
+  const adminPassword = randomBytes(32).toString('hex');
+  const configured = {
+    ...env,
+    ITERVANE_PROBE_DB_PASSWORD: randomBytes(32).toString('hex'),
+    ITERVANE_PROBE_ADMIN_PASSWORD: adminPassword,
+    ITERVANE_PROBE_JWT_SECRET: randomBytes(32).toString('hex'),
+    ITERVANE_PROBE_WEBHOOK_SECRET: randomBytes(32).toString('hex'),
+  };
+  const compose = ['compose', '--env-file', '/dev/null', '--project-name', name, '--file', resolve('fixtures/komodo/compose.yaml')];
+  return {
+    adminPassword,
+    start: async (withRegistry: boolean) => {
+      const dockerPlatform = await docker('DockerIdentity', ['version', '--format', '{{.Server.Os}}/{{.Server.Arch}}']);
+      if (dockerPlatform !== 'linux/amd64') throw new KomodoError('DockerIdentity', 'binding');
+      await docker('ComposeUp', [...compose, 'up', '--detach', '--quiet-pull', ...(withRegistry ? [] : ['mongo', 'core', 'periphery'])], configured);
+    },
+    stop: () => docker('ComposeDown', [...compose, 'down', '--volumes'], configured),
+  };
+}
+
+async function removeOwnedFixture(mark: string) {
+  const owned = await docker('FindFixture', ['container', 'ls', '--all', '--filter', 'label=' + labelKey + '=' + mark, '--format', '{{.ID}}']);
+  if (owned) {
+    const id = z.string().regex(/^[a-f0-9]{12,64}$/).parse(owned);
+    await docker('RemoveFixture', ['container', 'rm', '--force', id]);
+  }
+}
+
+/** Test-only Core/Periphery. The approved artifact is served by the calling trial's private registry. */
+export async function openNativeReleaseKomodo(env: NodeJS.ProcessEnv = process.env) {
+  if (process.platform !== 'linux' || process.arch !== 'x64' || env.GITHUB_ACTIONS !== 'true'
+    || env.PROBE_HOST_ENVIRONMENT !== 'github-hosted') throw new KomodoError('ReleaseFixtureHost', 'binding');
+  const owned = new Set<string>();
+  const stack = nativeStack('itervane-release-' + randomUUID(), env);
+  try { await stack.start(false); }
+  catch (error) { await stack.stop().catch(() => undefined); throw error; }
+  return {
+    async prepare() {
+      const mark = randomUUID();
+      owned.add(mark);
+      const setup = await bootstrap(stack.adminPassword, '', 'itervane-release-' + mark, mark);
+      const { target, credentials, client } = setup;
+      const raw = await client.call('read', 'GetDeployment', { deployment: target.id }, z.unknown());
+      return {
+        binding: { deploymentId: target.id, serverId: target.server, runtimeConfigSha256: komodoRuntimeConfigSha256(raw),
+          komodo: { origin: coreOrigin, actorId: target.actor } },
+        credentials: { ...credentials, actorId: target.actor },
+        async observeContainer(reference: string, configDigest: string) {
+          const container = await waitFor('ObserveApprovedContainer', async () => {
+            const status = await inspect(target.name);
+            return status.State.Running ? status : undefined;
+          }, 20_000);
+          if (container.Config.Labels[labelKey] !== mark || container.Config.Image !== reference || container.Image !== configDigest) {
+            throw new KomodoError('ApprovedRuntimeIdentity', 'binding');
+          }
+          return { reference: container.Config.Image, configDigest: container.Image };
+        },
+      };
+    },
+    async close() {
+      try { for (const mark of owned) await removeOwnedFixture(mark); }
+      finally { await stack.stop(); }
+    },
+  };
+}
+
 export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
   const locale = localeSchema.catch('en').parse(env.ITERVANE_NATIVE_LOCALE);
   const lang = locale === 'zh-CN' ? 1 : 0;
@@ -268,19 +335,9 @@ export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
   }
   const mark = randomUUID();
   const name = 'itervane-probe-' + mark;
-  const adminPassword = randomBytes(32).toString('hex');
-  const composeEnv = {
-    ...env,
-    ITERVANE_PROBE_DB_PASSWORD: randomBytes(32).toString('hex'),
-    ITERVANE_PROBE_ADMIN_PASSWORD: adminPassword,
-    ITERVANE_PROBE_JWT_SECRET: randomBytes(32).toString('hex'),
-    ITERVANE_PROBE_WEBHOOK_SECRET: randomBytes(32).toString('hex'),
-  };
-  const compose = ['compose', '--env-file', '/dev/null', '--project-name', name, '--file', resolve('fixtures/komodo/compose.yaml')];
+  const stack = nativeStack(name, env);
   try {
-    const dockerPlatform = await docker('DockerIdentity', ['version', '--format', '{{.Server.Os}}/{{.Server.Arch}}']);
-    if (dockerPlatform !== 'linux/amd64') throw new KomodoError('DockerIdentity', 'binding');
-    await docker('ComposeUp', [...compose, 'up', '--detach', '--quiet-pull'], composeEnv);
+    await stack.start(true);
     await waitFor('RegistryReady', async () => {
       let result: Response;
       try { result = await fetch('http://' + registry + '/v2/', { redirect: 'error', signal: AbortSignal.timeout(2_000) }); }
@@ -291,7 +348,7 @@ export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
     const a = await publishFixture('a');
     const b = await publishFixture('b');
     if (a.digest === b.digest || a.config === b.config) throw new KomodoError('FixtureVersions', 'binding');
-    const setup = await bootstrap(adminPassword, a, name, mark);
+    const setup = await bootstrap(stack.adminPassword, a.reference, name, mark);
     const { client, target } = setup;
     checks.push({ id: 'native-komodo-identity', status: 'passed', detail: 'Komodo ' + komodoVersion + '. ' + text.authorized[lang] });
     const seen = new Set<string>();
@@ -318,13 +375,9 @@ export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
   } finally {
     let cleanupFailed = false;
     try {
-      const owned = await docker('FindFixture', ['container', 'ls', '--all', '--filter', 'label=' + labelKey + '=' + mark, '--format', '{{.ID}}']);
-      if (owned) {
-        const id = z.string().regex(/^[a-f0-9]{12,64}$/).parse(owned);
-        await docker('RemoveFixture', ['container', 'rm', '--force', id]);
-      }
+      await removeOwnedFixture(mark);
     } catch { cleanupFailed = true; }
-    try { await docker('ComposeDown', [...compose, 'down', '--volumes'], composeEnv); }
+    try { await stack.stop(); }
     catch { cleanupFailed = true; }
     checks.push({
       id: 'cleanup', status: cleanupFailed ? 'failed' : 'passed',
