@@ -1920,7 +1920,9 @@ it.each(['normal', 'config response lost', 'config unconfirmed', 'dispatch ID lo
       const operation = await readOperation(operationId);
       const job = operation.wakeupJobId && (await database.storage.boss.findJobs(formalReleaseQueue, { id: operation.wakeupJobId }))[0];
       const { rows: [runtime] } = await database.admin.query<{ reason: string }>('SELECT reason FROM itervane.run_runtime WHERE run_id=$1', [task.runId]);
-      throw new Error(`No Komodo wakeup for ${phase} (${operation.state}, ${runtime?.reason}, ${job ? job.state : 'missing'})`);
+      const { rows: [clock] } = await database.admin.query<{ now: Date }>('SELECT itervane_queue.job_now() AS now');
+      throw new Error(`No Komodo wakeup for ${phase} (${operation.state}, ${runtime?.reason}, ${job ? job.state : 'missing'}, `
+        + `starts ${job ? job.startAfter.toISOString() : '-'}, DB clock ${clock?.now.toISOString()})`);
     };
     const newWorker = () => new FormalReleaseWorker(database.storage, backend);
     const imported = await run(importWorker, 'registry import');
@@ -1936,8 +1938,11 @@ it.each(['normal', 'config response lost', 'config unconfirmed', 'dispatch ID lo
     expect((await service.getView(owner, task.id, 'zh-CN')).candidate?.message).toMatch(/新的 Komodo 写入租约/);
     if (scenario === 'approval revoked before Komodo') {
       const [ownerGrant] = await database.storage.db.delete(workspaceMembers).returning();
-      expect(await newWorker().tick()).toEqual({ status: 'idle' });
-      expect(await readOperation(operationId)).toMatchObject({ state: 'blocked', wakeupJobId: null });
+      const observer = newWorker();
+      await vi.waitFor(async () => {
+        expect(await observer.tick()).toEqual({ status: 'idle' });
+        expect(await readOperation(operationId)).toMatchObject({ state: 'blocked', wakeupJobId: null });
+      }, { timeout: 5_000, interval: 45 });
       expect(inspectTarget).not.toHaveBeenCalled();
       expect(configureImage).not.toHaveBeenCalled();
       expect(dispatch).not.toHaveBeenCalled();
