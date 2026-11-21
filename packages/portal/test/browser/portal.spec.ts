@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { test as base, expect, type Page } from '@playwright/test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { admissionDtoSchema, catalogDtoSchema, formalAuditDtoSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema,
-  preauditDtoSchema, sourceInspectionDtoSchema, taskDtoSchema } from '@itervane/contracts';
+  preauditDtoSchema, sourceInspectionDtoSchema, taskDtoSchema, translate, verificationViewSchema } from '@itervane/contracts';
 import { browserStack } from './stack.js';
 
 type Stack = Awaited<ReturnType<typeof browserStack>>;
@@ -165,6 +165,77 @@ test('resumes a recorded audit and downloads its versioned repair patch in the b
   expect(downloaded.suggestedFilename()).toBe(`itervane-patch-${patchSha256.slice(0, 12)}.json`);
   expect(await readFile((await downloaded.path())!, 'utf8')).toBe(JSON.stringify(patch));
   expect((await motionProbe(page)).csp).toEqual([]);
+});
+
+test('shows independent verification across run revisions with bilingual keyboard access to retry evidence', async ({ page, stack }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await observeMotion(page, stack.origin);
+  const project = await seedProject(stack);
+  const authorization = authorizationFrom(page);
+  await login(page, stack);
+  await expect(page.getByRole('link', { name: project.title, exact: true })).toBeVisible();
+  const task = await admit(stack, authorization(), project);
+  const base = `${stack.origin}/v1/tasks/${task.id}`;
+  const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+  const nextRunId = randomUUID();
+  const imageDigest = `sha256:${hash('second generation image')}`;
+  const first = {
+    runId: task.runId, generation: 1, status: 'recorded', outcome: 'checks_failed', recordedAt: task.createdAt,
+    resultSha256: hash('first result'), receiptSha256: hash('first receipt'), candidateManifestSha256: hash('first candidate'),
+    source: { status: 'compared', introduced: 0, resolved: 1, remaining: 0 }, build: { status: 'built', distSha256: hash('built') },
+    baseline: { status: 'failed', baselineSha256: hash('baseline'), runtimeInputsSha256: hash('runtime inputs'),
+      failures: [{ id: 'health', code: 'unexpected_status', statusCode: 503 }] }, image: { status: 'not_reached' },
+  };
+  let phase: 'pending' | 'recorded' | 'failure' = 'pending';
+  let revision = task.version + 4;
+  await page.route(base, route => route.fulfill({ json: taskDtoSchema.parse({ ...task, runId: nextRunId, version: revision,
+    state: phase === 'pending' ? 'queued' : 'waiting_input',
+  }) }));
+  await page.route(`${base}/verification`, route => {
+    const locale = route.request().headers()['accept-language'] === 'zh-CN' ? 'zh-CN' : 'en';
+    if (phase === 'failure') return route.fulfill({ status: 503, json: { error: { code: 'unavailable', requestId: randomUUID(),
+      messageKey: 'error.unavailable', message: translate(locale, 'error.unavailable'), locale,
+    } } });
+    const current = phase === 'pending'
+      ? { runId: nextRunId, generation: 2, status: 'pending', message: translate(locale, 'verification.pending') }
+      : { ...first, runId: nextRunId, generation: 2, outcome: 'observed', message: translate(locale, 'reason.verification_observed'),
+        resultSha256: hash('second result'), receiptSha256: hash('second receipt'), candidateManifestSha256: hash('second candidate'),
+        baseline: { ...first.baseline, status: 'passed', failures: [] },
+        image: { status: 'scanned', manifestDigest: imageDigest, findings: { critical: 0, high: 0, medium: 1, low: 0, unknown: 0 } },
+      };
+    return route.fulfill({ json: verificationViewSchema.parse({ version: 1, taskId: task.id, locale, current,
+      previous: { ...first, message: translate(locale, 'reason.verification_checks_failed') },
+    }) });
+  });
+  await page.goto(`${stack.origin}/#/tasks/${task.id}`);
+  const panel = page.getByTestId('formal-verification');
+  await expect(panel.getByRole('status')).toContainText('The current run has no independent verification result yet.');
+  const previous = panel.getByText('Previous candidate', { exact: true });
+  await previous.focus(); await previous.press('Enter');
+  await expect(panel.getByText('Health · Unexpected HTTP status (503)', { exact: true })).toBeVisible();
+  await expect.poll(async () => (await motionProbe(page)).disclosures).toBeGreaterThan(0);
+
+  phase = 'recorded'; revision++;
+  await expect(panel.getByRole('status')).toContainText('Run generation 2');
+  await expect(panel.getByText(imageDigest, { exact: true })).toBeVisible();
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await language(page, 'zh-CN');
+  await expect(panel.getByRole('heading', { name: '独立复验' })).toBeVisible();
+  await expect(panel.getByRole('status')).toContainText('证据已记录');
+  const reduced = await motionProbe(page);
+  const history = panel.getByText('上一代候选', { exact: true });
+  await history.focus(); await history.press('Enter');
+  await expect(panel.getByText('健康检查 · HTTP 状态与预期不符 (503)', { exact: true })).toBeVisible();
+  expect((await motionProbe(page)).disclosures).toBe(reduced.disclosures);
+
+  phase = 'failure'; revision++;
+  await expect(panel.getByRole('alert')).toBeVisible();
+  await expect(panel.getByText(imageDigest, { exact: true })).toHaveCount(0);
+  await expect(history).toHaveCount(0);
+  phase = 'recorded';
+  await panel.getByRole('button', { name: '重新尝试' }).click();
+  await expect(panel.getByText(imageDigest, { exact: true })).toBeVisible();
+  await expectMotionCsp(page);
 });
 
 type MotionProbe = { state: number; events: number; headings: number; disclosures: number; csp: string[]; privateWithError: boolean };
