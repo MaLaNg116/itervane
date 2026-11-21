@@ -1111,7 +1111,7 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
     expect(candidate.manifest.verification).toMatchObject({ inputSha256: proof?.inputSha256, resultSha256: proof?.sha256, receiptSha256: proof?.receiptSha256 });
     expect(candidate.manifest.image.archive).toEqual(proof?.document.archiveVerification?.archive);
     expect(await view()).toEqual({ taskId: task.id, runId: current.runId, taskVersion: current.version + 1,
-      candidate, candidateTarget: display, availableTargets: [], actions: ['confirm', 'reject'] });
+      candidate, candidateTarget: display, result: null, availableTargets: [], actions: ['confirm', 'reject'] });
     expect((await view(headers)).actions).toEqual([]);
     const [stored] = await database.storage.db.select().from(releaseCandidates);
     const substitute = { ...candidate.manifest, evidenceVersion: 2, image: { ...candidate.manifest.image,
