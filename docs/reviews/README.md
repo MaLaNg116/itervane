@@ -61,7 +61,7 @@
 | 055 | P2-E-D2-C 自托管 HTTPS 入口和 Docker 私网 | [#55](https://github.com/MaLaNg116/itervane/pull/55)，已合入 main | [自托管接线导读](p2-e-ingress-reference.md) | Compose 校验通过，三项实际网络检查的本机与托管源码指纹一致，[七项身份与三项隔离](https://github.com/MaLaNg116/itervane/actions/runs/44945649304)通过 |
 | 056 | P2-E-D3-A 独立上线核验租约与有界重领 | [#56](https://github.com/MaLaNg116/itervane/pull/56)，基于已合入 #55 的 main | [核验租约导读](p2-e-rollout-claim.md) | TypeScript、200 项单元、三项真实 PostgreSQL 认领专项及 164 项全量通过，[托管常规检查](https://github.com/MaLaNg116/itervane/actions/runs/44947905782)通过，托管 Runner 复跑中 |
 | 057 | P2-E-D3-B 正式上线证据与原子结算 | [#57](https://github.com/MaLaNg116/itervane/pull/57)，基于 #56 | [正式结算导读](p2-e-formal-rollout-verdict.md) | TypeScript、200 项单元、八项真实 PostgreSQL 专项及 169 项全量，[原生 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/44949166614)和[受保护入口](https://github.com/MaLaNg116/itervane/actions/runs/44949166620)通过，KVM 回归中 |
-| 058 | P2-E-D3-C1 限定目标的发布 Worker 与安装验证 | [#58](https://github.com/MaLaNg116/itervane/pull/58)，基于 #57 | [安装与身份导读](p2-e-release-installation.md) | TypeScript、202 项单元及十项真实 PostgreSQL 专项通过，密钥归属原生检查和托管回归中 |
+| 058 | P2-E-D3-C1 限定目标的发布 Worker 与安装验证 | [#58](https://github.com/MaLaNg116/itervane/pull/58)，基于 #57 | [安装与身份导读](p2-e-release-installation.md) | TypeScript、202 项单元、十项真实 PostgreSQL 专项及 171 项全量、[常规 CI](https://github.com/MaLaNg116/itervane/actions/runs/44950737250)和[密钥归属原生验证](https://github.com/MaLaNg116/itervane/actions/runs/44950649151)通过，KVM 回归中 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 

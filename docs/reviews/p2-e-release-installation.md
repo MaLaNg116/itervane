@@ -6,7 +6,9 @@
 2. `df5f1ad` 核对配置缺项、其他环境、注册目标漂移及错误指纹无法取得只读租约。测试使用持久化发布队列和真实数据库，外部写入使用可观测夹具。 [安装闸门回归](https://github.com/MaLaNg116/itervane/blob/df5f1ad/packages/control-plane/test/integration/inspections.test.ts)
 3. `38e9dec` 在队列消费前通过 Komodo 自身的 `ListApiKeys` 核对当前密钥属于登记服务身份。请求和响应只在发布进程内使用，日志记录固定错误码。 [受限适配器](https://github.com/MaLaNg116/itervane/blob/38e9dec/packages/control-plane/src/runtime/release-komodo.ts) · [Komodo v2.3.4 实现](https://github.com/moghtech/komodo/blob/v2.3.4/bin/core/src/api/read/user.rs#L92)
 
-TypeScript 与 202 项单元通过。真实 PostgreSQL 17.12 在 `df5f1ad` 通过十项安装和上线核验专项。最终版本的托管 PostgreSQL、密钥归属原生验证和 KVM 回归随交付归档。C2 接入双语结果，D3-D 用同一发布操作完成真实端到端验收。
+TypeScript 与 202 项单元通过。`df5f1ad` 在真实 PostgreSQL 17.12 通过十项安装及上线核验专项和 171 项全量，源码指纹 `aa5199d69feb0b0a0f20fa460511d0383142145b1427d2f8f794c9daabcdd809`。核对密钥归属后的代码通过托管 PostgreSQL、浏览器和扫描器回归。未配置的实际启动进程返回退出码 1，日志为固定错误消息。
+
+Komodo v2.3.4 原生验证通过六项检查，包含发布前验证同一密钥的正确与错误账号。原生报告源码指纹 `b8fe4162a8d2a36115758b384633a1e4a51406e1021da79162c8d4f308f3044e`。KVM 全量回归待归档。C2 接入双语结果，D3-D 用同一发布操作完成真实端到端验收。 [常规 CI](https://github.com/MaLaNg116/itervane/actions/runs/44950737250) · [原生 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/44950649151) · [托管 Runner](https://github.com/MaLaNg116/itervane/actions/runs/44950649076)
 
 ## 安装配置
 
