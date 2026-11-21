@@ -260,6 +260,13 @@
       "when": 1795292953970,
       "tag": "0036_formal_release_rollout_attempts",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1795294205495,
+      "tag": "0037_formal_release_rollout_verdict",
+      "breakpoints": true
     }
   ]
 }

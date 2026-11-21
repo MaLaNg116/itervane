@@ -32,6 +32,7 @@ import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim
 import { FormalReleaseSteps } from '../../src/runtime/formal-release-steps.js';
 import { FormalReleaseWorker } from '../../src/runtime/formal-release-worker.js';
 import { FormalRolloutCoordinator } from '../../src/runtime/formal-rollout-claim.js';
+import { FormalRolloutWorker } from '../../src/runtime/formal-rollout-worker.js';
 import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-rescan.js';
 import { runFormalVerification, type FormalVerificationOptions } from '../../src/runtime/formal-verification.js';
 import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
@@ -40,6 +41,7 @@ import { FormalRepairExecution, type RepairRunner } from '../../src/runtime/repa
 import { observeFormalRepairTargets, type RepairObservationRunner } from '../../src/runtime/repair-observation.js';
 import { ReleaseRehearsal } from '../../src/runtime/release-rehearsal.js';
 import type { ReleaseRegistryPublisher } from '../../src/runtime/release-registry.js';
+import { ReleaseIngressError } from '../../src/runtime/release-traefik.js';
 import { ToolGateway } from '../../src/runtime/tools.js';
 import { prepareFormalVerificationInput } from '../../src/runtime/verification-input.js';
 import { projectVerificationEvidence } from '../../src/runtime/verification-evidence.js';
@@ -1885,7 +1887,7 @@ it('records one Komodo configuration and dispatch with separately bound observat
   expect(zh.at(-1)?.message).toMatch(/独立核对/);
 });
 
-async function parkForRollout({ approval, target }: Awaited<ReturnType<typeof queuedFormalRelease>>) {
+async function parkForRollout({ approval, target }: Awaited<ReturnType<typeof queuedFormalRelease>>, success = true) {
   const release = new FormalReleaseCoordinator(coordinator, releaseOrigin);
   const registry = new FormalReleaseSteps(release);
   const importScope = await release.claim(await fetchFormalWakeup(), randomUUID());
@@ -1906,7 +1908,7 @@ async function parkForRollout({ approval, target }: Awaited<ReturnType<typeof qu
   await komodo.prepareDispatch(writer);
   await komodo.authorizeWrite(writer, 'komodo_dispatch');
   const update = { updateId: 'e'.repeat(24), actorId: komodoBinding.actorId, deploymentId: target.deploymentId,
-    status: 'Complete', success: true } as const;
+    status: 'Complete', success } as const;
   await komodo.recordUpdate(writer, { ...update, status: 'Queued', success: false });
   await komodo.confirmDispatch(writer, update);
   expect(await release.finishKomodo(writer)).toBe('awaiting_rollout');
@@ -1997,6 +1999,135 @@ it('rejects direct formal rollout lease changes outside the recorded handoff and
     .rejects.toMatchObject({ code: '23514', message: 'formal_rollout_attempt_is_immutable' });
   await expect(database.storage.pool.query('DELETE FROM itervane.formal_release_rollout_attempts WHERE operation_id=$1', [operationId]))
     .rejects.toMatchObject({ code: '23514', message: 'formal_rollout_attempt_is_immutable' });
+});
+
+function observedRuntime(binding: Awaited<ReturnType<FormalRolloutCoordinator['authorize']>>) {
+  return { rolloutCheckSha256: binding.rolloutCheckSha256, containerId: sha256('running container'),
+    configDigest: binding.image.configDigest, imageReference: binding.image.reference,
+    runtimeConfigSha256: binding.target.runtimeConfigSha256, network: binding.check.network,
+    anonymousStatus: 401 as const, healthStatus: 200 as const, version: 'standard-v2' };
+}
+
+it('settles one formal rollout and releases the environment only with a complete current proof', async () => {
+  const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
+  const { operationId, target, taskService, approval } = submitted;
+  const { image, update } = await parkForRollout(submitted);
+  const observe = new FormalRolloutCoordinator(database.storage, releaseOrigin);
+  const observeUpdate = vi.fn<ConstructorParameters<typeof FormalRolloutWorker>[1]['observeUpdate']>(
+    async (_target, updateId, authorize) => {
+      expect(updateId).toBe(update.updateId);
+      await authorize();
+      return update;
+    });
+  const verify = vi.fn<ConstructorParameters<typeof FormalRolloutWorker>[2]['observe']>(async (binding, authorize) => {
+    await authorize();
+    expect(binding.image.configDigest).toBe(image.configDigest);
+    return { rolloutCheckSha256: binding.rolloutCheckSha256, containerId: sha256('running container'),
+      configDigest: binding.image.configDigest, imageReference: image.reference, runtimeConfigSha256: target.runtimeConfigSha256,
+      network: rolloutCheckFixture.network, anonymousStatus: 401, healthStatus: 200, version: 'standard-v2' };
+  });
+  const worker = new FormalRolloutWorker(observe, { observeUpdate }, { observe: verify });
+
+  expect(await Promise.all([worker.tick(randomUUID()), worker.tick(randomUUID())])).toEqual(expect.arrayContaining(['idle', 'verified_formal']));
+  expect(observeUpdate).toHaveBeenCalledTimes(2);
+  expect(verify).toHaveBeenCalledOnce();
+  expect(await worker.tick(randomUUID())).toBe('idle');
+  expect(await readOperation(operationId)).toMatchObject({ state: 'verified_formal', observation: null, wakeupJobId: null });
+  expect(await taskService.get(identity, task.id)).toMatchObject({ state: 'succeeded' });
+  const [result] = await database.storage.db.select().from(formalReleaseRolloutAttempts);
+  expect(result).toMatchObject({ state: 'verified', fence: 1, failure: null, proof: { operationId, rolloutFence: 1,
+    generation: approval.manifest.generation, targetRevision: approval.manifest.target.revision, manifestDigest: image.manifestDigest, update,
+    runtime: { containerId: sha256('running container'), configDigest: image.configDigest, anonymousStatus: 401, healthStatus: 200 } } });
+  expect(result!.completedAt!.getTime()).toBeLessThan(result!.leaseUntil.getTime());
+  for (const locale of ['zh-CN', 'en'] as const) {
+    const events = (await taskService.events(identity, task.id, 50, locale)).filter(event => event.type === 'task.release_rollout_verified');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ state: 'succeeded', locale, message: locale === 'zh-CN' ? /已核验/ : /were verified/ });
+  }
+  await expect(registerReleaseTarget(database.storage, { ...target, runtimeConfigSha256: sha256('next revision') }))
+    .resolves.toMatchObject({ revision: approval.manifest.target.revision + 1 });
+});
+
+it('rejects wrong, stale and partial formal rollout evidence while preserving a later cancellation', async () => {
+  const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
+  const { operationId, taskService, target } = submitted;
+  const short = new FormalRolloutCoordinator(database.storage, releaseOrigin, 1);
+  await parkForRollout(submitted);
+  const stale = await short.claimNext(randomUUID());
+  if (!stale) throw new Error('Expected a first observation attempt');
+  await database.admin.query(`SELECT pg_sleep_until(lease_until + interval '20 milliseconds')
+    FROM itervane.formal_release_rollout_attempts WHERE operation_id=$1 AND fence=1`, [operationId]);
+  const observe = new FormalRolloutCoordinator(database.storage, releaseOrigin);
+  const scope = await observe.claimNext(randomUUID());
+  if (!scope) throw new Error('Expected an observation after expiry');
+  expect(scope.fence).toBe(2);
+  const binding = await observe.authorize(scope);
+  const proof = { version: 1, ...binding.decision, rolloutFence: scope.fence, generation: binding.manifest.generation,
+    targetRevision: binding.manifest.target.revision, mappingSha256: binding.manifest.target.mappingSha256,
+    manifestDigest: binding.image.manifestDigest, update: binding.update, runtime: observedRuntime(binding) };
+  await expect(observe.settle(stale, { ...proof, rolloutFence: stale.fence })).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(observe.settle(scope, {})).rejects.toThrow();
+  for (const result of [
+    { ...proof, operationId: randomUUID() },
+    { ...proof, fingerprint: sha256('other candidate') },
+    { ...proof, update: { ...proof.update, updateId: 'c'.repeat(24) } },
+    { ...proof, runtime: { ...proof.runtime, configDigest: 'sha256:' + sha256('wrong image') } },
+    { ...proof, runtime: { ...proof.runtime, rolloutCheckSha256: sha256('other profile') } },
+  ]) {
+    await expect(observe.settle(scope, result)).rejects.toMatchObject({
+      cause: { code: '23514', message: 'formal_rollout_proof_mismatch' },
+    });
+  }
+
+  await expect(database.storage.pool.query("UPDATE itervane.release_operations SET state='verified_formal' WHERE id=$1", [operationId]))
+    .rejects.toMatchObject({ code: '23514', message: 'formal_rollout_evidence_required' });
+  await expect(database.storage.pool.query(`UPDATE itervane.formal_release_rollout_attempts SET state='verified', proof=$2::jsonb
+    WHERE operation_id=$1 AND fence=2`, [operationId, JSON.stringify(proof)]))
+    .rejects.toMatchObject({ code: '23514', message: 'formal_rollout_settlement_incomplete' });
+  expect(await readOperation(operationId)).toMatchObject({ state: 'reconciling' });
+  await expect(registerReleaseTarget(database.storage, { ...target, runtimeConfigSha256: sha256('still reserved') }))
+    .rejects.toMatchObject({ code: 'conflict' });
+
+  const current = await taskService.get(identity, task.id);
+  expect(await taskService.cancel(identity, task.id, { expectedVersion: current.version })).toMatchObject({ state: 'cancel_requested' });
+  expect(await observe.settle(scope, proof)).toBe('verified_formal');
+  await expect(observe.settle(scope, proof)).rejects.toBeInstanceOf(ExecutionLost);
+  expect(await readOperation(operationId)).toMatchObject({ state: 'verified_formal' });
+  expect(await taskService.get(identity, task.id)).toMatchObject({ state: 'cancelled' });
+  const attempts = await database.storage.db.select().from(formalReleaseRolloutAttempts).orderBy(formalReleaseRolloutAttempts.fence);
+  expect(attempts).toMatchObject([{ state: 'expired', fence: 1, proof: null }, { state: 'verified', fence: 2, proof }]);
+});
+
+it.each([
+  { scenario: 'recorded update failed', reason: 'release_rollout_update_failed', reads: 1, health: 0 },
+  { scenario: 'update changed after health', reason: 'release_rollout_update_changed', reads: 2, health: 1 },
+  { scenario: 'protected health failed', reason: 'release_rollout_health_failed', reads: 1, health: 1 },
+] as const)('holds the environment when formal rollout needs manual review ($scenario)', async ({ scenario, reason, reads, health }) => {
+  const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
+  const { operationId, taskService, target } = submitted;
+  const { image, update } = await parkForRollout(submitted, scenario !== 'recorded update failed');
+  const coordinator = new FormalRolloutCoordinator(database.storage, releaseOrigin);
+  const observeUpdate = vi.fn().mockResolvedValueOnce(update).mockResolvedValueOnce({ ...update, success: false });
+  const verify = vi.fn<ConstructorParameters<typeof FormalRolloutWorker>[2]['observe']>(async (binding, authorize) => {
+    await authorize();
+    if (scenario === 'protected health failed') throw new ReleaseIngressError('health_failed');
+    return { rolloutCheckSha256: binding.rolloutCheckSha256, containerId: sha256('running container'),
+      configDigest: image.configDigest, imageReference: image.reference, runtimeConfigSha256: target.runtimeConfigSha256,
+      network: rolloutCheckFixture.network, anonymousStatus: 401, healthStatus: 200, version: 'standard-v2' };
+  });
+  const worker = new FormalRolloutWorker(coordinator, { observeUpdate }, { observe: verify });
+
+  expect(await worker.tick(randomUUID())).toBe('manual_review');
+  expect(observeUpdate).toHaveBeenCalledTimes(reads);
+  expect(verify).toHaveBeenCalledTimes(health);
+  expect(await worker.tick(randomUUID())).toBe('idle');
+  expect(await readOperation(operationId)).toMatchObject({ state: 'reconciling', observation: null, wakeupJobId: null });
+  expect(await taskService.get(identity, task.id)).toMatchObject({ state: 'needs_human' });
+  expect(await database.storage.db.select().from(formalReleaseRolloutAttempts)).toMatchObject([{ state: 'rejected', proof: null, failure: reason }]);
+  await expect(registerReleaseTarget(database.storage, { ...target, runtimeConfigSha256: sha256('different revision') }))
+    .rejects.toMatchObject({ code: 'conflict' });
+  const events = await taskService.events(identity, task.id, 50, 'zh-CN');
+  expect(events.filter(event => event.type === 'task.release_rollout_manual_review')).toMatchObject([{ reason, reasonMessage: expect.any(String) }]);
 });
 
 it.each(['normal', 'config response lost', 'config unconfirmed', 'dispatch ID lost',

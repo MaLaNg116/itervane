@@ -1,4 +1,4 @@
-import { releaseRolloutCheckSchema, type ReleaseRegistryImageProof, type ReleaseRolloutCheck } from '@itervane/contracts';
+import { releaseRolloutCheckSchema, releaseRuntimeObservationSchema, type ReleaseRegistryImageProof, type ReleaseRolloutCheck } from '@itervane/contracts';
 import { z } from 'zod';
 import { createIdentityVerifier } from '../auth/identity.js';
 import { fingerprintRolloutCheck } from '../service/release-targets.js';
@@ -7,7 +7,7 @@ import { readIngressJson, ReleaseIngressError, verifyTraefikIngress } from './re
 
 const probeToken = z.string().max(16_384).regex(/^[A-Za-z0-9_-]+[.][A-Za-z0-9_-]+[.][A-Za-z0-9_-]+$/);
 const healthResponse = z.strictObject({
-  status: z.literal('healthy'), version: z.string().min(1).max(64).regex(/^[a-zA-Z0-9_.-]+$/),
+  status: z.literal('healthy'), version: releaseRuntimeObservationSchema.shape.version,
 });
 const tokenResponse = z.object({
   access_token: probeToken, token_type: z.literal('Bearer'), expires_in: z.int().min(1).max(300),
@@ -101,8 +101,9 @@ export class ReleaseRolloutVerifier {
     await verifyTraefikIngress(check, after.containerName, authorize, active);
     await authorize();
     active.throwIfAborted();
-    return { rolloutCheckSha256: input.rolloutCheckSha256, containerId: after.containerId, configDigest: after.configDigest,
-      imageReference: after.imageReference, network: after.network, anonymousStatus, healthStatus: 200 as const, version: health.version };
+    return releaseRuntimeObservationSchema.parse({ rolloutCheckSha256: input.rolloutCheckSha256,
+      containerId: after.containerId, configDigest: after.configDigest, imageReference: after.imageReference,
+      runtimeConfigSha256: after.runtimeConfigSha256, network: after.network, anonymousStatus, healthStatus: 200, version: health.version });
   }
 
   private async requestHealth(check: ReleaseRolloutCheck, authorize: AuthorizeObservation, signal: AbortSignal, token?: string) {

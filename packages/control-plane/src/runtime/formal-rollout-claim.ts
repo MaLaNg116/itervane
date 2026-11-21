@@ -1,4 +1,5 @@
-import { idSchema, releaseKomodoCompletionSchema, releaseKomodoIntentSchema, releaseRegistryOriginSchema } from '@itervane/contracts';
+import { idSchema, releaseKomodoCompletionSchema, releaseKomodoIntentSchema, releaseRegistryOriginSchema, releaseRolloutFailureSchema,
+  releaseRolloutProofSchema, type ReleaseRolloutFailure, type ReleaseRolloutProof } from '@itervane/contracts';
 import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 import type { Database } from '../persistence/database.js';
 import { executionSlot, formalReleaseRolloutAttempts, formalReleaseTargets, releaseCandidates, releaseDecisions,
@@ -19,6 +20,7 @@ const maxRolloutLeaseSeconds = 45;
 
 export type FormalRolloutScope = Readonly<{ operationId: string; workerId: string; fence: number }>;
 type RolloutAttempt = typeof formalReleaseRolloutAttempts.$inferSelect;
+type RolloutResult = { state: 'verified'; proof: ReleaseRolloutProof } | { state: 'rejected'; failure: ReleaseRolloutFailure };
 
 function attemptIdentity(scope: FormalRolloutScope) {
   return and(eq(formalReleaseRolloutAttempts.operationId, scope.operationId), eq(formalReleaseRolloutAttempts.workerId, scope.workerId),
@@ -67,7 +69,8 @@ async function readRolloutBinding(tx: Transaction, pending: PendingRollout, work
       intent.actorId !== target.komodo.actorId || intent.runtimeConfigSha256 !== target.runtimeConfigSha256 ||
       intent.revision !== manifest.target.revision || intent.mappingSha256 !== manifest.target.mappingSha256 ||
       intent.imageReference !== image.reference) throw new ExecutionLost();
-  return { target, check: mapping.rolloutCheck, rolloutCheckSha256: manifest.rolloutCheckSha256, manifest, image, update };
+  return { target, check: mapping.rolloutCheck, rolloutCheckSha256: manifest.rolloutCheckSha256, manifest, image, update,
+    decision: releaseDecisionBinding(pending) };
 }
 
 async function expireAttempt(tx: Transaction, attempt: RolloutAttempt, workerId: string) {
@@ -128,7 +131,7 @@ export class FormalRolloutCoordinator {
     });
   }
 
-  async withObservation<T>(scope: FormalRolloutScope, action: (tx: Transaction, pending: PendingRollout,
+  private async withObservation<T>(scope: FormalRolloutScope, action: (tx: Transaction, pending: PendingRollout,
     binding: Awaited<ReturnType<typeof readRolloutBinding>>) => Promise<T>) {
     return this.database.db.transaction(async tx => {
       const pending = await lockPendingRollout(tx, scope.operationId);
@@ -144,5 +147,36 @@ export class FormalRolloutCoordinator {
 
   async authorize(scope: FormalRolloutScope) {
     return this.withObservation(scope, async (_tx, _pending, binding) => binding);
+  }
+
+  async settle(scope: FormalRolloutScope, proof: unknown) {
+    return this.finishObservation(scope, { state: 'verified', proof: releaseRolloutProofSchema.parse(proof) });
+  }
+
+  async requireManualReview(scope: FormalRolloutScope, failure: ReleaseRolloutFailure) {
+    return this.finishObservation(scope, { state: 'rejected', failure: releaseRolloutFailureSchema.parse(failure) });
+  }
+
+  private async finishObservation(scope: FormalRolloutScope, result: RolloutResult) {
+    return this.withObservation(scope, async (tx, pending) => {
+      const [attempt] = await tx.update(formalReleaseRolloutAttempts).set(result)
+        .where(and(attemptIdentity(scope), sql`${formalReleaseRolloutAttempts.leaseUntil} > clock_timestamp()`))
+        .returning({ completedAt: formalReleaseRolloutAttempts.completedAt });
+      if (!attempt?.completedAt) throw new ExecutionLost();
+
+      const event = { workerId: scope.workerId, releaseDecision: { ...releaseDecisionBinding(pending), rolloutFence: scope.fence } };
+      if (result.state === 'rejected') {
+        await tx.update(runRuntime).set({ reason: 'release_rollout_manual_review' }).where(eq(runRuntime.runId, pending.candidate.runId));
+        await appendEvent(tx, pending.task, 'task.release_rollout_manual_review', 'needs_human', { ...event, reason: result.failure });
+        return 'manual_review' as const;
+      }
+
+      await tx.update(releaseOperations).set({ state: 'verified_formal', updatedAt: attempt.completedAt })
+        .where(eq(releaseOperations.id, scope.operationId));
+      await tx.update(runRuntime).set({ reason: 'release_rollout_verified' }).where(eq(runRuntime.runId, pending.candidate.runId));
+      await appendEvent(tx, pending.task, 'task.release_rollout_verified',
+        pending.task.state === 'cancel_requested' ? 'cancelled' : 'succeeded', event);
+      return 'verified_formal' as const;
+    });
   }
 }
