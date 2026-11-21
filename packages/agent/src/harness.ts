@@ -9,7 +9,7 @@ import type { RepairFindingSummary } from './repair-contracts.js';
 import { finishAudit, finishFormalAudit, finishFormalRepair, finishFormalVerification, finishRepair, finishVerify } from './results.js';
 import { initialRole, initialState, restoreState, stopped, type AgentState, type Stop } from './state.js';
 import { acceptReceipt, canCall, emptyArguments, hasObservation, plannedToolSchema, toolDefinitions, type PlannedTool } from './tools.js';
-import { pendingVerificationSections, type VerificationSection } from './verification-contracts.js';
+import { finishVerificationInputSchema, pendingVerificationSections, type VerificationSection } from './verification-contracts.js';
 
 export type AgentScope = Readonly<{
   spec: Readonly<AgentSpec>; bindingSha256: string; snapshotSha256: string; role: DeliveryRole; origin: AgentOrigin;
@@ -318,7 +318,16 @@ function createHarness<Profile extends HarnessProfile>({ model, checkpointer, ho
         if (turn.calls.length > 1) return { state: stalled(state, 'multiple_calls') };
         if (!call) return { state: stalled(state, 'invalid_call') };
         if (call.name === 'request_human' && emptyArguments.safeParse(call.input).success) return { state: stopped(state, 'manual_review') };
-        if (call.name === 'finish_role') return { state: finish(state, spec, call.input, origin) ?? stalled(state, 'insufficient_evidence') };
+        if (call.name === 'finish_role') {
+          if (verifying) {
+            const checked = finishVerificationInputSchema.safeParse(call.input);
+            if (!checked.success && checked.error.issues.some(issue =>
+              issue.code === 'too_big' && (issue.path[0] === 'summary' || issue.path[0] === 'followUps'))) {
+              return { state: stalled(state, 'verification_text_too_long') };
+            }
+          }
+          return { state: finish(state, spec, call.input, origin) ?? stalled(state, 'insufficient_evidence') };
+        }
         const planned = plannedToolSchema.safeParse({ name: call.name, args: call.input });
         if (!planned.success || !permits(state, planned.data)) return { state: stalled(state, 'invalid_call') };
         if (hasObservation(entries, planned.data)) return { state: stalled(state, 'no_new_evidence') };

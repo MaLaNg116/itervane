@@ -58,3 +58,21 @@ it('requires actual evidence to support the follow-up advice', async () => {
   } } }).run();
   expect(result).toMatchObject({ status: 'requires_human', reason: 'no_progress', usage: { toolCalls: 3 }, formalVerification: null });
 });
+
+it.each([
+  ['en', 'Shorten the verification summary'],
+  ['zh-CN', '请把复验摘要缩短'],
+] as const)('explains how to correct an oversized completion without rereading evidence in %s', async (locale, feedback) => {
+  const script = scriptedVerification(locale);
+  let completions = 0;
+  const result = await createFormalVerification({ ...verificationFixture(locale), model: { ...script, async complete(request) {
+    const turn = await script.complete(request);
+    const call = turn.calls[0];
+    if (call?.name !== 'finish_role') return turn;
+    if (++completions === 1) return verificationDecision('finish_role', { ...(call.input as object), summary: 'a'.repeat(481) });
+    expect(JSON.stringify(request.conversation)).toContain(feedback);
+    return turn;
+  } } }).run();
+  expect(completions).toBe(2);
+  expect(result).toMatchObject({ status: 'completed', formalVerification: { outcome: 'observed' }, usage: { toolCalls: 4 } });
+});
