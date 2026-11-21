@@ -13,4 +13,6 @@ TypeScript、200 项单元及发布目标修订的真实 PostgreSQL 专项通过
 
 交付 `07f5c2aa78b8934f04c0cc6db36bc965820b21e5` 的托管报告指纹为 `f7e8f8f78f1d61c7b3c04086997487c42066a8815daa1851cc5b511c0004d6f4`。七项真实入口检查全绿。加入容器名称和自动宿主端口检查的 Komodo 同提交回归也已通过。 [PR #54](https://github.com/MaLaNg116/itervane/pull/54) · [托管入口](https://github.com/MaLaNg116/itervane/actions/runs/44943972070) · [原生 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/44943971983)
 
+同一码的两组 GitHub 常规检查均通过，含 161 项真实 PostgreSQL 和双语浏览器回归。本机一次全量通过 160/161 项，既有复验恢复用例收到转人工结果，托管全量通过该用例。八项本机专题通过。 [托管数据库与浏览器](https://github.com/MaLaNg116/itervane/actions/runs/44944200204) · [同版托管 Runner](https://github.com/MaLaNg116/itervane/actions/runs/44943972003)
+
 本机试验的后端是可信样例，运行身份来自固定夹具。真实 Docker 私有网络的自托管接线及入口核验随 D2-C 验证，D3 接续正式发布操作、短租约和最终数据库结算。
