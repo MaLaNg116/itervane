@@ -67,7 +67,7 @@ export async function appendEvent(tx: Transaction, task: TaskRow, type: string, 
     repair?: { runId: string; repairResultSha256: string };
     verification?: { runId: string; verificationResultSha256: string };
     releaseCandidate?: { candidateId: string; fingerprint: string };
-    releaseDecision?: { candidateId: string; fingerprint: string; decisionVersion: number; operationId?: string; fence?: number };
+    releaseDecision?: { candidateId: string; fingerprint: string; decisionVersion: number; operationId?: string; fence?: number; rolloutFence?: number };
     retry?: { runId: string; previousRunId: string; retrySha256: string } } = {}) {
   const [next] = await tx.update(tasks).set({ state, version: task.version + 1 })
     .where(and(eq(tasks.id, task.id), eq(tasks.version, task.version))).returning();
