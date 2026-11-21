@@ -112,11 +112,12 @@ async function bootstrap(password: string, reference: string, name: string, mark
   }, z.object({ _id: resource.shape._id, admin: z.literal(false), enabled: z.literal(true) }));
   const actor = user._id.$oid;
   const id = created._id.$oid;
-  await admin.call('write', 'UpdatePermissionOnTarget', {
+  const setDeploymentPermissions = (specific: 'Inspect'[]) => admin.call('write', 'UpdatePermissionOnTarget', {
     user_target: { type: 'User', id: actor },
     resource_target: { type: 'Deployment', id },
-    permission: { level: 'Write', specific: [] },
+    permission: { level: 'Write', specific },
   }, z.unknown());
+  await setDeploymentPermissions([]);
   const credentials = await admin.call('write', 'CreateApiKeyForServiceUser', {
     user_id: actor, name: 'release-probe', expires: Date.now() + 20 * 60_000,
   }, z.object({ key: z.string().min(1).max(512), secret: z.string().min(1).max(512) }));
@@ -127,7 +128,8 @@ async function bootstrap(password: string, reference: string, name: string, mark
     await client.call('read', 'GetDeployment', { deployment: foreign._id.$oid }, z.unknown());
   } catch (error) {
     if (error instanceof KomodoError && error.reason === 'permission') {
-      return { client, target, credentials, foreignId: foreign._id.$oid };
+      return { client, target, credentials, foreignId: foreign._id.$oid,
+        allowBoundContainerInspection: () => setDeploymentPermissions(['Inspect']) };
     }
     if (error instanceof KomodoError) throw new KomodoError('UnrelatedTargetForbidden', error.reason, error.status);
     throw error;
@@ -245,7 +247,11 @@ async function verifyFormalAdapter(setup: Awaited<ReturnType<typeof bootstrap>>,
   await expectReleaseRejection('GetUpdate', 'binding', () =>
     mismatch.observeUpdate({ ...binding, komodo: { ...binding.komodo, actorId: foreignId } }, updateId, authorize));
   const observed = await waitFor('FormalAdapterFixture', () => observeFixture(target.name, mark, approved, previousContainer), 12_000);
-  const runtime = await adapter.inspectRuntime(binding, { manifestDigest: approved.digest, configDigest: approved.config }, 'none', authorize);
+  const runningImage = { manifestDigest: approved.digest, configDigest: approved.config };
+  await expectReleaseRejection('InspectDeploymentContainer', 'http', () =>
+    adapter.inspectRuntime(binding, runningImage, 'none', authorize));
+  await setup.allowBoundContainerInspection();
+  const runtime = await adapter.inspectRuntime(binding, runningImage, 'none', authorize);
   if (runtime.containerId !== observed.Id || runtime.configDigest !== observed.Image) throw new KomodoError('FormalAdapterRunningImage', 'binding');
   return { updateId, runtimeConfigSha256: binding.runtimeConfigSha256, observed };
 }
@@ -372,7 +378,9 @@ export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
   } catch (error) {
     const reason = error instanceof KomodoError
       ? error.step + ' (' + error.reason + (error.status ? ', HTTP ' + error.status : '') + ')'
-      : error instanceof KomodoReleaseError ? error.step + ' (' + error.reason + ')' : 'FixtureEvidence';
+      : error instanceof KomodoReleaseError
+        ? error.step + ' (' + error.reason + (error.statusCode ? ', HTTP ' + error.statusCode : '') + ')'
+        : 'FixtureEvidence';
     checks.push({ id: 'native-verification', status: 'failed', detail: text.failure[lang] + ' ' + reason + '.' });
   } finally {
     let cleanupFailed = false;
