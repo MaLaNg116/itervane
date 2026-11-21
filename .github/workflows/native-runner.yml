@@ -48,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm]
+        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm, protected-release-drift]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -186,9 +186,15 @@ jobs:
           NATIVE_SCENARIO: ${{ matrix.scenario }}
         run: |
           test "$KVM_AVAILABLE" = true
-          jq -e '.release.healthStatus == 200 and .release.httpMcpAgreement == true' .reports/p0/runner-protected-release.json >/dev/null
+          report=.reports/p0/runner-protected-release.json
+          if [[ "$NATIVE_SCENARIO" == protected-release-drift ]]; then
+            jq -e '.drift.target.reason == "release_target_changed" and .drift.archive.reason == "release_archive_unavailable" and
+              .drift.target.externalSteps == 0 and .drift.archive.externalSteps == 0 and .drift.originalArchiveRestored == true' "$report" >/dev/null
+            exit 0
+          fi
+          jq -e '.release.healthStatus == 200 and .release.httpMcpAgreement == true' "$report" >/dev/null
           if [[ "$NATIVE_SCENARIO" == protected-release-npm ]]; then
-            jq -e '.release.repairCategory == "npm_dependency" and .dependency.advisoryId != null' .reports/p0/runner-protected-release.json >/dev/null
+            jq -e '.release.repairCategory == "npm_dependency" and .dependency.advisoryId != null' "$report" >/dev/null
           fi
       - name: Retain independent KVM evidence
         if: always()
@@ -208,6 +214,7 @@ jobs:
             .reports/p0/runner-worker-inspection.json
             .reports/p0/runner-worker-build.json
             .reports/p0/runner-protected-release.json
+            .reports/p0/runner-drift-oci-artifact.json
             .reports/p0/runner-oci-artifact.json
             .reports/p0/runner-retry-oci-artifact.json
           if-no-files-found: error
