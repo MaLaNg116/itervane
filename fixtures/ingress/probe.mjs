@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { execFile, spawn } from 'node:child_process';
+import { createReadStream } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { getCACertificates, setDefaultCACertificates } from 'node:tls';
 import { promisify } from 'node:util';
@@ -69,8 +70,10 @@ const openPort = async () => {
 
 async function verifyBinary(path, expected) {
   const file = await stat(path);
-  assert.ok(file.isFile() && file.size <= 160 * 1024 * 1024);
-  assert.equal(createHash('sha256').update(await readFile(path)).digest('hex'), expected);
+  assert.ok(file.isFile());
+  const digest = createHash('sha256');
+  for await (const chunk of createReadStream(path)) digest.update(chunk);
+  assert.equal(digest.digest('hex'), expected);
 }
 
 const passed = (id, detail) => checks.push({ id, status: 'passed', detail });
