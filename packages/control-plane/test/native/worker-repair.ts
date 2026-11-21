@@ -11,11 +11,15 @@ import { formalRepairResults } from '../../src/persistence/schema.js';
 import type { FormalRepairOptions } from '../../src/runtime/formal-repair.js';
 import { DurableWorker } from '../../src/runtime/worker.js';
 
-const fixturePath = 'fixtures/runner/inspection-input/original/config.txt';
-const originalSha256 = '3812bc54c3579d8c67275c573f0ff1bf7dde70bfb4a9150621459ae510a87afc';
+const fixtures = {
+  patch: { path: 'fixtures/runner/inspection-input/original/config.txt', bytes: 158,
+    sha256: '3812bc54c3579d8c67275c573f0ff1bf7dde70bfb4a9150621459ae510a87afc', tool: 'apply_repair_patch' },
+  template: { path: 'fixtures/runner/repair-input/.env.example', bytes: 141,
+    sha256: '2a521af0e56199ba9686f52434e2097219b9c336a5037a2504c50914b1cfb809', tool: 'apply_repair_template' },
+} as const;
 const updated = '# Use managed credentials at runtime.\n';
 
-function repairModel(findingId: string) {
+function repairModel(findingId: string, beforeSha256: string) {
   const decide = (name: string, input: unknown) => ({ text: '', calls: [{ id: 'repair-fixture', name, input }], tokenUsage: 30 });
   const complete: ModelAdapter['complete'] = async ({ conversation }) => {
     const context = conversation[0];
@@ -26,7 +30,10 @@ function repairModel(findingId: string) {
     const evidence = observations.find(item => item.data.kind === 'repair_targets');
     if (!evidence || evidence.data.kind !== 'repair_targets') return decide('read_repair_targets', { findingIds: [findingId] });
     const target = evidence.data.observation.targets[0];
-    if (!target?.range || target.findingId !== findingId || target.file?.sha256 !== originalSha256) throw new Error('repair_fixture_target');
+    if (!target?.range || target.findingId !== findingId || target.file?.sha256 !== beforeSha256) throw new Error('repair_fixture_target');
+    if (target.templates.includes('remove-env-entry-v1')) {
+      return decide('apply_repair_template', { observationId: evidence.id, targetIndex: 0, templateId: 'remove-env-entry-v1' });
+    }
     return decide('apply_repair_patch', { observationId: evidence.id, targets: [{ targetIndex: 0,
       edits: [{ startByte: target.range.startByte, endByte: target.range.endByte, replacement: updated }],
     }] });
@@ -35,10 +42,12 @@ function repairModel(findingId: string) {
 }
 
 async function repair() {
-  const [taskId, runId, snapshot, finding, ...extra] = process.argv.slice(2);
+  const [taskId, runId, snapshot, finding, variant, ...extra] = process.argv.slice(2);
   const config = workerConfig();
   if (process.platform !== 'linux' || !process.getuid?.() || !config.runner || extra.length
+      || (variant !== 'patch' && variant !== 'template')
       || !/^\/itervane_test_[a-f0-9]{12}$/.test(new URL(config.databaseUrl).pathname)) throw new Error('repair_fixture_config');
+  const expected = fixtures[variant];
   const target = { taskId: idSchema.parse(taskId), runId: idSchema.parse(runId) };
   const baseSnapshotSha256 = sha256Schema.parse(snapshot);
   const findingId = sha256Schema.parse(finding);
@@ -70,12 +79,14 @@ async function repair() {
         },
       },
     };
-    const worker = new DurableWorker(database, config.databaseUrl, { leaseSeconds: config.leaseSeconds, auditModel: repairModel(findingId), repair: options });
+    const worker = new DurableWorker(database, config.databaseUrl, { leaseSeconds: config.leaseSeconds,
+      auditModel: repairModel(findingId, expected.sha256), repair: options,
+    });
     try { equal(await worker.tick(), true); } finally { await worker.close(); }
     ok(observation && receipt);
     const [observed] = observation.snapshot.observation.targets;
     ok(observed?.file && observed.range);
-    equal(observed.path, fixturePath); equal(observed.file.sha256, originalSha256); equal(observed.file.bytes, 158);
+    equal(observed.path, expected.path); equal(observed.file.sha256, expected.sha256); equal(observed.file.bytes, expected.bytes);
     equal(receipt.snapshot.candidate.baseSnapshotSha256, baseSnapshotSha256);
     const [stored] = await database.db.select().from(formalRepairResults).where(eq(formalRepairResults.runId, target.runId));
     ok(stored);
@@ -92,7 +103,7 @@ async function repair() {
     const state = saved?.checkpoint.channel_values.state as { trace?: { call: { name: string }; operationId: string }[] } | undefined;
     ok(state?.trace);
     const trace = state.trace.map(event => event.call.name);
-    deepStrictEqual(trace, ['read_repair_targets', 'apply_repair_patch']);
+    deepStrictEqual(trace, ['read_repair_targets', expected.tool]);
     return { observation, receipt, agent: { checkpointId, callKeySha256: state.trace[1]!.operationId, trace, usage, releaseEligible,
       resultSha256: stored.sha256,
     } };
