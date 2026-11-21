@@ -11,6 +11,7 @@ export * from './inspection.js';
 export * from './npm-repair.js';
 export * from './qualified-inspection.js';
 export * from './qualified-repair.js';
+export * from './qualified-verification.js';
 export * from './preaudit.js';
 export * from './release.js';
 export { idSchema, sourceRefSchema, taskStateSchema, agentRoleSchema, taskStates, agentRoles } from './primitives.js';

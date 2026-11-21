@@ -4,7 +4,7 @@ import { scannerDatabaseSchema, scannerReasonSchema, scannerStatusSchema, sha256
 const uuid = z.uuidv4();
 const gitId = z.string().regex(/^[0-9a-f]{40}$/);
 const counter = z.int().min(1).max(2147483647);
-const snapshot = z.strictObject({
+export const qualifiedInspectionSnapshotSchema = z.strictObject({
   runId: uuid, repositoryId: uuid, commit: gitId, tree: gitId, manifestSha256: sha256Schema,
   files: z.int().min(1).max(5000), totalBytes: z.int().min(1).max(33554432),
   inputsSha256: sha256Schema, readOnly: z.literal(true), offline: z.literal(true),
@@ -38,6 +38,7 @@ const report = z.strictObject({
     ctx.addIssue({ code: 'custom', message: 'Npm coordinates require an npm advisory finding' });
   }
 });
+export const qualifiedScanReportsSchema = z.tuple([report, report]);
 
 export const qualifiedInspectionScopeSchema = z.strictObject({
   version: z.literal(1), requestId: uuid, taskId: uuid, runId: uuid, projectId: uuid, repositoryId: uuid,
@@ -57,7 +58,7 @@ export const qualifiedInspectionResponseSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('receipt'), scope: qualifiedInspectionScopeSchema, domainId: uuid, imageSha256: sha256Schema,
     originSha256: sha256Schema, commitSha256: sha256Schema, cleanupConfirmed: z.literal(true),
-    sessionVerified: z.literal(true), snapshot: snapshot.extend({ reports: z.tuple([report, report]) }),
+    sessionVerified: z.literal(true), snapshot: qualifiedInspectionSnapshotSchema.extend({ reports: qualifiedScanReportsSchema }),
   }),
   qualifiedRunnerRejectionSchema,
 ]);
