@@ -9,4 +9,6 @@
 
 本机 TypeScript、202 项单元和宿主脚本语法检查通过。验收报告明确记录模型使用脚本夹具、控制面使用签名 OIDC 夹具、应用入口使用真实 Keycloak。第二类修复经实际发布、审批后漂移和发布过程故障验收进入 D3。
 
-首轮托管任务进入正式上线核验，因健康检查失败转入人工处理。入口夹具使用默认应用端口 3000，OCI 运行计划写入端口 38171。`1951f4d` 将登记的入口与实际 OCI 端口对齐，修复后的原生场景复跑中。 [首轮记录](https://github.com/MaLaNg116/itervane/actions/runs/44956661850/job/137006171176) · [OCI 构建端口](https://github.com/MaLaNg116/itervane/blob/1951f4d/packages/runner/host/runtime_guest.py#L31)
+首轮托管任务进入正式上线核验，因健康检查失败转入人工处理。入口夹具使用默认应用端口 3000，OCI 运行计划写入端口 38171。`1951f4d` 将登记的入口与实际 OCI 端口对齐。 [首轮记录](https://github.com/MaLaNg116/itervane/actions/runs/44956661850/job/137006171176) · [OCI 构建端口](https://github.com/MaLaNg116/itervane/blob/1951f4d/packages/runner/host/runtime_guest.py#L31)
+
+修正后的同一任务发布已通过。PostgreSQL 17.12 证据记录两代候选、首轮复验失败、返修改变补丁、最后一项发现清零。正式安装 Worker 使用同一操作完成镜像导入和原生部署，真实受保护入口的健康状态为 200、匿名状态为 401。审批身份限制、镜像匹配、两种语言的 HTTP/MCP 对照、工作区清理及独立归档摘要均通过。报告源码指纹 `7feb2439d4f68a978c617ce959c2b0799c47a5dca196cab0485fc30165438a61`。 [真实 KVM 发布证据](https://github.com/MaLaNg116/itervane/actions/runs/44957996813/job/137010357391)
