@@ -9,7 +9,7 @@ const en = {
     read_scan: 'Read the normalized findings and coverage from one completed scanner on this snapshot.',
     read_repair_targets: 'Read file digests, byte bounds and template hints for selected findings from the published audit.',
     apply_repair_template: 'Apply a listed versioned template to the target index in a cited observation.',
-    apply_repair_patch: 'Propose bounded UTF-8 byte edits using the target indices and original byte ranges from one cited observation.',
+    apply_repair_patch: 'Propose bounded UTF-8 byte edits from one cited observation. For an npm upgrade, select both targets with that finding ID using only targetIndex on each. The platform uses the observed npm edits.',
     draft_repair: 'Draft a candidate from the audited snapshot using only the given registered template IDs.',
     read_candidate: 'Read the candidate artifact for this verification.',
     check_candidate: 'Run one protected check on the current candidate. The platform selects its baseline and expected conditions.',
@@ -30,8 +30,8 @@ const en = {
   },
   formalRepair: {
     goal: 'Prepare a candidate patch for the published audit findings within the isolated Runner.',
-    instruction: 'Read the relevant repair targets before choosing a tool. Prefer a listed template when its conditions fit. For an explicit edit use the exact target index and observed byte range. Apply at most one successful candidate. A candidate still requires independent verification. If the observations cannot justify an edit, request human review.',
-    finish: 'Cite the evidence ID of the applied candidate and summarize the actual change. Leave verification claims to the independent check.',
+    instruction: 'Read the relevant repair targets before choosing a tool. Prefer a listed template when its conditions fit. Use the observed byte range for an explicit edit. For an approved npm upgrade, send both target indices without edit contents. Once a repair_candidate is present, call finish_role with its evidence ID and a short summary. Independent verification follows. If the observations cannot justify an edit, request human review.',
+    finish: 'Call this once a repair_candidate is present. Set evidenceId to the enumerated evidence ID and provide a short summary of the applied change.',
   },
   role: {
     audit: 'Review the source, distinguish hypotheses from facts, and explain each protected finding.',
@@ -81,7 +81,7 @@ const zh: Translations = {
     read_scan: '读取当前快照的一种已完成扫描的归一化发现与覆盖。',
     read_repair_targets: '读取已发布审计中所选发现的原文件摘要、字节范围与模板提示。',
     apply_repair_template: '对所引用观测中的目标序号应用列出的版本化模板。',
-    apply_repair_patch: '引用一个已取得的观测，使用目标序号和原文件字节范围提出受限的 UTF-8 修改。',
+    apply_repair_patch: '引用同一份观测提出受限的 UTF-8 修改。升级 npm 依赖时，选择同一发现编号的两个目标，每个目标只填 targetIndex。平台采用观测返回的编辑内容。',
     draft_repair: '只用给定的已登记模板 ID，从审计快照生成修复候选。',
     read_candidate: '读取本次复验的候选差异。',
     check_candidate: '对当前候选运行一项受保护检查。基线和判据由平台选择。',
@@ -102,8 +102,8 @@ const zh: Translations = {
   },
   formalRepair: {
     goal: '在隔离 Runner 内为已发布审计发现准备候选补丁。',
-    instruction: '先读取相关修复目标，再根据实际观测选择工具。符合前提时优先使用列出的模板。结构化修改使用精确的目标序号与原文件字节范围。最多生成一份成功的候选，交给独立复验。观测无法支撑修改时请请求人工处理。',
-    finish: '引用实际修复候选的证据编号，概述已发生的修改。复验结论由后续独立检查确定。',
+    instruction: '先读取相关修复目标，再根据实际观测选择工具。符合前提时优先使用列出的模板。显式修改使用观测给出的字节范围。已批准的 npm 升级只提交成对的目标序号。取得 repair_candidate 后，调用 finish_role 引用其证据编号并简要概述修改，随后由独立流程复验。观测无法支撑修改时请请求人工处理。',
+    finish: '取得 repair_candidate 后调用此工具。从枚举值中选择证据编号填入 evidenceId，简要概述已发生的修改。',
   },
   role: {
     audit: '审阅源码，区分假设与事实，逐项说明受保护检查的发现。',

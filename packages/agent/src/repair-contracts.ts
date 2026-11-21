@@ -1,6 +1,6 @@
 import {
-  idSchema, repairCandidateReceiptSchema, repairObservationSchema, repairPatchLimits, repairTemplateIdSchema,
-  sha256Schema, sourceContentLimits, type FormalAuditResult,
+  idSchema, isNpmRepairArtifact, repairCandidateReceiptSchema, repairObservationSchema, repairPatchLimits, repairTemplateIdSchema,
+  sha256Schema, sourceContentLimits, type FormalAuditResult, type RepairObservation,
 } from '@itervane/contracts';
 import { z } from 'zod';
 
@@ -9,11 +9,19 @@ const targetIndex = z.int().min(0).max(repairPatchLimits.files - 1);
 const offset = z.int().min(0).max(sourceContentLimits.maxFileBytes);
 const edit = z.strictObject({ startByte: offset, endByte: offset, replacement: z.string().max(8_192) })
   .refine(value => value.startByte < value.endByte || (value.startByte === value.endByte && value.replacement.length > 0));
+type RepairTarget = RepairObservation['targets'][number];
+
+export function editableRepairTarget(target?: RepairTarget): target is RepairTarget & { file: NonNullable<RepairTarget['file']> } {
+  if (target?.status !== 'text' || !target.file) return false;
+  if (target.scanner === 'trivy') return target.npm !== undefined;
+  return !isNpmRepairArtifact(target.path) && (target.line === null || target.range !== null);
+}
+
 export const repairToolInputs = {
   read_repair_targets: z.strictObject({ findingIds: selected }),
   apply_repair_template: z.strictObject({ observationId: sha256Schema, targetIndex, templateId: repairTemplateIdSchema }),
   apply_repair_patch: z.strictObject({ observationId: sha256Schema,
-    targets: z.array(z.strictObject({ targetIndex, edits: z.array(edit).min(1).max(repairPatchLimits.editsPerFile) }))
+    targets: z.array(z.strictObject({ targetIndex, edits: z.array(edit).min(1).max(repairPatchLimits.editsPerFile).optional() }))
       .min(1).max(repairPatchLimits.files).refine(values => new Set(values.map(value => value.targetIndex)).size === values.length),
   }),
 };

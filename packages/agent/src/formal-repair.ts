@@ -8,7 +8,7 @@ import type { BaseCheckpointSaver } from '@langchain/langgraph';
 import { sha256, shaSchema, type AgentSpec } from './contracts.js';
 import { createFormalRepairHarness, type AgentHost, type AgentRunOptions } from './harness.js';
 import { agentText } from './messages.js';
-import { repairFailureCodeSchema, type RepairFailureCode } from './repair-contracts.js';
+import { editableRepairTarget, repairFailureCodeSchema, type RepairFailureCode } from './repair-contracts.js';
 import { repairActionSha256, type PlannedTool } from './tools.js';
 
 type ApplyCall = Extract<PlannedTool, { name: 'apply_repair_template' | 'apply_repair_patch' }>;
@@ -37,16 +37,22 @@ function rejectionCode(outcome: Rejection) {
 
 function compileProposal(call: ApplyCall, observation: RepairObservation) {
   const template = call.name === 'apply_repair_template' ? call.args : null;
-  const editsByTarget = call.name === 'apply_repair_patch' ? call.args.targets : [{ targetIndex: call.args.targetIndex, edits: [] }];
+  const editsByTarget = call.name === 'apply_repair_patch' ? call.args.targets : [{ targetIndex: call.args.targetIndex, edits: undefined }];
+  const selectedTargets = new Set(editsByTarget.map(target => target.targetIndex));
   const files = new Map<string, RepairPatch['files'][number]>();
   const findingIds = new Set<string>();
   for (const { targetIndex, edits } of editsByTarget) {
     const target = observation.targets[targetIndex];
-    if (target?.status !== 'text' || !target.file || (target.line !== null && !target.range)) return;
+    if (!editableRepairTarget(target)) return;
     const { file, range } = target;
     if (template && (!range || !target.templates.includes(template.templateId))) return;
-    const replacements = template && range ? [{ startByte: range.startByte, endByte: range.endByte, replacement: '' }] : edits;
-    if (replacements.some(edit => edit.startByte < (range?.startByte ?? 0) || edit.endByte > (range?.endByte ?? file.bytes)
+    if (target.npm) {
+      const pair = observation.targets.flatMap((peer, index) => peer.findingId === target.findingId && peer.npm ? [index] : []);
+      if (template || edits || pair.length !== 2 || !pair.every(index => selectedTargets.has(index))) return;
+    }
+    const replacements = template && range ? [{ startByte: range.startByte, endByte: range.endByte, replacement: '' }]
+      : target.npm?.edits ?? edits;
+    if (!replacements || replacements.some(edit => edit.startByte < (range?.startByte ?? 0) || edit.endByte > (range?.endByte ?? file.bytes)
       || (range && edit.startByte === range.endByte))) return;
     const change = files.get(target.path);
     if (change && change.beforeSha256 !== file.sha256) return;

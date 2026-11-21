@@ -6,7 +6,7 @@ import {
   receiptSchema, sha256, templateIdsSchema, type AgentEvidence, type AgentOrigin, type AuditReport, type Candidate, type DeliveryRole,
 } from './contracts.js';
 import { agentText } from './messages.js';
-import { finishRepairInputSchema, repairToolInputs, repairToolNames } from './repair-contracts.js';
+import { editableRepairTarget, finishRepairInputSchema, repairToolInputs, repairToolNames } from './repair-contracts.js';
 
 export const emptyArguments = z.object({}).strict();
 const inputs = {
@@ -49,7 +49,7 @@ export function repairActionSha256(call: PlannedTool) {
   if (call.name === 'read_repair_targets') return sha256(JSON.stringify({ ...call, args: { findingIds: [...call.args.findingIds].sort() } }));
   if (call.name === 'apply_repair_patch') {
     const targets = call.args.targets.toSorted((left, right) => left.targetIndex - right.targetIndex)
-      .map(target => ({ ...target, edits: target.edits.toSorted((left, right) => left.startByte - right.startByte) }));
+      .map(target => ({ ...target, edits: target.edits?.toSorted((left, right) => left.startByte - right.startByte) }));
     return sha256(JSON.stringify({ ...call, args: { ...call.args, targets } }));
   }
   return sha256(JSON.stringify(call));
@@ -95,8 +95,7 @@ export function toolDefinitions(locale: Locale, role: DeliveryRole, evidence: re
   const observations = evidence.flatMap(({ id, data }) => data.kind === 'repair_targets' ? [{ id, targets: data.observation.targets }] : []);
   const candidates = evidence.flatMap(({ id, data }) => data.kind === 'repair_candidate' ? [id] : []);
   const remaining = repairFindingIds.filter(id => !observations.some(item => item.targets.some(target => target.findingId === id)));
-  const editable = candidates.length ? [] : observations.filter(item => item.targets.some(target =>
-    target.status === 'text' && (target.line === null || target.range !== null))).map(item => item.id);
+  const editable = candidates.length ? [] : observations.filter(item => item.targets.some(target => editableRepairTarget(target))).map(item => item.id);
   const templates = candidates.length ? [] : observations.filter(item => item.targets.some(target => target.templates.length)).map(item => item.id);
   const availableInputs = {
     ...inputs,

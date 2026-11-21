@@ -4,7 +4,7 @@ import type { Locale } from '@itervane/contracts';
 import type { ModelAdapter, ModelTurn } from '@itervane/model';
 import { expect, it, vi } from 'vitest';
 import { omittedPath } from '../../src/agent/formal-fixture.js';
-import { fixtureAuditNarrative, syntheticRepairFixture, updatedFixtureManifest } from '../../src/agent/repair-fixture.js';
+import { fixtureAuditNarrative, syntheticNpmRepairFixture, syntheticRepairFixture, updatedFixtureManifest } from '../../src/agent/repair-fixture.js';
 
 type ModelRequest = Parameters<ModelAdapter['complete']>[0];
 
@@ -40,6 +40,42 @@ function repairFixture(locale: Locale, template: boolean) {
   const model = { protocol: 'anthropic' as const, complete };
   return { ...fixture, readTargets, apply, model };
 }
+
+it('applies both npm files from one observation and rejects partial and substituted edits before calling the host', async () => {
+  const fixture = syntheticNpmRepairFixture('en');
+  const apply = vi.fn(fixture.apply);
+  let attempts = 0;
+  const complete: ModelAdapter['complete'] = async request => {
+    const { target, candidate } = readEvidence(request);
+    if (candidate) return decision('finish_role', { summary: 'Prepared the approved upgrade.', evidenceId: candidate.id });
+    if (!target || target.data.kind !== 'repair_targets') return decision('read_repair_targets', { findingIds: [fixture.finding.id] });
+    const targets = target.data.observation.targets.map((_, targetIndex) => ({ targetIndex }));
+    const edit = target.data.observation.targets[0]!.npm!.edits[0]!;
+    const altered = [{ targetIndex: 0, edits: [{ ...edit, replacement: '"9.0.0"' }] }, targets[1]!];
+    attempts++;
+    return decision('apply_repair_patch', { observationId: target.id, targets: attempts === 1 ? targets.slice(1) : attempts === 2 ? altered : targets });
+  };
+  const report = await createFormalRepair({ ...fixture, model: { protocol: 'anthropic', complete }, apply }).run();
+  expect(report).toMatchObject({ reason: 'repair_complete', status: 'completed' });
+  expect(report.evidence.filter(entry => entry.data.kind === 'repair_failure')).toHaveLength(2);
+  expect(apply).toHaveBeenCalledTimes(1);
+  const applied = report.evidence.find(entry => entry.data.kind === 'repair_candidate')?.data;
+  expect(applied?.kind === 'repair_candidate' && applied.candidate.changes.map(({ path, afterSha256 }) => ({ path, afterSha256 })))
+    .toEqual(fixture.files.map(file => ({ path: file.path, afterSha256: sha256(file.expected) })));
+});
+
+it('offers human review when no approved npm version is present in the observation', async () => {
+  const fixture = syntheticNpmRepairFixture('zh-CN', false);
+  const apply = vi.fn(fixture.apply);
+  const complete: ModelAdapter['complete'] = async request => {
+    if (!readEvidence(request).target) return decision('read_repair_targets', { findingIds: [fixture.finding.id] });
+    expect(request.tools.map(tool => tool.name)).toEqual(['request_human']);
+    return decision('request_human', {});
+  };
+  const report = await createFormalRepair({ ...fixture, model: { protocol: 'anthropic', complete }, apply }).run();
+  expect(report).toMatchObject({ reason: 'manual_review', status: 'requires_human' });
+  expect(apply).not.toHaveBeenCalled();
+});
 
 it.each([
   ['zh-CN', true, 'apply_repair_template'], ['en', false, 'apply_repair_patch'],
