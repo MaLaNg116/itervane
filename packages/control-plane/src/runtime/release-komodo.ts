@@ -33,12 +33,14 @@ const update = z.object({
 });
 const deployedContainer = z.object({
   Id: z.string().regex(/^[a-f0-9]{64}$/),
+  Name: z.string().regex(/^\/[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/),
   Image: ociDigestSchema,
   State: z.object({ Status: z.literal('running'), Running: z.literal(true), Paused: z.literal(false),
     Restarting: z.literal(false), Dead: z.literal(false) }),
   Config: z.object({ Image: imageReference }),
   HostConfig: z.object({
-    NetworkMode: deploymentNetwork, Privileged: z.literal(false), PortBindings: z.union([z.null(), z.strictObject({})]),
+    NetworkMode: deploymentNetwork, Privileged: z.literal(false), PublishAllPorts: z.literal(false),
+    PortBindings: z.union([z.null(), z.strictObject({})]),
   }),
   NetworkSettings: z.object({ Networks: z.record(deploymentNetwork, z.unknown()) }),
 });
@@ -179,7 +181,8 @@ export class KomodoReleaseClient {
     if (container.Config.Image !== reference || container.Image !== digest.data || container.HostConfig.NetworkMode !== expectedNetwork.data
       || networks.length !== 1 || networks[0] !== expectedNetwork.data) throw new KomodoReleaseError('InspectDeploymentContainer', 'binding');
     // The native response includes container environment and networking details. Keep only facts needed for rollout verification.
-    return { ...configured, containerId: container.Id, configDigest: container.Image, network: expectedNetwork.data };
+    return { ...configured, containerId: container.Id, containerName: container.Name.slice(1),
+      configDigest: container.Image, network: expectedNetwork.data };
   }
 
   async configureImage(raw: KomodoReleaseTarget, release: { previousImage: string; manifestDigest: string },
