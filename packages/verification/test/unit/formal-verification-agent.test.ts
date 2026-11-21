@@ -1,5 +1,7 @@
 import { createFormalVerification, sha256 } from '@itervane/agent';
 import { expect, it, vi } from 'vitest';
+import { initialState, restoreState, stopped } from '../../../agent/src/state.js';
+import { createDeliveryFixture } from '../../src/agent/fixture.js';
 import { scriptedVerification, verificationDecision, verificationFixture } from '../../src/agent/verification-fixture.js';
 
 it.each([
@@ -76,3 +78,19 @@ it.each([
   expect(completions).toBe(2);
   expect(result).toMatchObject({ status: 'completed', formalVerification: { outcome: 'observed' }, usage: { toolCalls: 4 } });
 });
+
+it.each(['formal_audit', 'formal_repair', 'formal_verification'] as const)(
+  'retains a stopped %s checkpoint after the wall clock moves backwards', origin => {
+    const { spec } = createDeliveryFixture('display', 'en');
+    const binding = sha256(JSON.stringify({ spec, origin }));
+    const now = Date.now();
+    const active = initialState(spec, binding, origin);
+    const settled = stopped(active, 'manual_review');
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now - 1_000);
+    try {
+      expect(restoreState(active, spec, binding, origin)).toBeUndefined();
+      expect(restoreState(settled, spec, binding, origin)).toEqual(settled);
+      expect(restoreState(settled, spec, sha256('other execution'), origin)).toBeUndefined();
+    } finally { clock.mockRestore(); }
+  },
+);
