@@ -8,4 +8,6 @@
 
 固定源码 `d0f63387470d4b2a2c86b7f6d36a4d2f5cf4ed16`。TypeScript、163 项单元和 70 项宿主测试通过。非 root 本机试验使用 Skopeo 1.13.3 和经 SHA-256 核对的 Distribution 3.1.2，验证回环与 TLS Basic 两种连接、同摘要复用、写入后拷贝响应失败、授权丢失、错误证据、不正确的凭证和 Registry 数据错配。所有暂存均已清理。该本机试验使用合成 OCI，真实 KVM 镜像和审批操作由托管流程验证。 [Distribution v3.1.2](https://github.com/distribution/distribution/releases/tag/v3.1.2)
 
+固定源码全量 PostgreSQL 138 项通过，源码指纹为 `0a7beac19a1cafce133f33aa6c171e151eb81d121de14557acde594cb7003960`。
+
 C3 将实际 Registry 来源纳入目标版本核对，并把归档交接和导入接入正式执行槽。C4 与 E-D 分别进行 Komodo 派发和实际在线版本核对。 [PR #45](https://github.com/MaLaNg116/itervane/pull/45) · [托管 KVM 与 Registry 验收](https://github.com/MaLaNg116/itervane/actions/runs/44921453641)
