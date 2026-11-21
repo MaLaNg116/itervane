@@ -30,14 +30,15 @@ export async function appendEvent(tx: Transaction, task: TaskRow, type: string, 
   options: { actorId?: string; workerId?: string; reason?: TaskEventReason;
     observation?: { runId: string; toolCallKeySha256: string; inspectionRequestId?: string };
     audit?: { runId: string; auditResultSha256: string };
-    repair?: { runId: string; repairResultSha256: string } } = {}) {
+    repair?: { runId: string; repairResultSha256: string };
+    verification?: { runId: string; verificationResultSha256: string } } = {}) {
   const [next] = await tx.update(tasks).set({ state, version: task.version + 1 })
     .where(and(eq(tasks.id, task.id), eq(tasks.version, task.version))).returning();
   if (!next) throw new DomainError('version_conflict');
   await tx.update(taskRuns).set({ state }).where(and(eq(taskRuns.taskId, task.id), eq(taskRuns.generation, task.generation)));
   await tx.insert(taskEvents).values({ taskId: task.id, sequence: next.version, type, state,
     actorId: options.actorId ?? task.requestedBy, actorKind: options.workerId ? 'worker' : 'principal', workerId: options.workerId ?? null,
-    detail: { ...(options.reason ? { reason: options.reason } : {}), ...options.observation, ...options.audit, ...options.repair } });
+    detail: { ...(options.reason ? { reason: options.reason } : {}), ...options.observation, ...options.audit, ...options.repair, ...options.verification } });
   return next;
 }
 

@@ -1,9 +1,8 @@
-import { formalVerificationEvidenceSchema, sha256Schema } from '@itervane/contracts';
+import { formalVerificationEvidenceSchema, sha256Schema, verificationSections, verificationSectionSchema } from '@itervane/contracts';
 import { z } from 'zod';
 import type { AgentEvidence } from './contracts.js';
 
-export const verificationSections = ['source', 'build', 'baseline', 'image'] as const;
-export const verificationSectionSchema = z.enum(verificationSections);
+export { finishVerificationInputSchema, formalVerificationCompletionSchema, verificationSections, verificationSectionSchema } from '@itervane/contracts';
 export type VerificationSection = z.infer<typeof verificationSectionSchema>;
 
 const scope = { kind: z.literal('verification_section'), receiptSha256: sha256Schema };
@@ -26,18 +25,3 @@ export function pendingVerificationSections(evidence: readonly AgentEvidence[]):
   return verificationSections.filter(section => !seen.some(item => item.section === section)
     && (section !== 'image' || baseline?.result.status === 'passed'));
 }
-
-export const finishVerificationInputSchema = z.strictObject({
-  summary: z.string().trim().min(1).max(480),
-  evidenceIds: z.array(sha256Schema).min(3).max(4).refine(ids => new Set(ids).size === ids.length),
-  followUps: z.array(z.strictObject({
-    evidenceId: sha256Schema, detail: z.string().trim().min(1).max(320),
-  })).max(4),
-});
-
-export const formalVerificationCompletionSchema = finishVerificationInputSchema.extend({
-  receiptSha256: sha256Schema, candidateManifestSha256: sha256Schema,
-  outcome: z.enum(['observed', 'checks_failed', 'source_findings', 'incomplete']),
-  source: facts.source,
-  unverified: z.array(verificationSectionSchema).max(4),
-});

@@ -183,6 +183,13 @@
       "when": 1795261665955,
       "tag": "0025_formal_verification_checkpoint",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1795263310785,
+      "tag": "0026_formal_verification_result",
+      "breakpoints": true
     }
   ]
 }
