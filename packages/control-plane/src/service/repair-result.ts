@@ -65,6 +65,33 @@ export async function publishFormalRepair(tx: Transaction, task: TaskRow, scope:
   return { document, sha256: hash };
 }
 
+export async function readPublishedRepairCommand(tx: Transaction, result: Extract<FormalRepairResult, { status: 'candidate_ready' }>, requestId: string) {
+  const [entry] = await tx.select({ operation: formalRepairOperations, attempt: formalRepairAttempts })
+    .from(formalRepairAttempts).innerJoin(formalRepairOperations, eq(formalRepairAttempts.operationId, formalRepairOperations.operationId))
+    .where(and(eq(formalRepairAttempts.requestId, requestId), eq(formalRepairAttempts.state, 'recorded'),
+      eq(formalRepairOperations.runId, result.runId)));
+  const receipt = qualifiedRepairResponseSchema.safeParse(entry?.attempt.receipt).data;
+  const candidate = result.candidate;
+  if (!entry || receipt?.kind !== 'repair_receipt' || entry.operation.operationId !== candidate.operationId
+      || entry.operation.inputSha256 !== result.inputSha256 || entry.attempt.receiptSha256 !== candidate.receiptSha256
+      || sha256(JSON.stringify(receipt)) !== candidate.receiptSha256) throw new Error('formal_repair_export_receipt');
+  const { workspace, patch } = repairCommandSchema.parse(JSON.parse(entry.operation.command));
+  const command = canonicalRepairCommand(workspace, patch);
+  const { scope, snapshot } = receipt;
+  const fact = snapshot.candidate;
+  if (command.bytes.toString('utf8') !== entry.operation.command || sha256(command.bytes) !== entry.operation.commandSha256
+      || scope.commandSha256 !== entry.operation.commandSha256 || scope.commandBytes !== command.bytes.length
+      || scope.requestId !== requestId || scope.operationId !== candidate.operationId || scope.repairInputSha256 !== result.inputSha256
+      || scope.runId !== result.runId || scope.taskId !== result.taskId || scope.projectId !== result.projectId || scope.generation !== result.generation
+      || command.patchSha256 !== candidate.patchSha256 || command.workspaceSha256 !== fact.workspaceSha256
+      || fact.patchSha256 !== candidate.patchSha256 || fact.candidateManifestSha256 !== candidate.manifestSha256
+      || JSON.stringify(fact.changes) !== JSON.stringify(candidate.changes)
+      || command.patch.baseSnapshotSha256 !== result.baseSnapshotSha256 || snapshot.manifestSha256 !== result.baseSnapshotSha256) {
+    throw new Error('formal_repair_export_integrity');
+  }
+  return { command, receipt };
+}
+
 export class FormalRepairService {
   constructor(private readonly database: Database) {}
 
@@ -119,18 +146,7 @@ export class FormalRepairService {
       const { current, result } = await this.current(tx, identity, taskId, true);
       if (result?.status !== 'candidate_ready' || !current.row?.requestId) throw new DomainError('unsupported_state');
       if (current.row.sha256 !== expectedSha256) throw new DomainError('conflict');
-      const [entry] = await tx.select({ operation: formalRepairOperations, attempt: formalRepairAttempts })
-        .from(formalRepairAttempts).innerJoin(formalRepairOperations, eq(formalRepairAttempts.operationId, formalRepairOperations.operationId))
-        .where(and(eq(formalRepairAttempts.requestId, current.row.requestId), eq(formalRepairAttempts.state, 'recorded'),
-          eq(formalRepairOperations.runId, current.runId)));
-      if (!entry || entry.operation.operationId !== result.candidate.operationId || entry.operation.inputSha256 !== result.inputSha256
-          || entry.attempt.receiptSha256 !== result.candidate.receiptSha256) throw new Error('formal_repair_export_receipt');
-      const { workspace, patch } = repairCommandSchema.parse(JSON.parse(entry.operation.command));
-      const command = canonicalRepairCommand(workspace, patch);
-      if (command.bytes.toString('utf8') !== entry.operation.command || sha256(command.bytes) !== entry.operation.commandSha256
-          || command.patchSha256 !== result.candidate.patchSha256 || command.patch.baseSnapshotSha256 !== result.baseSnapshotSha256) {
-        throw new Error('formal_repair_export_integrity');
-      }
+      const { command } = await readPublishedRepairCommand(tx, result, current.row.requestId);
       return formalRepairPatchDtoSchema.parse({ taskId, runId: result.runId, resultSha256: current.row.sha256,
         patchSha256: command.patchSha256, patch: command.patch,
       });
