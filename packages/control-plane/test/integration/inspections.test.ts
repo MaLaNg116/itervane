@@ -1034,7 +1034,9 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
   expect(await registerReleaseTarget(database.storage, target)).toEqual(registered);
   const current = await new TaskService(database.storage).get(identity, task.id);
   const portalClientId = 'itervane-test-portal';
-  const api = createApi(database.storage, { ...issuer.config, portalClientId }, { logger: false });
+  const publicUrl = 'https://itervane.example';
+  const api = createApi(database.storage, { ...issuer.config, portalClientId, publicUrl }, { logger: false });
+  let viewerMcp: Client | undefined;
   const url = `/v1/tasks/${task.id}/release-candidate`;
   const headers = { authorization: `Bearer ${await issuer.token()}`, 'Accept-Language': 'zh-CN' };
   const portalHeaders = { ...headers, authorization: `Bearer ${await issuer.token('owner', { azp: portalClientId })}` };
@@ -1098,15 +1100,29 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
     await database.admin.query('INSERT INTO itervane.principals(id,issuer,subject) VALUES($1,$2,$3)', [viewer, issuer.config.issuer, 'release-viewer']);
     await database.admin.query("INSERT INTO itervane.project_members(project_id,principal_id,role) VALUES($1,$2,'viewer')", [task.projectId, viewer]);
     const viewerHeaders = { authorization: `Bearer ${await issuer.token('release-viewer')}`, 'Accept-Language': 'en' };
-    expect((await api.inject({ url, headers: viewerHeaders })).json()).toMatchObject({ id: candidate.id, locale: 'en', status: 'pending',
+    const viewerCandidate = (await api.inject({ url, headers: viewerHeaders })).json();
+    expect(viewerCandidate).toMatchObject({ id: candidate.id, locale: 'en', status: 'pending',
       message: 'The release candidate is awaiting a human decision.',
     });
+    const address = await api.listen({ host: '127.0.0.1', port: 0 });
+    const token = await issuer.token('release-viewer', { aud: `${publicUrl}/mcp`, scope: 'itervane:read' });
+    viewerMcp = new Client({ name: 'release-candidate-reader', version: '0.0.0' });
+    await viewerMcp.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+      requestInit: { headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'en' } },
+    }));
+    const args = { name: 'get_release_candidate', arguments: { taskId: task.id } };
+    const readCandidate = await viewerMcp.callTool(args);
+    expect(readCandidate.isError).not.toBe(true);
+    expect(formalReleaseCandidateDtoSchema.parse(readCandidate.structuredContent)).toEqual(viewerCandidate);
     expect((await api.inject({ method: 'POST', url, headers: viewerHeaders, payload })).statusCode).toBe(403);
     expect(await view(viewerHeaders)).toMatchObject({ candidate: { id: candidate.id, locale: 'en' },
       candidateTarget: display, actions: [], availableTargets: [] });
     await database.admin.query('DELETE FROM itervane.project_members WHERE principal_id=$1', [viewer]);
     expect((await api.inject({ url, headers: viewerHeaders })).statusCode).toBe(404);
     expect((await api.inject({ url: viewUrl, headers: viewerHeaders })).statusCode).toBe(404);
+    const denied = await viewerMcp.callTool(args);
+    expect(denied.isError).toBe(true);
+    expect(apiErrorSchema.parse(denied.structuredContent).error.code).toBe('not_found');
 
     expect(await registerReleaseTarget(database.storage, { ...target, blockImageSeverities: ['critical', 'medium'] })).toMatchObject({ revision: 2 });
     expect((await api.inject({ url, headers })).json()).toMatchObject({ id: candidate.id, status: 'evidence_changed' });
@@ -1126,7 +1142,7 @@ async function assertFormalCandidate(eligible: boolean, stop: 'revoke' | 'cancel
       .toMatchObject({ type: 'task.release_candidate_frozen', state: 'waiting_approval', message: /人工决定/ });
     expect((await database.admin.query('SELECT count(*)::int AS count FROM itervane.release_operations')).rows[0]?.count).toBe(0);
     await assertReleaseApproval(api, replacement, candidate, portalClientId, stop);
-  } finally { await api.close(); }
+  } finally { await viewerMcp?.close(); await api.close(); }
 }
 
 async function assertReleaseApproval(api: ReturnType<typeof createApi>, current: ReturnType<typeof formalReleaseCandidateDtoSchema.parse>,
