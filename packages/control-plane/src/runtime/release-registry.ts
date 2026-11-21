@@ -2,7 +2,8 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import { formalReleaseTargetSchema, ociDigestSchema, qualifiedImageArchiveSchema, type QualifiedImageArchive } from '@itervane/contracts';
+import { formalReleaseTargetSchema, ociDigestSchema, qualifiedImageArchiveSchema, releaseRegistryOriginSchema,
+  type QualifiedImageArchive } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { z } from 'zod';
 
@@ -11,6 +12,7 @@ const configType = 'application/vnd.oci.image.config.v1+json';
 const metadataLimit = 64 * 1024;
 const layoutProofSchema = z.strictObject({ manifestDigest: ociDigestSchema, configDigest: ociDigestSchema });
 const frozenImageSchema = layoutProofSchema.extend({ archive: qualifiedImageArchiveSchema });
+const registryTargetSchema = formalReleaseTargetSchema.pick({ imageRepository: true, registryOrigin: true }).required();
 const manifestSchema = z.object({
   schemaVersion: z.literal(2), mediaType: z.literal(manifestType),
   config: z.object({ mediaType: z.literal(configType), digest: ociDigestSchema, size: z.int().min(1).max(metadataLimit) }),
@@ -81,12 +83,11 @@ export class ReleaseRegistryPublisher {
   readonly #authorization?: string;
 
   constructor(config: RegistryConfiguration, tools: RegistryTools) {
-    const url = URL.parse(config.origin);
-    if (!url) throw new Error('invalid_release_registry');
+    const origin = releaseRegistryOriginSchema.safeParse(config.origin);
+    if (!origin.success) throw new Error('invalid_release_registry');
+    const url = new URL(origin.data);
     const credentials = config.credentials && credentialsSchema.parse(config.credentials);
-    const loopbackFixture = url.protocol === 'http:' && url.hostname === '127.0.0.1' && url.port && !credentials;
-    if (url.username || url.password || url.pathname !== '/' || url.search || url.hash
-        || (!loopbackFixture && url.protocol !== 'https:') || !isAbsolute(tools.materializer) || !isAbsolute(tools.skopeo)) {
+    if ((url.protocol !== 'https:' && credentials) || !isAbsolute(tools.materializer) || !isAbsolute(tools.skopeo)) {
       throw new Error('invalid_release_registry');
     }
     this.origin = url;
@@ -97,9 +98,10 @@ export class ReleaseRegistryPublisher {
     if (credentials) this.#authorization = Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64');
   }
 
-  async publish(repositoryName: string, raw: z.input<typeof frozenImageSchema>, archivePath: string,
+  async publish(rawTarget: z.input<typeof registryTargetSchema>, raw: z.input<typeof frozenImageSchema>, archivePath: string,
     authorize: () => Promise<void>, signal?: AbortSignal): Promise<RegistryImageProof> {
-    const repository = formalReleaseTargetSchema.shape.imageRepository.parse(repositoryName);
+    const { imageRepository: repository, registryOrigin } = registryTargetSchema.parse(rawTarget);
+    if (this.origin.origin !== registryOrigin) throw new Error('release_registry_drift');
     const image = frozenImageSchema.parse(raw);
     if (process.platform !== 'linux' || !process.getuid?.() || !isAbsolute(archivePath)) throw new Error('invalid_release_archive_path');
     signal?.throwIfAborted();
