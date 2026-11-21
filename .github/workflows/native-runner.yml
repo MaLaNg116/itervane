@@ -19,7 +19,9 @@ on:
       - 'packages/verification/src/runner-vm.ts'
       - 'packages/verification/src/report.ts'
       - 'fixtures/runner/**'
+      - 'fixtures/standard-app/**'
       - 'scripts/prepare-runner-inspection.ts'
+      - 'scripts/prepare-runner-build-dependencies.ts'
       - 'scripts/probe-qualified-runner.ts'
       - 'scripts/scanner-tools.ts'
       - 'package.json'
@@ -37,6 +39,10 @@ jobs:
   kvm-evidence:
     runs-on: ubuntu-24.04
     timeout-minutes: 36
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [regression, standard-build, standard-build-missing-cache]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -86,13 +92,49 @@ jobs:
           test -s "$payload/inputs.json"
           tail -n 1 "$scratch/preparation.log" > .reports/p0/kvm-inspection-inputs.json
           printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
+      - name: Prepare sealed build inputs for the selected trial
+        id: build
+        if: steps.capability.outputs.available == 'true' && matrix.scenario != 'regression'
+        env:
+          BUILD_SCENARIO: ${{ matrix.scenario }}
+        run: |
+          set -euo pipefail
+          scratch=$(mktemp -d "$RUNNER_TEMP/itervane-build.XXXXXXXX")
+          payload="$scratch/itervane-build-inputs"
+          pnpm exec tsx scripts/prepare-runner-build-dependencies.ts "$payload" | tee "$scratch/preparation.log"
+          test -s "$payload/profile.json"
+          tail -n 1 "$scratch/preparation.log" > .reports/p0/kvm-build-inputs.json
+          if [[ "$BUILD_SCENARIO" == standard-build-missing-cache ]]; then
+            /usr/bin/python3 - "$payload" <<'PY'
+          import base64
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          root = Path(sys.argv[1])
+          dependencies = json.loads((root / "dependencies.json").read_bytes())
+          [express] = [entry for entry in dependencies["tarballs"]
+                       if entry["url"] == "https://registry.npmjs.org/express/-/express-5.3.0.tgz"]
+          digest = base64.b64decode(express["integrity"].removeprefix("sha512-"), validate=True).hex()
+          assert len(digest) == 128
+          cache = root / "npm-cache" / "_cacache" / "content-v2" / "sha512"
+          blob = cache / digest[:2] / digest[2:4] / digest[4:]
+          assert hashlib.sha512(blob.read_bytes()).hexdigest() == digest
+          blob.unlink()
+          PY
+          fi
+          printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
       - name: Prepare and seal the trusted offline guest
         if: steps.capability.outputs.available == 'true'
         env:
           PROBE_DIRECTORY: ${{ steps.session.outputs.directory }}
           INSPECTION_PAYLOAD: ${{ steps.inspection.outputs.payload }}
+          BUILD_PAYLOAD: ${{ steps.build.outputs.payload }}
         run: |
-          sudo -n bash fixtures/runner/prepare-probe-image.sh "$PROBE_DIRECTORY" "$INSPECTION_PAYLOAD"
+          args=("$PROBE_DIRECTORY" "$INSPECTION_PAYLOAD")
+          if [[ -n "$BUILD_PAYLOAD" ]]; then args+=("$BUILD_PAYLOAD"); fi
+          sudo -n bash fixtures/runner/prepare-probe-image.sh "${args[@]}"
           sudo -n cat "$PROBE_DIRECTORY/image.json" > .reports/p0/kvm-image.json
           case "$INSPECTION_PAYLOAD" in
             "$RUNNER_TEMP"/itervane-scan.????????/itervane-inspection)
@@ -105,22 +147,25 @@ jobs:
         env:
           PROBE_DIRECTORY: ${{ steps.session.outputs.directory }}
           PROBE_HOST_ENVIRONMENT: ${{ runner.environment }}
+          NATIVE_SCENARIO: ${{ matrix.scenario }}
         run: |
           test -s .reports/p0/kvm-inspection-inputs.json
-          bash fixtures/runner/run-native-session.sh "$PROBE_DIRECTORY"
+          bash fixtures/runner/run-native-session.sh "$PROBE_DIRECTORY" "$NATIVE_SCENARIO"
       - name: Retain independent KVM evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: kvm-host-evidence
+          name: ${{ matrix.scenario == 'regression' && 'kvm-host-evidence' || format('kvm-{0}-evidence', matrix.scenario) }}
           path: |
             .reports/p0/kvm-host.json
             .reports/p0/kvm-session-host.json
             .reports/p0/kvm-image.json
             .reports/p0/kvm-inspection-inputs.json
+            .reports/p0/kvm-build-inputs.json
             .reports/p0/kvm-packages.txt
             .reports/p0/runner-vm*.json
             .reports/p0/runner-qualified-*.json
             .reports/p0/runner-worker-inspection.json
+            .reports/p0/runner-worker-build.json
           if-no-files-found: error
           retention-days: 14

@@ -9,6 +9,7 @@ export const verificationProfileSchema = z.strictObject({
   baselineSha256: sha256Schema,
   scannerInputsSha256: sha256Schema,
   runnerImageSha256: sha256Schema,
+  buildProfileSha256: sha256Schema.optional(),
 });
 export type VerificationProfile = z.infer<typeof verificationProfileSchema>;
 

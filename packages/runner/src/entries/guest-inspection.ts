@@ -4,6 +4,7 @@ import { qualifiedGuestRepairIssueSchema, verificationProofByteLimit } from '@it
 import { repairQualifiedGuestSnapshot } from '../guest-repair.js';
 import { observeQualifiedRepairTargets } from '../guest-repair-observation.js';
 import { publishGuestSnapshot } from '../guest-snapshot.js';
+import { stageGuestStandardBuild, STANDARD_BUILD_INPUT, STANDARD_BUILD_TOOLS } from '../guest-standard-build.js';
 import { publishGuestVerificationSource, verificationCommandName } from '../guest-verification-source.js';
 import {
   INSPECTION_OUTPUT, INSPECTION_SOURCE, INSPECTION_TOOLS, inspectGuestSnapshot, inspectionFailures, inspectVerificationSnapshots,
@@ -19,6 +20,10 @@ if (command === 'snapshot' && args.length === 5) {
     }
     publishGuestSnapshot(INSPECTION_SOURCE, repository, runId, { repositoryId, commit }, mode);
     if (mode === 'verification') publishGuestVerificationSource(INSPECTION_SOURCE);
+  } catch { process.exitCode = 1; }
+} else if (command === 'stage-standard-build' && args.length === 0) {
+  try {
+    stageGuestStandardBuild(INSPECTION_SOURCE, join(INSPECTION_OUTPUT, 'receipt.json'), STANDARD_BUILD_TOOLS, STANDARD_BUILD_INPUT);
   } catch { process.exitCode = 1; }
 } else if (command === 'scan' && args.length === 0 && process.env.ITERVANE_SCAN_BOUNDARY === 'verified') {
   const repair = lstatSync(join(INSPECTION_SOURCE, 'repair-command.json'), { throwIfNoEntry: false }) !== undefined;

@@ -2,6 +2,7 @@ import { deepStrictEqual, equal, match, notEqual, ok } from 'node:assert/strict'
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -9,7 +10,8 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import {
   admissionDtoSchema, auditFindingsPerScan, formalAuditDtoSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema, idSchema, projectDtoSchema,
   repositoryDtoSchema, sha256Schema, sourceInspectionDtoSchema,
-  qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, taskDtoSchema, taskEventDtoSchema, translate, type FormalAuditResult,
+  qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
+  taskDtoSchema, taskEventDtoSchema, translate, type FormalAuditResult,
 } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
@@ -25,6 +27,8 @@ const execute = promisify(execFile);
 const commit = '9167604c888416d7b6518e1c76485d7308cffb5c';
 const repairFixtureCommit = 'f41a940ffe4ec24221b873e1cd74b8ec2125873e';
 const cleanVerificationCommit = '49799e18f4f63cf22767a9cd8054cab979b9b6d2';
+const standardBuildCommit = '3a719ca44f306d30cdf2d27e9a6d3b954ed656f0';
+const standardLockDriftCommit = '03e5d18a27d23960f040c0d5d70afefac15ec46e';
 const origin = 'https://github.com/MaLaNg116/itervane.git';
 const publicUrl = 'https://itervane.example';
 const controllerAccount = 'itervane-probe';
@@ -171,12 +175,16 @@ async function watchGuest(controllerUid: string) {
 
 async function probe() {
   const [bundle, socket, controllerUid, imageSha256, staging, repairBundle, verificationBundle, ...extra] = process.argv.slice(2);
+  const [buildMode, buildProfile, baseline] = extra;
+  const buildRun = buildMode === 'standard-build' || buildMode === 'standard-build-missing-cache';
   if (process.platform !== 'linux' || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted' || process.env.DATABASE_URL
-    || process.env.ITERVANE_POSTGRES_IMAGE || extra.length || !bundle?.startsWith('/var/lib/libvirt/images/itervane-native.')
+    || process.env.ITERVANE_POSTGRES_IMAGE || (extra.length !== 0 && (extra.length !== 3 || !buildRun))
+    || !bundle?.startsWith('/var/lib/libvirt/images/itervane-native.')
     || !socket?.endsWith('/qualified/inspection.sock') || !controllerUid || !/^[1-9][0-9]{0,9}$/.test(controllerUid)
     || !imageSha256 || !/^[a-f0-9]{64}$/.test(imageSha256) || !staging?.endsWith('/staging')
     || repairBundle !== bundle.replace(/\/worker\.mjs$/, '/repair-worker.mjs')
     || verificationBundle !== bundle.replace(/\/worker\.mjs$/, '/verification-worker.mjs')) throw new Error('worker_probe_config');
+  const build = buildRun ? { profile: sha256Schema.parse(buildProfile), baseline: sha256Schema.parse(baseline) } : undefined;
 
   phase = 'postgres';
   const postgres = await temporaryPostgres();
@@ -230,6 +238,67 @@ async function probe() {
       equal(trivy.scanner, 'trivy'); ok(trivy.findingsCount > 0 && trivy.database?.sha256);
       return scan;
     };
+
+    const rescanFixture = async (task: Awaited<ReturnType<typeof start>>, findingId: string | null, buildArgs: string[] = []) => {
+      // The production worker phase follows in D3-D. This probe still claims a real queued run and lease.
+      equal((await db.admin.query("UPDATE itervane.tasks SET state='queued' WHERE id=$1 AND state='waiting_input'", [task.id])).rowCount, 1);
+      equal((await db.admin.query("UPDATE itervane.task_runs SET state='queued' WHERE id=$1 AND state='waiting_input'", [task.runId])).rowCount, 1);
+      const result = await runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+        'verification', [task.id, task.runId, findingId ?? 'original', ...buildArgs]);
+      equal(result.commit, task.source.commit);
+      idSchema.parse(result.domainId);
+      for (const value of [result.inputSha256, result.receiptSha256, result.commandSha256, result.baseSnapshotSha256,
+        result.targetManifestSha256, result.originalReportsSha256]) sha256Schema.parse(value);
+      equal(result.cleanupConfirmed, true);
+      equal(result.dispatches, 1);
+      equal(result.newFindingGroups, 0);
+      equal((await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows[0]?.task_id, null);
+      await assertDrained(controllerUid, staging);
+      return result;
+    };
+
+    if (build) {
+      const audit = auditProvider = await auditProtocolFixture();
+      const buildFixture = async (revision: string, outcome: 'built' | 'profile_mismatch' | 'offline_install') => {
+        phase = `standard_build_audit_${outcome}`;
+        worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, audit.baseURL);
+        const task = await start('Verify the standard build from this fixed source', revision);
+        await reached(task.id, 'waiting_input');
+        const reviewed = formalAuditDtoSchema.parse(await request(`/v1/tasks/${task.id}/audit`));
+        if (reviewed.status !== 'recorded' || reviewed.result.status !== 'completed') throw new Error('standard_build_audit');
+        if (reviewed.result.checklist?.findings.length !== 0) {
+          phase = 'standard_build_initial_findings';
+          throw new Error('standard_build_findings');
+        }
+        await worker.stop('TERM'); worker = undefined;
+        phase = `standard_build_execution_${outcome}`;
+        const fact = await rescanFixture(task, null, [build.profile, build.baseline, outcome]);
+        const evidence = qualifiedStandardBuildProofSchema.parse(fact.build);
+        equal(evidence.baselineSha256, build.baseline);
+        equal(evidence.subjectManifestSha256, reviewed.result.snapshotSha256);
+        equal(evidence.verificationInputSha256, fact.inputSha256);
+        equal(evidence.runId, fact.domainId);
+        return { ...fact, build: evidence };
+      };
+      if (buildMode === 'standard-build-missing-cache') {
+        const missing = await buildFixture(standardBuildCommit, 'offline_install');
+        equal(missing.build.status, 'failed');
+        return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, missing, stagedFilesRemaining: false };
+      }
+      const built = await buildFixture(standardBuildCommit, 'built');
+      equal(built.build.status, 'built');
+      if (built.build.status !== 'built') throw new Error('standard_build_output_missing');
+      const paths = ['index.html', 'package-lock.json', 'package.json', 'server/app.mjs', 'server/index.mjs', 'src/main.jsx', 'src/style.css'];
+      const projection = paths.map(path => {
+        const data = readFileSync(`fixtures/standard-app/${path}`);
+        return { path, sha256: sha256(data), bytes: data.length };
+      });
+      equal(built.build.projectionSha256, sha256(JSON.stringify(projection)));
+      ok(built.build.dist.files >= 2 && built.build.dist.bytes > 0);
+      const drift = await buildFixture(standardLockDriftCommit, 'profile_mismatch');
+      equal(drift.build.status, 'blocked');
+      return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, built, drift, stagedFilesRemaining: false };
+    }
 
     phase = 'scan_and_shared_reads';
     worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl);
@@ -471,23 +540,6 @@ async function probe() {
     deepStrictEqual(npmExport.patch.files, npmFiles.map(({ path, original, edits }) => ({ path, beforeSha256: sha256(original), edits })));
     equal((await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows[0]?.task_id, null);
 
-    const rescanFixture = async (task: typeof npm.task, findingId: string | null) => {
-      // The production worker phase follows in D3-D. This probe still claims a real queued run and lease.
-      equal((await db.admin.query("UPDATE itervane.tasks SET state='queued' WHERE id=$1 AND state='waiting_input'", [task.id])).rowCount, 1);
-      equal((await db.admin.query("UPDATE itervane.task_runs SET state='queued' WHERE id=$1 AND state='waiting_input'", [task.runId])).rowCount, 1);
-      const result = await runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
-        'verification', [task.id, task.runId, findingId ?? 'original']);
-      equal(result.commit, task.source.commit);
-      idSchema.parse(result.domainId);
-      for (const value of [result.inputSha256, result.receiptSha256, result.commandSha256, result.baseSnapshotSha256,
-        result.targetManifestSha256, result.originalReportsSha256]) sha256Schema.parse(value);
-      equal(result.cleanupConfirmed, true);
-      equal(result.dispatches, 1);
-      equal(result.newFindingGroups, 0);
-      equal((await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows[0]?.task_id, null);
-      await assertDrained(controllerUid, staging);
-      return result;
-    };
     const rescanRepair = async (fixture: typeof npm) => {
       const result = await rescanFixture(fixture.task, fixture.finding.id);
       const { receipt: published, observation: observed } = fixture;

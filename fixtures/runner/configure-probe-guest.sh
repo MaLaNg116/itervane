@@ -65,6 +65,7 @@ DeviceAllow=/dev/virtio-ports/org.itervane.runner.source.0 rw
 StateDirectory=itervane-probe-source
 StateDirectoryMode=0700
 ReadWritePaths=-/var/lib/itervane-inspection-source
+ReadWritePaths=-/var/lib/itervane-build-input
 MemoryMax=192M
 TasksMax=16
 LimitFSIZE=67108864
@@ -112,6 +113,68 @@ UMask=0027
 EOF
   install -d -m 0755 /etc/systemd/system/multi-user.target.wants
   ln -sfn /etc/systemd/system/itervane-guest-scan.path /etc/systemd/system/multi-user.target.wants/itervane-guest-scan.path
+fi
+if test -d /usr/local/libexec/itervane-build-inputs; then
+  test -x /usr/local/libexec/itervane-inspection/node
+  useradd --system --user-group --no-create-home --shell /usr/sbin/nologin itervane-build
+  usermod -a -G itervane-build itervane-source
+  mv -- /usr/local/libexec/itervane-build-inputs /usr/local/libexec/itervane-build
+  chown -R root:root /usr/local/libexec/itervane-build
+  chmod -R a+rX,a-w /usr/local/libexec/itervane-build
+  ln -s ../itervane-inspection/node /usr/local/libexec/itervane-build/node
+  install -m 0444 /var/tmp/build_guest.py /usr/local/libexec/itervane/build_guest.py
+  rm -- /var/tmp/build_guest.py
+  install -d -m 2750 -o itervane-source -g itervane-build /var/lib/itervane-build-input
+  install -d -m 2750 -o root -g itervane-source /var/lib/itervane-build-output
+  cat >/etc/systemd/system/itervane-guest-build.path <<'EOF'
+[Path]
+PathExists=/var/lib/itervane-build-input/ready/request.json
+TriggerLimitIntervalSec=3min
+TriggerLimitBurst=1
+EOF
+  cat >/etc/systemd/system/itervane-guest-build.service <<'EOF'
+[Unit]
+BindsTo=itervane-guest-source.service
+After=itervane-guest-source.service itervane-guest-scan.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I -B /usr/local/libexec/itervane/build_guest.py run
+ExecStopPost=+/usr/bin/python3 -I -B /usr/local/libexec/itervane/build_guest.py publish
+User=itervane-build
+Group=itervane-build
+NoNewPrivileges=true
+CapabilityBoundingSet=
+PrivateNetwork=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+SystemCallArchitectures=native
+SystemCallFilter=~io_uring_setup io_uring_enter io_uring_register
+SystemCallErrorNumber=EPERM
+InaccessiblePaths=-/run/dbus/system_bus_socket -/run/systemd/private
+InaccessiblePaths=/var/lib/itervane-inspection-source /var/lib/itervane-inspection-output /var/lib/itervane-probe-source
+ReadOnlyPaths=/var/lib/itervane-build-input /usr/local/libexec/itervane-build
+ReadWritePaths=/var/lib/itervane-build-output
+StateDirectory=itervane-build-work
+StateDirectoryMode=0700
+MemoryMax=1G
+TasksMax=96
+LimitFSIZE=67108864
+TimeoutStartSec=52
+TimeoutStopSec=5
+KillMode=control-group
+StandardOutput=null
+StandardError=null
+UMask=0077
+EOF
+  ln -sfn /etc/systemd/system/itervane-guest-build.path /etc/systemd/system/multi-user.target.wants/itervane-guest-build.path
 fi
 cat >/etc/systemd/system/itervane-probe-workload.service <<'EOF'
 [Unit]

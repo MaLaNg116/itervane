@@ -33,6 +33,8 @@ REPAIR_COMMAND = INSPECTION_REQUEST.with_name("repair-command.json")
 REPAIR_OBSERVATION = INSPECTION_REQUEST.with_name("repair-observation.json")
 VERIFICATION_COMMAND = INSPECTION_REQUEST.with_name("verification-command.json")
 INSPECTION_RECEIPT = Path("/var/lib/itervane-inspection-output/receipt.json")
+BUILD_INPUT = Path("/var/lib/itervane-build-input")
+BUILD_RECEIPT = Path("/var/lib/itervane-build-output/receipt.json")
 FIXTURE_REPOSITORY_ID = "a955164f-7cf2-45c5-8a53-7cdb556db805"
 GIT_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "GIT_CONFIG_NOSYSTEM": "1",
            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"}
@@ -159,6 +161,72 @@ def verify_objects(root, identity, commit):
     return RECEIPT.pack(identity, bytes.fromhex(commit), bytes.fromhex(tree.decode()), hashlib.sha256(raw_commit).digest(), len(records) - 1)
 
 
+def wait_receipt(path, limit, wire):
+    while True:
+        wire.check_deadline()
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            time.sleep(0.1)
+        else:
+            break
+    with os.fdopen(fd, "rb") as report:
+        info = os.fstat(report.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise GuestFailure("scan-integrity")
+        receipt = report.read(limit + 1)
+    if len(receipt) > limit:
+        raise GuestFailure("scan-integrity")
+    return receipt
+
+
+def read_inspection(receipt, command):
+    try:
+        proof = json.loads(receipt)
+        if not isinstance(proof, dict):
+            raise ValueError()
+        if "code" in proof:
+            code = proof["code"].encode("ascii")
+            scan_failure = code.startswith((b"scan-", b"snapshot-")) and code in GUEST_ERRORS
+            if len(proof) == 1 and (scan_failure or (command is not None and code in GUEST_REPAIR_ERRORS)):
+                raise GuestFailure(code.decode("ascii"))
+            raise ValueError()
+    except (AttributeError, ValueError, RecursionError) as error:
+        raise GuestFailure("scan-integrity") from error
+    return proof
+
+
+def with_standard_build(receipt, proof, command, wire):
+    frozen = json.loads(command)
+    profile = frozen["input"]["profile"]
+    expected = profile.get("buildProfileSha256")
+    if expected is None:
+        return receipt
+    staged = subprocess.run(
+        [INSPECTION_TOOLS / "node", INSPECTION_TOOLS / "worker.mjs", "stage-standard-build"],
+        env=GIT_ENV, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, check=False,
+    )
+    if staged.returncode:
+        raise GuestFailure("scan-integrity")
+    blocked = BUILD_INPUT / "blocked.json"
+    path = blocked if blocked.exists() else BUILD_RECEIPT
+    try:
+        outcome = json.loads(wait_receipt(path, 2048, wire))
+    except (ValueError, RecursionError) as error:
+        raise GuestFailure("scan-integrity") from error
+    target = proof["target"]["manifestSha256"] if proof["target"] is not None else proof["manifestSha256"]
+    if (not isinstance(outcome, dict) or outcome.get("buildProfileSha256") != expected
+        or outcome.get("baselineSha256") != profile["baselineSha256"]
+        or outcome.get("verificationInputSha256") != proof["verificationInputSha256"]
+        or outcome.get("runId") != proof["runId"] or outcome.get("subjectManifestSha256") != target):
+        raise GuestFailure("scan-integrity")
+    proof["build"] = outcome
+    serialized = json.dumps(proof, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    if len(serialized) > MAX_VERIFICATION_RECEIPT:
+        raise GuestFailure("scan-integrity")
+    return serialized
+
+
 def inspect_source(repository, identity, commit, repository_id, mode, wire, command=None):
     published = {
         "verification": (VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT, b"Y"),
@@ -187,35 +255,15 @@ def inspect_source(repository, identity, commit, repository_id, mode, wire, comm
             raise GuestFailure("snapshot-rejected")
         INSPECTION_REQUEST.touch(mode=0o600, exist_ok=False)
         requested = True
-        while True:
-            wire.check_deadline()
-            try:
-                fd = os.open(INSPECTION_RECEIPT, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            except FileNotFoundError:
-                time.sleep(0.1)
-            else:
-                break
-        with os.fdopen(fd, "rb") as report:
-            if not stat.S_ISREG(os.fstat(report.fileno()).st_mode):
-                raise GuestFailure("scan-integrity")
-            receipt = report.read(receipt_limit + 1)
+        receipt = wait_receipt(INSPECTION_RECEIPT, receipt_limit, wire)
+        proof = read_inspection(receipt, command)
+        if mode == "verification":
+            receipt = with_standard_build(receipt, proof, command, wire)
     finally:
         if requested:
             INSPECTION_REQUEST.unlink()
         if command_written:
             command_path.unlink()
-    try:
-        proof = json.loads(receipt) if len(receipt) <= receipt_limit else None
-        if not isinstance(proof, dict):
-            raise ValueError()
-        if "code" in proof:
-            code = proof["code"].encode("ascii")
-            scan_failure = code.startswith((b"scan-", b"snapshot-")) and code in GUEST_ERRORS
-            if len(proof) == 1 and (scan_failure or (command is not None and code in GUEST_REPAIR_ERRORS)):
-                raise GuestFailure(code.decode("ascii"))
-            raise ValueError()
-    except (AttributeError, ValueError, RecursionError) as error:
-        raise GuestFailure("scan-integrity") from error
     wire.send(receipt_frame, receipt)
 
 

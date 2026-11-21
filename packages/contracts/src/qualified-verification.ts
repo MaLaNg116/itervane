@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { repairCommandByteLimit, repairCommandSchema } from './formal-repair.js';
 import { formalVerificationInputSchema } from './formal-verification.js';
 import { sha256Schema, sourceContentLimits } from './inspection.js';
+import { qualifiedStandardBuildProofSchema } from './qualified-standard-build.js';
 import {
   qualifiedInspectionScopeSchema, qualifiedInspectionSnapshotSchema, qualifiedRunnerRejectionSchema, qualifiedScanReportsSchema,
 } from './qualified-inspection.js';
@@ -17,6 +18,7 @@ const scope = qualifiedInspectionScopeSchema.omit({ planSha256: true }).extend({
   operation: z.literal('verify_source'), verificationInputSha256: sha256Schema,
   baseSnapshotSha256: sha256Schema, targetManifestSha256: sha256Schema,
   runnerImageSha256: sha256Schema, scannerInputsSha256: sha256Schema,
+  buildProfileSha256: sha256Schema.optional(),
   commandSha256: sha256Schema, commandBytes: z.int().positive().max(verificationCommandByteLimit),
 });
 export const qualifiedVerificationRequestSchema = scope.extend({ origin: z.string().min(1).max(768) });
@@ -31,6 +33,7 @@ export const qualifiedGuestVerificationProofSchema = qualifiedInspectionSnapshot
     patchSha256: sha256Schema,
     reports: qualifiedScanReportsSchema,
   }).nullable(),
+  build: qualifiedStandardBuildProofSchema.optional(),
 }).refine(proof => !proof.target || proof.target.manifestSha256 !== proof.manifestSha256);
 
 export const qualifiedVerificationResponseSchema = z.discriminatedUnion('kind', [

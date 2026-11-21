@@ -1,15 +1,18 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { standardBuildProfileSchema } from '@itervane/contracts';
 import { buildLockByteLimit, readBuildDependencies } from '../packages/runner/src/build-dependencies.js';
+import { fileDigest } from '../packages/runner/src/guest-inspection.js';
 import { readBoundedFile } from '../packages/runner/src/guest-snapshot.js';
 import { sha256 } from '../packages/runner/src/profiles.js';
 
 const execute = promisify(execFile);
 const fixture = fileURLToPath(new URL('../fixtures/standard-app/', import.meta.url));
+const buildRecipe = fileURLToPath(new URL('../fixtures/runner/', import.meta.url));
 const tarballLimit = 48 * 1024 * 1024;
 const downloadLimit = 192 * 1024 * 1024;
 let phase = 'target';
@@ -37,7 +40,8 @@ async function prepare(destination: string) {
   phase = 'lockfile';
   const manifest = readBoundedFile(join(fixture, 'package.json'), 65_536);
   const { lockSha256, tarballs } = readBuildDependencies(readBoundedFile(join(fixture, 'package-lock.json'), buildLockByteLimit));
-  const npm = resolve(dirname(process.execPath), '../lib/node_modules/npm/bin/npm-cli.js');
+  const npmRoot = resolve(dirname(process.execPath), '../lib/node_modules/npm');
+  const npm = join(npmRoot, 'bin/npm-cli.js');
   await mkdir(destination, { mode: 0o700 });
   const temporary = await mkdtemp(join(destination, '.cache-preparation-'));
   try {
@@ -69,8 +73,23 @@ async function prepare(destination: string) {
     const inputs = { version: 1, platform: 'linux/amd64', node: process.version, npm: npmVersion,
       packageSha256: sha256(manifest), lockSha256, tarballs, totalBytes,
     };
-    await writeFile(join(destination, 'dependencies.json'), JSON.stringify(inputs, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
-    console.log(JSON.stringify({ packageSha256: inputs.packageSha256, lockSha256, npmVersion, tarballs: tarballs.length, totalBytes }));
+    const dependencies = JSON.stringify(inputs, null, 2) + '\n';
+    await writeFile(join(destination, 'dependencies.json'), dependencies, { flag: 'wx', mode: 0o600 });
+
+    phase = 'profile';
+    const baseline = readBoundedFile(join(buildRecipe, 'standard-web-baseline.mjs'), 65_536);
+    const viteConfig = readBoundedFile(join(buildRecipe, 'standard-vite.config.mjs'), 4096);
+    await cp(npmRoot, join(destination, 'npm'), { recursive: true, force: false, errorOnExist: true, verbatimSymlinks: true });
+    await writeFile(join(destination, 'baseline.mjs'), baseline, { flag: 'wx', mode: 0o600 });
+    await writeFile(join(destination, 'vite.config.mjs'), viteConfig, { flag: 'wx', mode: 0o600 });
+    const profile = standardBuildProfileSchema.parse({
+      version: 1, platform: 'linux/amd64', packageSha256: inputs.packageSha256, lockSha256,
+      dependenciesSha256: sha256(dependencies), npmVersion, nodeSha256: await fileDigest(process.execPath, 180 * 1024 * 1024),
+      baselineSha256: sha256(baseline), viteConfigSha256: sha256(viteConfig),
+    });
+    const profileBytes = JSON.stringify(profile);
+    await writeFile(join(destination, 'profile.json'), profileBytes, { flag: 'wx', mode: 0o600 });
+    console.log(JSON.stringify({ ...profile, buildProfileSha256: sha256(profileBytes), tarballs: tarballs.length, totalBytes }));
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }
 
