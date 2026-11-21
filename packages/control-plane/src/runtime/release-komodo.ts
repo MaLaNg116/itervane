@@ -1,14 +1,11 @@
 import {
-  formalReleaseTargetSchema, komodoResourceIdSchema, ociDigestSchema, releaseKomodoOriginSchema, releaseRegistryHost,
+  komodoReleaseTargetSchema, komodoResourceIdSchema, ociDigestSchema, releaseKomodoConfigurationSchema, releaseKomodoOriginSchema,
+  releaseKomodoUpdateSchema, releaseRegistryHost,
 } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { z } from 'zod';
 
-const targetSchema = formalReleaseTargetSchema.pick({
-  komodo: true, registryOrigin: true, deploymentId: true, serverId: true, imageRepository: true, runtimeConfigSha256: true,
-}).required();
-
-export type KomodoReleaseTarget = z.infer<typeof targetSchema>;
+export type KomodoReleaseTarget = z.infer<typeof komodoReleaseTargetSchema>;
 
 const secret = z.string().min(1).max(512).regex(/^[!-~]+$/);
 const credentialSchema = z.strictObject({ actorId: komodoResourceIdSchema, key: secret, secret });
@@ -16,7 +13,7 @@ type Credentials = z.infer<typeof credentialSchema>;
 type Authorize = () => Promise<void>;
 
 const objectId = z.object({ $oid: komodoResourceIdSchema });
-const imageReference = z.string().max(2400);
+const imageReference = releaseKomodoConfigurationSchema.shape.imageReference;
 const imageConfig = z.strictObject({ type: z.literal('Image'), params: z.strictObject({ image: imageReference }) });
 const json = z.json();
 const deploymentConfig = z.object({
@@ -31,7 +28,7 @@ const deployment = z.object({ _id: objectId, name: z.string().min(1).max(128), c
 const update = z.object({
   _id: objectId, operation: z.literal('Deploy'), operator: komodoResourceIdSchema,
   target: z.object({ type: z.literal('Deployment'), id: komodoResourceIdSchema }),
-  status: z.enum(['Queued', 'InProgress', 'Complete']), success: z.boolean(),
+  status: releaseKomodoUpdateSchema.shape.status, success: z.boolean(),
 });
 
 const routes = { GetDeployment: 'read', UpdateDeployment: 'write', Deploy: 'execute', GetUpdate: 'read' } as const;
@@ -94,7 +91,7 @@ export class KomodoReleaseClient {
   }
 
   private binding(raw: unknown) {
-    const target = targetSchema.safeParse(raw);
+    const target = komodoReleaseTargetSchema.safeParse(raw);
     if (!target.success || target.data.komodo.origin !== this.origin || target.data.komodo.actorId !== this.#credentials.actorId) {
       throw new KomodoReleaseError('target', 'binding');
     }
