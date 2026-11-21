@@ -2,8 +2,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { test as base, expect, type Page } from '@playwright/test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { admissionDtoSchema, catalogDtoSchema, formalAuditDtoSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema,
-  preauditDtoSchema, sourceInspectionDtoSchema, taskDtoSchema, translate, verificationViewSchema } from '@itervane/contracts';
+import { admissionDtoSchema, catalogDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema, formalReleaseDecisionResultSchema,
+  formalReleaseViewSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema, preauditDtoSchema, releaseDecisionInputSchema,
+  sourceInspectionDtoSchema, taskDtoSchema, translate, verificationViewSchema, type FormalReleaseCandidateDto, type TaskDto } from '@itervane/contracts';
 import { browserStack } from './stack.js';
 
 type Stack = Awaited<ReturnType<typeof browserStack>>;
@@ -236,6 +237,162 @@ test('shows independent verification across run revisions with bilingual keyboar
   await panel.getByRole('button', { name: '重新尝试' }).click();
   await expect(panel.getByText(imageDigest, { exact: true })).toBeVisible();
   await expectMotionCsp(page);
+});
+
+function frozenReleaseFixture(task: TaskDto) {
+  const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+  const ids = { applicationId: randomUUID(), environmentId: randomUUID() };
+  const target = { ...ids, applicationName: 'Release portal sample', environmentName: 'Protected test' };
+  const candidate = formalReleaseCandidateDtoSchema.parse({
+    id: randomUUID(), fingerprint: hash('frozen candidate'), createdAt: task.createdAt, status: 'pending', decisionVersion: 0,
+    decisions: [], operationId: null, locale: 'en', message: translate('en', 'task.release_candidate_frozen'),
+    manifest: {
+      version: 1, origin: 'formal_verification', releaseEligible: false, evidenceVersion: 1,
+      taskId: task.id, runId: task.runId, generation: 1, projectId: task.projectId, source: task.source,
+      originalSnapshotSha256: hash('source'), repairedSnapshotSha256: hash('patched source'), diffSha256: hash('patch'),
+      verification: { inputSha256: hash('input'), resultSha256: hash('result'), receiptSha256: hash('receipt'), catalogSha256: hash('catalog'),
+        profileSha256: hash('profile'), buildSha256: hash('build'), baselineSha256: hash('baseline'), source: { introduced: 0, resolved: 1, remaining: 0 } },
+      image: { manifestDigest: `sha256:${hash('image')}`, configDigest: `sha256:${hash('image config')}`,
+        archive: { format: 'oci-layout-tar', sha256: hash('archive'), bytes: 50_024 }, runnerImageSha256: hash('runner'),
+        scanReportSha256: hash('scan'), scanPolicySha256: hash('policy'), findings: { critical: 0, high: 0, medium: 1, low: 0, unknown: 0 } },
+      runtimeConfigSha256: hash('runtime config'), rolloutCheckSha256: hash('rollout'), recoveryPlanSha256: hash('recovery'),
+      target: { ...ids, mappingSha256: hash('target mapping'), revision: 1 }, validUntil: new Date(Date.now() + 300_000).toISOString(),
+    },
+  });
+  return { target, candidate };
+}
+
+test('uses the exact frozen release for bilingual decisions, closes stale approval, and reuses the request key on retry', async ({ page, stack }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await observeMotion(page, stack.origin);
+  const project = await seedProject(stack);
+  const authorization = authorizationFrom(page);
+  await login(page, stack);
+  await expect(page.getByRole('link', { name: project.title, exact: true })).toBeVisible();
+  const task = await admit(stack, authorization(), project);
+  const base = `${stack.origin}/v1/tasks/${task.id}`;
+  const { target, candidate } = frozenReleaseFixture(task);
+  let current: FormalReleaseCandidateDto | null = null;
+  let taskVersion = task.version + 3;
+  let state: TaskDto['state'] = 'waiting_input';
+  let displaced = false;
+  const requests: Array<ReturnType<typeof releaseDecisionInputSchema.parse>> = [];
+  function localize(candidate: FormalReleaseCandidateDto, locale: 'en' | 'zh-CN') {
+    const messages = { pending: 'task.release_candidate_frozen', confirmed: 'task.release_confirmed', revoked: 'task.release_revoked' } as const;
+    if (candidate.status !== 'pending' && candidate.status !== 'confirmed' && candidate.status !== 'revoked') throw new Error('Unexpected fixture state');
+    return { ...candidate, locale, message: translate(locale, messages[candidate.status]) };
+  }
+  // The authenticated UI/transport is real. Runner and decision ledger evidence are covered in the control-plane suites.
+  await page.route(base, route => route.fulfill({ json: taskDtoSchema.parse({ ...task, state, version: taskVersion }) }));
+  await page.route(`${base}/release`, route => {
+    const locale = route.request().headers()['accept-language'] === 'zh-CN' ? 'zh-CN' : 'en';
+    return route.fulfill({ json: formalReleaseViewSchema.parse({
+      taskId: task.id, runId: displaced ? randomUUID() : task.runId, taskVersion,
+      candidate: current ? localize(current, locale) : null, candidateTarget: current ? target : null,
+      availableTargets: current ? [] : [{ ...target, revision: 1 }],
+      actions: current?.status === 'pending' ? ['confirm', 'reject'] : current?.status === 'confirmed' ? ['revoke'] : [],
+    }) });
+  });
+  await page.route(`${base}/release-candidate`, async route => {
+    expect(route.request().method()).toBe('POST');
+    expect(route.request().postDataJSON()).toEqual({ environmentId: target.environmentId, expectedVersion: taskVersion });
+    current = candidate;
+    taskVersion++;
+    state = 'waiting_approval';
+    await route.fulfill({ status: 201, json: candidate });
+  });
+  await page.route(`${stack.origin}/v1/release-candidates/${candidate.id}/decisions`, async route => {
+    const body = releaseDecisionInputSchema.parse(route.request().postDataJSON());
+    requests.push(body);
+    expect(body.fingerprint).toBe(candidate.fingerprint);
+    if (requests.length === 1) { await route.abort('failed'); return; }
+    const expected = requests.length === 2 ? 'confirm' : 'revoke';
+    expect(body.action).toBe(expected);
+    const version = expected === 'confirm' ? 1 : 2;
+    expect(body.expectedVersion).toBe(version - 1);
+    current = { ...current!, status: expected === 'confirm' ? 'confirmed' : 'revoked', operationId: current?.operationId ?? randomUUID(),
+      decisionVersion: version, decisions: [...(current?.decisions ?? []), {
+        version, action: expected, actorId: task.requestedBy, decidedAt: task.createdAt, selfConfirmed: expected === 'confirm',
+      }] };
+    taskVersion++;
+    state = expected === 'confirm' ? 'queued' : 'needs_human';
+    await route.fulfill({ json: formalReleaseDecisionResultSchema.parse({ candidate: localize(current, 'zh-CN'), replayed: false }) });
+  });
+
+  await page.goto(`${stack.origin}/#/tasks/${task.id}`);
+  const panel = page.getByTestId('formal-release');
+  await expect(panel.getByRole('combobox', { name: 'Release target' })).toHaveValue(target.environmentId);
+  await panel.getByRole('button', { name: 'Freeze candidate' }).click();
+  await expect(panel.getByText(candidate.manifest.image.manifestDigest, { exact: true })).toBeVisible();
+  const evidence = panel.getByText('Candidate evidence', { exact: true });
+  await evidence.focus(); await evidence.press('Enter');
+  await expect(panel.getByText(candidate.fingerprint, { exact: true })).toBeVisible();
+  await expect.poll(async () => (await motionProbe(page)).disclosures).toBeGreaterThan(0);
+
+  const approve = panel.getByRole('button', { name: 'Approve release', exact: true });
+  await approve.focus(); await approve.press('Enter');
+  const englishDialog = page.getByRole('dialog', { name: 'Approve this release candidate?' });
+  await expect(englishDialog.getByRole('button', { name: 'Go back' })).toBeFocused();
+  await expect(englishDialog.getByText(candidate.fingerprint, { exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(englishDialog).toHaveCount(0);
+  await approve.click();
+  await expect(englishDialog).toBeVisible();
+  displaced = true;
+  await expect(englishDialog).toHaveCount(0);
+  await expect(panel.getByText(candidate.manifest.image.manifestDigest, { exact: true })).toHaveCount(0);
+  expect(requests).toHaveLength(0);
+
+  displaced = false;
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const motionBefore = (await motionProbe(page)).disclosures;
+  await language(page, 'zh-CN');
+  const chineseEvidence = panel.getByText('候选证据', { exact: true });
+  await chineseEvidence.focus(); await chineseEvidence.press('Enter');
+  await expect(panel.getByText(candidate.fingerprint, { exact: true })).toBeVisible();
+  expect((await motionProbe(page)).disclosures).toBe(motionBefore);
+
+  await panel.getByRole('button', { name: '批准发布', exact: true }).click();
+  const chineseDialog = page.getByRole('dialog', { name: '批准此发布候选？' });
+  const confirm = chineseDialog.getByRole('button', { name: '批准发布', exact: true });
+  await confirm.click();
+  await expect(chineseDialog.getByRole('alert')).toBeVisible();
+  await confirm.click();
+  await expect(panel.getByRole('status')).toHaveText(/已入队/);
+  await expect(panel.getByText('申请人本人确认', { exact: true })).toBeVisible();
+  expect(requests[0]).toEqual(requests[1]);
+  await panel.getByRole('button', { name: '撤销批准', exact: true }).click();
+  await page.getByRole('dialog', { name: '撤销对此候选的批准？' }).getByRole('button', { name: '撤销批准', exact: true }).click();
+  await expect(panel.getByRole('status')).toHaveText(/撤销/);
+  await expect(panel.getByText('已撤销批准', { exact: true })).toBeVisible();
+  expect(requests).toHaveLength(3);
+  await expectMotionCsp(page);
+});
+
+test('shows release evidence without actions to a read-only member and clears it when access is revoked', async ({ page, stack }) => {
+  const project = await seedProject(stack, true);
+  const authorization = authorizationFrom(page);
+  await stack.database.admin.query("UPDATE itervane.project_members SET role='maintainer' WHERE project_id=$1", [project.id]);
+  await login(page, stack, 'viewer');
+  await expect(page.getByRole('link', { name: project.title, exact: true })).toBeVisible();
+  const admitted = await admit(stack, authorization(), project);
+  await paused(stack, admitted.id);
+  await stack.database.admin.query("UPDATE itervane.project_members SET role='viewer' WHERE project_id=$1", [project.id]);
+  const base = `${stack.origin}/v1/tasks/${admitted.id}`;
+  const response = await fetch(base, { headers: { Authorization: authorization() } });
+  const task = taskDtoSchema.parse(await response.json());
+  const { candidate, target } = frozenReleaseFixture(task);
+  await page.route(`${base}/release`, route => route.fulfill({ json: formalReleaseViewSchema.parse({
+    taskId: task.id, runId: task.runId, taskVersion: task.version, candidate, candidateTarget: target, availableTargets: [], actions: [],
+  }) }));
+  await page.goto(`${stack.origin}/#/tasks/${task.id}`);
+  const panel = page.getByTestId('formal-release');
+  await expect(panel.getByText(candidate.manifest.image.manifestDigest, { exact: true })).toBeVisible();
+  await expect(panel.getByRole('button', { name: /Freeze candidate|Approve release|Reject candidate|Withdraw approval/ })).toHaveCount(0);
+  await page.unroute(`${base}/release`);
+  await stack.database.admin.query('DELETE FROM itervane.project_members WHERE project_id=$1', [project.id]);
+  await expect(panel).toHaveCount(0);
+  await expect(page.getByText(candidate.manifest.image.manifestDigest, { exact: true })).toHaveCount(0);
 });
 
 type MotionProbe = { state: number; events: number; headings: number; disclosures: number; csp: string[]; privateWithError: boolean };
