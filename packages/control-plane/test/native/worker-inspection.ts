@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   admissionDtoSchema, applicationDtoSchema, auditFindingsPerScan, environmentDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema,
-  formalRepairDtoSchema, formalRepairPatchDtoSchema, idSchema, projectDtoSchema,
+  formalRepairDtoSchema, formalRepairPatchDtoSchema, idSchema, komodoResourceIdSchema, projectDtoSchema,
   formalRepairRetrySchema, formalVerificationInputSchema, formalVerificationResultSchema, qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
   repositoryDtoSchema, releaseRegistryImageProofSchema, sha256Schema, sourceInspectionDtoSchema,
   qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
@@ -29,7 +29,10 @@ import { identityFixture } from '../helpers/identity.js';
 import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../verification/src/agent/npm-repair-fixture.js';
 import { temporaryPostgres } from '../../../verification/src/postgres-fixture.js';
 import { sourceFingerprint } from '../../../verification/src/report.js';
+import { openNativeReleaseKomodo } from '../../../verification/src/native/komodo-probe.js';
 import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from './audit-provider.js';
+import { proveKnownKomodoRecovery, proveUnknownKomodoDispatch } from './komodo-release-proof.js';
+import type { KomodoInterruption, runKomodoReleaseFixture } from './komodo-release-worker.js';
 import type { RegistryImportMarker } from './release-recovery.js';
 import { temporaryRegistry } from './registry-fixture.js';
 
@@ -120,20 +123,23 @@ async function startWorker(bundle: string, socket: string, controllerUid: string
 }
 
 function launchScopedFixtureWorker(bundle: string, socket: string, controllerUid: string, image: string,
-  databaseUrl: string, args: string[]) {
+  databaseUrl: string, args: string[], fixturePayload?: string) {
+  const script = 'set -eu; IFS= read -r DATABASE_URL; export DATABASE_URL; '
+    + (fixturePayload ? 'IFS= read -r ITERVANE_NATIVE_KOMODO_FIXTURE; export ITERVANE_NATIVE_KOMODO_FIXTURE; ' : '')
+    + 'exec "$@"';
   const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', ...sourceWorkerEnvironment(socket, controllerUid, image),
-    '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c', 'set -eu; IFS= read -r DATABASE_URL; export DATABASE_URL; exec "$@"',
+    '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c', script,
     'itervane-fixture-worker', process.execPath, bundle, ...args,
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
   const exit = exitStatus(child);
   child.stdin.on('error', () => undefined);
-  child.stdin.end(databaseUrl + '\n');
+  child.stdin.end(databaseUrl + '\n' + (fixturePayload ? fixturePayload + '\n' : ''));
   return { child, exit };
 }
 
 async function runScopedFixtureWorker(bundle: string, socket: string, controllerUid: string, image: string,
-  databaseUrl: string, probe: 'repair' | 'verification', args: string[]) {
-  const { child, exit } = launchScopedFixtureWorker(bundle, socket, controllerUid, image, databaseUrl, args);
+  databaseUrl: string, probe: 'repair' | 'verification', args: string[], fixturePayload?: string) {
+  const { child, exit } = launchScopedFixtureWorker(bundle, socket, controllerUid, image, databaseUrl, args, fixturePayload);
   let diagnostic = '';
   child.stderr.on('data', (chunk: Buffer) => {
     if (probe === 'verification' && diagnostic.length < 256) diagnostic += chunk.subarray(0, 256).toString('utf8');
@@ -151,27 +157,24 @@ async function runScopedFixtureWorker(bundle: string, socket: string, controller
   return JSON.parse(Buffer.concat(output).toString('utf8'));
 }
 
-async function killAfterRegistryImport(bundle: string, socket: string, controllerUid: string, image: string,
-  databaseUrl: string, operationId: string, registryOrigin: string, materializer: string) {
-  const { child, exit } = launchScopedFixtureWorker(bundle, socket, controllerUid, image, databaseUrl,
-    ['interrupt-registry-import', operationId, registryOrigin, materializer]);
+async function interruptFixture<T extends { pid: number; operationId: string; fence: number }>(
+  { child, exit }: ReturnType<typeof launchScopedFixtureWorker>, operationId: string, validate: (marker: T) => T, before: string) {
   child.stderr.resume();
   let markedPid: number | undefined;
   let stopped = false;
   const kill = (pid: number) => execute('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/bin/kill', '-KILL', String(pid)], { timeout: 5_000 });
   try {
-    const line = await Promise.race([firstLine(child, 205_000), exit.then(() => { throw new Error('registry_worker_exited_before_import'); })]);
-    const marker = JSON.parse(line) as RegistryImportMarker;
+    const line = await Promise.race([firstLine(child, 205_000), exit.then(() => { throw new Error(before); })]);
+    const marker = JSON.parse(line) as T;
     ok(Number.isSafeInteger(marker.pid) && marker.pid > 1 && marker.pid <= 2_147_483_647);
     markedPid = marker.pid;
     equal(marker.operationId, operationId);
     ok(Number.isSafeInteger(marker.fence) && marker.fence > 0);
-    equal(marker.stagingEmpty, true);
-    const imported = releaseRegistryImageProofSchema.parse(marker.imported);
+    const checked = validate(marker);
     await kill(markedPid);
     notEqual(await boundedExit(child, exit, 15_000), 0);
     stopped = true;
-    return { ...marker, imported };
+    return checked;
   } finally {
     if (!stopped) {
       if (markedPid) await kill(markedPid).catch(() => undefined);
@@ -179,6 +182,15 @@ async function killAfterRegistryImport(bundle: string, socket: string, controlle
       await boundedExit(child, exit, 5_000).catch(() => undefined);
     }
   }
+}
+
+async function killAfterRegistryImport(bundle: string, socket: string, controllerUid: string, image: string,
+  databaseUrl: string, operationId: string, registryOrigin: string, materializer: string) {
+  return interruptFixture<RegistryImportMarker>(launchScopedFixtureWorker(bundle, socket, controllerUid, image, databaseUrl,
+    ['interrupt-registry-import', operationId, registryOrigin, materializer]), operationId, marker => {
+    equal(marker.stagingEmpty, true);
+    return { ...marker, imported: releaseRegistryImageProofSchema.parse(marker.imported) };
+  }, 'registry_worker_exited_before_import');
 }
 
 async function runRepairWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string, args: string[],
@@ -250,6 +262,7 @@ async function probe() {
   let worker: Awaited<ReturnType<typeof startWorker>> | undefined;
   let auditProvider: Awaited<ReturnType<typeof auditProtocolFixture>> | undefined;
   let releaseRegistry: Awaited<ReturnType<typeof temporaryRegistry>> | undefined;
+  let releaseKomodo: Awaited<ReturnType<typeof openNativeReleaseKomodo>> | undefined;
   const client = new Client({ name: 'itervane-native-worker', version: '0.0.0' });
   try {
     const db = database = await databaseFixture(postgres.url);
@@ -409,7 +422,7 @@ async function probe() {
         equal(evidence.subjectManifestSha256, reviewed.result.snapshotSha256);
         equal(evidence.verificationInputSha256, fact.inputSha256);
         equal(evidence.runId, fact.domainId);
-        return { ...fact, build: evidence };
+        return { ...fact, build: evidence, taskId: task.id };
       };
       if (buildMode === 'standard-build-missing-cache') {
         const missing = await buildFixture(standardBuildCommit, 'offline_install');
@@ -499,12 +512,16 @@ async function probe() {
         const application = applicationDtoSchema.parse(await request(`/v1/projects/${project.id}/applications`, { name: 'Standard release fixture' }));
         const environment = environmentDtoSchema.parse(await request(`/v1/projects/${project.id}/environments`, { name: 'Protected sample', applicationId: application.id }));
         const registry = releaseRegistry = await temporaryRegistry();
-        const target = await registerReleaseTarget(db.storage, {
-          environmentId: environment.id, deploymentId: 'a'.repeat(24), serverId: 'b'.repeat(24), imageRepository: 'testing/standard',
-          registryOrigin: registry.origin,
-          verificationProfileSha256: verificationProfileFingerprint(automaticProfile), runtimeConfigSha256: sha256('native candidate fixture'),
+        phase = 'standard_komodo_core';
+        const komodo = releaseKomodo = await openNativeReleaseKomodo();
+        const knownTarget = await komodo.prepare();
+        const bind = (environmentId: string, fixture: typeof knownTarget) => registerReleaseTarget(db.storage, {
+          environmentId, ...fixture.binding, imageRepository: 'testing/standard', registryOrigin: registry.origin,
+          verificationProfileSha256: verificationProfileFingerprint(automaticProfile),
           rolloutCheckSha256: sha256('native rollout fixture'), recoveryPlanSha256: sha256('native previous release fixture'),
         });
+        const target = await bind(environment.id, knownTarget);
+        phase = 'standard_formal_release_candidate';
         const candidatePath = `/v1/tasks/${current.id}/release-candidate`;
         const candidate = formalReleaseCandidateDtoSchema.parse(await request(candidatePath, { environmentId: environment.id, expectedVersion: current.version }));
         deepStrictEqual(formalReleaseCandidateDtoSchema.parse(await request(candidatePath)), candidate);
@@ -603,10 +620,60 @@ async function probe() {
           'SELECT state,wakeup_job_id FROM itervane.release_operations WHERE id=$1', [operationId])).rows;
         deepStrictEqual(held, { state: 'dispatching', wakeup_job_id: null });
         await assertDrained(controllerUid, staging);
+
+        const komodoTrial = (fixture: typeof knownTarget, taskId: string, releaseId: string,
+          image: typeof pinnedImage) => {
+          const credentials = JSON.stringify({ origin: fixture.binding.komodo.origin, ...fixture.credentials });
+          const args = (boundary: string, materializer = '-') =>
+            ['komodo-release-step', releaseId, registry.origin, materializer, boundary];
+          return {
+            database: db.storage, taskId, operationId: releaseId, reference: image.reference, configDigest: image.configDigest,
+            tick: (materializer?: string): ReturnType<typeof runKomodoReleaseFixture> =>
+              runScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256, db.runtimeUrl,
+                'verification', args('tick', materializer), credentials),
+            interrupt: (boundary: KomodoInterruption['boundary']) =>
+              interruptFixture<KomodoInterruption>(launchScopedFixtureWorker(verificationBundle, socket, controllerUid, imageSha256,
+                db.runtimeUrl, args(boundary), credentials), releaseId, marker => {
+                equal(marker.boundary, boundary);
+                if (boundary !== 'configured') komodoResourceIdSchema.parse(marker.updateId);
+                return marker;
+              }, 'komodo_worker_exited_before_interruption'),
+            observeContainer: fixture.observeContainer,
+          };
+        };
+        phase = 'standard_komodo_known_update';
+        const komodoRecovery = await proveKnownKomodoRecovery(komodoTrial(knownTarget, current.id, operationId, pinnedImage), resumed.fence);
+
+        phase = 'standard_komodo_missing_update';
+        const unknownTarget = await komodo.prepare();
+        const other = environmentDtoSchema.parse(await request(`/v1/projects/${project.id}/environments`,
+          { name: 'Unknown deployment sample', applicationId: application.id }));
+        const otherMapping = await bind(other.id, unknownTarget);
+        const cleanTask = taskDtoSchema.parse(await request(`/v1/tasks/${built.taskId}`));
+        const cleanCandidate = formalReleaseCandidateDtoSchema.parse(await request(`/v1/tasks/${cleanTask.id}/release-candidate`,
+          { environmentId: other.id, expectedVersion: cleanTask.version }));
+        equal(cleanCandidate.manifest.target.mappingSha256, otherMapping.fingerprint);
+        ok(passing.image?.status === 'scanned' && passing.image.archive);
+        deepStrictEqual(cleanCandidate.manifest.image.archive, passing.image.archive);
+        equal(cleanCandidate.manifest.image.manifestDigest, passing.image.manifestDigest);
+        const otherApproval = (await request(`/v1/release-candidates/${cleanCandidate.id}/decisions`, {
+          action: 'confirm', fingerprint: cleanCandidate.fingerprint, expectedVersion: 0, idempotencyKey: randomUUID(),
+        }, true)) as { candidate: unknown };
+        const otherConfirmed = formalReleaseCandidateDtoSchema.parse(otherApproval.candidate);
+        equal(otherConfirmed.status, 'confirmed');
+        const otherOperation = idSchema.parse(otherConfirmed.operationId);
+        const cleanImage = cleanCandidate.manifest.image;
+        const cleanProof = { registryOrigin: registry.origin, repository: 'testing/standard',
+          reference: `${new URL(registry.origin).host}/testing/standard@${cleanImage.manifestDigest}`,
+          archive: cleanImage.archive, manifestDigest: cleanImage.manifestDigest, configDigest: cleanImage.configDigest };
+        const unknownKomodo = await proveUnknownKomodoDispatch(komodoTrial(unknownTarget, cleanTask.id, otherOperation, cleanProof),
+          join(dirname(bundle), 'release-tools/materialize_oci.py'), komodoRecovery.updateId);
+        await assertDrained(controllerUid, staging);
         retry = { before, after, retrySha256, generation: handoff.generation, candidate, claim,
           archiveTransport: { ...transport, registry: resumed.proof, registryReadOnly: { initiallyAbsent: true, matchedAfterCleanup: true } },
           registryRecovery: { operationId, preparedFence: interrupted.fence, observedFence: resumed.fence,
             observations: resumed.observations, writeIntents: settled.length, killedBeforeCommit: true, stagingEmpty: interrupted.stagingEmpty },
+          komodoRecovery, unknownKomodo,
           approval: { operationId, decisionVersion: confirmed.decisionVersion } };
       }
       return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
@@ -914,7 +981,7 @@ async function probe() {
       verification: { template: templateRescan, npm: npmRescan, original: originalRescan },
     };
   } finally {
-    try { await Promise.all([worker?.stop('TERM'), releaseRegistry?.close()]); }
+    try { await Promise.all([worker?.stop('TERM'), releaseKomodo?.close(), releaseRegistry?.close()]); }
     finally {
       await auditProvider?.close(); await client.close(); await api?.close(); await identity?.close(); await database?.close(); await postgres.close();
     }

@@ -13,6 +13,7 @@ import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-res
 import { runFormalVerification } from '../../src/runtime/formal-verification.js';
 import { currentInspectionAttempt } from '../../src/service/inspection-evidence.js';
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
+import { runKomodoReleaseFixture } from './komodo-release-worker.js';
 import { readApprovedArchive } from './release-archive.js';
 import { interruptibleRegistryImport, recoverInterruptedRegistry } from './release-recovery.js';
 
@@ -224,6 +225,12 @@ try {
     equal(extra.length, 0);
     const { databaseUrl } = fixtureConfig();
     console.log(JSON.stringify(await recoverInterruptedRegistry(databaseUrl, operationId, origin)));
+  } else if (action === 'komodo-release-step') {
+    phase = 'komodo_release_step';
+    ok(origin && materializer);
+    equal(extra.length, 1);
+    const { databaseUrl, runner } = fixtureConfig();
+    console.log(JSON.stringify(await runKomodoReleaseFixture(databaseUrl, runner, operationId, origin, materializer, extra[0])));
   } else console.log(JSON.stringify(await verify()));
 }
 catch { console.error(`verification_fixture_phase_${phase}`); process.exitCode = 1; }
