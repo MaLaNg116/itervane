@@ -9,7 +9,7 @@ import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { createFormalVerification } from '@itervane/agent';
 import { apiErrorSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
-  formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseViewSchema, formalRepairRetryContextSchema, verificationViewSchema,
+  formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseViewSchema, formalRepairRetryContextSchema, formalVerificationResultSchema, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
@@ -1250,6 +1250,20 @@ async function assertReleaseApproval(api: ReturnType<typeof createApi>, current:
 
 const releaseOrigin = 'https://registry.example.invalid';
 
+async function adjustFixtureVerification(statement: string, values: unknown[] = []) {
+  const connection = await database.admin.connect();
+  try {
+    await connection.query('BEGIN');
+    await connection.query('ALTER TABLE itervane.formal_verification_results DISABLE TRIGGER formal_verification_result_authority');
+    await connection.query(statement, values);
+    await connection.query('ALTER TABLE itervane.formal_verification_results ENABLE TRIGGER formal_verification_result_authority');
+    await connection.query('COMMIT');
+  } catch (error) {
+    await connection.query('ROLLBACK');
+    throw error;
+  } finally { connection.release(); }
+}
+
 async function queuedFormalRelease(options: { separateRequester?: boolean; expiring?: boolean } = {}) {
   const taskService = new TaskService(database.storage);
   const resources = new ResourceService(database.storage);
@@ -1299,13 +1313,7 @@ async function queuedFormalRelease(options: { separateRequester?: boolean; expir
   expect(verified.state).toBe('waiting_input');
   if (options.expiring) {
     // An old outcome gives this newly frozen candidate only a few seconds of its real PostgreSQL TTL.
-    await database.admin.query(`
-      BEGIN;
-      ALTER TABLE itervane.formal_verification_results DISABLE TRIGGER formal_verification_result_authority;
-      UPDATE itervane.formal_verification_results SET created_at=clock_timestamp()-interval '55 seconds';
-      ALTER TABLE itervane.formal_verification_results ENABLE TRIGGER formal_verification_result_authority;
-      COMMIT;
-    `);
+    await adjustFixtureVerification("UPDATE itervane.formal_verification_results SET created_at=clock_timestamp()-interval '55 seconds'");
   }
   const frozen = (await service.freeze(requester, task.id, { environmentId: environment.id, expectedVersion: verified.version }, 'zh-CN')).candidate;
   const approval = (await service.decide(owner, frozen.id, {
@@ -1479,8 +1487,8 @@ it.each([
   ['worker origin', 'release_target_changed'],
   ['approver regrant', 'release_approval_invalid'],
   ['requester access', 'permission_revoked'],
-  ['lost proof', 'release_evidence_changed'],
-] as const)('blocks formal release after %s changes', async (change, reason) => {
+  ['verification proof', 'release_evidence_changed'],
+] as const)('blocks formal release when %s no longer matches the approval', async (change, reason) => {
   const { operationId, target, taskService } = await queuedFormalRelease({ separateRequester: change === 'requester access' });
   if (change === 'target revision') await registerReleaseTarget(database.storage, { ...target, rolloutCheckSha256: sha256('new check') });
   if (change === 'approver regrant') {
@@ -1488,7 +1496,14 @@ it.each([
     await database.storage.db.insert(workspaceMembers).values({ principalId: removed!.principalId, workspaceId: removed!.workspaceId });
   }
   if (change === 'requester access') await database.storage.db.delete(projectMembers);
-  if (change === 'lost proof') await database.admin.query('TRUNCATE itervane.formal_verification_results');
+  if (change === 'verification proof') {
+    const [original] = await database.storage.db.select().from(formalVerificationResults);
+    const changed = formalVerificationResultSchema.parse({ ...original!.document,
+      provider: original!.document.provider === 'anthropic' ? 'openai' : 'anthropic' });
+    const document = JSON.stringify(changed);
+    await adjustFixtureVerification('UPDATE itervane.formal_verification_results SET sha256=$1, document=$2 WHERE run_id=$3',
+      [sha256(document), document, original!.runId]);
+  }
   const coordinatorOrigin = change === 'worker origin' ? 'https://other-registry.invalid' : releaseOrigin;
   const release = new FormalReleaseCoordinator(coordinator, coordinatorOrigin);
   expect(await release.claim(await fetchFormalWakeup(), randomUUID())).toBeNull();
