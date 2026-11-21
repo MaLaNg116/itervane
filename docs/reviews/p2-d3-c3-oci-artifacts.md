@@ -8,4 +8,4 @@
 
 TypeScript、65 项宿主测试和 PostgreSQL 全量 121 项已通过。宿主对照覆盖截断、改写、取消中的流、相同制品竞争和既有地址损坏。本机可信 OCI 试验通过归档写入和独立 manifest 读取，正式标准候选的 [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44898778492) 使用 `1a762b1c1916b6e03a699e28f45786ab8f2dabc1`。后续 P2-E 用同一内容摘要准备真实人审发布。
 
-首轮原生运行已传回并留存 79,042,560 字节，宿主独立校验长度、权限和 SHA-256 `b1b991b6c851a3cf0052b3fa2a29ed9b5f66bb49c782ca52abd0291d433703e3`。正式复验回执为 `21c27b7fd02ae2590c661064d325bb0a2d93cfb5754d59ca7e79ddc2f9050e89`。独立 manifest 读取因 GitHub 工作目录的账号隔离中断。 `93e2a55` 将核验脚本安装到既有的受控共享目录，重新验证同一回读步骤。
+首轮原生运行已传回并留存 79,042,560 字节，宿主独立校验长度、权限和 SHA-256 `b1b991b6c851a3cf0052b3fa2a29ed9b5f66bb49c782ca52abd0291d433703e3`。正式复验回执为 `21c27b7fd02ae2590c661064d325bb0a2d93cfb5754d59ca7e79ddc2f9050e89`。独立 manifest 读取因 GitHub 工作目录的账号隔离中断。 `93e2a55` 将核验脚本安装到既有的受控共享目录。 [回读复跑](https://github.com/MaLaNg116/itervane/actions/runs/44899721011)
