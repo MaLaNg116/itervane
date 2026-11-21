@@ -8,6 +8,6 @@
 4. `9e882c4` 在真实 PostgreSQL 覆盖重叠认领、原授权在等结果期间被撤销、只读认领、错误 Registry 来源、实际结果缺失或错配、取消和上限后的环境占用。 [集成用例](https://github.com/MaLaNg116/itervane/blob/9e882c4/packages/control-plane/test/integration/inspections.test.ts)
 5. `8624abd` 在托管 KVM 探针上使用正式 Worker 导入。父进程在实际导入且私有暂存清理之后、结果尚未写入 PostgreSQL 时终止原进程，等数据库租约实际过期后启动新进程。验收核对同一操作、唯一导入意图、已验证镜像摘要和新观察 fence。 [原生进程探针](https://github.com/MaLaNg116/itervane/blob/8624abd/packages/control-plane/test/native/release-recovery.ts) · [证据比对](https://github.com/MaLaNg116/itervane/blob/8624abd/packages/control-plane/test/native/worker-inspection.ts)
 
-固定源码 `8624abdac5b6eed9e676843fcbbf16fb9ad20cca`。TypeScript、163 项单元和原生 Worker 打包通过。真实 PostgreSQL 上的归档与意图约束、过期接续、有限恢复三项专项均通过。完整 PostgreSQL 与托管 KVM 证据随本批更新。
+固定源码 `8624abdac5b6eed9e676843fcbbf16fb9ad20cca`。TypeScript、163 项单元和原生 Worker 打包通过。PostgreSQL 17.12 的三项恢复专项及 151 项全量集成测试通过，源码指纹为 `7d8f03f3cc32195ed2dc15196aad87436ff58440bcfcb9490aa5fcc72c94cf7f`。托管源码 `69499d2a8b182e416e36fb097c39f3cdcbee770d` 的差异限于文档。 [PR #49](https://github.com/MaLaNg116/itervane/pull/49) · [托管 KVM 验收](https://github.com/MaLaNg116/itervane/actions/runs/44931283197)
 
 C4 在已确认的同摘要 Registry 制品上接续真实 Komodo 派发。E-D 独立核对线上镜像、配置和健康后完成 P2 验收。
