@@ -3,11 +3,13 @@ import { formalVerificationResultSchema, qualifiedVerificationResponseSchema, ty
   type FormalVerificationResult } from '@itervane/contracts';
 import { compareVerificationScans, sha256 } from '@itervane/runner';
 import { and, eq } from 'drizzle-orm';
+import type { Database } from '../persistence/database.js';
 import { formalRescanAttempts, formalVerificationResults, formalVerificationRuntime, runRuntime } from '../persistence/schema.js';
 import { appendEvent, clearSlot, ExecutionLost, type ExecutionScope, type TaskRow } from '../runtime/authority.js';
 import { projectVerificationEvidence } from '../runtime/verification-evidence.js';
 import type { Transaction } from './access.js';
 import { DomainError } from './errors.js';
+import { enqueueRepairRetry, prepareRepairRetry, readRepairRetry } from './repair-retry.js';
 
 function recordedObservations(report: FormalVerificationReport, evidence: FormalVerificationEvidence) {
   if (report.trace.length !== report.evidence.length) throw new Error('formal_verification_trace');
@@ -26,7 +28,8 @@ function recordedObservations(report: FormalVerificationReport, evidence: Formal
 
 export async function publishFormalVerification(tx: Transaction, task: TaskRow, scope: ExecutionScope,
   result: { report: FormalVerificationReport; evidence: FormalVerificationEvidence },
-  provider: FormalVerificationResult['provider'], signal: AbortSignal) {
+  provider: FormalVerificationResult['provider'], signal: AbortSignal,
+  retryConfig?: { database: Database; repairPolicySha256: string }) {
   signal.throwIfAborted();
   const { report } = result;
   const [entry] = await tx.select({ pointer: formalVerificationRuntime, attempt: formalRescanAttempts })
@@ -68,11 +71,15 @@ export async function publishFormalVerification(tx: Transaction, task: TaskRow, 
 
   const observed = review?.outcome === 'observed';
   const failed = review?.outcome === 'checks_failed' || review?.outcome === 'source_findings';
-  const reason = observed ? 'verification_observed' : failed ? 'verification_checks_failed' : 'verification_needs_human';
+  const retry = failed && retryConfig ? await prepareRepairRetry(tx, task, scope, document, hash, retryConfig.repairPolicySha256) : undefined;
+  const exhausted = failed && Boolean(await readRepairRetry(tx, task, scope));
+  const reason = observed ? 'verification_observed' : exhausted ? 'repair_retry_limit'
+    : failed ? 'verification_checks_failed' : 'verification_needs_human';
   await tx.update(runRuntime).set({ reason, resumePending: false, waitingForTaskId: null }).where(eq(runRuntime.runId, runId));
-  await appendEvent(tx, task, 'task.verification_recorded', observed ? 'waiting_input' : 'needs_human', {
+  const recordedTask = await appendEvent(tx, task, 'task.verification_recorded', retry ? 'running' : observed ? 'waiting_input' : 'needs_human', {
     workerId, reason, verification: { runId, verificationResultSha256: hash },
   });
+  if (retry && retryConfig) await enqueueRepairRetry(tx, retryConfig.database, recordedTask, scope, retry);
   await clearSlot(tx);
   signal.throwIfAborted();
 }

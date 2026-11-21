@@ -18,6 +18,14 @@ import type { ExecutionCoordinator } from './coordinator.js';
 
 export type RepairRunner = Pick<QualifiedInspectionClient, 'observe' | 'repair'>;
 export type RepairPolicy = { protectedPaths: readonly string[]; npmApprovals?: readonly NpmUpgradeApproval[] };
+
+export function repairPolicyFingerprint(policy: RepairPolicy) {
+  const protectedPaths = [...new Set(policy.protectedPaths.map(path => sourcePath(path).toLowerCase()))].sort();
+  const npmApprovals = (policy.npmApprovals ?? []).map(item => JSON.stringify([
+    item.advisoryId, item.name, item.installedVersion, item.fixedVersion, item.integrity,
+  ])).sort();
+  return sha256(JSON.stringify({ protectedPaths, npmApprovals }));
+}
 type Command = ReturnType<typeof canonicalRepairCommand>;
 type Attempt = typeof formalRepairAttempts.$inferSelect;
 type Outcome = Extract<QualifiedRepairResponse, { kind: 'rejected' }>;
@@ -126,11 +134,13 @@ export class FormalRepairExecution {
   private readonly protectedPaths: readonly string[];
   private readonly npmApprovals: readonly NpmUpgradeApproval[];
   private readonly runner: RepairRunner | undefined;
+  private readonly policySha256: string;
 
   constructor(private readonly coordinator: ExecutionCoordinator, options: RepairPolicy & { runner?: RepairRunner }) {
     this.protectedPaths = options.protectedPaths.map(sourcePath);
     this.npmApprovals = structuredClone(options.npmApprovals ?? []);
     this.runner = options.runner;
+    this.policySha256 = repairPolicyFingerprint(options);
   }
 
   async apply(scope: ExecutionScope, raw: RepairProposal, signal?: AbortSignal): Promise<QualifiedRepairResponse> {
@@ -163,6 +173,7 @@ export class FormalRepairExecution {
     proposal: RepairProposal & { findingIds: string[] }, status: QualifiedInspectionStatus | undefined): Promise<Dispatch | { outcome: QualifiedRepairResponse }> {
     const basis = await repairBasis(tx, task, scope);
     const { input, scan } = basis;
+    if (input.retry && input.retry.repairPolicySha256 !== this.policySha256) throw new DomainError('conflict');
     const { callKeySha256, findingIds, patch } = proposal;
     if (patch.baseSnapshotSha256 !== input.document.inspection.snapshotSha256) throw new DomainError('conflict');
     if (findingIds.some(id => !input.document.findingIds.includes(id))) throw new DomainError('forbidden');
@@ -182,6 +193,7 @@ export class FormalRepairExecution {
       baseSnapshotSha256: input.document.inspection.snapshotSha256, editablePaths: paths, protectedPaths: this.protectedPaths,
       ...(npmRepairs.length ? { npmRepairs } : {}),
     }, patch);
+    if (input.retry?.previous.patchSha256 === command.patchSha256) throw new DomainError('conflict');
     const serialized = command.bytes.toString('utf8');
     if (existing && (existing.inputSha256 !== input.sha256 || existing.command !== serialized
         || existing.commandSha256 !== sha256(command.bytes) || JSON.stringify(existing.findingIds) !== JSON.stringify(findingIds))) {

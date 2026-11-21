@@ -8,6 +8,7 @@ import { queueName, type Database } from '../persistence/database.js';
 import type { runRuntime } from '../persistence/schema.js';
 import { DomainError } from '../service/errors.js';
 import { publishFormalRepair } from '../service/repair-result.js';
+import { readRepairRetry, verificationProfileFingerprint } from '../service/repair-retry.js';
 import { publishFormalVerification } from '../service/verification-result.js';
 import { BudgetExhausted, ExecutionLost, type ExecutionScope } from './authority.js';
 import { GuardedCheckpointer } from './checkpointer.js';
@@ -15,6 +16,7 @@ import { ExecutionCoordinator } from './coordinator.js';
 import { runFormalAudit, type AuditModel } from './formal-audit.js';
 import { runFormalRepair, type FormalRepairOptions } from './formal-repair.js';
 import { runFormalVerification, type FormalVerificationOptions } from './formal-verification.js';
+import { repairPolicyFingerprint } from './repair-execution.js';
 import { ToolGateway } from './tools.js';
 import type { InspectionRunner } from './source-inspection.js';
 import { prepareFormalVerificationInput } from './verification-input.js';
@@ -95,7 +97,13 @@ export class DurableWorker {
     timer.unref();
     let phase: 'preflight' | 'audit' | 'repair' | 'verification' = 'preflight';
     try {
-      const runtime = await this.coordinator.withLease(scope, async (_tx, current) => current.runtime);
+      const { runtime, retry } = await this.coordinator.withLease(scope, async (tx, current) => ({
+        runtime: current.runtime, retry: await readRepairRetry(tx, current.task, scope),
+      }));
+      if (retry && (!this.repair || !this.verification || retry.repairPolicySha256 !== repairPolicyFingerprint(this.repair)
+          || retry.verificationProfileSha256 !== verificationProfileFingerprint(this.verification.profile))) {
+        return await this.coordinator.stop(scope, 'repair_retry_configuration_changed');
+      }
       let next: Awaited<ReturnType<typeof runFormalAudit>> | 'preflight' =
         runtime.reason === 'repair_pending' || runtime.reason === 'verification_pending' ? runtime.reason : 'preflight';
       if (next === 'preflight') {
@@ -187,7 +195,8 @@ export class DurableWorker {
     const result = await runFormalVerification(this.coordinator, scope, this.saver, model, this.verification, signal);
     if (result.kind === 'rejected') return this.coordinator.stop(scope,
       result.cleanup === 'unknown' ? 'verification_reconciling' : 'verification_unavailable');
-    await this.coordinator.withLease(scope, (tx, { task }) => publishFormalVerification(tx, task, scope, result, model.adapter.protocol, signal));
+    const retry = this.repair ? { database: this.database, repairPolicySha256: repairPolicyFingerprint(this.repair) } : undefined;
+    await this.coordinator.withLease(scope, (tx, { task }) => publishFormalVerification(tx, task, scope, result, model.adapter.protocol, signal, retry));
   }
 
   close(): Promise<void> {

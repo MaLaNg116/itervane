@@ -6,6 +6,7 @@ import type { Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
 import { inspectionCoverage } from '../service/inspection-evidence.js';
 import { readPublishedRepairCommand } from '../service/repair-result.js';
+import { verificationProfileFingerprint } from '../service/repair-retry.js';
 import type { ExecutionScope, TaskRow } from './authority.js';
 import { repairBasis } from './repair-execution.js';
 
@@ -52,6 +53,7 @@ async function verificationMaterial(tx: Transaction, { input, scan }: Basis): Pr
 // The Worker supplies the trusted profile and holds the current authorized lease in this transaction.
 export async function prepareFormalVerificationInput(tx: Transaction, task: TaskRow, scope: ExecutionScope, profile: VerificationProfile) {
   const basis = await repairBasis(tx, task, scope);
+  if (basis.input.retry && basis.input.retry.verificationProfileSha256 !== verificationProfileFingerprint(profile)) throw new DomainError('conflict');
   const { subject, repair } = await verificationMaterial(tx, basis);
   const { findingIds: _findingIds, ...base } = basis.input.document;
   const document = formalVerificationInputSchema.parse({ ...base, profile, subject });

@@ -37,6 +37,7 @@ export const en = {
   'task.repair_recorded': 'The repair outcome was recorded.',
   'task.verification_recorded': 'The independent verification outcome was recorded.',
   'task.verification_paused': 'Independent verification paused for Runner reconciliation.',
+  'task.repair_retry_queued': 'A new repair run was queued with the verified failure evidence.',
   'task.repair_deferred': 'The task is waiting for a configured repair Worker.',
   'task.repair_resumed': 'The task was queued from its published audit for repair.',
   'task.resumed': 'Task queued to retry its preflight.', 'task.cancel_requested': 'Cancellation requested; the execution is stopping.',
@@ -64,6 +65,8 @@ export const en = {
   'reason.verification_needs_human': 'Independent verification requires human review.',
   'reason.verification_reconciling': 'The verification Runner requires confirmed cleanup before another attempt.',
   'reason.verification_unavailable': 'The verification could not record a result from a qualified Runner.',
+  'reason.repair_retry_configuration_changed': 'The retry requires the verified source, rules and Worker configuration from its handoff.',
+  'reason.repair_retry_limit': 'The automatic retry was used. The remaining verification issues require human review.',
   'audit.pending': 'The checklist will appear when the audit result is recorded.',
   'repair.pending': 'A repair result will appear here once the repair stage records it.',
   'mcp.repair': 'Read the recorded repair outcome and candidate metadata for an authorized task.',
@@ -122,6 +125,7 @@ export const zhCN: Record<MessageKey, string> = {
   'task.repair_recorded': '修复结果已记录。',
   'task.verification_recorded': '独立复验结果已记录。',
   'task.verification_paused': '独立复验已暂停，等待核对 Runner 状态。',
+  'task.repair_retry_queued': '任务已携带核验后的失败证据进入新一轮返修。',
   'task.repair_deferred': '任务正在等待已配置的修复 Worker。',
   'task.repair_resumed': '任务已从已发布的审计结果重新入队，等待修复。',
   'task.resumed': '任务已排队重试前置检查。', 'task.cancel_requested': '已申请取消，执行正在停止。',
@@ -149,6 +153,8 @@ export const zhCN: Record<MessageKey, string> = {
   'reason.verification_needs_human': '独立复验需要人工处理。',
   'reason.verification_reconciling': '再次复验前需要确认 Runner 已完成清理。',
   'reason.verification_unavailable': '本次复验未能记录符合要求的 Runner 结论。',
+  'reason.repair_retry_configuration_changed': '返修需要继续使用交接时核验的源码、规则与 Worker 配置。',
+  'reason.repair_retry_limit': '自动返修额度已用完，剩余问题需要人工处理。',
   'audit.pending': '审计结果入库后，可在此查看清单。',
   'repair.pending': '修复结果入库后，可在此查看候选及状态。',
   'mcp.repair': '读取有权限的任务已保存的修复结果和候选元数据。',
@@ -175,7 +181,7 @@ export const zhCN: Record<MessageKey, string> = {
 export const messageKeySchema = z.enum(Object.keys(en) as [MessageKey, ...MessageKey[]]);
 export const taskEventTypes = ['task.accepted', 'task.cancelled', 'task.started', 'task.recovered', 'task.paused', 'task.inspection_paused', 'task.resumed',
   'task.cancel_requested', 'task.needs_human', 'task.waiting_child', 'task.tool_observed', 'task.audit_resumed', 'task.audit_recorded',
-  'task.repair_recorded', 'task.repair_deferred', 'task.repair_resumed', 'task.verification_recorded', 'task.verification_paused'] as const;
+  'task.repair_recorded', 'task.repair_deferred', 'task.repair_resumed', 'task.verification_recorded', 'task.verification_paused', 'task.repair_retry_queued'] as const;
 
 export const eventReasonMessages = {
   runner_unavailable: 'tool.runner_unavailable', lease_expired: 'reason.lease_expired', expired_cancel: 'reason.expired_cancel',
@@ -188,6 +194,7 @@ export const eventReasonMessages = {
   verification_pending: 'reason.verification_pending', verification_observed: 'reason.verification_observed',
   verification_checks_failed: 'reason.verification_checks_failed', verification_needs_human: 'reason.verification_needs_human',
   verification_reconciling: 'reason.verification_reconciling', verification_unavailable: 'reason.verification_unavailable',
+  repair_retry_configuration_changed: 'reason.repair_retry_configuration_changed', repair_retry_limit: 'reason.repair_retry_limit',
   permission_revoked: 'reason.permission_revoked', budget_exhausted: 'reason.budget_exhausted', cancelled: 'reason.cancelled',
   cancelled_or_interrupted: 'reason.cancelled_or_interrupted', execution_error: 'reason.execution_error', child_task: 'reason.child_task',
   'project.describe': 'tool.project_describe', 'source.inspect': 'tool.source_inspect', unsupported: 'reason.tool_denied',
