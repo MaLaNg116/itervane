@@ -7,6 +7,7 @@ import {
   qualifiedInspectionRequestSchema, qualifiedInspectionResponseSchema, qualifiedInspectionStatusSchema, qualifiedRunnerRejectionSchema,
   qualifiedRepairObservationRequestSchema, qualifiedRepairObservationResponseSchema,
   qualifiedRepairRequestSchema, qualifiedRepairResponseSchema, sha256Schema,
+  qualifiedImageArchiveSchema, qualifiedOciArchiveVerificationSchema, type QualifiedImageArchive, type QualifiedOciArchiveVerification,
   qualifiedVerificationRequestSchema, qualifiedVerificationResponseSchema, verificationProofByteLimit, type FormalVerificationInput,
   type QualifiedInspectionReceipt, type QualifiedInspectionRequest, type QualifiedInspectionResponse,
   type InspectionPlan, type QualifiedInspectionScope, type QualifiedInspectionStatus,
@@ -265,6 +266,23 @@ export class QualifiedInspectionClient {
   }
 
   async observe(signal?: AbortSignal): Promise<QualifiedInspectionStatus | null> {
+    return this.readObservation('STATUS 1\n', signal, value => {
+      const status = qualifiedInspectionStatusSchema.parse(value);
+      return status.imageSha256 === this.imageSha256 ? status : null;
+    });
+  }
+
+  async verifyArchive(raw: QualifiedImageArchive, signal?: AbortSignal): Promise<QualifiedOciArchiveVerification | null> {
+    const archive = qualifiedImageArchiveSchema.parse(raw);
+    return this.readObservation(`ARCHIVE 1 ${archive.sha256} ${archive.bytes}\n`, signal, value => {
+      const verified = qualifiedOciArchiveVerificationSchema.parse(value);
+      if (verified.runnerImageSha256 !== this.imageSha256 || verified.archive.sha256 !== archive.sha256
+          || verified.archive.bytes !== archive.bytes) return null;
+      return verified;
+    });
+  }
+
+  private async readObservation<T>(request: string, signal: AbortSignal | undefined, decode: (value: unknown) => T): Promise<T | null> {
     if (signal?.aborted) return null;
     try { await verifySocket(this.address); }
     catch { return null; }
@@ -275,9 +293,8 @@ export class QualifiedInspectionClient {
     signal?.addEventListener('abort', stop, { once: true });
     try {
       if (signal?.aborted) return null;
-      socket.write('STATUS 1\n');
-      const status = qualifiedInspectionStatusSchema.parse(JSON.parse(await lines.read(requestLimit)));
-      return status.imageSha256 === this.imageSha256 ? status : null;
+      socket.write(request);
+      return decode(JSON.parse(await lines.read(requestLimit)));
     } catch {
       return null;
     } finally {

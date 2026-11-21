@@ -86,6 +86,29 @@ class ControllerTest(unittest.TestCase):
         observe.assert_called_once_with()
         launch.assert_not_called()
 
+    def test_archive_proof_reads_only_the_exact_descriptor_for_the_worker_peer(self):
+        launch, observe = Mock(), Mock()
+        digest = "a" * 64
+        valid = f"ARCHIVE 1 {digest} 20\n".encode("ascii")
+        accepted = {"kind": "archive_verified"}
+        reader = Mock(return_value=accepted)
+        for uid, command, verification, expected in (
+            (os.getuid() + 1, valid, reader, "peer_denied"),
+            (os.getuid(), b"ARCHIVE 1 ../sample.oci.tar 20\n", reader, "invalid_request"),
+            (os.getuid(), valid, None, "not_ready"),
+            (os.getuid(), valid, reader, None),
+            (os.getuid(), valid, Mock(side_effect=FileNotFoundError), "not_ready"),
+        ):
+            server, client = socket.socketpair()
+            with self.subTest(expected=expected), server, client:
+                client.sendall(command)
+                reply = controller.serve_connection(server, uid, {}, WORKSPACE, observe, launch, lambda: False,
+                                                     verify_archive=verification)
+                self.assertEqual(reply, controller.rejected(expected) if expected else accepted)
+        reader.assert_called_once_with({"format": controller.OCI_ARCHIVE_FORMAT, "sha256": digest, "bytes": 20})
+        observe.assert_not_called()
+        launch.assert_not_called()
+
     def test_idle_requires_same_workspace_lock_empty_staging_and_empty_session(self):
         libvirt = SimpleNamespace(libvirtError=RuntimeError)
         with TemporaryDirectory() as temporary, patch.object(controller, "prepare_session"):

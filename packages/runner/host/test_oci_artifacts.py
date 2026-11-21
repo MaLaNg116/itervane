@@ -55,3 +55,22 @@ class OciArtifactStoreTest(unittest.TestCase):
             self.store.retain(stage)
         self.store.discard(stage)
         self.assertEqual(corrupt.read_bytes(), b"x" + self.payload[1:])
+
+    def test_readback_requires_retention_and_rehashes_the_bound_bytes(self):
+        stage = self.store.stage(self.descriptor, (self.payload,))
+        with self.assertRaises(FileNotFoundError):
+            self.store.verify_retained(self.descriptor)
+        self.store.retain(stage)
+        self.store.verify_retained(self.descriptor)
+        with self.assertRaisesRegex(ValueError, "differs from receipt"):
+            self.store.verify_retained({**self.descriptor, "bytes": len(self.payload) - 1})
+        path = self.root / (self.descriptor["sha256"] + ".oci.tar")
+        path.chmod(0o600)
+        path.write_bytes(b"x" + self.payload[1:])
+        path.chmod(0o400)
+        with self.assertRaisesRegex(ValueError, "differs from receipt"):
+            self.store.verify_retained(self.descriptor)
+        path.rename(self.root / "fixture-bytes")
+        path.symlink_to(self.root / "fixture-bytes")
+        with self.assertRaises(OSError):
+            self.store.verify_retained(self.descriptor)

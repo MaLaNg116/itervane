@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 import signal
 import socket
 import stat
@@ -23,7 +24,7 @@ from native_source import SourceProbe
 from oci_artifacts import ArtifactStore
 from session_boundary import SESSION_URI, SessionRejected, prepare_session
 from source_gateway import COMMIT, RegisteredOrigin, SourceGateway, SourceRejected
-from source_wire import GUEST_REPAIR_ERRORS, MAX_QUALIFIED_RECEIPT, MAX_REPAIR_COMMAND, MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT
+from source_wire import GUEST_REPAIR_ERRORS, MAX_QUALIFIED_RECEIPT, MAX_REPAIR_COMMAND, MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT, OCI_ARCHIVE_FORMAT
 
 
 REQUEST_LIMIT = 2048
@@ -31,6 +32,7 @@ HANDSHAKE_SECONDS = 3
 PULSE_SECONDS = 2
 READY = b"READY 1\n"
 STATUS = b"STATUS 1\n"
+ARCHIVE_REQUEST = re.compile(rb"ARCHIVE 1 ([0-9a-f]{64}) ([1-9][0-9]{0,8})\n")
 IDS = ("requestId", "taskId", "runId", "projectId", "repositoryId")
 COUNTERS = ("generation", "fence")
 FIELDS = {*IDS, *COUNTERS, "version", "planSha256", "workspaceSha256", "commit", "origin"}
@@ -350,7 +352,7 @@ def response_for(request, result):
 
 def serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping,
                      enable_repair=False, enable_verification=False, enable_standard_build=False, enable_baseline=False,
-                     enable_oci=False, enable_retention=False):
+                     enable_oci=False, enable_retention=False, verify_archive=None):
     connection.settimeout(HANDSHAKE_SECONDS)
     _, uid, _ = PEER.unpack(connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, PEER.size))
     if uid != worker_uid:
@@ -359,6 +361,16 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
         frame = read_frame(connection)
         if frame == STATUS:
             return observe()
+        archive_request = ARCHIVE_REQUEST.fullmatch(frame)
+        if archive_request:
+            if verify_archive is None or stopping():
+                return rejected("not_ready")
+            sha256, size = archive_request.groups()
+            archive = {"format": OCI_ARCHIVE_FORMAT, "sha256": sha256.decode("ascii"), "bytes": int(size)}
+            try:
+                return verify_archive(archive)
+            except (OSError, ValueError):
+                return rejected("not_ready")
         request = parse_request(frame)
     except (OSError, ValueError, RecursionError):
         return rejected("invalid_request")
@@ -401,7 +413,7 @@ def socket_parent(path):
 
 
 def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping, enable_repair, enable_verification,
-               enable_standard_build, enable_baseline, enable_oci, enable_retention):
+               enable_standard_build, enable_baseline, enable_oci, enable_retention, verify_archive):
     socket_parent(path)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(os.fspath(path))
@@ -418,7 +430,7 @@ def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping
                     try:
                         result = serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping,
                                                   enable_repair, enable_verification, enable_standard_build, enable_baseline,
-                                                  enable_oci, enable_retention)
+                                                  enable_oci, enable_retention, verify_archive)
                         encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
                         limit = MAX_VERIFICATION_RECEIPT if result["kind"] == "verification_receipt" else MAX_QUALIFIED_RECEIPT
                         if len(encoded) > limit + 8192:
@@ -490,6 +502,10 @@ def main():
             return {"kind": "status", "version": 1, "workspaceSha256": fingerprint,
                     "imageSha256": digest, "state": "idle" if idle else "blocked"}
 
+        def verify_archive(archive):
+            artifact_store.verify_retained(archive)
+            return {"kind": "archive_verified", "version": 1, "runnerImageSha256": digest, "archive": archive}
+
         def launch(request, origin, cancelled, command):
             verification = request.get("operation") == VERIFY_SOURCE
             if verification and request["runnerImageSha256"] != digest:
@@ -518,7 +534,8 @@ def main():
 
         run_server(path, worker_uid, origins, fingerprint, observe, launch, stopped,
                    "--enable-repair" in features, "--enable-verification" in features, "--enable-standard-build" in features,
-                   "--enable-standard-baseline" in features, "--enable-standard-oci" in features, artifact_store is not None)
+                   "--enable-standard-baseline" in features, "--enable-standard-oci" in features, artifact_store is not None,
+                   verify_archive if artifact_store else None)
     except (ImportError, OSError, ValueError, Rejected, SessionRejected, SourceRejected):
         print("Qualified inspection controller could not start.", file=sys.stderr)
         return 1

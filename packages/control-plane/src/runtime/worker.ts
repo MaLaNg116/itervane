@@ -195,8 +195,12 @@ export class DurableWorker {
     const result = await runFormalVerification(this.coordinator, scope, this.saver, model, this.verification, signal);
     if (result.kind === 'rejected') return this.coordinator.stop(scope,
       result.cleanup === 'unknown' ? 'verification_reconciling' : 'verification_unavailable');
+    const image = result.evidence.image;
+    const archiveVerification = result.report.formalVerification?.outcome === 'observed' && image.status === 'scanned' && image.archive
+      ? await this.verification.runner.verifyArchive?.(image.archive, signal) : undefined;
     const retry = this.repair ? { database: this.database, repairPolicySha256: repairPolicyFingerprint(this.repair) } : undefined;
-    await this.coordinator.withLease(scope, (tx, { task }) => publishFormalVerification(tx, task, scope, result, model.adapter.protocol, signal, retry));
+    const published = archiveVerification ? { ...result, archiveVerification } : result;
+    await this.coordinator.withLease(scope, (tx, { task }) => publishFormalVerification(tx, task, scope, published, model.adapter.protocol, signal, retry));
   }
 
   close(): Promise<void> {

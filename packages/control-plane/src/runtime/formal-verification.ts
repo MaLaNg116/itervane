@@ -1,5 +1,6 @@
 import { createFormalVerification } from '@itervane/agent';
 import type { VerificationProfile } from '@itervane/contracts';
+import type { QualifiedInspectionClient } from '@itervane/runner';
 import type { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { eq } from 'drizzle-orm';
 import { formalVerificationRuntime } from '../persistence/schema.js';
@@ -11,7 +12,10 @@ import type { AuditModel } from './formal-audit.js';
 import { runFormalRescan, type RescanRunner } from './formal-rescan.js';
 import { prepareFormalVerificationInput } from './verification-input.js';
 
-export type FormalVerificationOptions = { runner: RescanRunner; profile: VerificationProfile };
+export type FormalVerificationOptions = {
+  runner: RescanRunner & Partial<Pick<QualifiedInspectionClient, 'verifyArchive'>>;
+  profile: VerificationProfile;
+};
 
 export async function runFormalVerification(coordinator: ExecutionCoordinator, scope: ExecutionScope, saver: PostgresSaver,
   model: AuditModel, options: FormalVerificationOptions, signal: AbortSignal) {
