@@ -10,6 +10,7 @@ import { usePortal, useRemote, useText } from '../context.js';
 import { Disclosure } from '../motion.js';
 import { navigate } from '../router.js';
 import { Button } from '../ui/button.js';
+import { OperationsProposal } from './task-operations-proposal.js';
 
 export function StartOperationsObservation({ taskId, projectId, releaseOperationId }: {
   taskId: string; projectId: string; releaseOperationId: string | undefined;
@@ -76,7 +77,10 @@ export function TaskOperations({ task }: { task: Pick<TaskDto, 'id' | 'runId' | 
               <div><dt>{t('operationsReceipt')}</dt><dd><code className="break-text">{view.observation.receiptSha256}</code></dd></div>
             </dl>
           </Disclosure>}
-          {view.diagnosis && <DiagnosisDetails diagnosis={view.diagnosis} observationDigest={view.observation.receiptSha256} />}
+          {view.diagnosis && <>
+            <DiagnosisDetails diagnosis={view.diagnosis} observationDigest={view.observation.receiptSha256} />
+            <OperationsProposal key={view.runId} task={task} />
+          </>}
         </>}
       </div>}
   </Panel>;
