@@ -66,6 +66,7 @@ import { runOperationsObservation } from '../../src/runtime/operations-execution
 import { OperationsExecutionCoordinator } from '../../src/runtime/operations-execution-lease.js';
 import { OperationsRestartWorker } from '../../src/runtime/operations-restart-worker.js';
 import { OperationsRestartRecoveryWorker } from '../../src/runtime/operations-restart-recovery-worker.js';
+import { holdRestartAcknowledgement } from '../native/restart-crash-barrier.js';
 import { RestartQueueWorker } from '../../src/runtime/installed-restart-worker.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
 import { requireActor } from '../../src/service/access.js';
@@ -3291,6 +3292,27 @@ async function restartAwaitingRecovery(outcome: 'acknowledged' | 'unknown' = 'ac
   const outcomeEvidence = { startedAt: '2026-01-01T00:00:00.000000002Z', runtime: action.fixture.runtime };
   return { action, runtime, sent, approval, binding, claimRecovery, outcomeEvidence };
 }
+
+it('holds the durable restart acknowledgement at the native interruption point', async () => {
+  const { action, runtime, request, lease, binding, approval } = await pausedWhiskersRestart();
+  await request();
+  const scope = await lease();
+  await runtime.prepareRestartResume(scope, binding);
+  const barrier = await holdRestartAcknowledgement(database, action.execution.id);
+  const recording = runtime.recordRestartResume(scope, { ...approval, outcome: 'acknowledged' });
+  void recording.catch(() => {});
+  try {
+    expect(await barrier.waitForWorker()).toBeGreaterThan(0);
+    const [pending] = await database.storage.db.select().from(operationsRestartResumes)
+      .where(eq(operationsRestartResumes.executionId, action.execution.id));
+    expect(pending).toMatchObject({ state: 'prepared', fence: scope.fence, recordedAt: null });
+    await barrier.release();
+    await expect(recording).resolves.toMatchObject({ state: 'acknowledged', waiting: false });
+  } finally {
+    await barrier.close();
+    await recording.catch(() => {});
+  }
+});
 
 it('settles restart recovery after revocation under the original proof and frees the environment once', async () => {
   const { action, runtime, sent, approval, claimRecovery, outcomeEvidence } = await restartAwaitingRecovery();
