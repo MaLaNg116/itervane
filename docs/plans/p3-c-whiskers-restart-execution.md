@@ -23,3 +23,13 @@ C2c2a 从 #92 的原生回执和任务暂停继续。当前平台批准者以门
 | 执行器中断或响应不明 | 领取后、写入发送意图前可以重领同一续发。发送意图落库后，后继执行器进入只读核对。原生应答也转入核对，由 C2c3 验证恢复。 |
 
 C2c2b 将这些入口接到真实 Whiskers 适配器，逐次核对签发 Write 凭证的安装和运行中的 Confirm 策略，并使用原生人工批准验证只执行一次。C2c3 接入独立健康核验后完成整条处置链验收。
+
+## C2c2b 固定原生策略与接入派发
+
+C2c2b1 验证专用参考安装。登记实际运行版本、Whiskers 端点、服务与工具范围、写凭证指纹、启用的策略和安装代次。在同一个运行实例证明重启工具要求 Confirm，只有受信安装管理者能更改护栏，人工审批者使用原生 Operator 权限。Worker 在连接和发送前核对当前安装证明。策略未知、安装漂移或旧证明失效时阻止发送。 [原生策略管理](https://github.com/LupusMalusDeviant/Whiskers/blob/e10cfa62ed8c3129302f68e0b4ec6e3ece8994e4/src/Whiskers/Services/Agent/Guardrails/GuardrailStore.cs) · [原生审批角色](https://github.com/LupusMalusDeviant/Whiskers/blob/e10cfa62ed8c3129302f68e0b4ec6e3ece8994e4/src/Whiskers/Components/Pages/ApprovalsView.razor)
+
+C2c2b2 接续处置调度和现有 `WhiskersRestartClient`。首次请求在平台批准、目标及安装资格全部有效时保存意图并调用一次。原生待批回执落库后暂停。门户批准人提交续发前，继续绑定原始原生批准与同一调用者。收到同号待批、执行回执、换号或超时，分别走原有等待或只读核对。门户及外部 MCP 保留各自的认证范围，Worker 使用专用 Write 凭证，Operator 通过 Whiskers 确认。
+
+原生许可由调用者、工具和参数决定，跨处置复用相同身份时可能命中此前许可。任何已经可能发出的请求若仍有可用许可，保留同目标互斥。只有可信证据确认旧许可已消费、拒绝、过期或对应调用身份已撤销，才允许新处置使用相同绑定。验收覆盖撤销后迟到批准、首次请求命中旧许可的防护、无原生批准时无副作用和获批后仅一次调用。使用同一已发布的合成应用记录原生审批、调用和容器启动证据。 [原生许可生命周期](https://github.com/LupusMalusDeviant/Whiskers/blob/e10cfa62ed8c3129302f68e0b4ec6e3ece8994e4/src/Whiskers/Services/Agent/Guardrails/DirectMcpCallGuard.cs) · [原生请求有效期](https://github.com/LupusMalusDeviant/Whiskers/blob/e10cfa62ed8c3129302f68e0b4ec6e3ece8994e4/src/Whiskers/Services/Agent/Approvals/ApprovalStore.cs)
+
+C2c3 提供独立恢复结算后再启用正式写执行，支持中英文状态并保留统一审计关联。
