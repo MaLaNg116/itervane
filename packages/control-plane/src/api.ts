@@ -5,7 +5,7 @@ import {
   admissionDtoSchema, applicationDtoSchema, capabilitiesSchema, environmentDtoSchema,
   idSchema, listQuerySchema, meDtoSchema, projectAccessDtoSchema, portalConfigSchema, projectDtoSchema, repositoryDtoSchema, taskDtoSchema, taskEventDtoSchema,
   negotiateLocale, sourceInspectionDtoSchema, ruleIdSchema, ruleQuerySchema, preauditAdmissionSchema, preauditDtoSchema, sha256Schema, type Locale,
-  operationsLaunchViewSchema, operationsRestartEnqueueInputSchema, operationsRestartSubmissionSchema,
+  operationsEnqueueInputSchema, operationsLaunchViewSchema, operationsRestartEnqueueInputSchema, operationsRestartSubmissionSchema, operationsSubmissionSchema,
   operationsRestartWriterProofSchema, type OperationsRestartWriterProof,
 } from '@itervane/contracts';
 import { AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
@@ -30,6 +30,7 @@ import { OperationsProposalService } from './service/operations-proposals.js';
 import { OperationsExecutionAdmission } from './service/operations-execution-admission.js';
 import { OperationsRestartViewService } from './service/operations-restart-view.js';
 import { OperationsRestoreViewService } from './service/operations-restore-view.js';
+import type { InstalledReleaseTarget } from './service/release-targets.js';
 import { ExecutionCoordinator } from './runtime/coordinator.js';
 import { OperationsExecutionCoordinator } from './runtime/operations-execution-lease.js';
 
@@ -51,7 +52,8 @@ const limit = (request: FastifyRequest) => parseInput(listQuerySchema, request.q
 
 export type ApiConfig = IdentityConfig & { publicUrl?: string; portalClientId?: string; operationsApi?: OperationsWorkflowScope };
 export function createApi(database: Database, config: ApiConfig,
-  options: { logger?: boolean; portalRoot?: string; operationsRestartWriter?: OperationsRestartWriterProof } = {}) {
+  options: { logger?: boolean; portalRoot?: string; operationsRestartWriter?: OperationsRestartWriterProof;
+    operationsRestoreTarget?: InstalledReleaseTarget } = {}) {
   const verify = createIdentityVerifier(config);
   const resources = new ResourceService(database); const tasks = new TaskService(database);
   const inspections = new InspectionService(database); const audits = new FormalAuditService(database);
@@ -198,8 +200,11 @@ export function createApi(database: Database, config: ApiConfig,
     const restartOperator = config.portalClientId && options.operationsRestartWriter
       ? { clientId: config.portalClientId, writer: operationsRestartWriterProofSchema.parse(options.operationsRestartWriter) }
       : undefined;
+    const restoreOperator = config.portalClientId && config.portalClientId !== 'signed-access-token' && options.operationsRestoreTarget
+      ? { clientId: config.portalClientId, restoreTarget: options.operationsRestoreTarget } : undefined;
     const restarts = new OperationsRestartViewService(database, operationsApi, restartOperator);
-    const restores = new OperationsRestoreViewService(database);
+    const restores = new OperationsRestoreViewService(database, operationsApi, restoreOperator);
+    const admission = new OperationsExecutionAdmission(database, operationsApi);
     app.get('/v1/tasks/:taskId/operations-proposal', async request => {
       const { taskId } = parseInput(taskParam, request.params);
       return views.get(identity(request), taskId, request.locale);
@@ -222,8 +227,15 @@ export function createApi(database: Database, config: ApiConfig,
       const { taskId } = parseInput(taskParam, request.params);
       return restores.get(identity(request), taskId, request.locale);
     });
+    if (restoreOperator) {
+      app.post('/v1/operations/proposals/:proposalId/restore', async (request, reply) => {
+        const { proposalId } = parseInput(proposalParam, request.params);
+        const input = parseInput(operationsEnqueueInputSchema, request.body);
+        const { execution, replayed } = await admission.enqueue({ ...input, proposalId }, { ...restoreOperator, identity: identity(request) });
+        return reply.code(replayed ? 200 : 202).send(operationsSubmissionSchema.parse({ executionId: execution.id, replayed }));
+      });
+    }
     if (restartOperator) {
-      const admission = new OperationsExecutionAdmission(database, operationsApi);
       const coordinator = new OperationsExecutionCoordinator(new ExecutionCoordinator(database), operationsApi, restartOperator.clientId);
       app.post('/v1/operations/proposals/:proposalId/execution', async (request, reply) => {
         const { proposalId } = parseInput(proposalParam, request.params);

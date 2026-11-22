@@ -71,7 +71,7 @@ export function createMcpEndpoint(database: Database, config: IdentityConfig & {
   const proposals = operationsApi?.diagnosisProviderSha256 ? new OperationsProposalService(database, operationsApi) : undefined;
   const proposalViews = operationsApi?.diagnosisProviderSha256 ? new OperationsProposalViewService(database, operationsApi) : undefined;
   const restartViews = operationsApi?.diagnosisProviderSha256 ? new OperationsRestartViewService(database, operationsApi) : undefined;
-  const restoreViews = operationsApi?.diagnosisProviderSha256 ? new OperationsRestoreViewService(database) : undefined;
+  const restoreViews = operationsApi?.diagnosisProviderSha256 ? new OperationsRestoreViewService(database, operationsApi) : undefined;
   const specs = [...coreSpecs, ...(operationsApi ? operationsSpecs : []), ...(proposals ? proposalSpecs : [])];
   const publicUrl = canonicalPublicUrl(config.publicUrl ?? 'http://127.0.0.1:4310');
   const resource = `${publicUrl}/mcp`; const metadataUrl = `${publicUrl}/.well-known/oauth-protected-resource/mcp`;

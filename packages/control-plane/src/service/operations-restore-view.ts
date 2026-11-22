@@ -3,11 +3,13 @@ import { eventReasonMessages, idSchema, operationsRestoreExecutionViewSchema, op
 import { sha256 } from '@itervane/runner';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import type { VerifiedIdentity } from '../auth/identity.js';
+import type { OperationsEnrollmentScope } from '../config.js';
 import type { Database } from '../persistence/database.js';
 import { operationsExecutionIntents, operationsExecutionSchedules, operationsExecutions, operationsRestoreRecoveries,
   operationsRestoreSteps, runRuntime, taskEvents, tasks } from '../persistence/schema.js';
-import type { Transaction } from './access.js';
+import { isHumanWorkspaceOwner, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
+import { requireOperationsExecutionApproval, requireRestoreSubmissionTarget, type RestoreOperatorScope } from './operations-execution-admission.js';
 import { readOperationsExecutionContext } from './operations-execution-view.js';
 import { databaseNow } from './releases.js';
 
@@ -49,12 +51,12 @@ function readVerification(record: NonNullable<Awaited<ReturnType<typeof readRest
 }
 
 export class OperationsRestoreViewService {
-  constructor(private readonly database: Database) {}
+  constructor(private readonly database: Database, private readonly installation: OperationsEnrollmentScope, private readonly operator?: RestoreOperatorScope) {}
 
   async get(identity: VerifiedIdentity, rawTaskId: unknown, locale: Locale) {
     const taskId = parseInput(idSchema, rawTaskId);
     return this.database.db.transaction(async tx => {
-      const { task, run, proposed } = await readOperationsExecutionContext(tx, identity, taskId);
+      const { actor, project, task, run, proposed } = await readOperationsExecutionContext(tx, identity, taskId);
       const view: OperationsRestoreExecutionView = { taskId, runId: run.id, locale, execution: null, action: null };
       if (proposed?.frozen.action.kind === 'rollback') {
         const { proposal, frozen: { action, target } } = proposed;
@@ -69,6 +71,14 @@ export class OperationsRestoreViewService {
             reason, message: translate(locale, eventReasonMessages[reason]), environmentHeld: execution.state === 'reserved',
             restore: { operationId: action.restore.operationId, manifestDigest: action.restore.manifestDigest }, nativeUpdateId,
             recovery: readVerification(current, action.restore.operationId, nativeUpdateId) };
+        } else if (this.operator && isHumanWorkspaceOwner(identity, actor, project.workspaceId, this.operator.clientId)) {
+          try {
+            const { frozen, decision } = await requireOperationsExecutionApproval(tx, task, proposal, this.installation, 1);
+            if (actor.principalId === decision.actorId && actor.workspaceGrantId === decision.grantId) {
+              await requireRestoreSubmissionTarget(tx, frozen, this.operator.restoreTarget);
+              view.action = { kind: 'enqueue', proposalId: proposal.id, fingerprint: proposal.fingerprint, decisionVersion: 1 };
+            }
+          } catch (error) { if (!(error instanceof DomainError)) throw error; }
         }
       }
       if (identity.expiresAt * 1_000 <= (await databaseNow(tx)).getTime()) throw new DomainError('unauthenticated');
