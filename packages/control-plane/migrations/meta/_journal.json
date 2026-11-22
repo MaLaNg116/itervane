@@ -400,6 +400,13 @@
       "when": 1795338068380,
       "tag": "0056_operations_restart_recovery_receipts",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1795346945437,
+      "tag": "0057_operations_restore_intents",
+      "breakpoints": true
     }
   ]
 }
