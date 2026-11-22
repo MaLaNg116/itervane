@@ -55,12 +55,14 @@ import type { KomodoInterruption, runKomodoReleaseFixture } from './komodo-relea
 import type { RegistryImportMarker } from './release-recovery.js';
 import { temporaryRegistry } from './registry-fixture.js';
 import { openProtectedIngress } from './protected-ingress.js';
-import { proveNativeRestart, type DiagnosisHttp } from './restart-proof.js';
+import { proveNativeRestart, type DiagnosisHttp, type DiagnosisReaders } from './restart-proof.js';
 
-type NativeRestartAcceptance = {
-  installationFile: string;
-  verify: (diagnosis: TaskDto, diagnosisSha256: string, request: DiagnosisHttp, mcp: Client) => ReturnType<typeof proveNativeRestart>;
+type NativeDiagnosisPublication = {
+  taskId: string; operationId: string; containerId: string; restoreExecutionId?: string;
 };
+type NativeDiagnosisAcceptance<T> = (
+  { kind: 'restart'; installationFile: string } | { kind: 'rollback'; previousOperationId: string }
+) & { verify: (diagnosis: TaskDto, diagnosisSha256: string, readers: DiagnosisReaders) => Promise<T> };
 
 const execute = promisify(execFile);
 const commit = '9167604c888416d7b6518e1c76485d7308cffb5c';
@@ -931,6 +933,7 @@ async function probe() {
         };
         const first = await publish(current, decision);
         const { proof } = first;
+        const firstPublication = { taskId: current.id, operationId, containerId: proof.runtime.containerId };
         if (restoreRun) {
           const scope = { projectId: project.id, environmentId: environment.id };
           const history = () => db.storage.db.transaction(tx => readPublishedOperationsDeployment(tx, scope, { includePrevious: true }));
@@ -968,7 +971,8 @@ async function probe() {
               sameTarget: true, sameProtectedIngress: true } };
         }
 
-        const verifyInstalledDiagnosis = async (enrollmentSha256: string, readKey: string, restart?: NativeRestartAcceptance) => {
+        const verifyInstalledDiagnosis = async <T>(enrollmentSha256: string, readKey: string, publication: NativeDiagnosisPublication,
+          acceptance?: NativeDiagnosisAcceptance<T>) => {
           phase = 'operations_formal_installation';
           const providerEnv = { ITERVANE_AUDIT_MODEL_PROVIDER: 'anthropic', ANTHROPIC_BASE_URL: audit.baseURL, ANTHROPIC_MODEL: auditFixtureModel };
           const configuration = workerConfig({ DATABASE_URL: db.runtimeUrl, ...providerEnv, ANTHROPIC_API_KEY: auditFixtureKey }).auditModel;
@@ -976,11 +980,14 @@ async function probe() {
           const { providerSha256 } = configuredAuditModel(configuration);
           const installed = { ITERVANE_OPERATIONS_ENVIRONMENT_ID: environment.id, ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollmentSha256,
             ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: providerSha256 };
-          const { app: diagnosisApi } = await createInstalledApi(db.storage, runtimeConfig({
+          const config = runtimeConfig({
             DATABASE_URL: db.runtimeUrl, ITERVANE_OIDC_ISSUER: oidc.config.issuer, ITERVANE_OIDC_AUDIENCE: oidc.config.audience,
             ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_OPERATIONS_API_ENABLED: '1', ITERVANE_PORTAL_CLIENT_ID: portalClientId, ...installed,
-            ITERVANE_RESTART_API_INSTALLATION_FILE: restart?.installationFile,
-          }), { logger: false });
+            ITERVANE_RESTART_API_INSTALLATION_FILE: acceptance?.kind === 'restart' ? acceptance.installationFile : undefined,
+          });
+          const { app: diagnosisApi } = acceptance?.kind === 'rollback'
+            ? { app: createApi(db.storage, config, { logger: false, operationsRestoreTarget: { environmentId: environment.id, mappingSha256: mapping.fingerprint } }) }
+            : await createInstalledApi(db.storage, config, { logger: false });
           const reader = new Client({ name: 'itervane-native-diagnosis', version: '0.0.0' });
           try {
             const endpoint = await diagnosisApi.listen({ host: '127.0.0.1', port: 0 });
@@ -1002,12 +1009,12 @@ async function probe() {
             const capability = await http('/v1/capabilities') as { stage: string; operations: boolean };
             equal(capability.stage, 'p3-b');
             equal(capability.operations, true);
-            deepStrictEqual(await http(`/v1/tasks/${current.id}/operations-option`), {
-              option: { projectId: project.id, environmentId: environment.id, releaseOperationId: operationId, diagnosis: true },
+            deepStrictEqual(await http(`/v1/tasks/${publication.taskId}/operations-option`), {
+              option: { projectId: project.id, environmentId: environment.id, releaseOperationId: publication.operationId, diagnosis: true },
             });
             const { task: diagnosis } = admissionDtoSchema.parse((await reader.callTool({
               name: 'start_operations_diagnosis', arguments: { projectId: project.id, environmentId: environment.id,
-                expectedReleaseOperationId: operationId, idempotencyKey: randomUUID(), locale: 'zh-CN' },
+                expectedReleaseOperationId: publication.operationId, idempotencyKey: randomUUID(), locale: 'zh-CN' },
             })).structuredContent);
             equal(diagnosis.state, 'queued');
             const initialCalls = audit.calls.length;
@@ -1031,14 +1038,18 @@ async function probe() {
             phase = 'operations_formal_worker_stop';
             await worker.stop('TERM'); worker = undefined;
             phase = 'operations_formal_model_trace';
-            const expectedSections = restart ? ['container', 'release'] : ['container', 'release', 'logs', 'metrics'];
+            const expectedSections = acceptance ? ['container', 'release'] : ['container', 'release', 'logs', 'metrics'];
+            const previous = acceptance?.kind === 'rollback' ? acceptance.previousOperationId : null;
+            const recommendation = previous ? 'review_rollback' : acceptance ? 'review_restart' : 'continue_observation';
             deepStrictEqual(audit.calls.slice(initialCalls), [...expectedSections.map(() => 'read_operations'), 'finish_role']);
 
             phase = 'operations_formal_evidence';
-            const { rows } = await db.admin.query<{ document: unknown; sha256: string; container_id: string; tools_used: number }>(
-              `SELECT result.document, result.sha256, observation.document#>>'{observation,containerId}' AS container_id, runtime.tools_used
+            const { rows } = await db.admin.query<{ document: unknown; sha256: string; container_id: string; tools_used: number; restore_id: string | null }>(
+              `SELECT result.document, result.sha256, observation.document#>>'{observation,containerId}' AS container_id, runtime.tools_used,
+                request.document->>'restoreExecutionId' AS restore_id
                 FROM itervane.operations_diagnosis_results result
                 JOIN itervane.operations_observations observation ON observation.run_id=result.run_id
+                JOIN itervane.operations_requests request ON request.run_id=result.run_id
                 JOIN itervane.run_runtime runtime ON runtime.run_id=result.run_id WHERE result.run_id=$1`, [diagnosis.runId]);
             equal(rows.length, 1);
             const row = rows[0]!;
@@ -1048,16 +1059,21 @@ async function probe() {
             equal(receipt.taskId, diagnosis.id);
             equal(sha256(JSON.stringify(receipt)), row.sha256);
             equal(row.tools_used, expectedSections.length);
-            equal(row.container_id, proof.runtime.containerId);
+            equal(row.container_id, publication.containerId);
+            equal(row.restore_id, publication.restoreExecutionId ?? null);
+            equal(receipt.result.previousReleaseOperationId, previous);
             deepStrictEqual(receipt.reads.map(item => item.section), expectedSections);
             const readDiagnosis = async (lookup: Client, locale: Locale) => {
               const response = operationsObservationViewSchema.parse(await http(`/v1/tasks/${diagnosis.id}/operations`, { locale }));
               const result = (await lookup.callTool({ name: 'get_operations_result', arguments: { taskId: diagnosis.id } })).structuredContent;
               deepStrictEqual(operationsObservationViewSchema.parse(result), response);
-              equal(response.releaseOperationId, operationId);
+              equal(response.releaseOperationId, publication.operationId);
               equal(response.diagnosis?.receiptSha256, row.sha256);
-              equal(response.observation?.state, restart ? 'exited' : 'running');
-              equal(response.diagnosis?.recommendation.code, restart ? 'review_restart' : 'continue_observation');
+              equal(response.observation?.state, acceptance ? 'exited' : 'running');
+              equal(response.diagnosis?.recommendation.code, recommendation);
+              const release = response.diagnosis?.facts.find(fact => fact.section === 'release');
+              equal(release?.result.current.operationId, publication.operationId);
+              if (previous) equal(release?.result.previous?.operationId, previous);
               const projected = JSON.stringify(response);
               for (const secret of [readKey, row.container_id]) ok(!projected.includes(secret));
               return response;
@@ -1066,8 +1082,10 @@ async function probe() {
             const en = await withEnglishReader(lookup => readDiagnosis(lookup, 'en'), endpoint);
             deepStrictEqual(zh.diagnosis?.facts, en.diagnosis?.facts);
             notEqual(zh.diagnosis?.recommendation.message, en.diagnosis?.recommendation.message);
-            return { runId: diagnosis.runId, releaseOperationId: operationId, sha256: row.sha256,
-              ...(restart ? { restart: await restart.verify(diagnosis, row.sha256, http, reader) } : {}),
+            const accepted = await acceptance?.verify(diagnosis, row.sha256, { request: http, mcp: reader,
+              withEnglishReader: read => withEnglishReader(read, endpoint) });
+            return { runId: diagnosis.runId, releaseOperationId: publication.operationId, sha256: row.sha256,
+              recommendation, previousReleaseOperationId: previous, restoreExecutionId: row.restore_id, accepted,
               sections: receipt.reads.map(item => item.section), matchedPublishedTarget: true, httpMcpAgreement: true, model: 'scripted_anthropic_fixture' };
           } finally {
             try { await reader.close(); } finally { await diagnosisApi.close(); }
@@ -1136,7 +1154,7 @@ async function probe() {
               return latest.message;
             };
             notEqual(await compareReader(client, 'zh-CN'), await withEnglishReader(lookup => compareReader(lookup, 'en')));
-            const diagnosis = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey);
+            const diagnosis = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, firstPublication);
             equal((await target.observeContainer(proof.runtime.imageReference, image.configDigest)).containerId, receipt.observation.containerId);
             const [counts] = (await db.admin.query(`SELECT
               (SELECT count(*)::int FROM itervane.release_operations WHERE environment_id=$1) AS releases,
@@ -1242,9 +1260,9 @@ async function probe() {
                   ITERVANE_RESTART_KOMODO_READER_SECRET: readerCredentials.secret, ITERVANE_RESTART_WHISKERS_WRITE_KEY: native.writeKey,
                   ITERVANE_RESTART_PROBE_SECRET: ingress.probeSecret });
               };
-              const result = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, {
-                installationFile: files.installation,
-                async verify(diagnosis, diagnosisSha256, request, mcp) {
+              const result = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, firstPublication, {
+                kind: 'restart', installationFile: files.installation,
+                async verify(diagnosis, diagnosisSha256, { request, mcp }) {
                   await startRestartProcess();
                   phase = interrupted ? 'operations_native_restart_interruption' : 'operations_native_restart_application';
                   const count = interrupted ? 2 : 1;
@@ -1266,8 +1284,8 @@ async function probe() {
                   return accepted;
                 },
               });
-              ok(result.restart);
-              return { ...result.restart, diagnosisRunId: result.runId, diagnosisSections: result.sections,
+              ok(result.accepted);
+              return { ...result.accepted, diagnosisRunId: result.runId, diagnosisSections: result.sections,
                 distinctKomodoReader: true, model: result.model };
             };
             const verified = await exerciseRestart(false);
