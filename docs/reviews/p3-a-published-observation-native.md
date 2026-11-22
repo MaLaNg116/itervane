@@ -7,3 +7,5 @@
 3. HTTP 与外部 MCP 比对同一任务，并逐语言比对事件。报告保留任务、run、绑定摘要、执行代次及清理状态。Worker 凭证由进程输入注入。验收器将独立断言观察关联、读取次数、共享执行槽和资源清理。 [独立验收条件](https://github.com/MaLaNg116/itervane/blob/f477030faab14c45ff4feb0cd387d458e63d396a/.github/workflows/native-runner.yml#L210)
 
 本机 TypeScript、210 项单元及两个 Bash 接续脚本语法检查通过，托管真实场景待归档。业务诊断的独立 HTTP/MCP 接收及专用回执读模型由 A2-C 交付。
+
+同一非文档版本已通过 Whiskers 基础原生回归。接续场景使用独立作业保存发布与诊断证据。 [Whiskers 回归](https://github.com/MaLaNg116/itervane/actions/runs/44968006870) · [原生接续](https://github.com/MaLaNg116/itervane/actions/runs/44968006971/job/137041290751)

@@ -7,3 +7,5 @@
 3. 回执核对绑定容器、Whiskers 服务器、发布操作及执行代次。回执、完成事件和运行结果在同一事务写入。数据库约束校验租约和完成事件，并冻结已完成的观察。中文和英文共享同一事件。 [数据库触发器](https://github.com/MaLaNg116/itervane/blob/bb80d343fedde26cad7eade4b424249d1ceec16a/packages/control-plane/migrations/0040_operations_observations.sql) · [真实数据库用例](https://github.com/MaLaNg116/itervane/blob/6ba542f50128850c7ba6e42bc13a008beae0ace0/packages/control-plane/test/integration/inspections.test.ts)
 
 本机 TypeScript、210 项单元检查、PostgreSQL 17.12 的八项专项通过。受控回执覆盖匹配安装、原子保存、中英文事件、取消及换绑后丢弃、后继 Worker 接手和预算耗尽。B2-C 将同一 Worker 接到真实 Whiskers 与本轮 Komodo 已发布容器。托管回归待归档。
+
+托管常规 CI 与原生 Whiskers 回归通过。KVM 场景在同一非文档版本运行。 [托管真实数据库与浏览器](https://github.com/MaLaNg116/itervane/actions/runs/44967527210) · [原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/44967521367) · [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44967521413)
