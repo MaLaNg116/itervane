@@ -102,8 +102,8 @@
 | 097 | P3-C2c3a 同一容器的停止锚点与独立恢复核验 | [#97](https://github.com/MaLaNg116/itervane/pull/97)，已合入 | [恢复证据导读](p3-c-restart-recovery-evidence.md) | [九项托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45033674814)、[原生 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/45035506932)及[全部 17 项托管检查](https://github.com/MaLaNg116/itervane/pull/97/checks)通过 |
 | 098 | P3-C2c3b1 重启前停止快照与续发复核 | [#98](https://github.com/MaLaNg116/itervane/pull/98)，已合入 | [停止快照导读](p3-c-restart-baseline.md) | TypeScript、真实 PostgreSQL 及[16 项托管检查](https://github.com/MaLaNg116/itervane/pull/98/checks)通过 |
 | 099 | P3-C2c3b2 停止快照、只读核对和原子结算 | [#99](https://github.com/MaLaNg116/itervane/pull/99)，已合入 | [独立结算导读](p3-c-restart-settlement.md) | 真库九项专项、迁移一致性及[16 项托管检查](https://github.com/MaLaNg116/itervane/pull/99/checks)通过 |
-| 100 | P3-C2c3c1 专用重启 Worker 与 Komodo 读身份 | [#100](https://github.com/MaLaNg116/itervane/pull/100)，基于已合入 #99 的 main | [安装导读](p3-c-installed-restart-worker.md) | TypeScript、246 项单元及真库队列分派通过，[同步后检查](https://github.com/MaLaNg116/itervane/pull/100/checks) |
-| 101 | P3-C2c3c2a 绑定原批准的人工提交和双语回执 | [#101](https://github.com/MaLaNg116/itervane/pull/101)，依赖 #100 | [人工入口导读](p3-c-restart-operator-api.md) | TypeScript、246 项单元、三项 PostgreSQL 17.12 HTTP/MCP 专项通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/101/checks) |
+| 100 | P3-C2c3c1 专用重启 Worker 与 Komodo 读身份 | [#100](https://github.com/MaLaNg116/itervane/pull/100)，已合入 | [安装导读](p3-c-installed-restart-worker.md) | TypeScript、真库队列分派及[16 项托管检查](https://github.com/MaLaNg116/itervane/pull/100/checks)通过 |
+| 101 | P3-C2c3c2a 绑定原批准的人工提交和双语回执 | [#101](https://github.com/MaLaNg116/itervane/pull/101)，基于已合入 #100 的 main | [人工入口导读](p3-c-restart-operator-api.md) | TypeScript、246 项单元、三项 PostgreSQL 17.12 HTTP/MCP 专项通过，[同步后检查](https://github.com/MaLaNg116/itervane/pull/101/checks) |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
