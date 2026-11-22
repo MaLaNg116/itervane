@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { localeSchema, type Check } from '@itervane/contracts';
 import { z } from 'zod';
 import {
-  createKomodoRestartReader, KomodoReleaseClient, KomodoReleaseError, komodoRuntimeConfigSha256, type KomodoReleaseTarget,
+  KomodoReleaseClient, KomodoReleaseError, komodoRuntimeConfigSha256, type KomodoReleaseTarget,
 } from '../../../control-plane/src/runtime/release-komodo.js';
 import { report } from '../report.js';
 import { deployment, dockerDigest, fixtureAppNetwork, KomodoError, KomodoNativeClient, komodoVersion,
@@ -291,8 +291,14 @@ async function verifyFormalAdapter(setup: Awaited<ReturnType<typeof bootstrap>>,
     throw new KomodoError('FormalAdapterRunningImage', 'binding');
   }
   const readerCredential = await setup.provisionReader();
-  const reader = createKomodoRestartReader(binding, readerCredential);
+  const reader = KomodoReleaseClient.readOnly(binding, readerCredential);
   await reader.verifyInstallation();
+  const readConfiguration = await reader.inspectTarget(binding, authorize);
+  const readUpdate = await reader.observeUpdate(binding, updateId, authorize);
+  if (readConfiguration.imageReference !== approved.reference || readUpdate.status !== 'Complete' ||
+      !readUpdate.success || readUpdate.actorId !== target.actor || readUpdate.updateId !== result.updateId) {
+    throw new KomodoError('FormalAdapterReaderUpdate', 'binding');
+  }
   const nativeReader = new KomodoNativeClient(coreOrigin, readerCredential);
   for (const [label, exercise] of [
     ['UnexpectedReaderTarget', () => nativeReader.call('read', 'GetDeployment', { deployment: foreignId }, z.unknown())],
@@ -328,6 +334,8 @@ const text = {
     'Komodo 只读检查观测到同一容器的停止态和健康的新启动，镜像保持一致。'],
   restartReader: ['The separate Komodo observer could inspect the bound target. Native permissions rejected writes and access to a different deployment.',
     '独立 Komodo 读身份可查看绑定目标，原生权限拒绝写入和无关部署读取。'],
+  restoreReader: ['An independent read identity confirmed the deployed configuration and native update with the original writer.',
+    '独立读身份核对了部署配置和原生更新，更新对应原写入者。'],
   cleaned: ['Removed the owned fixture and temporary Compose resources.', '本轮样例和临时 Compose 资源已清理。'],
   privateNetwork: ['The running target only joined its internal bridge and published no host ports.',
     '实际运行目标只加入自己的内部桥接网络，未发布宿主端口。'],
@@ -491,6 +499,7 @@ export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
       + ' OCI=' + b.digest + ' Image=' + release.observed.Image + ' Runtime=' + release.runtimeConfigSha256 + '.' });
     checks.push({ id: 'restart-runtime-readback', status: 'passed', detail: text.restartReadback[lang] });
     checks.push({ id: 'restart-reader-permission', status: 'passed', detail: text.restartReader[lang] });
+    checks.push({ id: 'restore-reader-update', status: 'passed', detail: text.restoreReader[lang] });
     await confirmAppNetwork(network);
     checks.push({ id: 'protected-container-network', status: 'passed', detail: text.privateNetwork[lang] });
   } catch (error) {

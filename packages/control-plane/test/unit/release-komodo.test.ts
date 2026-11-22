@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { createKomodoRestartReader, KomodoReleaseClient, komodoRuntimeConfigSha256, type KomodoReleaseTarget } from '../../src/runtime/release-komodo.js';
+import { KomodoReleaseClient, komodoRuntimeConfigSha256, type KomodoReleaseTarget } from '../../src/runtime/release-komodo.js';
 
 const deploymentId = 'a'.repeat(24);
 const serverId = 'b'.repeat(24);
@@ -158,8 +158,8 @@ const container = {
 
 it('verifies the read-only restart principal before using the exact enrolled deployment', async () => {
   const readerCredentials = { ...credentials, actorId: otherId };
-  const reader = createKomodoRestartReader(target, readerCredentials);
-  expect(() => createKomodoRestartReader(target, credentials)).toThrow('komodo_release_binding');
+  const reader = KomodoReleaseClient.readOnly(target, readerCredentials);
+  expect(() => KomodoReleaseClient.readOnly(target, credentials)).toThrow('komodo_release_binding');
   fetchKomodo.mockResolvedValueOnce(Response.json({ _id: { $oid: otherId }, admin: true, enabled: true }));
   await expect(reader.verifyInstallation()).rejects.toMatchObject({ step: 'GetUser', reason: 'response' });
   fetchKomodo.mockResolvedValueOnce(Response.json({ _id: { $oid: otherId }, admin: false, enabled: true }))
@@ -175,6 +175,28 @@ it('verifies the read-only restart principal before using the exact enrolled dep
     [origin + '/read/GetDeployment', 'POST', JSON.stringify({ deployment: deploymentId })],
     [origin + '/read/InspectDeploymentContainer', 'POST', JSON.stringify({ deployment: deploymentId })],
   ]);
+});
+
+it('reads only the requested update of the frozen deployment and its original writer using the independent reader key', async () => {
+  const readerIdentity = { actorId: otherId, key: 'reader-key', secret: 'reader-secret' };
+  const reader = KomodoReleaseClient.readOnly(target, readerIdentity);
+  expect(() => reader.observeUpdate({ ...target, deploymentId: otherId }, updateId, authorization)).toThrow('komodo_release_binding');
+  expect(fetchKomodo).not.toHaveBeenCalled();
+  fetchKomodo.mockResolvedValueOnce(Response.json(configured));
+  await expect(reader.inspectTarget(target, authorization)).resolves.toMatchObject({ imageReference: approved });
+  fetchKomodo.mockResolvedValueOnce(Response.json(nativeUpdate));
+  await expect(reader.observeUpdate(target, updateId, authorization)).resolves.toMatchObject({ updateId, deploymentId, actorId });
+  for (const invalid of [{ ...nativeUpdate, operator: otherId },
+    { ...nativeUpdate, target: { ...nativeUpdate.target, id: otherId } }, { ...nativeUpdate, _id: { $oid: otherId } }]) {
+    fetchKomodo.mockResolvedValueOnce(Response.json(invalid));
+    await expect(reader.observeUpdate(target, updateId, authorization)).rejects.toMatchObject({ step: 'GetUpdate', reason: 'binding' });
+  }
+  for (const [url, request] of fetchKomodo.mock.calls.slice(1)) {
+    expect(url).toBe(origin + '/read/GetUpdate');
+    expect(request).toMatchObject({ body: JSON.stringify({ id: updateId }), headers: {
+      'x-api-key': readerIdentity.key, 'x-api-secret': readerIdentity.secret,
+    } });
+  }
 });
 
 it('independently reads the running image identity and keeps only the enrolled runtime facts', async () => {

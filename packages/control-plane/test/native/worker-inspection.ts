@@ -29,7 +29,7 @@ import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
 import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
 import { createInstalledApi } from '../../src/runtime/installed-api.js';
-import { createKomodoRestartReader, KomodoReleaseClient } from '../../src/runtime/release-komodo.js';
+import { KomodoReleaseClient } from '../../src/runtime/release-komodo.js';
 import { createKeycloakRolloutTokenSource, ReleaseRolloutVerifier } from '../../src/runtime/release-rollout.js';
 import { ReleaseIngressError } from '../../src/runtime/release-traefik.js';
 import { changeOperationsRestartInstallation } from '../../src/service/operations-restart-installations.js';
@@ -1154,7 +1154,7 @@ async function probe() {
             const readerCredentials = await target.provisionRestartReader();
             notEqual(readerCredentials.actorId, target.credentials.actorId);
             const boundTarget = { ...target.binding, imageRepository: targetSettings.imageRepository, registryOrigin: targetSettings.registryOrigin };
-            const reader = createKomodoRestartReader(boundTarget, readerCredentials);
+            const reader = KomodoReleaseClient.readOnly(boundTarget, readerCredentials);
             await reader.verifyInstallation();
             const verifier = new ReleaseRolloutVerifier(reader, createKeycloakRolloutTokenSource(ingress.check.probeIdentity, ingress.probeSecret));
             const { containerId, version, configDigest, imageReference } = proof.runtime;

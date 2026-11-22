@@ -12,7 +12,7 @@ import { targetForKomodo } from './formal-komodo-steps.js';
 import { OperationsExecutionCoordinator } from './operations-execution-lease.js';
 import { OperationsRestartRecoveryWorker } from './operations-restart-recovery-worker.js';
 import { OperationsRestartWorker } from './operations-restart-worker.js';
-import { createKomodoRestartReader } from './release-komodo.js';
+import { KomodoReleaseClient } from './release-komodo.js';
 import { createKeycloakRolloutTokenSource, ReleaseRolloutVerifier } from './release-rollout.js';
 import { loadWhiskersWriter } from './whiskers-writer-installation.js';
 
@@ -48,7 +48,7 @@ export async function createInstalledRestartWorker(database: Database, config: R
     if (enrollment.releaseTargetSha256 !== installed.mappingSha256) throw new Error('operations_restart_enrollment_required');
     await requireOperationsRestartWriter(tx, installed, enrollment.whiskers, writer.proof);
   });
-  const reader = createKomodoRestartReader(targetForKomodo(release), config.komodo);
+  const reader = KomodoReleaseClient.readOnly(targetForKomodo(release), config.komodo);
   await reader.verifyInstallation(signal);
   const verifier = new ReleaseRolloutVerifier(reader, createKeycloakRolloutTokenSource(release.rolloutCheck.probeIdentity, config.probeSecret));
   const coordinator = new OperationsExecutionCoordinator(new ExecutionCoordinator(database, { leaseSeconds: config.leaseSeconds }), installed);
