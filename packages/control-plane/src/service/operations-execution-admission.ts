@@ -46,7 +46,7 @@ export async function requireOperationsExecutionApproval(tx: Transaction, task: 
   const basis = await readOperationsProposalBasis(tx, task, frozen.diagnosis.sha256, installation);
   const current = operationsProposalSchema.parse({ ...basis.document, proposedBy: proposal.proposedBy, grantId: proposal.grantId });
   if (sha256(JSON.stringify(current)) !== proposal.fingerprint) throw new DomainError('version_conflict');
-  const now = await databaseNow(tx);
+  const now = await databaseNow(tx, decision.decidedAt);
   if (proposal.validUntil <= now) throw new DomainError('unsupported_state');
   return { frozen, decision, now, whiskers: basis.whiskers, publishedVersion: basis.publishedVersion, restorePlan: basis.restorePlan };
 }
@@ -91,7 +91,7 @@ export class OperationsExecutionAdmission {
       if (actor.principalId !== decision.actorId || actor.workspaceGrantId !== decision.grantId) throw new DomainError('forbidden');
       if (frozen.action.kind !== 'restart') throw new DomainError('unsupported_state');
       await requireOperationsRestartWriter(tx, frozen.target, whiskers, operator.writer);
-      const readyAt = await databaseNow(tx);
+      const readyAt = await databaseNow(tx, now);
       if (operator.identity.expiresAt * 1_000 <= readyAt.getTime()) throw new DomainError('unauthenticated');
       if (proposal.validUntil <= readyAt) throw new DomainError('unsupported_state');
     }

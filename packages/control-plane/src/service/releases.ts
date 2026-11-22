@@ -32,13 +32,13 @@ export function parseFrozenRelease(candidate: CandidateRow) {
   return parsed.data;
 }
 
-export async function databaseNow(tx: Transaction) {
+export async function databaseNow(tx: Transaction, notBefore?: Date) {
   const { rows } = await tx.execute<{ milliseconds: string }>(sql`
     SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::text AS milliseconds
   `);
   const milliseconds = Number(rows[0]?.milliseconds);
   if (!Number.isSafeInteger(milliseconds)) throw new DomainError('unavailable');
-  return new Date(milliseconds);
+  return new Date(Math.max(milliseconds, notBefore?.getTime() ?? milliseconds));
 }
 
 async function lockTaskScope(tx: Transaction, taskId: string, lock: 'share' | 'update'): Promise<TaskScope> {

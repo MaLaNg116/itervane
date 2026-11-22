@@ -421,6 +421,13 @@
       "when": 1795351298030,
       "tag": "0059_operations_restore_recoveries",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1795352199660,
+      "tag": "0060_operations_authority_clock",
+      "breakpoints": true
     }
   ]
 }

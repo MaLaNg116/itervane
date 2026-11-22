@@ -3084,6 +3084,32 @@ it.each(['wait', 'expired', 'replaced', 'publishing', 'revoked'] as const)('limi
 const operationsPortal = 'itervane-operations-decision-portal';
 const decisionIdentity = (subject = 'owner') => issuer.token(subject, { azp: operationsPortal }).then(createIdentityVerifier(issuer.config));
 
+it('keeps operations authorization timestamps ordered when the database clock falls behind the diagnosis', async () => {
+  await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_results
+    ALTER COLUMN created_at SET DEFAULT (clock_timestamp() + interval '20 seconds')`);
+  const { installed, diagnosis, task: diagnosed, service } = await settleProposalDiagnosis('restart')
+    .finally(() => database.admin.query('ALTER TABLE itervane.operations_diagnosis_results ALTER COLUMN created_at SET DEFAULT now()'));
+  const clock = await database.storage.pool.query('SELECT clock_timestamp() < $1::timestamptz AS behind', [diagnosis.createdAt]);
+  expect(clock.rows[0]?.behind).toBe(true);
+
+  const { proposal } = await service.freeze(identity, diagnosed.id, { diagnosisSha256: diagnosis.sha256 });
+  const owner = await decisionIdentity();
+  const decisionService = new OperationsDecisionService(database.storage, installed, operationsPortal);
+  const decisionInput = { fingerprint: proposal.fingerprint };
+  const confirmed = (await decisionService.decide(owner, proposal.id, {
+    ...decisionInput, action: 'confirm', expectedVersion: 0, idempotencyKey: randomUUID(),
+  })).decision;
+  const { execution } = await new OperationsExecutionAdmission(database.storage, installed)
+    .enqueue({ ...decisionInput, proposalId: proposal.id, decisionVersion: 1 });
+  const revoked = (await decisionService.decide(owner, proposal.id, {
+    ...decisionInput, action: 'revoke', expectedVersion: 1, idempotencyKey: randomUUID(),
+  })).decision;
+  expect([proposal.createdAt, confirmed.decidedAt, execution.createdAt, revoked.decidedAt])
+    .toEqual([diagnosis.createdAt, diagnosis.createdAt, diagnosis.createdAt, diagnosis.createdAt]);
+  expect((await database.storage.db.select().from(operationsExecutions).where(eq(operationsExecutions.id, execution.id)))[0])
+    .toMatchObject({ state: 'blocked', blockedReason: 'approval_revoked', closedAt: revoked.decidedAt });
+});
+
 async function restartExecutionCandidate(prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
   const { fixture, installed, diagnosis, task: diagnosed, service } = await settleProposalDiagnosis('restart', prepared);
   const { proposal } = await service.freeze(identity, diagnosed.id, { diagnosisSha256: diagnosis.sha256 });

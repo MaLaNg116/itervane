@@ -33,7 +33,7 @@ export class OperationsDecisionService {
       const frozen = readOperationsProposal(proposal);
       if (proposal.fingerprint !== input.fingerprint) throw new DomainError('version_conflict');
 
-      const now = await databaseNow(tx);
+      const now = await databaseNow(tx, proposal.createdAt);
       if (identity.expiresAt * 1_000 <= now.getTime()) throw new DomainError('unauthenticated');
       const history = await tx.select().from(operationsDecisions).where(eq(operationsDecisions.proposalId, proposalId)).orderBy(asc(operationsDecisions.version));
       const duplicate = history.find(item => item.actorId === actor.principalId && item.idempotencyKey === input.idempotencyKey);
@@ -45,9 +45,13 @@ export class OperationsDecisionService {
       const last = history.at(-1);
       const version = last?.version ?? 0;
       if (version !== input.expectedVersion) throw new DomainError('version_conflict');
+      let prerequisite = last?.decidedAt ?? proposal.createdAt;
       if (input.action === 'revoke') {
         if (last?.action !== 'confirm') throw new DomainError('unsupported_state');
         await lockEnvironmentForEffect(tx, proposal.environmentId);
+        const [reservation] = await tx.select({ createdAt: operationsExecutions.createdAt }).from(operationsExecutions)
+          .where(eq(operationsExecutions.proposalId, proposalId));
+        if (reservation && reservation.createdAt > prerequisite) prerequisite = reservation.createdAt;
       } else {
         if (last || proposal.validUntil <= now) throw new DomainError('unsupported_state');
         const proposer = await requireProjectAccess(tx, await requireStoredActor(tx, proposal.proposedBy), task.projectId, true);
@@ -57,7 +61,7 @@ export class OperationsDecisionService {
         if (sha256(JSON.stringify(current)) !== proposal.fingerprint) throw new DomainError('version_conflict');
       }
 
-      const decidedAt = await databaseNow(tx);
+      const decidedAt = await databaseNow(tx, prerequisite);
       if (identity.expiresAt * 1_000 <= decidedAt.getTime()) throw new DomainError('unauthenticated');
       if (input.action !== 'revoke' && proposal.validUntil <= decidedAt) throw new DomainError('unsupported_state');
       const [decision] = await tx.insert(operationsDecisions).values({ proposalId, version: version + 1,
