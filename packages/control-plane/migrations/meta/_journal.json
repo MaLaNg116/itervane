@@ -309,6 +309,13 @@
       "when": 1795315546698,
       "tag": "0043_operations_diagnosis_settlement",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1795317931998,
+      "tag": "0044_operations_proposals",
+      "breakpoints": true
     }
   ]
 }
