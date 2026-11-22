@@ -5,7 +5,7 @@ import {
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairInput, type FormalRepairResult, type FormalRepairRetry,
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
   type OperationsDiagnosisObservation, type OperationsDiagnosisReceipt, type OperationsDiagnosisSection,
-  type OperationsObservationReceipt, type OperationsProposal, type OperationsRequestBinding,
+  type OperationsObservationReceipt, type OperationsProposal, type OperationsRequestBinding, type OperationsRestartRequest,
   type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt,
   type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
@@ -627,6 +627,22 @@ export const operationsExecutionIntents = domain.table('operations_execution_int
     foreignColumns: [operationsExecutionSchedules.executionId] }),
   check('operations_execution_intent_binding', sql`${t.decisionVersion} = 1 AND ${t.generation} = 1
     AND ${t.fence} > 0 AND ${t.proposalFingerprint} ~ '^[a-f0-9]{64}$'`),
+]);
+
+export const operationsRestartRequests = domain.table('operations_restart_requests', {
+  executionId: uuid('execution_id').primaryKey(),
+  callSha256: text('call_sha256').notNull(),
+  document: jsonb('document').$type<OperationsRestartRequest>().notNull(),
+  approvalId: text('approval_id'),
+  receivedAt: timestamp('received_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
+}, t => [
+  foreignKey({ name: 'operations_restart_request_intent_fk', columns: [t.executionId], foreignColumns: [operationsExecutionIntents.executionId] }),
+  unique('operations_restart_native_approval').on(t.approvalId),
+  check('operations_restart_request_binding', sql`(${t.callSha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.document}->>'credentialSha256' ~ '^[a-f0-9]{64}$') IS TRUE`),
+  check('operations_restart_request_receipt', sql`((${t.approvalId} IS NULL AND ${t.receivedAt} IS NULL)
+    OR (${t.approvalId} ~ '^[a-f0-9]{32}$' AND ${t.receivedAt} >= ${t.createdAt})) IS TRUE`),
 ]);
 
 export const formalReleaseSteps = domain.table('formal_release_steps', {

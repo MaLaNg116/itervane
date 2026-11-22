@@ -1,11 +1,10 @@
-import { whiskersMcpKeySchema } from '@itervane/contracts';
+import { whiskersMcpKeySchema, whiskersNativeApprovalIdSchema } from '@itervane/contracts';
 import type { CallToolResult } from '@modelcontextprotocol/client';
 import {
   WhiskersMcpError, whiskersContainerBindingSchema, whiskersToolText, withWhiskersMcp,
   type WhiskersContainerBinding, type WhiskersMcpFailure,
 } from './whiskers-mcp.js';
 
-const approvalIdPattern = /^[a-f0-9]{32}$/;
 const raisedApproval = /^Human approval required: 'restart_container' \(write\) requires confirmation\. Approval ([a-f0-9]{32}) was raised \(Whiskers → Approvals\)\. After it is approved, repeat this exact call within 10 minutes; it then runs once\.$/;
 const pendingApproval = /^Approval ([a-f0-9]{32}) for 'restart_container' is still pending\. Repeat this exact call once a human has approved it\.$/;
 // The acknowledgement contains a display name. Independent readback verifies the actual target and health.
@@ -50,7 +49,7 @@ export class WhiskersRestartClient {
   }
 
   resume(approvalId: string, authorize: Authorize, signal?: AbortSignal) {
-    if (!approvalIdPattern.test(approvalId)) throw new WhiskersRestartError('binding');
+    if (!whiskersNativeApprovalIdSchema.safeParse(approvalId).success) throw new WhiskersRestartError('binding');
     return this.attempt(Object.freeze({ kind: 'resume', approvalId }), authorize, signal);
   }
 
