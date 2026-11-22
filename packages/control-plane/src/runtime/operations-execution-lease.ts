@@ -145,7 +145,7 @@ export class OperationsExecutionCoordinator {
 
   get leaseSeconds() { return this.coordinator.leaseSeconds; }
 
-  async claim(job: Job<unknown>, workerId: string): Promise<OperationsExecutionLease | null> {
+  async claim(job: Job<unknown>, workerId: string, supportedAction?: 'restart'): Promise<OperationsExecutionLease | null> {
     idSchema.parse(workerId);
     const database = this.coordinator.database;
     const request = operationsExecutionWakeupSchema.safeParse(job.data);
@@ -166,7 +166,7 @@ export class OperationsExecutionCoordinator {
       if (mode === 'dispatch' && await expireUndispatchedOperations(tx, database, execution.environmentId, task.requestedBy, workerId)) return null;
       const { target, action } = readOperationsProposal(proposal);
       const eligible = !slot.taskId && target.environmentId === this.installation.environmentId
-        && target.enrollmentSha256 === this.installation.enrollmentSha256;
+        && target.enrollmentSha256 === this.installation.enrollmentSha256 && (!supportedAction || action.kind === supportedAction);
       let authorized = true;
       if (eligible && mode !== 'reconcile') {
         try {

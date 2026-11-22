@@ -1,6 +1,7 @@
-import { posix } from 'node:path';
+import { isAbsolute, posix } from 'node:path';
 import { z } from 'zod';
-import { auditModelProtocolSchema, idSchema, npmUpgradeApprovalsSchema, sha256Schema, standardVerificationProfileSchema, whiskersReadKeySchema } from '@itervane/contracts';
+import { auditModelProtocolSchema, idSchema, komodoResourceIdSchema, npmUpgradeApprovalsSchema, sha256Schema,
+  standardVerificationProfileSchema, whiskersMcpKeySchema, whiskersReadKeySchema } from '@itervane/contracts';
 import { safeEndpoint } from '@itervane/model';
 import { sourcePath } from '@itervane/runner';
 import { validateIdentityConfig } from './auth/identity.js';
@@ -110,6 +111,25 @@ export function releaseWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
       ? undefined : { username: env.ITERVANE_RELEASE_REGISTRY_USER, password: env.ITERVANE_RELEASE_REGISTRY_PASSWORD },
   });
   return { ...worker, runner, installed, tools, credentials };
+}
+
+export function restartWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
+  const worker = sharedWorkerConfig(env);
+  const installed = operationsEnrollmentScopeSchema.extend({ mappingSha256: sha256Schema }).parse({
+    environmentId: env.ITERVANE_OPERATIONS_ENVIRONMENT_ID, enrollmentSha256: env.ITERVANE_OPERATIONS_ENROLLMENT_SHA256,
+    mappingSha256: env.ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256,
+  });
+  const localFile = z.string().max(4096).refine(path => isAbsolute(path) && !path.includes('\0'), 'Expected an absolute local installation file');
+  const files = z.strictObject({ installation: localFile, guardrails: localFile, roles: localFile }).parse({
+    installation: env.ITERVANE_RESTART_INSTALLATION_FILE, guardrails: env.ITERVANE_RESTART_GUARDRAILS_FILE, roles: env.ITERVANE_RESTART_ROLES_FILE,
+  });
+  const writeKey = whiskersMcpKeySchema.parse(env.ITERVANE_RESTART_WHISKERS_WRITE_KEY);
+  const credential = z.string().min(1).max(512).regex(/^[!-~]+$/);
+  const komodo = z.strictObject({ actorId: komodoResourceIdSchema, key: credential, secret: credential }).parse({
+    actorId: env.ITERVANE_RESTART_KOMODO_READER_ID, key: env.ITERVANE_RESTART_KOMODO_READER_KEY, secret: env.ITERVANE_RESTART_KOMODO_READER_SECRET,
+  });
+  const probeSecret = z.string().min(1).max(1024).parse(env.ITERVANE_RESTART_PROBE_SECRET);
+  return { ...worker, installed, files, writeKey, komodo, probeSecret };
 }
 
 export function migrationConfig(env: NodeJS.ProcessEnv = process.env) {
