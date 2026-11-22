@@ -93,5 +93,6 @@ export async function readOperationsDeployment(tx: Transaction, actor: Actor, sc
   const previous = earlier ? checkedRelease(earlier, mapping, target) : null;
   if (earlier?.operation.id === current.releaseOperationId) throw new Error('operations_deployment_evidence_integrity');
   return { projectId, environmentId, applicationId: environment.applicationId, grantId,
-    targetRevision: mapping.revision, mappingSha256: mapping.sha256, deploymentId: target.deploymentId, ...current, previous };
+    targetRevision: mapping.revision, mappingSha256: mapping.sha256, deploymentId: target.deploymentId,
+    approvalTtlSeconds: target.approvalTtlSeconds, ...current, previous };
 }

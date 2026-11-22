@@ -27,7 +27,7 @@ import { runtimeConfig, workerConfig, type OperationsWorkflowScope } from '../..
 import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
-  operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults, operationsDiagnosisRuntime, operationsObservations, operationsRequests,
+  operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults, operationsDiagnosisRuntime, operationsObservations, operationsProposals, operationsRequests,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskEvents, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
@@ -64,6 +64,7 @@ import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { FormalReleaseService } from '../../src/service/formal-release.js';
 import { readOperationsDeployment } from '../../src/service/operations-deployment.js';
 import { OperationsObservationViewService } from '../../src/service/operations-observation-view.js';
+import { OperationsProposalService, readOperationsProposal } from '../../src/service/operations-proposals.js';
 import { freezeOperationsRequest, readOperationsDiagnosis, readOperationsRequest } from '../../src/service/operations-requests.js';
 import { readOperationsObservationTarget, readOperationsReleaseEvidence, registerOperationsTarget } from '../../src/service/operations-targets.js';
 import { publishFormalRepair } from '../../src/service/repair-result.js';
@@ -782,7 +783,8 @@ async function assertVerificationRecovery(scope: ExecutionScope, options: Formal
 }
 
 function standardVerificationReceipt(original: QualifiedInspectionReceipt, request: ReturnType<typeof prepareQualifiedVerificationRequest>,
-  input: Parameters<RescanRunner['verify']>[1], regression = false, candidate?: QualifiedRepairReceipt['snapshot']['candidate']): QualifiedVerificationReceipt {
+  input: Parameters<RescanRunner['verify']>[1], regression = false, candidate?: QualifiedRepairReceipt['snapshot']['candidate'],
+  imageVariant = ''): QualifiedVerificationReceipt {
   const { origin: _origin, ...bound } = request;
   const domainId = randomUUID();
   const profile = input.profile;
@@ -790,18 +792,18 @@ function standardVerificationReceipt(original: QualifiedInspectionReceipt, reque
   const runtimeInputs = sha256('runtime inputs');
   const databaseEvidence = original.snapshot.reports[1].database;
   if (!databaseEvidence) throw new Error('Missing source database evidence');
-  const imageDigest = 'sha256:' + sha256('OCI manifest');
-  const configDigest = 'sha256:' + sha256('OCI config');
+  const imageDigest = 'sha256:' + sha256('OCI manifest' + imageVariant);
+  const configDigest = 'sha256:' + sha256('OCI config' + imageVariant);
   const image: QualifiedStandardImageProof | undefined = profile.ociInputsSha256 && !regression ? {
     version: 1, status: 'scanned', ociInputsSha256: profile.ociInputsSha256, runtimeInputsSha256: runtimeInputs,
     platform: 'linux/amd64', manifestDigest: imageDigest, configDigest,
-    baseManifestDigest: 'sha256:' + sha256('base'), appLayerDigest: 'sha256:' + sha256('app layer'),
+    baseManifestDigest: 'sha256:' + sha256('base'), appLayerDigest: 'sha256:' + sha256('app layer' + imageVariant),
     runtimeLayerSha256: sha256('runtime layer'), scan: {
       scanner: 'trivy', version: '0.76.2', imageDigest, configDigest, osPackages: 1, npmPackages: 1,
       findings: [{ class: 'lang-pkgs', advisory: 'FIXTURE-1', package: 'test-module', version: '1.2.3', severity: 'MEDIUM' }],
       policySha256: sha256('protected image scan'), reportSha256: sha256('image report'), database: databaseEvidence,
     },
-    ...(profile.retainStandardImage ? { archive: { format: 'oci-layout-tar' as const, sha256: sha256('retained bytes'), bytes: 613 } } : {}),
+    ...(profile.retainStandardImage ? { archive: { format: 'oci-layout-tar' as const, sha256: sha256('retained bytes' + imageVariant), bytes: 613 } } : {}),
   } : undefined;
   const target = candidate ? {
     manifestSha256: candidate.candidateManifestSha256, patchSha256: candidate.patchSha256,
@@ -1310,6 +1312,7 @@ const rolloutCheckFixture = {
 
 async function queuedFormalRelease(options: {
   separateRequester?: boolean; expiring?: boolean; komodo?: boolean; rolloutCheck?: boolean; existingTarget?: FormalReleaseTarget;
+  imageVariant?: string;
 } = {}) {
   const taskService = new TaskService(database.storage);
   const resources = new ResourceService(database.storage);
@@ -1338,7 +1341,7 @@ async function queuedFormalRelease(options: {
         const original = qualifiedInspectionResponseSchema.parse(stored?.receipt);
         if (original.kind !== 'receipt') throw new Error('Missing verified original');
         const request = prepareQualifiedVerificationRequest(coordinates, canonicalVerificationCommand({ input, repair }));
-        return standardVerificationReceipt(original, request, input, false);
+        return standardVerificationReceipt(original, request, input, false, undefined, options.imageVariant);
       },
       verifyArchive: async archive => ({ kind: 'archive_verified', version: 1, runnerImageSha256: imageSha256, archive }),
     } },
@@ -2422,8 +2425,8 @@ async function claimOperations(installed: OperationsWorkflowScope) {
   return coordinator.claim(job, randomUUID(), installed);
 }
 
-async function startDiagnosis() {
-  const fixture = await installedOperationsFixture();
+async function startDiagnosis(prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  const fixture = prepared ?? await installedOperationsFixture();
   const installed = diagnosisInstallation(fixture);
   const { task } = await fixture.taskService.admitOperations(identity, { ...fixture.scope, locale: 'zh-CN', idempotencyKey: randomUUID() }, installed);
   const scope = await claimOperations(installed);
@@ -2657,16 +2660,21 @@ it('settles only the scoped operations diagnosis through the Worker and its thre
     .toMatchObject({ cause: { code: '23514', message: 'operations_diagnosis_result_is_immutable' } });
 });
 
-it('rolls back diagnosis settlement on event failure and replays the published conclusion after takeover', async () => {
-  const { fixture, installed, scope } = await startDiagnosis();
+function scriptedRestartDiagnosis(): ModelAdapter {
   const scripted = scriptedOperations();
-  const complete = vi.fn<ModelAdapter['complete']>(async input => {
+  return { ...scripted, async complete(input) {
     const response = await scripted.complete(input);
     const call = response.calls[0];
     if (call?.name !== 'finish_role') return response;
     const draft = finishOperationsInputSchema.parse(call.input);
     return operationsDecision('finish_role', { ...draft, recommendation: { ...draft.recommendation, code: 'review_restart' } });
-  });
+  } };
+}
+
+it('rolls back diagnosis settlement on event failure and replays the published conclusion after takeover', async () => {
+  const { fixture, installed, scope } = await startDiagnosis();
+  const scripted = scriptedRestartDiagnosis();
+  const complete = vi.fn(scripted.complete);
   const model = { adapter: { ...scripted, complete }, providerSha256: installed.diagnosisProviderSha256 };
   const whiskers = scopedWhiskers(fixture, undefined, 'exited');
   const run = async (lease: ExecutionScope) => {
@@ -2701,6 +2709,97 @@ it('rolls back diagnosis settlement on event failure and replays the published c
     expect(whiskers.tools).toEqual(['get_container_details', 'get_container_logs']);
     expect(complete).toHaveBeenCalledTimes(4);
   } finally { whiskers.restore(); }
+});
+
+async function settleProposalDiagnosis(kind: 'restart' | 'rollback' | 'observe',
+  prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  const context = await startDiagnosis(prepared);
+  const { fixture, installed, scope } = context;
+  const adapter = kind === 'restart' ? scriptedRestartDiagnosis() : scriptedOperations();
+  const whiskers = scopedWhiskers(fixture, undefined, kind === 'observe' ? 'running' : 'exited');
+  const saver = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+  try {
+    await runFormalOperations(coordinator, scope, saver, installed, { adapter, providerSha256: installed.diagnosisProviderSha256 },
+      new AbortController().signal);
+  } finally { whiskers.restore(); await saver.end(); }
+  const [diagnosis] = await database.storage.db.select().from(operationsDiagnosisResults)
+    .where(eq(operationsDiagnosisResults.runId, scope.runId));
+  if (!diagnosis) throw new Error('Expected a settled diagnosis');
+  return { ...context, diagnosis, service: new OperationsProposalService(database.storage, installed) };
+}
+
+it('freezes one immutable restart proposal from the signed-off diagnosis under concurrent requests', async () => {
+  const current = await settleProposalDiagnosis('restart');
+  const { fixture, diagnosis, task, service } = current;
+  const input = { diagnosisSha256: diagnosis.sha256 };
+  const principalId = randomUUID();
+  const subject = 'operations-proposal-viewer';
+  await database.storage.db.insert(principals).values({ id: principalId, issuer: issuer.config.issuer, subject });
+  await database.storage.db.insert(projectMembers).values({ projectId: fixture.scope.projectId, principalId, role: 'viewer' });
+  const viewer = await createIdentityVerifier(issuer.config)(await issuer.token(subject));
+  await expect(service.freeze(viewer, task.id, input)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(service.freeze(identity, task.id, { ...input, action: 'rollback' })).rejects.toMatchObject({ code: 'invalid_input' });
+  await expect(service.freeze(identity, task.id, { diagnosisSha256: sha256('another diagnosis') })).rejects.toMatchObject({ code: 'version_conflict' });
+
+  const attempts = await Promise.all([service.freeze(identity, task.id, input), service.freeze(identity, task.id, input)]);
+  const [first, other] = attempts;
+  expect(attempts.map(item => item.replayed).sort()).toEqual([false, true]);
+  expect(other?.proposal.id).toBe(first?.proposal.id);
+  const proposal = first!.proposal;
+  const document = readOperationsProposal(proposal);
+  expect(document).toMatchObject({ action: { kind: 'restart' },
+    diagnosis: { taskId: task.id, runId: task.runId, sha256: diagnosis.sha256 },
+    target: { environmentId: fixture.scope.environmentId, releaseOperationId: fixture.operationId, containerId: fixture.runtime.containerId,
+      enrollmentSha256: fixture.enrollment.fingerprint, manifestDigest: fixture.image.manifestDigest } });
+  expect(Date.parse(document.validUntil)).toBe(diagnosis.createdAt.getTime() + fixture.target.approvalTtlSeconds * 1_000);
+  expect(JSON.stringify(document)).not.toContain(operationsFixtureKey);
+  expect(await database.storage.db.select().from(operationsProposals)).toHaveLength(1);
+  expect(await database.storage.db.select().from(releaseOperations)).toHaveLength(1);
+  expect(await fixture.taskService.get(identity, task.id)).toMatchObject({ state: 'succeeded', version: task.version + 2 });
+  await expect(database.storage.db.delete(operationsProposals)).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'operations_proposal_is_immutable' } });
+});
+
+it('freezes only the exact previously verified image cited by a rollback diagnosis', async () => {
+  const first = await installedOperationsFixture();
+  task = (await first.taskService.admit(identity, { projectId: first.scope.projectId, source: task.source, purpose: 'Different verified release',
+    dataClass: 'synthetic', locale: 'zh-CN', idempotencyKey: randomUUID() })).task;
+  const next = await queuedFormalRelease({ existingTarget: first.target, imageVariant: 'second verified release' });
+  const { runtime, image } = await finishTestRollout(await parkForRollout(next, true, 'd'.repeat(24)));
+  const { diagnosis, task: diagnosed, service } = await settleProposalDiagnosis('rollback', { ...first, ...next, runtime, image });
+  const input = { diagnosisSha256: diagnosis.sha256 };
+  const { proposal } = await service.freeze(identity, diagnosed.id, input);
+  expect(readOperationsProposal(proposal)).toMatchObject({
+    target: { releaseOperationId: next.operationId, manifestDigest: image.manifestDigest },
+    action: { kind: 'rollback', restore: { operationId: first.operationId, manifestDigest: first.image.manifestDigest,
+      configDigest: first.image.configDigest, proofSha256: expect.stringMatching(/^[a-f0-9]{64}$/) } },
+  });
+  expect(first.image.manifestDigest).not.toBe(image.manifestDigest);
+  expect(await database.storage.db.select().from(releaseOperations)).toHaveLength(2);
+});
+
+it.each(['wait', 'expired', 'replaced', 'publishing', 'revoked'] as const)('limits proposal admission after %s', async mode => {
+  if (mode === 'expired') await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_results
+    ALTER COLUMN created_at SET DEFAULT (now() - interval '2 hours')`);
+  const { fixture, diagnosis, task: diagnosed, service } = await settleProposalDiagnosis(mode === 'wait' ? 'observe' : 'restart')
+    .finally(async () => {
+      if (mode === 'expired') await database.admin.query('ALTER TABLE itervane.operations_diagnosis_results ALTER COLUMN created_at SET DEFAULT now()');
+    });
+  if (mode === 'replaced') await registerOperationsTarget(database.storage, { ...fixture.registration,
+    whiskers: { ...fixture.registration.whiskers, serverId: 'rebound-server' } });
+  if (mode === 'publishing') {
+    task = (await fixture.taskService.admit(identity, { projectId: fixture.scope.projectId, source: task.source, purpose: 'Publication already queued',
+      dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
+    await queuedFormalRelease({ existingTarget: fixture.target });
+  }
+  if (mode === 'revoked') {
+    const [owner] = await database.storage.db.delete(workspaceMembers).returning();
+    if (!owner) throw new Error('Expected owner grant');
+    await database.storage.db.insert(workspaceMembers).values({ principalId: owner.principalId, workspaceId: owner.workspaceId });
+  }
+  const code = mode === 'publishing' ? 'conflict' : mode === 'replaced' || mode === 'revoked' ? 'version_conflict' : 'unsupported_state';
+  await expect(service.freeze(identity, diagnosed.id, { diagnosisSha256: diagnosis.sha256 })).rejects.toMatchObject({ code });
+  expect(await database.storage.db.select().from(operationsProposals)).toEqual([]);
 });
 
 it('drops a pending operations diagnosis fetch after the installed server is changed', async () => {
