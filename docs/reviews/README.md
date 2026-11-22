@@ -100,8 +100,8 @@
 | 095 | P3-C2c2b1 Whiskers 写安装登记、轮换与只读核对 | [#95](https://github.com/MaLaNg116/itervane/pull/95)，已合入 | [写安装导读](p3-c-whiskers-restart-installation.md) | 18 项 PostgreSQL 17.12 专项及[全部 17 项托管检查](https://github.com/MaLaNg116/itervane/pull/95/checks)通过 |
 | 096 | P3-C2c2b2 受信安装、重启派发和回执核对 | [#96](https://github.com/MaLaNg116/itervane/pull/96)，已合入 | [重启派发导读](p3-c-whiskers-restart-driver.md) | [九项托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45029877838)、[原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/45032129467)及[全部 17 项有效检查](https://github.com/MaLaNg116/itervane/pull/96/checks)通过 |
 | 097 | P3-C2c3a 同一容器的停止锚点与独立恢复核验 | [#97](https://github.com/MaLaNg116/itervane/pull/97)，已合入 | [恢复证据导读](p3-c-restart-recovery-evidence.md) | [九项托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45033674814)、[原生 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/45035506932)及[全部 17 项托管检查](https://github.com/MaLaNg116/itervane/pull/97/checks)通过 |
-| 098 | P3-C2c3b1 重启前停止快照与续发复核 | [#98](https://github.com/MaLaNg116/itervane/pull/98)，基于已合入 #97 的 main | [停止快照导读](p3-c-restart-baseline.md) | TypeScript、244 项单元、PostgreSQL 17.12 专项及迁移一致性已验证，[托管检查](https://github.com/MaLaNg116/itervane/pull/98/checks) |
-| 099 | P3-C2c3b2 停止快照、只读核对和原子结算 | [#99](https://github.com/MaLaNg116/itervane/pull/99)，依赖 #98 | [独立结算导读](p3-c-restart-settlement.md) | TypeScript、244 项单元、九项 PostgreSQL 17.12 专项与迁移一致性通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/45006369277) |
+| 098 | P3-C2c3b1 重启前停止快照与续发复核 | [#98](https://github.com/MaLaNg116/itervane/pull/98)，已合入 | [停止快照导读](p3-c-restart-baseline.md) | TypeScript、真实 PostgreSQL 及[16 项托管检查](https://github.com/MaLaNg116/itervane/pull/98/checks)通过 |
+| 099 | P3-C2c3b2 停止快照、只读核对和原子结算 | [#99](https://github.com/MaLaNg116/itervane/pull/99)，基于已合入 #98 的 main | [独立结算导读](p3-c-restart-settlement.md) | TypeScript、244 项单元、九项 PostgreSQL 17.12 专项与迁移一致性通过，[同步后检查](https://github.com/MaLaNg116/itervane/pull/99/checks) |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
