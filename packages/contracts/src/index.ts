@@ -23,6 +23,7 @@ export * from './preaudit.js';
 export * from './release.js';
 export * from './operations.js';
 export * from './operations-diagnosis.js';
+export * from './operations-health.js';
 export * from './operations-proposal.js';
 export { idSchema, sourceRefSchema, taskStateSchema, agentRoleSchema, taskStates, agentRoles, serviceOriginSchema } from './primitives.js';
 export type TaskState = z.infer<typeof taskStateSchema>;

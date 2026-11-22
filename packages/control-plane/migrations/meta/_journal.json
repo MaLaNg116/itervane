@@ -435,6 +435,13 @@
       "when": 1795354165414,
       "tag": "0061_operations_current_publication",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1795367789440,
+      "tag": "0062_operations_health_incidents",
+      "breakpoints": true
     }
   ]
 }
