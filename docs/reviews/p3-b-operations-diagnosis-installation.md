@@ -16,4 +16,8 @@ pnpm exec tsx --env-file-if-exists=.env -e 'import { workerConfig } from "./pack
 
 原生诊断首轮停在 `operations_formal_investigation`。`79deb06` 为后续复跑补充了白名单原因、证据类别及记录状态，区分调查、进程关闭和模型调用核对。 [首轮作业](https://github.com/MaLaNg116/itervane/actions/runs/44979952380/job/137078061605) · [复跑](https://github.com/MaLaNg116/itervane/actions/runs/44981348666)
 
+后续夹具将详情、日志和指标三个原生只读工具全部加入同一白名单。同步主线的固定 Runner 镜像来源后，`4279f28ec137e8f455f0f2ea04df3a4f9359c111` 通过正式安装和受保护应用原生诊断。报告的源码指纹为 `9cccc6d452d3d43c578abcc53b0374d06b8dfa355554984ff7c31153651c7a24`。四类证据引用同一已发布容器，双语 HTTP 与 MCP 相符。诊断过程中只有原部署一次派发，执行槽及 Whiskers 夹具已清理。 [安装态原生证据](https://github.com/MaLaNg116/itervane/actions/runs/44990230823/job/137109454654) · [同版原生 Whiskers 检查](https://github.com/MaLaNg116/itervane/actions/runs/44990234055)
+
+该版本使用真实 PostgreSQL 17.12 验证诊断查询、失败后接管和数据库时钟回退时的回执顺序。合入前核对 Worker 模型指纹、只读白名单、授权范围、双语回执和门户检查。模型使用 Anthropic 协议的确定性响应。 [PR 常规 CI](https://github.com/MaLaNg116/itervane/actions/runs/44990232708) · [分支常规 CI](https://github.com/MaLaNg116/itervane/actions/runs/44990229597)
+
 复跑确认详情与发布证据已记录，日志读取被托管夹具的工具策略拦截。`9f9d327` 将该 Read 策略的允许列表限定为容器详情、日志和指标。 [复跑作业](https://github.com/MaLaNg116/itervane/actions/runs/44981348666/job/137082373936) · [固定后的 Read 策略](https://github.com/MaLaNg116/itervane/blob/9f9d3278a5451a95a6463aa23f9c18a3cf57181d/fixtures/whiskers/read-only-guardrails.json) · [复验](https://github.com/MaLaNg116/itervane/actions/runs/44982452271)
