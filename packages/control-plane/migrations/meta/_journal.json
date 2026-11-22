@@ -358,6 +358,13 @@
       "when": 1795328041378,
       "tag": "0050_rollout_claim_timestamp",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1795328331755,
+      "tag": "0051_operations_restart_requests",
+      "breakpoints": true
     }
   ]
 }

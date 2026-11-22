@@ -12,6 +12,23 @@ export const whiskersEndpointSchema = z.strictObject({
   serverId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/),
 });
 
+export const whiskersContainerBindingSchema = whiskersEndpointSchema.extend({ containerId: sha256Schema });
+export type WhiskersContainerBinding = z.output<typeof whiskersContainerBindingSchema>;
+export const whiskersNativeApprovalIdSchema = z.string().regex(/^[a-f0-9]{32}$/);
+
+export const operationsRestartRequestSchema = z.strictObject({
+  version: z.literal(1),
+  tool: z.literal('restart_container'),
+  target: whiskersContainerBindingSchema,
+  credentialSha256: sha256Schema,
+});
+export type OperationsRestartRequest = z.infer<typeof operationsRestartRequestSchema>;
+
+export const operationsRestartApprovalInputSchema = z.strictObject({
+  callSha256: sha256Schema,
+  approvalId: whiskersNativeApprovalIdSchema,
+});
+
 export const operationsTargetInputSchema = z.strictObject({
   environmentId: idSchema,
   releaseTargetRevision: revision,
