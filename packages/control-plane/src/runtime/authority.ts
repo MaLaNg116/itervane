@@ -67,6 +67,7 @@ export async function appendEvent(tx: Transaction, task: TaskRow, type: string, 
     repair?: { runId: string; repairResultSha256: string };
     verification?: { runId: string; verificationResultSha256: string };
     operations?: { runId: string; releaseOperationId: string; observationSha256: string; fence: number; diagnosisSha256?: string };
+    operationsExecution?: { executionId: string; proposalId: string; fence?: number };
     releaseCandidate?: { candidateId: string; fingerprint: string };
     releaseDecision?: { candidateId: string; fingerprint: string; decisionVersion: number; operationId?: string; fence?: number; rolloutFence?: number };
     retry?: { runId: string; previousRunId: string; retrySha256: string } } = {}) {
@@ -77,7 +78,8 @@ export async function appendEvent(tx: Transaction, task: TaskRow, type: string, 
   await tx.insert(taskEvents).values({ taskId: task.id, sequence: next.version, type, state,
     actorId: options.actorId ?? task.requestedBy, actorKind: options.workerId ? 'worker' : 'principal', workerId: options.workerId ?? null,
     detail: { ...(options.reason ? { reason: options.reason } : {}), ...options.observation, ...options.audit, ...options.repair,
-      ...options.verification, ...options.operations, ...options.releaseCandidate, ...options.releaseDecision, ...options.retry } });
+      ...options.verification, ...options.operations, ...options.operationsExecution, ...options.releaseCandidate, ...options.releaseDecision,
+      ...options.retry } });
   return next;
 }
 

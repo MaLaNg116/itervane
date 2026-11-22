@@ -1,0 +1,5195 @@
+{
+  "id": "800a0c4e-07d1-45ca-b968-401f4c08e5f8",
+  "prevId": "a766e5f9-f1f5-43e0-957e-6291d86d5830",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "itervane.applications": {
+      "name": "applications",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "applications_project_id_projects_id_fk": {
+          "name": "applications_project_id_projects_id_fk",
+          "tableFrom": "applications",
+          "tableTo": "projects",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "application_project_pair": {
+          "name": "application_project_pair",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "project_id"
+          ]
+        },
+        "application_name_unique": {
+          "name": "application_name_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "project_id",
+            "name"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "itervane.checkpoint_write_receipts": {
+      "name": "checkpoint_write_receipts",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "graph": {
+          "name": "graph",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'preflight'"
+        },
+        "checkpoint_id": {
+          "name": "checkpoint_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "write_hash": {
+          "name": "write_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "checkpoint_write_receipts_run_id_task_runs_id_fk": {
+          "name": "checkpoint_write_receipts_run_id_task_runs_id_fk",
+          "tableFrom": "checkpoint_write_receipts",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "checkpoint_write_receipts_run_id_graph_checkpoint_id_write_hash_pk": {
+          "name": "checkpoint_write_receipts_run_id_graph_checkpoint_id_write_hash_pk",
+          "columns": [
+            "run_id",
+            "graph",
+            "checkpoint_id",
+            "write_hash"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "checkpoint_write_graph": {
+          "name": "checkpoint_write_graph",
+          "value": "\"itervane\".\"checkpoint_write_receipts\".\"graph\" IN ('preflight', 'audit', 'repair', 'verify', 'operations')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.environments": {
+      "name": "environments",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "application_id": {
+          "name": "application_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "access": {
+          "name": "access",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'protected'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "environments_project_id_projects_id_fk": {
+          "name": "environments_project_id_projects_id_fk",
+          "tableFrom": "environments",
+          "tableTo": "projects",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "environment_application_project_fk": {
+          "name": "environment_application_project_fk",
+          "tableFrom": "environments",
+          "tableTo": "applications",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "application_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "environment_project_application": {
+          "name": "environment_project_application",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "project_id",
+            "application_id"
+          ]
+        },
+        "environment_name_unique": {
+          "name": "environment_name_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "application_id",
+            "name"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "environment_protected": {
+          "name": "environment_protected",
+          "value": "\"itervane\".\"environments\".\"access\" = 'protected'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.execution_slot": {
+      "name": "execution_slot",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fence": {
+          "name": "fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "lease_until": {
+          "name": "lease_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'-infinity'::timestamptz"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "execution_slot_task_id_tasks_id_fk": {
+          "name": "execution_slot_task_id_tasks_id_fk",
+          "tableFrom": "execution_slot",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "execution_slot_run_id_task_runs_id_fk": {
+          "name": "execution_slot_run_id_task_runs_id_fk",
+          "tableFrom": "execution_slot",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "one_execution_slot": {
+          "name": "one_execution_slot",
+          "value": "\"itervane\".\"execution_slot\".\"id\" = 1"
+        },
+        "slot_assignment": {
+          "name": "slot_assignment",
+          "value": "\n  (\"itervane\".\"execution_slot\".\"task_id\" IS NULL AND \"itervane\".\"execution_slot\".\"run_id\" IS NULL AND \"itervane\".\"execution_slot\".\"worker_id\" IS NULL)\n  OR (\"itervane\".\"execution_slot\".\"task_id\" IS NOT NULL AND \"itervane\".\"execution_slot\".\"run_id\" IS NOT NULL AND \"itervane\".\"execution_slot\".\"worker_id\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_audit_inputs": {
+      "name": "formal_audit_inputs",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "inspection_request_id": {
+          "name": "inspection_request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prepared_fence": {
+          "name": "prepared_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "formal_audit_inputs_inspection_request_id_inspection_attempts_request_id_fk": {
+          "name": "formal_audit_inputs_inspection_request_id_inspection_attempts_request_id_fk",
+          "tableFrom": "formal_audit_inputs",
+          "tableTo": "inspection_attempts",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "inspection_request_id"
+          ],
+          "columnsTo": [
+            "request_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "formal_audit_run_task": {
+          "name": "formal_audit_run_task",
+          "tableFrom": "formal_audit_inputs",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id",
+            "task_id"
+          ],
+          "columnsTo": [
+            "id",
+            "task_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "formal_audit_task_project": {
+          "name": "formal_audit_task_project",
+          "tableFrom": "formal_audit_inputs",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "task_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "formal_audit_input_binding": {
+          "name": "formal_audit_input_binding",
+          "value": "(\"itervane\".\"formal_audit_inputs\".\"prepared_fence\" > 0 AND \"itervane\".\"formal_audit_inputs\".\"sha256\" ~ '^[a-f0-9]{64}$'\n    AND \"itervane\".\"formal_audit_inputs\".\"document\"->>'version' = '1' AND \"itervane\".\"formal_audit_inputs\".\"document\"->>'taskId' = \"itervane\".\"formal_audit_inputs\".\"task_id\"::text AND \"itervane\".\"formal_audit_inputs\".\"document\"->>'runId' = \"itervane\".\"formal_audit_inputs\".\"run_id\"::text\n    AND \"itervane\".\"formal_audit_inputs\".\"document\"->>'projectId' = \"itervane\".\"formal_audit_inputs\".\"project_id\"::text AND \"itervane\".\"formal_audit_inputs\".\"document\"#>>'{inspection,requestId}' = \"itervane\".\"formal_audit_inputs\".\"inspection_request_id\"::text\n    AND octet_length(\"itervane\".\"formal_audit_inputs\".\"document\"::text) <= 65536) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_audit_results": {
+      "name": "formal_audit_results",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "input_sha256": {
+          "name": "input_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_id": {
+          "name": "checkpoint_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "finalized_fence": {
+          "name": "finalized_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "formal_audit_results_run_id_formal_audit_runtime_run_id_fk": {
+          "name": "formal_audit_results_run_id_formal_audit_runtime_run_id_fk",
+          "tableFrom": "formal_audit_results",
+          "tableTo": "formal_audit_runtime",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "formal_audit_result_binding": {
+          "name": "formal_audit_result_binding",
+          "value": "(\"itervane\".\"formal_audit_results\".\"finalized_fence\" > 0 AND \"itervane\".\"formal_audit_results\".\"sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"formal_audit_results\".\"input_sha256\" ~ '^[a-f0-9]{64}$'\n  AND \"itervane\".\"formal_audit_results\".\"document\"->>'version' = '1' AND \"itervane\".\"formal_audit_results\".\"document\"->>'runId' = \"itervane\".\"formal_audit_results\".\"run_id\"::text\n  AND \"itervane\".\"formal_audit_results\".\"document\"->>'inputSha256' = \"itervane\".\"formal_audit_results\".\"input_sha256\" AND \"itervane\".\"formal_audit_results\".\"document\"->>'checkpointId' = \"itervane\".\"formal_audit_results\".\"checkpoint_id\"\n  AND octet_length(\"itervane\".\"formal_audit_results\".\"document\"::text) <= 98304) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_audit_runtime": {
+      "name": "formal_audit_runtime",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "input_sha256": {
+          "name": "input_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_id": {
+          "name": "checkpoint_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_step": {
+          "name": "checkpoint_step",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "published_fence": {
+          "name": "published_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "formal_audit_runtime_run_id_formal_audit_inputs_run_id_fk": {
+          "name": "formal_audit_runtime_run_id_formal_audit_inputs_run_id_fk",
+          "tableFrom": "formal_audit_runtime",
+          "tableTo": "formal_audit_inputs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "formal_audit_runtime_binding": {
+          "name": "formal_audit_runtime_binding",
+          "value": "\"itervane\".\"formal_audit_runtime\".\"input_sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"formal_audit_runtime\".\"checkpoint_step\" >= -1 AND \"itervane\".\"formal_audit_runtime\".\"published_fence\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_release_rollout_attempts": {
+      "name": "formal_release_rollout_attempts",
+      "schema": "itervane",
+      "columns": {
+        "operation_id": {
+          "name": "operation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fence": {
+          "name": "fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'observing'"
+        },
+        "lease_until": {
+          "name": "lease_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "proof": {
+          "name": "proof",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure": {
+          "name": "failure",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "one_formal_rollout_observer": {
+          "name": "one_formal_rollout_observer",
+          "columns": [
+            {
+              "expression": "(1)",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"itervane\".\"formal_release_rollout_attempts\".\"state\" = 'observing'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "formal_release_rollout_attempts_operation_id_release_operations_id_fk": {
+          "name": "formal_release_rollout_attempts_operation_id_release_operations_id_fk",
+          "tableFrom": "formal_release_rollout_attempts",
+          "tableTo": "release_operations",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "operation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "formal_release_rollout_attempts_operation_id_fence_pk": {
+          "name": "formal_release_rollout_attempts_operation_id_fence_pk",
+          "columns": [
+            "operation_id",
+            "fence"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "formal_rollout_fence": {
+          "name": "formal_rollout_fence",
+          "value": "\"itervane\".\"formal_release_rollout_attempts\".\"fence\" BETWEEN 1 AND 3"
+        },
+        "formal_rollout_state": {
+          "name": "formal_rollout_state",
+          "value": "(\"itervane\".\"formal_release_rollout_attempts\".\"state\" IN ('observing', 'verified', 'rejected') OR (\"itervane\".\"formal_release_rollout_attempts\".\"state\" = 'expired' AND \"itervane\".\"formal_release_rollout_attempts\".\"fence\" < 3)\n    OR (\"itervane\".\"formal_release_rollout_attempts\".\"state\" = 'manual_review' AND \"itervane\".\"formal_release_rollout_attempts\".\"fence\" = 3))"
+        },
+        "formal_rollout_lease": {
+          "name": "formal_rollout_lease",
+          "value": "\"itervane\".\"formal_release_rollout_attempts\".\"lease_until\" > \"itervane\".\"formal_release_rollout_attempts\".\"created_at\"\n    AND \"itervane\".\"formal_release_rollout_attempts\".\"lease_until\" <= \"itervane\".\"formal_release_rollout_attempts\".\"created_at\" + interval '45 seconds'"
+        },
+        "formal_rollout_outcome": {
+          "name": "formal_rollout_outcome",
+          "value": "(\n    (\"itervane\".\"formal_release_rollout_attempts\".\"state\" NOT IN ('verified', 'rejected') AND \"itervane\".\"formal_release_rollout_attempts\".\"proof\" IS NULL AND \"itervane\".\"formal_release_rollout_attempts\".\"failure\" IS NULL AND \"itervane\".\"formal_release_rollout_attempts\".\"completed_at\" IS NULL)\n    OR (\"itervane\".\"formal_release_rollout_attempts\".\"completed_at\" >= \"itervane\".\"formal_release_rollout_attempts\".\"created_at\" AND \"itervane\".\"formal_release_rollout_attempts\".\"completed_at\" < \"itervane\".\"formal_release_rollout_attempts\".\"lease_until\" AND (\n      (\"itervane\".\"formal_release_rollout_attempts\".\"state\" = 'verified' AND jsonb_typeof(\"itervane\".\"formal_release_rollout_attempts\".\"proof\") = 'object' AND octet_length(\"itervane\".\"formal_release_rollout_attempts\".\"proof\"::text) <= 8192 AND \"itervane\".\"formal_release_rollout_attempts\".\"failure\" IS NULL)\n      OR (\"itervane\".\"formal_release_rollout_attempts\".\"state\" = 'rejected' AND \"itervane\".\"formal_release_rollout_attempts\".\"proof\" IS NULL AND \"itervane\".\"formal_release_rollout_attempts\".\"failure\" IN (\n        'release_rollout_update_failed', 'release_rollout_update_changed', 'release_rollout_runtime_changed',\n        'release_rollout_ingress_changed', 'release_rollout_health_failed', 'release_rollout_unavailable'\n      ))\n    ))\n  ) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_release_steps": {
+      "name": "formal_release_steps",
+      "schema": "itervane",
+      "columns": {
+        "operation_id": {
+          "name": "operation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prepared_fence": {
+          "name": "prepared_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prepared_by": {
+          "name": "prepared_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'prepared'"
+        },
+        "proof": {
+          "name": "proof",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "intent": {
+          "name": "intent",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_update_id": {
+          "name": "external_update_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_fence": {
+          "name": "settled_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_by": {
+          "name": "settled_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "formal_release_single_registry_intent": {
+          "name": "formal_release_single_registry_intent",
+          "columns": [
+            {
+              "expression": "operation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"itervane\".\"formal_release_steps\".\"kind\" = 'registry'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "formal_release_single_komodo_intent": {
+          "name": "formal_release_single_komodo_intent",
+          "columns": [
+            {
+              "expression": "operation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"itervane\".\"formal_release_steps\".\"kind\" IN ('komodo_config', 'komodo_dispatch')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "formal_release_komodo_update_unique": {
+          "name": "formal_release_komodo_update_unique",
+          "columns": [
+            {
+              "expression": "(\"intent\"->>'origin')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "external_update_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"itervane\".\"formal_release_steps\".\"kind\" = 'komodo_dispatch' AND \"itervane\".\"formal_release_steps\".\"external_update_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "formal_release_steps_operation_id_release_operations_id_fk": {
+          "name": "formal_release_steps_operation_id_release_operations_id_fk",
+          "tableFrom": "formal_release_steps",
+          "tableTo": "release_operations",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "operation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "formal_release_steps_operation_id_kind_prepared_fence_pk": {
+          "name": "formal_release_steps_operation_id_kind_prepared_fence_pk",
+          "columns": [
+            "operation_id",
+            "kind",
+            "prepared_fence"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "formal_release_step_kind": {
+          "name": "formal_release_step_kind",
+          "value": "\"itervane\".\"formal_release_steps\".\"kind\" IN ('archive', 'registry', 'komodo_config', 'komodo_dispatch') AND \"itervane\".\"formal_release_steps\".\"prepared_fence\" > 0"
+        },
+        "formal_release_step_intent": {
+          "name": "formal_release_step_intent",
+          "value": "(\n    (\"itervane\".\"formal_release_steps\".\"kind\" IN ('archive', 'registry') AND \"itervane\".\"formal_release_steps\".\"intent\" IS NULL)\n    OR (\"itervane\".\"formal_release_steps\".\"kind\" IN ('komodo_config', 'komodo_dispatch') AND jsonb_typeof(\"itervane\".\"formal_release_steps\".\"intent\") = 'object'\n      AND octet_length(\"itervane\".\"formal_release_steps\".\"intent\"::text) <= 8192)\n  ) IS TRUE"
+        },
+        "formal_release_step_update_id": {
+          "name": "formal_release_step_update_id",
+          "value": "(\n    (\"itervane\".\"formal_release_steps\".\"external_update_id\" IS NULL AND (\"itervane\".\"formal_release_steps\".\"kind\" <> 'komodo_dispatch' OR \"itervane\".\"formal_release_steps\".\"state\" <> 'confirmed'))\n    OR (\"itervane\".\"formal_release_steps\".\"kind\" = 'komodo_dispatch' AND \"itervane\".\"formal_release_steps\".\"external_update_id\" ~ '^[0-9a-f]{24}$')\n  ) IS TRUE"
+        },
+        "formal_release_step_state": {
+          "name": "formal_release_step_state",
+          "value": "(\n    (\"itervane\".\"formal_release_steps\".\"state\" = 'prepared' AND \"itervane\".\"formal_release_steps\".\"proof\" IS NULL AND \"itervane\".\"formal_release_steps\".\"settled_fence\" IS NULL AND \"itervane\".\"formal_release_steps\".\"settled_by\" IS NULL AND \"itervane\".\"formal_release_steps\".\"settled_at\" IS NULL)\n    OR (\"itervane\".\"formal_release_steps\".\"state\" IN ('confirmed', 'uncertain') AND \"itervane\".\"formal_release_steps\".\"settled_fence\" >= \"itervane\".\"formal_release_steps\".\"prepared_fence\"\n      AND \"itervane\".\"formal_release_steps\".\"settled_by\" IS NOT NULL AND \"itervane\".\"formal_release_steps\".\"settled_at\" IS NOT NULL AND (\n        (\"itervane\".\"formal_release_steps\".\"state\" = 'confirmed' AND \"itervane\".\"formal_release_steps\".\"proof\" IS NOT NULL AND octet_length(\"itervane\".\"formal_release_steps\".\"proof\"::text) <= 8192)\n        OR (\"itervane\".\"formal_release_steps\".\"kind\" = 'registry' AND \"itervane\".\"formal_release_steps\".\"state\" = 'uncertain' AND \"itervane\".\"formal_release_steps\".\"proof\" IS NULL)\n      ))\n  ) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_release_targets": {
+      "name": "formal_release_targets",
+      "schema": "itervane",
+      "columns": {
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "application_id": {
+          "name": "application_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "deployment_id": {
+          "name": "deployment_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "formal_release_target_environment_fk": {
+          "name": "formal_release_target_environment_fk",
+          "tableFrom": "formal_release_targets",
+          "tableTo": "environments",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "environment_id",
+            "project_id",
+            "application_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id",
+            "application_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "formal_release_target_deployment_unique": {
+          "name": "formal_release_target_deployment_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "deployment_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "formal_release_target_binding": {
+          "name": "formal_release_target_binding",
+          "value": "(\"itervane\".\"formal_release_targets\".\"revision\" > 0 AND \"itervane\".\"formal_release_targets\".\"sha256\" ~ '^[a-f0-9]{64}$'\n    AND \"itervane\".\"formal_release_targets\".\"deployment_id\" ~ '^[a-f0-9]{24}$' AND \"itervane\".\"formal_release_targets\".\"document\"->>'deploymentId' = \"itervane\".\"formal_release_targets\".\"deployment_id\"\n    AND \"itervane\".\"formal_release_targets\".\"document\"->>'environmentId' = \"itervane\".\"formal_release_targets\".\"environment_id\"::text AND octet_length(\"itervane\".\"formal_release_targets\".\"document\"::text) <= 4096) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_repair_attempts": {
+      "name": "formal_repair_attempts",
+      "schema": "itervane",
+      "columns": {
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "operation_id": {
+          "name": "operation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fence": {
+          "name": "fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workspace_sha256": {
+          "name": "workspace_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "image_sha256": {
+          "name": "image_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "origin_sha256": {
+          "name": "origin_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'reserved'"
+        },
+        "settled_fence": {
+          "name": "settled_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_worker_id": {
+          "name": "settled_worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "receipt_sha256": {
+          "name": "receipt_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "receipt": {
+          "name": "receipt",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "formal_repair_open_attempt": {
+          "name": "formal_repair_open_attempt",
+          "columns": [
+            {
+              "expression": "operation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"itervane\".\"formal_repair_attempts\".\"state\" <> 'closed'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "formal_repair_attempts_operation_id_formal_repair_operations_operation_id_fk": {
+          "name": "formal_repair_attempts_operation_id_formal_repair_operations_operation_id_fk",
+          "tableFrom": "formal_repair_attempts",
+          "tableTo": "formal_repair_operations",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "operation_id"
+          ],
+          "columnsTo": [
+            "operation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "formal_repair_attempt_per_fence": {
+          "name": "formal_repair_attempt_per_fence",
+          "nullsNotDistinct": false,
+          "columns": [
+            "operation_id",
+            "fence"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "formal_repair_attempt_coordinates": {
+          "name": "formal_repair_attempt_coordinates",
+          "value": "\"itervane\".\"formal_repair_attempts\".\"fence\" > 0 AND \"itervane\".\"formal_repair_attempts\".\"workspace_sha256\" ~ '^[a-f0-9]{64}$'\n    AND \"itervane\".\"formal_repair_attempts\".\"image_sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"formal_repair_attempts\".\"origin_sha256\" ~ '^[a-f0-9]{64}$'"
+        },
+        "formal_repair_attempt_state": {
+          "name": "formal_repair_attempt_state",
+          "value": "(\n    (\"itervane\".\"formal_repair_attempts\".\"state\" = 'reserved' AND \"itervane\".\"formal_repair_attempts\".\"settled_fence\" IS NULL AND \"itervane\".\"formal_repair_attempts\".\"settled_worker_id\" IS NULL AND \"itervane\".\"formal_repair_attempts\".\"settled_at\" IS NULL)\n    OR (\"itervane\".\"formal_repair_attempts\".\"state\" IN ('closed', 'uncertain', 'recorded') AND \"itervane\".\"formal_repair_attempts\".\"settled_fence\" >= \"itervane\".\"formal_repair_attempts\".\"fence\"\n      AND \"itervane\".\"formal_repair_attempts\".\"settled_worker_id\" IS NOT NULL AND \"itervane\".\"formal_repair_attempts\".\"settled_at\" IS NOT NULL)) IS TRUE"
+        },
+        "formal_repair_attempt_receipt": {
+          "name": "formal_repair_attempt_receipt",
+          "value": "(\n    (\"itervane\".\"formal_repair_attempts\".\"state\" <> 'recorded' AND \"itervane\".\"formal_repair_attempts\".\"receipt\" IS NULL AND \"itervane\".\"formal_repair_attempts\".\"receipt_sha256\" IS NULL)\n    OR (\"itervane\".\"formal_repair_attempts\".\"state\" = 'recorded' AND \"itervane\".\"formal_repair_attempts\".\"settled_fence\" = \"itervane\".\"formal_repair_attempts\".\"fence\" AND \"itervane\".\"formal_repair_attempts\".\"settled_worker_id\" = \"itervane\".\"formal_repair_attempts\".\"worker_id\"\n      AND \"itervane\".\"formal_repair_attempts\".\"receipt_sha256\" ~ '^[a-f0-9]{64}$' AND octet_length(\"itervane\".\"formal_repair_attempts\".\"receipt\"::text) <= 32768\n      AND \"itervane\".\"formal_repair_attempts\".\"receipt\"->>'kind' = 'repair_receipt' AND \"itervane\".\"formal_repair_attempts\".\"receipt\"->'cleanupConfirmed' = 'true'::jsonb\n      AND \"itervane\".\"formal_repair_attempts\".\"receipt\"->'sessionVerified' = 'true'::jsonb AND \"itervane\".\"formal_repair_attempts\".\"receipt\"->>'originSha256' = \"itervane\".\"formal_repair_attempts\".\"origin_sha256\"\n      AND \"itervane\".\"formal_repair_attempts\".\"receipt\"->>'imageSha256' = \"itervane\".\"formal_repair_attempts\".\"image_sha256\"\n      AND \"itervane\".\"formal_repair_attempts\".\"receipt\"#>>'{scope,requestId}' = \"itervane\".\"formal_repair_attempts\".\"request_id\"::text AND \"itervane\".\"formal_repair_attempts\".\"receipt\"#>>'{scope,operationId}' = \"itervane\".\"formal_repair_attempts\".\"operation_id\"::text\n      AND \"itervane\".\"formal_repair_attempts\".\"receipt\"#>>'{scope,workspaceSha256}' = \"itervane\".\"formal_repair_attempts\".\"workspace_sha256\" AND \"itervane\".\"formal_repair_attempts\".\"receipt\"#>>'{scope,fence}' = \"itervane\".\"formal_repair_attempts\".\"fence\"::text\n      AND \"itervane\".\"formal_repair_attempts\".\"receipt\"->>'domainId' = \"itervane\".\"formal_repair_attempts\".\"receipt\"#>>'{snapshot,runId}'\n      AND \"itervane\".\"formal_repair_attempts\".\"receipt\"#>'{snapshot,offline}' = 'true'::jsonb AND \"itervane\".\"formal_repair_attempts\".\"receipt\"#>'{snapshot,readOnly}' = 'true'::jsonb)\n  ) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_repair_inputs": {
+      "name": "formal_repair_inputs",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "prepared_fence": {
+          "name": "prepared_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "formal_repair_inputs_run_id_formal_audit_results_run_id_fk": {
+          "name": "formal_repair_inputs_run_id_formal_audit_results_run_id_fk",
+          "tableFrom": "formal_repair_inputs",
+          "tableTo": "formal_audit_results",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "formal_repair_input_binding": {
+          "name": "formal_repair_input_binding",
+          "value": "(\"itervane\".\"formal_repair_inputs\".\"prepared_fence\" > 0 AND \"itervane\".\"formal_repair_inputs\".\"sha256\" ~ '^[a-f0-9]{64}$'\n  AND \"itervane\".\"formal_repair_inputs\".\"document\"->>'version' = '1' AND \"itervane\".\"formal_repair_inputs\".\"document\"->>'runId' = \"itervane\".\"formal_repair_inputs\".\"run_id\"::text\n  AND octet_length(\"itervane\".\"formal_repair_inputs\".\"document\"::text) <= 8192) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_repair_operations": {
+      "name": "formal_repair_operations",
+      "schema": "itervane",
+      "columns": {
+        "operation_id": {
+          "name": "operation_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "call_key_sha256": {
+          "name": "call_key_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_sha256": {
+          "name": "input_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "command_sha256": {
+          "name": "command_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "command": {
+          "name": "command",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "finding_ids": {
+          "name": "finding_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prepared_fence": {
+          "name": "prepared_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "formal_repair_operations_run_id_formal_repair_inputs_run_id_fk": {
+          "name": "formal_repair_operations_run_id_formal_repair_inputs_run_id_fk",
+          "tableFrom": "formal_repair_operations",
+          "tableTo": "formal_repair_inputs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "formal_repair_operation_call": {
+          "name": "formal_repair_operation_call",
+          "nullsNotDistinct": false,
+          "columns": [
+            "run_id",
+            "call_key_sha256"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "formal_repair_operation_command": {
+          "name": "formal_repair_operation_command",
+          "value": "(\"itervane\".\"formal_repair_operations\".\"prepared_fence\" > 0 AND \"itervane\".\"formal_repair_operations\".\"call_key_sha256\" ~ '^[a-f0-9]{64}$'\n    AND \"itervane\".\"formal_repair_operations\".\"input_sha256\" ~ '^[a-f0-9]{64}$' AND octet_length(\"itervane\".\"formal_repair_operations\".\"command\") BETWEEN 1 AND 2097152\n    AND \"itervane\".\"formal_repair_operations\".\"command_sha256\" = encode(sha256(convert_to(\"itervane\".\"formal_repair_operations\".\"command\", 'UTF8')), 'hex')\n    AND \"itervane\".\"formal_repair_operations\".\"command\"::jsonb#>>'{workspace,operationId}' = \"itervane\".\"formal_repair_operations\".\"operation_id\"::text\n    AND \"itervane\".\"formal_repair_operations\".\"command\"::jsonb#>>'{workspace,repairInputSha256}' = \"itervane\".\"formal_repair_operations\".\"input_sha256\"\n    AND jsonb_typeof(\"itervane\".\"formal_repair_operations\".\"finding_ids\") = 'array' AND jsonb_array_length(\"itervane\".\"formal_repair_operations\".\"finding_ids\") BETWEEN 1 AND 32) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_repair_results": {
+      "name": "formal_repair_results",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "input_sha256": {
+          "name": "input_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_id": {
+          "name": "checkpoint_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "finalized_fence": {
+          "name": "finalized_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "formal_repair_results_run_id_formal_repair_runtime_run_id_fk": {
+          "name": "formal_repair_results_run_id_formal_repair_runtime_run_id_fk",
+          "tableFrom": "formal_repair_results",
+          "tableTo": "formal_repair_runtime",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "formal_repair_results_request_id_formal_repair_attempts_request_id_fk": {
+          "name": "formal_repair_results_request_id_formal_repair_attempts_request_id_fk",
+          "tableFrom": "formal_repair_results",
+          "tableTo": "formal_repair_attempts",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "request_id"
+          ],
+          "columnsTo": [
+            "request_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "formal_repair_result_binding": {
+          "name": "formal_repair_result_binding",
+          "value": "(\"itervane\".\"formal_repair_results\".\"finalized_fence\" > 0 AND \"itervane\".\"formal_repair_results\".\"sha256\" ~ '^[a-f0-9]{64}$'\n  AND \"itervane\".\"formal_repair_results\".\"input_sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"formal_repair_results\".\"document\"->>'version' = '1' AND \"itervane\".\"formal_repair_results\".\"document\"->>'runId' = \"itervane\".\"formal_repair_results\".\"run_id\"::text\n  AND \"itervane\".\"formal_repair_results\".\"document\"->>'inputSha256' = \"itervane\".\"formal_repair_results\".\"input_sha256\" AND \"itervane\".\"formal_repair_results\".\"document\"->>'checkpointId' = \"itervane\".\"formal_repair_results\".\"checkpoint_id\"\n  AND \"itervane\".\"formal_repair_results\".\"document\"->'releaseEligible' = 'false'::jsonb AND octet_length(\"itervane\".\"formal_repair_results\".\"document\"::text) <= 16384\n  AND ((\"itervane\".\"formal_repair_results\".\"request_id\" IS NOT NULL AND \"itervane\".\"formal_repair_results\".\"document\"->>'status' = 'candidate_ready' AND \"itervane\".\"formal_repair_results\".\"document\"->>'reason' = 'repair_complete'\n      AND jsonb_typeof(\"itervane\".\"formal_repair_results\".\"document\"->'candidate') = 'object')\n    OR (\"itervane\".\"formal_repair_results\".\"request_id\" IS NULL AND \"itervane\".\"formal_repair_results\".\"document\"->>'status' = 'requires_human' AND \"itervane\".\"formal_repair_results\".\"document\"->'candidate' = 'null'::jsonb))) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_repair_retries": {
+      "name": "formal_repair_retries",
+      "schema": "itervane",
+      "columns": {
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "previous_run_id": {
+          "name": "previous_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prepared_fence": {
+          "name": "prepared_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "formal_repair_retries_task_id_tasks_id_fk": {
+          "name": "formal_repair_retries_task_id_tasks_id_fk",
+          "tableFrom": "formal_repair_retries",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "formal_repair_retries_previous_run_id_formal_verification_results_run_id_fk": {
+          "name": "formal_repair_retries_previous_run_id_formal_verification_results_run_id_fk",
+          "tableFrom": "formal_repair_retries",
+          "tableTo": "formal_verification_results",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "previous_run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "formal_repair_retry_task_run_fk": {
+          "name": "formal_repair_retry_task_run_fk",
+          "tableFrom": "formal_repair_retries",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id",
+            "task_id"
+          ],
+          "columnsTo": [
+            "id",
+            "task_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "formal_repair_retry_run": {
+          "name": "formal_repair_retry_run",
+          "nullsNotDistinct": false,
+          "columns": [
+            "run_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "formal_repair_retry_binding": {
+          "name": "formal_repair_retry_binding",
+          "value": "(\"itervane\".\"formal_repair_retries\".\"prepared_fence\" > 0 AND \"itervane\".\"formal_repair_retries\".\"sha256\" ~ '^[a-f0-9]{64}$'\n    AND \"itervane\".\"formal_repair_retries\".\"document\"->>'version' = '1' AND \"itervane\".\"formal_repair_retries\".\"document\"->>'taskId' = \"itervane\".\"formal_repair_retries\".\"task_id\"::text AND \"itervane\".\"formal_repair_retries\".\"document\"->>'runId' = \"itervane\".\"formal_repair_retries\".\"run_id\"::text\n    AND \"itervane\".\"formal_repair_retries\".\"document\"#>>'{previous,previousRunId}' = \"itervane\".\"formal_repair_retries\".\"previous_run_id\"::text AND \"itervane\".\"formal_repair_retries\".\"previous_run_id\" <> \"itervane\".\"formal_repair_retries\".\"run_id\"\n    AND octet_length(\"itervane\".\"formal_repair_retries\".\"document\"::text) <= 8192) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_repair_runtime": {
+      "name": "formal_repair_runtime",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "input_sha256": {
+          "name": "input_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_id": {
+          "name": "checkpoint_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_step": {
+          "name": "checkpoint_step",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "published_fence": {
+          "name": "published_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "formal_repair_runtime_run_id_formal_repair_inputs_run_id_fk": {
+          "name": "formal_repair_runtime_run_id_formal_repair_inputs_run_id_fk",
+          "tableFrom": "formal_repair_runtime",
+          "tableTo": "formal_repair_inputs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "formal_repair_runtime_binding": {
+          "name": "formal_repair_runtime_binding",
+          "value": "\"itervane\".\"formal_repair_runtime\".\"input_sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"formal_repair_runtime\".\"checkpoint_step\" >= -1 AND \"itervane\".\"formal_repair_runtime\".\"published_fence\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_rescan_attempts": {
+      "name": "formal_rescan_attempts",
+      "schema": "itervane",
+      "columns": {
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_sha256": {
+          "name": "input_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fence": {
+          "name": "fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workspace_sha256": {
+          "name": "workspace_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "image_sha256": {
+          "name": "image_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "origin_sha256": {
+          "name": "origin_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'reserved'"
+        },
+        "settled_fence": {
+          "name": "settled_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_worker_id": {
+          "name": "settled_worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "receipt_sha256": {
+          "name": "receipt_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "receipt": {
+          "name": "receipt",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "formal_rescan_open_attempt": {
+          "name": "formal_rescan_open_attempt",
+          "columns": [
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"itervane\".\"formal_rescan_attempts\".\"state\" <> 'closed'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "formal_rescan_attempts_run_id_formal_verification_inputs_run_id_fk": {
+          "name": "formal_rescan_attempts_run_id_formal_verification_inputs_run_id_fk",
+          "tableFrom": "formal_rescan_attempts",
+          "tableTo": "formal_verification_inputs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "formal_rescan_attempt_per_fence": {
+          "name": "formal_rescan_attempt_per_fence",
+          "nullsNotDistinct": false,
+          "columns": [
+            "run_id",
+            "fence"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "formal_rescan_attempt_coordinates": {
+          "name": "formal_rescan_attempt_coordinates",
+          "value": "\"itervane\".\"formal_rescan_attempts\".\"fence\" > 0 AND \"itervane\".\"formal_rescan_attempts\".\"input_sha256\" ~ '^[a-f0-9]{64}$'\n    AND \"itervane\".\"formal_rescan_attempts\".\"workspace_sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"formal_rescan_attempts\".\"image_sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"formal_rescan_attempts\".\"origin_sha256\" ~ '^[a-f0-9]{64}$'"
+        },
+        "formal_rescan_attempt_state": {
+          "name": "formal_rescan_attempt_state",
+          "value": "((\"itervane\".\"formal_rescan_attempts\".\"state\" = 'reserved' AND \"itervane\".\"formal_rescan_attempts\".\"settled_fence\" IS NULL\n    AND \"itervane\".\"formal_rescan_attempts\".\"settled_worker_id\" IS NULL AND \"itervane\".\"formal_rescan_attempts\".\"settled_at\" IS NULL) OR (\"itervane\".\"formal_rescan_attempts\".\"state\" IN ('closed', 'uncertain', 'recorded')\n    AND \"itervane\".\"formal_rescan_attempts\".\"settled_fence\" >= \"itervane\".\"formal_rescan_attempts\".\"fence\" AND \"itervane\".\"formal_rescan_attempts\".\"settled_worker_id\" IS NOT NULL AND \"itervane\".\"formal_rescan_attempts\".\"settled_at\" IS NOT NULL)) IS TRUE"
+        },
+        "formal_rescan_attempt_receipt": {
+          "name": "formal_rescan_attempt_receipt",
+          "value": "((\"itervane\".\"formal_rescan_attempts\".\"state\" <> 'recorded' AND \"itervane\".\"formal_rescan_attempts\".\"receipt_sha256\" IS NULL AND \"itervane\".\"formal_rescan_attempts\".\"receipt\" IS NULL) OR (\n    \"itervane\".\"formal_rescan_attempts\".\"state\" = 'recorded' AND \"itervane\".\"formal_rescan_attempts\".\"settled_fence\" = \"itervane\".\"formal_rescan_attempts\".\"fence\" AND \"itervane\".\"formal_rescan_attempts\".\"settled_worker_id\" = \"itervane\".\"formal_rescan_attempts\".\"worker_id\"\n    AND \"itervane\".\"formal_rescan_attempts\".\"receipt_sha256\" ~ '^[a-f0-9]{64}$' AND octet_length(\"itervane\".\"formal_rescan_attempts\".\"receipt\"::text) <= 9437184\n    AND \"itervane\".\"formal_rescan_attempts\".\"receipt\"->>'kind' = 'verification_receipt' AND \"itervane\".\"formal_rescan_attempts\".\"receipt\"->'cleanupConfirmed' = 'true'::jsonb\n    AND \"itervane\".\"formal_rescan_attempts\".\"receipt\"->'sessionVerified' = 'true'::jsonb AND \"itervane\".\"formal_rescan_attempts\".\"receipt\"->>'originSha256' = \"itervane\".\"formal_rescan_attempts\".\"origin_sha256\"\n    AND \"itervane\".\"formal_rescan_attempts\".\"receipt\"->>'imageSha256' = \"itervane\".\"formal_rescan_attempts\".\"image_sha256\" AND \"itervane\".\"formal_rescan_attempts\".\"receipt\"->>'domainId' = \"itervane\".\"formal_rescan_attempts\".\"receipt\"#>>'{snapshot,runId}'\n    AND \"itervane\".\"formal_rescan_attempts\".\"receipt\"#>>'{scope,requestId}' = \"itervane\".\"formal_rescan_attempts\".\"request_id\"::text AND \"itervane\".\"formal_rescan_attempts\".\"receipt\"#>>'{scope,runId}' = \"itervane\".\"formal_rescan_attempts\".\"run_id\"::text\n    AND \"itervane\".\"formal_rescan_attempts\".\"receipt\"#>>'{scope,fence}' = \"itervane\".\"formal_rescan_attempts\".\"fence\"::text AND \"itervane\".\"formal_rescan_attempts\".\"receipt\"#>>'{scope,workspaceSha256}' = \"itervane\".\"formal_rescan_attempts\".\"workspace_sha256\"\n    AND \"itervane\".\"formal_rescan_attempts\".\"receipt\"#>>'{scope,verificationInputSha256}' = \"itervane\".\"formal_rescan_attempts\".\"input_sha256\"\n    AND \"itervane\".\"formal_rescan_attempts\".\"receipt\"#>'{snapshot,offline}' = 'true'::jsonb AND \"itervane\".\"formal_rescan_attempts\".\"receipt\"#>'{snapshot,readOnly}' = 'true'::jsonb)) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_verification_inputs": {
+      "name": "formal_verification_inputs",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "prepared_fence": {
+          "name": "prepared_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "formal_verification_inputs_run_id_formal_repair_inputs_run_id_fk": {
+          "name": "formal_verification_inputs_run_id_formal_repair_inputs_run_id_fk",
+          "tableFrom": "formal_verification_inputs",
+          "tableTo": "formal_repair_inputs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "formal_verification_input_binding": {
+          "name": "formal_verification_input_binding",
+          "value": "(\"itervane\".\"formal_verification_inputs\".\"prepared_fence\" > 0 AND \"itervane\".\"formal_verification_inputs\".\"sha256\" ~ '^[a-f0-9]{64}$'\n  AND \"itervane\".\"formal_verification_inputs\".\"document\"->>'version' = '1' AND \"itervane\".\"formal_verification_inputs\".\"document\"->>'runId' = \"itervane\".\"formal_verification_inputs\".\"run_id\"::text\n  AND octet_length(\"itervane\".\"formal_verification_inputs\".\"document\"::text) <= 8192) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_verification_results": {
+      "name": "formal_verification_results",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_sha256": {
+          "name": "input_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "receipt_sha256": {
+          "name": "receipt_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_id": {
+          "name": "checkpoint_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "finalized_fence": {
+          "name": "finalized_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "formal_verification_results_run_id_formal_verification_runtime_run_id_fk": {
+          "name": "formal_verification_results_run_id_formal_verification_runtime_run_id_fk",
+          "tableFrom": "formal_verification_results",
+          "tableTo": "formal_verification_runtime",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "formal_verification_results_request_id_formal_rescan_attempts_request_id_fk": {
+          "name": "formal_verification_results_request_id_formal_rescan_attempts_request_id_fk",
+          "tableFrom": "formal_verification_results",
+          "tableTo": "formal_rescan_attempts",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "request_id"
+          ],
+          "columnsTo": [
+            "request_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "formal_verification_result_binding": {
+          "name": "formal_verification_result_binding",
+          "value": "(\"itervane\".\"formal_verification_results\".\"finalized_fence\" > 0 AND \"itervane\".\"formal_verification_results\".\"sha256\" ~ '^[a-f0-9]{64}$'\n  AND \"itervane\".\"formal_verification_results\".\"input_sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"formal_verification_results\".\"receipt_sha256\" ~ '^[a-f0-9]{64}$'\n  AND \"itervane\".\"formal_verification_results\".\"document\"->>'version' = '1' AND \"itervane\".\"formal_verification_results\".\"document\"->>'runId' = \"itervane\".\"formal_verification_results\".\"run_id\"::text AND \"itervane\".\"formal_verification_results\".\"document\"->>'requestId' = \"itervane\".\"formal_verification_results\".\"request_id\"::text\n  AND \"itervane\".\"formal_verification_results\".\"document\"->>'inputSha256' = \"itervane\".\"formal_verification_results\".\"input_sha256\" AND \"itervane\".\"formal_verification_results\".\"document\"->>'receiptSha256' = \"itervane\".\"formal_verification_results\".\"receipt_sha256\"\n  AND \"itervane\".\"formal_verification_results\".\"document\"->>'checkpointId' = \"itervane\".\"formal_verification_results\".\"checkpoint_id\" AND \"itervane\".\"formal_verification_results\".\"document\"->'releaseEligible' = 'false'::jsonb\n  AND octet_length(\"itervane\".\"formal_verification_results\".\"document\"::text) <= 16384\n  AND ((\"itervane\".\"formal_verification_results\".\"document\"->>'status' = 'reviewed' AND jsonb_typeof(\"itervane\".\"formal_verification_results\".\"document\"->'review') = 'object')\n    OR (\"itervane\".\"formal_verification_results\".\"document\"->>'status' = 'requires_human' AND \"itervane\".\"formal_verification_results\".\"document\"->'review' = 'null'::jsonb))) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.formal_verification_runtime": {
+      "name": "formal_verification_runtime",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "input_sha256": {
+          "name": "input_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "receipt_sha256": {
+          "name": "receipt_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_id": {
+          "name": "checkpoint_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_step": {
+          "name": "checkpoint_step",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "published_fence": {
+          "name": "published_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "formal_verification_runtime_run_id_formal_verification_inputs_run_id_fk": {
+          "name": "formal_verification_runtime_run_id_formal_verification_inputs_run_id_fk",
+          "tableFrom": "formal_verification_runtime",
+          "tableTo": "formal_verification_inputs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "formal_verification_runtime_binding": {
+          "name": "formal_verification_runtime_binding",
+          "value": "\"itervane\".\"formal_verification_runtime\".\"input_sha256\" ~ '^[a-f0-9]{64}$'\n  AND \"itervane\".\"formal_verification_runtime\".\"receipt_sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"formal_verification_runtime\".\"checkpoint_step\" >= -1 AND \"itervane\".\"formal_verification_runtime\".\"published_fence\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.inspection_attempts": {
+      "name": "inspection_attempts",
+      "schema": "itervane",
+      "columns": {
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "repository_id": {
+          "name": "repository_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "commit": {
+          "name": "commit",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fence": {
+          "name": "fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plan_sha256": {
+          "name": "plan_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "origin_sha256": {
+          "name": "origin_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "image_sha256": {
+          "name": "image_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workspace_sha256": {
+          "name": "workspace_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'reserved'"
+        },
+        "settled_fence": {
+          "name": "settled_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "receipt_sha256": {
+          "name": "receipt_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "receipt": {
+          "name": "receipt",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "inspection_open_attempt_per_run": {
+          "name": "inspection_open_attempt_per_run",
+          "columns": [
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"itervane\".\"inspection_attempts\".\"state\" <> 'closed'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "inspection_attempts_run_id_inspection_plans_run_id_fk": {
+          "name": "inspection_attempts_run_id_inspection_plans_run_id_fk",
+          "tableFrom": "inspection_attempts",
+          "tableTo": "inspection_plans",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inspection_attempt_run_task": {
+          "name": "inspection_attempt_run_task",
+          "tableFrom": "inspection_attempts",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id",
+            "task_id"
+          ],
+          "columnsTo": [
+            "id",
+            "task_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inspection_attempt_task_project": {
+          "name": "inspection_attempt_task_project",
+          "tableFrom": "inspection_attempts",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "task_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inspection_attempt_repository_project": {
+          "name": "inspection_attempt_repository_project",
+          "tableFrom": "inspection_attempts",
+          "tableTo": "repositories",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "repository_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "inspection_attempt_per_fence": {
+          "name": "inspection_attempt_per_fence",
+          "nullsNotDistinct": false,
+          "columns": [
+            "run_id",
+            "fence"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "inspection_attempt_workspace_binding": {
+          "name": "inspection_attempt_workspace_binding",
+          "value": "\"itervane\".\"inspection_attempts\".\"workspace_sha256\" IS NULL OR (\n    \"itervane\".\"inspection_attempts\".\"workspace_sha256\" ~ '^[a-f0-9]{64}$' AND (\"itervane\".\"inspection_attempts\".\"state\" <> 'recorded'\n    OR (\"itervane\".\"inspection_attempts\".\"receipt\"#>>'{scope,workspaceSha256}' = \"itervane\".\"inspection_attempts\".\"workspace_sha256\") IS TRUE))"
+        },
+        "inspection_attempt_coordinates": {
+          "name": "inspection_attempt_coordinates",
+          "value": "\n    \"itervane\".\"inspection_attempts\".\"generation\" > 0 AND \"itervane\".\"inspection_attempts\".\"fence\" > 0 AND \"itervane\".\"inspection_attempts\".\"commit\" ~ '^[a-f0-9]{40}$'\n    AND \"itervane\".\"inspection_attempts\".\"plan_sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"inspection_attempts\".\"origin_sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"inspection_attempts\".\"image_sha256\" ~ '^[a-f0-9]{64}$'"
+        },
+        "inspection_attempt_state": {
+          "name": "inspection_attempt_state",
+          "value": "(\n    (\"itervane\".\"inspection_attempts\".\"state\" = 'reserved' AND \"itervane\".\"inspection_attempts\".\"settled_fence\" IS NULL AND \"itervane\".\"inspection_attempts\".\"settled_at\" IS NULL)\n    OR (\"itervane\".\"inspection_attempts\".\"state\" IN ('closed', 'uncertain', 'recorded') AND \"itervane\".\"inspection_attempts\".\"settled_fence\" >= \"itervane\".\"inspection_attempts\".\"fence\" AND \"itervane\".\"inspection_attempts\".\"settled_at\" IS NOT NULL)\n  ) IS TRUE"
+        },
+        "inspection_attempt_receipt_binding": {
+          "name": "inspection_attempt_receipt_binding",
+          "value": "(\n    (\"itervane\".\"inspection_attempts\".\"state\" <> 'recorded' AND \"itervane\".\"inspection_attempts\".\"receipt\" IS NULL AND \"itervane\".\"inspection_attempts\".\"receipt_sha256\" IS NULL)\n    OR (\"itervane\".\"inspection_attempts\".\"state\" = 'recorded' AND \"itervane\".\"inspection_attempts\".\"settled_fence\" = \"itervane\".\"inspection_attempts\".\"fence\" AND \"itervane\".\"inspection_attempts\".\"receipt_sha256\" ~ '^[a-f0-9]{64}$'\n      AND octet_length(\"itervane\".\"inspection_attempts\".\"receipt\"::text) <= 4202496\n      AND \"itervane\".\"inspection_attempts\".\"receipt\"->>'kind' = 'receipt' AND \"itervane\".\"inspection_attempts\".\"receipt\"->'cleanupConfirmed' = 'true'::jsonb\n      AND \"itervane\".\"inspection_attempts\".\"receipt\"->'sessionVerified' = 'true'::jsonb AND \"itervane\".\"inspection_attempts\".\"receipt\"->>'originSha256' = \"itervane\".\"inspection_attempts\".\"origin_sha256\"\n      AND \"itervane\".\"inspection_attempts\".\"receipt\"->>'imageSha256' = \"itervane\".\"inspection_attempts\".\"image_sha256\"\n      AND \"itervane\".\"inspection_attempts\".\"receipt\"#>>'{scope,requestId}' = \"itervane\".\"inspection_attempts\".\"request_id\"::text\n      AND \"itervane\".\"inspection_attempts\".\"receipt\"#>>'{scope,taskId}' = \"itervane\".\"inspection_attempts\".\"task_id\"::text AND \"itervane\".\"inspection_attempts\".\"receipt\"#>>'{scope,runId}' = \"itervane\".\"inspection_attempts\".\"run_id\"::text\n      AND \"itervane\".\"inspection_attempts\".\"receipt\"#>>'{scope,projectId}' = \"itervane\".\"inspection_attempts\".\"project_id\"::text AND \"itervane\".\"inspection_attempts\".\"receipt\"#>>'{scope,repositoryId}' = \"itervane\".\"inspection_attempts\".\"repository_id\"::text\n      AND \"itervane\".\"inspection_attempts\".\"receipt\"#>>'{scope,commit}' = \"itervane\".\"inspection_attempts\".\"commit\" AND \"itervane\".\"inspection_attempts\".\"receipt\"#>>'{scope,planSha256}' = \"itervane\".\"inspection_attempts\".\"plan_sha256\"\n      AND \"itervane\".\"inspection_attempts\".\"receipt\"#>>'{scope,fence}' = \"itervane\".\"inspection_attempts\".\"fence\"::text AND \"itervane\".\"inspection_attempts\".\"receipt\"#>>'{scope,generation}' = \"itervane\".\"inspection_attempts\".\"generation\"::text\n      AND \"itervane\".\"inspection_attempts\".\"receipt\"->>'domainId' = \"itervane\".\"inspection_attempts\".\"receipt\"#>>'{snapshot,runId}'\n      AND \"itervane\".\"inspection_attempts\".\"receipt\"#>>'{snapshot,repositoryId}' = \"itervane\".\"inspection_attempts\".\"repository_id\"::text AND \"itervane\".\"inspection_attempts\".\"receipt\"#>>'{snapshot,commit}' = \"itervane\".\"inspection_attempts\".\"commit\"\n      AND \"itervane\".\"inspection_attempts\".\"receipt\"#>'{snapshot,offline}' = 'true'::jsonb AND \"itervane\".\"inspection_attempts\".\"receipt\"#>'{snapshot,readOnly}' = 'true'::jsonb)\n  ) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.inspection_plans": {
+      "name": "inspection_plans",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prepared_fence": {
+          "name": "prepared_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "inspection_plans_task_id_tasks_id_fk": {
+          "name": "inspection_plans_task_id_tasks_id_fk",
+          "tableFrom": "inspection_plans",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "inspection_run_task_fk": {
+          "name": "inspection_run_task_fk",
+          "tableFrom": "inspection_plans",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id",
+            "task_id"
+          ],
+          "columnsTo": [
+            "id",
+            "task_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "inspection_plan_binding": {
+          "name": "inspection_plan_binding",
+          "value": "(\"itervane\".\"inspection_plans\".\"prepared_fence\" > 0 AND \"itervane\".\"inspection_plans\".\"sha256\" ~ '^[a-f0-9]{64}$'\n  AND \"itervane\".\"inspection_plans\".\"document\"->>'taskId' = \"itervane\".\"inspection_plans\".\"task_id\"::text AND \"itervane\".\"inspection_plans\".\"document\"->>'runId' = \"itervane\".\"inspection_plans\".\"run_id\"::text AND \"itervane\".\"inspection_plans\".\"document\"->>'version' = '1') IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.operations_decisions": {
+      "name": "operations_decisions",
+      "schema": "itervane",
+      "columns": {
+        "proposal_id": {
+          "name": "proposal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "self_confirmed": {
+          "name": "self_confirmed",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "decided_at": {
+          "name": "decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "operations_decisions_proposal_id_operations_proposals_id_fk": {
+          "name": "operations_decisions_proposal_id_operations_proposals_id_fk",
+          "tableFrom": "operations_decisions",
+          "tableTo": "operations_proposals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "proposal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "operations_decisions_actor_id_principals_id_fk": {
+          "name": "operations_decisions_actor_id_principals_id_fk",
+          "tableFrom": "operations_decisions",
+          "tableTo": "principals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "actor_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "operations_decisions_proposal_id_version_pk": {
+          "name": "operations_decisions_proposal_id_version_pk",
+          "columns": [
+            "proposal_id",
+            "version"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "operations_decision_request": {
+          "name": "operations_decision_request",
+          "nullsNotDistinct": false,
+          "columns": [
+            "proposal_id",
+            "actor_id",
+            "idempotency_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "operations_decision_action_version": {
+          "name": "operations_decision_action_version",
+          "value": "(\"itervane\".\"operations_decisions\".\"version\" = 1 AND \"itervane\".\"operations_decisions\".\"action\" IN ('confirm', 'reject'))\n    OR (\"itervane\".\"operations_decisions\".\"version\" = 2 AND \"itervane\".\"operations_decisions\".\"action\" = 'revoke')"
+        },
+        "operations_decision_self_confirmed": {
+          "name": "operations_decision_self_confirmed",
+          "value": "NOT \"itervane\".\"operations_decisions\".\"self_confirmed\" OR \"itervane\".\"operations_decisions\".\"action\" = 'confirm'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.operations_diagnosis_inputs": {
+      "name": "operations_diagnosis_inputs",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "input_sha256": {
+          "name": "input_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_sha256": {
+          "name": "provider_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "operations_diagnosis_inputs_run_id_operations_requests_run_id_fk": {
+          "name": "operations_diagnosis_inputs_run_id_operations_requests_run_id_fk",
+          "tableFrom": "operations_diagnosis_inputs",
+          "tableTo": "operations_requests",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "operations_diagnosis_fingerprints": {
+          "name": "operations_diagnosis_fingerprints",
+          "value": "\"itervane\".\"operations_diagnosis_inputs\".\"input_sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"operations_diagnosis_inputs\".\"provider_sha256\" ~ '^[a-f0-9]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.operations_diagnosis_reads": {
+      "name": "operations_diagnosis_reads",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "section": {
+          "name": "section",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "operation_id": {
+          "name": "operation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fence": {
+          "name": "fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "recorded_at": {
+          "name": "recorded_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "operations_diagnosis_reads_run_id_operations_diagnosis_inputs_run_id_fk": {
+          "name": "operations_diagnosis_reads_run_id_operations_diagnosis_inputs_run_id_fk",
+          "tableFrom": "operations_diagnosis_reads",
+          "tableTo": "operations_diagnosis_inputs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "operations_diagnosis_reads_run_id_section_pk": {
+          "name": "operations_diagnosis_reads_run_id_section_pk",
+          "columns": [
+            "run_id",
+            "section"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "operations_diagnosis_operation_per_run": {
+          "name": "operations_diagnosis_operation_per_run",
+          "nullsNotDistinct": false,
+          "columns": [
+            "run_id",
+            "operation_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "operations_diagnosis_read_shape": {
+          "name": "operations_diagnosis_read_shape",
+          "value": "(\"itervane\".\"operations_diagnosis_reads\".\"section\" IN ('container', 'release', 'logs', 'metrics') AND \"itervane\".\"operations_diagnosis_reads\".\"fence\" > 0\n    AND \"itervane\".\"operations_diagnosis_reads\".\"attempts\" BETWEEN 1 AND 2 AND \"itervane\".\"operations_diagnosis_reads\".\"operation_id\" ~ '^[a-f0-9]{64}$'\n    AND ((\"itervane\".\"operations_diagnosis_reads\".\"state\" = 'reserved' AND \"itervane\".\"operations_diagnosis_reads\".\"document\" IS NULL AND \"itervane\".\"operations_diagnosis_reads\".\"sha256\" IS NULL AND \"itervane\".\"operations_diagnosis_reads\".\"recorded_at\" IS NULL)\n      OR (\"itervane\".\"operations_diagnosis_reads\".\"state\" = 'recorded' AND \"itervane\".\"operations_diagnosis_reads\".\"document\"->>'kind' = 'operations_section' AND \"itervane\".\"operations_diagnosis_reads\".\"document\"->>'section' = \"itervane\".\"operations_diagnosis_reads\".\"section\"\n        AND \"itervane\".\"operations_diagnosis_reads\".\"document\"->>'proofSha256' ~ '^[a-f0-9]{64}$' AND \"itervane\".\"operations_diagnosis_reads\".\"sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"operations_diagnosis_reads\".\"recorded_at\" >= \"itervane\".\"operations_diagnosis_reads\".\"created_at\"\n        AND octet_length(\"itervane\".\"operations_diagnosis_reads\".\"document\"::text) <= 4096))) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.operations_diagnosis_results": {
+      "name": "operations_diagnosis_results",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fence": {
+          "name": "fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_id": {
+          "name": "checkpoint_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "operations_diagnosis_results_run_id_operations_diagnosis_runtime_run_id_fk": {
+          "name": "operations_diagnosis_results_run_id_operations_diagnosis_runtime_run_id_fk",
+          "tableFrom": "operations_diagnosis_results",
+          "tableTo": "operations_diagnosis_runtime",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "operations_diagnosis_result_binding": {
+          "name": "operations_diagnosis_result_binding",
+          "value": "(\"itervane\".\"operations_diagnosis_results\".\"fence\" > 0 AND \"itervane\".\"operations_diagnosis_results\".\"sha256\" ~ '^[a-f0-9]{64}$'\n  AND \"itervane\".\"operations_diagnosis_results\".\"document\"->>'version' = '1' AND \"itervane\".\"operations_diagnosis_results\".\"document\"->>'runId' = \"itervane\".\"operations_diagnosis_results\".\"run_id\"::text AND \"itervane\".\"operations_diagnosis_results\".\"document\"->>'fence' = \"itervane\".\"operations_diagnosis_results\".\"fence\"::text\n  AND \"itervane\".\"operations_diagnosis_results\".\"document\"->>'checkpointId' = \"itervane\".\"operations_diagnosis_results\".\"checkpoint_id\" AND \"itervane\".\"operations_diagnosis_results\".\"document\"->>'observationSha256' ~ '^[a-f0-9]{64}$'\n  AND octet_length(\"itervane\".\"operations_diagnosis_results\".\"document\"::text) <= 8192) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.operations_diagnosis_runtime": {
+      "name": "operations_diagnosis_runtime",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "input_sha256": {
+          "name": "input_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_id": {
+          "name": "checkpoint_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_step": {
+          "name": "checkpoint_step",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "published_fence": {
+          "name": "published_fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "operations_diagnosis_runtime_run_id_operations_diagnosis_inputs_run_id_fk": {
+          "name": "operations_diagnosis_runtime_run_id_operations_diagnosis_inputs_run_id_fk",
+          "tableFrom": "operations_diagnosis_runtime",
+          "tableTo": "operations_diagnosis_inputs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "operations_diagnosis_runtime_binding": {
+          "name": "operations_diagnosis_runtime_binding",
+          "value": "\"itervane\".\"operations_diagnosis_runtime\".\"input_sha256\" ~ '^[a-f0-9]{64}$'\n  AND char_length(\"itervane\".\"operations_diagnosis_runtime\".\"checkpoint_id\") BETWEEN 1 AND 128 AND \"itervane\".\"operations_diagnosis_runtime\".\"checkpoint_step\" >= -1 AND \"itervane\".\"operations_diagnosis_runtime\".\"published_fence\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.operations_execution_intents": {
+      "name": "operations_execution_intents",
+      "schema": "itervane",
+      "columns": {
+        "execution_id": {
+          "name": "execution_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "decision_version": {
+          "name": "decision_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "proposal_fingerprint": {
+          "name": "proposal_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fence": {
+          "name": "fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "clock_timestamp()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "operations_execution_intent_schedule_fk": {
+          "name": "operations_execution_intent_schedule_fk",
+          "tableFrom": "operations_execution_intents",
+          "tableTo": "operations_execution_schedules",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "execution_id"
+          ],
+          "columnsTo": [
+            "execution_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "operations_execution_intent_binding": {
+          "name": "operations_execution_intent_binding",
+          "value": "\"itervane\".\"operations_execution_intents\".\"decision_version\" = 1 AND \"itervane\".\"operations_execution_intents\".\"generation\" = 1\n    AND \"itervane\".\"operations_execution_intents\".\"fence\" > 0 AND \"itervane\".\"operations_execution_intents\".\"proposal_fingerprint\" ~ '^[a-f0-9]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.operations_execution_schedules": {
+      "name": "operations_execution_schedules",
+      "schema": "itervane",
+      "columns": {
+        "execution_id": {
+          "name": "execution_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "wakeup_job_id": {
+          "name": "wakeup_job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "operations_execution_schedules_execution_id_operations_executions_id_fk": {
+          "name": "operations_execution_schedules_execution_id_operations_executions_id_fk",
+          "tableFrom": "operations_execution_schedules",
+          "tableTo": "operations_executions",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "execution_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "operations_execution_scheduled_run_fk": {
+          "name": "operations_execution_scheduled_run_fk",
+          "tableFrom": "operations_execution_schedules",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id",
+            "task_id"
+          ],
+          "columnsTo": [
+            "id",
+            "task_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "operations_execution_scheduled_task": {
+          "name": "operations_execution_scheduled_task",
+          "nullsNotDistinct": false,
+          "columns": [
+            "task_id"
+          ]
+        },
+        "operations_execution_scheduled_wakeup": {
+          "name": "operations_execution_scheduled_wakeup",
+          "nullsNotDistinct": false,
+          "columns": [
+            "wakeup_job_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "itervane.operations_executions": {
+      "name": "operations_executions",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "proposal_id": {
+          "name": "proposal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "proposal_fingerprint": {
+          "name": "proposal_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "decision_version": {
+          "name": "decision_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "closed_at": {
+          "name": "closed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "blocked_reason": {
+          "name": "blocked_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "operations_execution_environment_hold": {
+          "name": "operations_execution_environment_hold",
+          "columns": [
+            {
+              "expression": "environment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"itervane\".\"operations_executions\".\"state\" = 'reserved'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "operations_executions_proposal_id_operations_proposals_id_fk": {
+          "name": "operations_executions_proposal_id_operations_proposals_id_fk",
+          "tableFrom": "operations_executions",
+          "tableTo": "operations_proposals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "proposal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "operations_executions_environment_id_environments_id_fk": {
+          "name": "operations_executions_environment_id_environments_id_fk",
+          "tableFrom": "operations_executions",
+          "tableTo": "environments",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "operations_execution_decision_fk": {
+          "name": "operations_execution_decision_fk",
+          "tableFrom": "operations_executions",
+          "tableTo": "operations_decisions",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "proposal_id",
+            "decision_version"
+          ],
+          "columnsTo": [
+            "proposal_id",
+            "version"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "operations_execution_per_proposal": {
+          "name": "operations_execution_per_proposal",
+          "nullsNotDistinct": false,
+          "columns": [
+            "proposal_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "operations_execution_binding": {
+          "name": "operations_execution_binding",
+          "value": "\"itervane\".\"operations_executions\".\"decision_version\" = 1 AND \"itervane\".\"operations_executions\".\"proposal_fingerprint\" ~ '^[a-f0-9]{64}$'"
+        },
+        "operations_execution_lifecycle": {
+          "name": "operations_execution_lifecycle",
+          "value": "((\"itervane\".\"operations_executions\".\"state\" = 'reserved' AND \"itervane\".\"operations_executions\".\"closed_at\" IS NULL AND \"itervane\".\"operations_executions\".\"blocked_reason\" IS NULL)\n    OR (\"itervane\".\"operations_executions\".\"state\" = 'blocked' AND \"itervane\".\"operations_executions\".\"closed_at\" >= \"itervane\".\"operations_executions\".\"created_at\" AND \"itervane\".\"operations_executions\".\"blocked_reason\" IN ('approval_revoked', 'proposal_expired'))) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.operations_observations": {
+      "name": "operations_observations",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fence": {
+          "name": "fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_sha256": {
+          "name": "binding_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "operations_observations_run_id_operations_requests_run_id_fk": {
+          "name": "operations_observations_run_id_operations_requests_run_id_fk",
+          "tableFrom": "operations_observations",
+          "tableTo": "operations_requests",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "operations_observation_binding": {
+          "name": "operations_observation_binding",
+          "value": "(\"itervane\".\"operations_observations\".\"fence\" > 0 AND \"itervane\".\"operations_observations\".\"binding_sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"operations_observations\".\"sha256\" ~ '^[a-f0-9]{64}$'\n  AND \"itervane\".\"operations_observations\".\"document\"->>'version' = '1' AND \"itervane\".\"operations_observations\".\"document\"->>'runId' = \"itervane\".\"operations_observations\".\"run_id\"::text AND \"itervane\".\"operations_observations\".\"document\"->>'fence' = \"itervane\".\"operations_observations\".\"fence\"::text\n  AND \"itervane\".\"operations_observations\".\"document\"->>'bindingSha256' = \"itervane\".\"operations_observations\".\"binding_sha256\" AND octet_length(\"itervane\".\"operations_observations\".\"document\"::text) <= 4096) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.operations_proposals": {
+      "name": "operations_proposals",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "diagnosis_run_id": {
+          "name": "diagnosis_run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "proposed_by": {
+          "name": "proposed_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "valid_until": {
+          "name": "valid_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "operations_proposals_diagnosis_run_id_operations_diagnosis_results_run_id_fk": {
+          "name": "operations_proposals_diagnosis_run_id_operations_diagnosis_results_run_id_fk",
+          "tableFrom": "operations_proposals",
+          "tableTo": "operations_diagnosis_results",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "diagnosis_run_id"
+          ],
+          "columnsTo": [
+            "run_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "operations_proposals_environment_id_environments_id_fk": {
+          "name": "operations_proposals_environment_id_environments_id_fk",
+          "tableFrom": "operations_proposals",
+          "tableTo": "environments",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "operations_proposals_proposed_by_principals_id_fk": {
+          "name": "operations_proposals_proposed_by_principals_id_fk",
+          "tableFrom": "operations_proposals",
+          "tableTo": "principals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "proposed_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "operations_proposal_per_diagnosis": {
+          "name": "operations_proposal_per_diagnosis",
+          "nullsNotDistinct": false,
+          "columns": [
+            "diagnosis_run_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "operations_proposal_binding": {
+          "name": "operations_proposal_binding",
+          "value": "(\"itervane\".\"operations_proposals\".\"created_at\" < \"itervane\".\"operations_proposals\".\"valid_until\" AND \"itervane\".\"operations_proposals\".\"fingerprint\" ~ '^[a-f0-9]{64}$'\n    AND \"itervane\".\"operations_proposals\".\"document\"->>'version' = '1' AND \"itervane\".\"operations_proposals\".\"document\"#>>'{diagnosis,runId}' = \"itervane\".\"operations_proposals\".\"diagnosis_run_id\"::text\n    AND \"itervane\".\"operations_proposals\".\"document\"#>>'{target,environmentId}' = \"itervane\".\"operations_proposals\".\"environment_id\"::text\n    AND \"itervane\".\"operations_proposals\".\"document\"->>'proposedBy' = \"itervane\".\"operations_proposals\".\"proposed_by\"::text AND \"itervane\".\"operations_proposals\".\"document\"->>'grantId' = \"itervane\".\"operations_proposals\".\"grant_id\"::text\n    AND \"itervane\".\"operations_proposals\".\"document\"#>>'{action,kind}' IN ('restart', 'rollback')\n    AND \"itervane\".\"operations_proposals\".\"document\"->>'targetProofSha256' ~ '^[a-f0-9]{64}$' AND octet_length(\"itervane\".\"operations_proposals\".\"document\"::text) <= 8192) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.operations_requests": {
+      "name": "operations_requests",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "application_id": {
+          "name": "application_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "release_operation_id": {
+          "name": "release_operation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "operations_requests_release_operation_id_release_operations_id_fk": {
+          "name": "operations_requests_release_operation_id_release_operations_id_fk",
+          "tableFrom": "operations_requests",
+          "tableTo": "release_operations",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "release_operation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "operations_request_run_task": {
+          "name": "operations_request_run_task",
+          "tableFrom": "operations_requests",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id",
+            "task_id"
+          ],
+          "columnsTo": [
+            "id",
+            "task_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "operations_request_task_project": {
+          "name": "operations_request_task_project",
+          "tableFrom": "operations_requests",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "task_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "operations_request_environment": {
+          "name": "operations_request_environment",
+          "tableFrom": "operations_requests",
+          "tableTo": "environments",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "environment_id",
+            "project_id",
+            "application_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id",
+            "application_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "operations_request_binding": {
+          "name": "operations_request_binding",
+          "value": "(\"itervane\".\"operations_requests\".\"sha256\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"operations_requests\".\"document\"->>'version' = '1'\n    AND \"itervane\".\"operations_requests\".\"document\"->>'projectId' = \"itervane\".\"operations_requests\".\"project_id\"::text AND \"itervane\".\"operations_requests\".\"document\"->>'applicationId' = \"itervane\".\"operations_requests\".\"application_id\"::text\n    AND \"itervane\".\"operations_requests\".\"document\"->>'environmentId' = \"itervane\".\"operations_requests\".\"environment_id\"::text AND \"itervane\".\"operations_requests\".\"document\"->>'releaseOperationId' = \"itervane\".\"operations_requests\".\"release_operation_id\"::text\n    AND octet_length(\"itervane\".\"operations_requests\".\"document\"::text) <= 4096) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.operations_targets": {
+      "name": "operations_targets",
+      "schema": "itervane",
+      "columns": {
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "application_id": {
+          "name": "application_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sha256": {
+          "name": "sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "operations_targets_environment_id_formal_release_targets_environment_id_fk": {
+          "name": "operations_targets_environment_id_formal_release_targets_environment_id_fk",
+          "tableFrom": "operations_targets",
+          "tableTo": "formal_release_targets",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "environment_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "operations_target_environment_fk": {
+          "name": "operations_target_environment_fk",
+          "tableFrom": "operations_targets",
+          "tableTo": "environments",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "environment_id",
+            "project_id",
+            "application_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id",
+            "application_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "operations_target_binding": {
+          "name": "operations_target_binding",
+          "value": "(\"itervane\".\"operations_targets\".\"revision\" > 0 AND \"itervane\".\"operations_targets\".\"sha256\" ~ '^[a-f0-9]{64}$'\n    AND \"itervane\".\"operations_targets\".\"document\"->>'environmentId' = \"itervane\".\"operations_targets\".\"environment_id\"::text\n    AND jsonb_typeof(\"itervane\".\"operations_targets\".\"document\"->'whiskers') = 'object' AND octet_length(\"itervane\".\"operations_targets\".\"document\"::text) <= 4096) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.preaudits": {
+      "name": "preaudits",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_by": {
+          "name": "requested_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_key": {
+          "name": "request_key",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_hash": {
+          "name": "request_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "report_sha256": {
+          "name": "report_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "preaudit_project_history": {
+          "name": "preaudit_project_history",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "preaudits_project_id_projects_id_fk": {
+          "name": "preaudits_project_id_projects_id_fk",
+          "tableFrom": "preaudits",
+          "tableTo": "projects",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "preaudits_requested_by_principals_id_fk": {
+          "name": "preaudits_requested_by_principals_id_fk",
+          "tableFrom": "preaudits",
+          "tableTo": "principals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "requested_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "preaudit_request_unique": {
+          "name": "preaudit_request_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "project_id",
+            "requested_by",
+            "request_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "preaudit_document_binding": {
+          "name": "preaudit_document_binding",
+          "value": "(\"itervane\".\"preaudits\".\"request_hash\" ~ '^[a-f0-9]{64}$' AND \"itervane\".\"preaudits\".\"report_sha256\" ~ '^[a-f0-9]{64}$'\n  AND \"itervane\".\"preaudits\".\"document\"->>'id' = \"itervane\".\"preaudits\".\"id\"::text AND \"itervane\".\"preaudits\".\"document\"->>'projectId' = \"itervane\".\"preaudits\".\"project_id\"::text AND \"itervane\".\"preaudits\".\"document\"->>'requestedBy' = \"itervane\".\"preaudits\".\"requested_by\"::text\n  AND \"itervane\".\"preaudits\".\"document\"#>>'{evaluation,formalScan}' = 'false' AND \"itervane\".\"preaudits\".\"document\"#>>'{evaluation,releaseEligible}' = 'false'\n  AND octet_length(\"itervane\".\"preaudits\".\"document\"::text) <= 65536) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.principals": {
+      "name": "principals",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "issuer": {
+          "name": "issuer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject": {
+          "name": "subject",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "principal_identity_unique": {
+          "name": "principal_identity_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "issuer",
+            "subject"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "itervane.project_members": {
+      "name": "project_members",
+      "schema": "itervane",
+      "columns": {
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "project_members_project_id_projects_id_fk": {
+          "name": "project_members_project_id_projects_id_fk",
+          "tableFrom": "project_members",
+          "tableTo": "projects",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "project_members_principal_id_principals_id_fk": {
+          "name": "project_members_principal_id_principals_id_fk",
+          "tableFrom": "project_members",
+          "tableTo": "principals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "project_members_project_id_principal_id_pk": {
+          "name": "project_members_project_id_principal_id_pk",
+          "columns": [
+            "project_id",
+            "principal_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "project_member_grant": {
+          "name": "project_member_grant",
+          "nullsNotDistinct": false,
+          "columns": [
+            "grant_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "project_role": {
+          "name": "project_role",
+          "value": "\"itervane\".\"project_members\".\"role\" IN ('maintainer', 'viewer')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.projects": {
+      "name": "projects",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "slug": {
+          "name": "slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "projects_workspace_id_workspaces_id_fk": {
+          "name": "projects_workspace_id_workspaces_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "workspaces",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "project_slug_unique": {
+          "name": "project_slug_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "workspace_id",
+            "slug"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "itervane.release_candidates": {
+      "name": "release_candidates",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "application_id": {
+          "name": "application_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_by": {
+          "name": "requested_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "evidence_version": {
+          "name": "evidence_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "document": {
+          "name": "document",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "release_candidates_requested_by_principals_id_fk": {
+          "name": "release_candidates_requested_by_principals_id_fk",
+          "tableFrom": "release_candidates",
+          "tableTo": "principals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "requested_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "release_candidate_task_project_fk": {
+          "name": "release_candidate_task_project_fk",
+          "tableFrom": "release_candidates",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "task_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "release_candidate_run_task_fk": {
+          "name": "release_candidate_run_task_fk",
+          "tableFrom": "release_candidates",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id",
+            "task_id"
+          ],
+          "columnsTo": [
+            "id",
+            "task_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "release_candidate_environment_scope_fk": {
+          "name": "release_candidate_environment_scope_fk",
+          "tableFrom": "release_candidates",
+          "tableTo": "environments",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "environment_id",
+            "project_id",
+            "application_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id",
+            "application_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "release_candidate_evidence_version": {
+          "name": "release_candidate_evidence_version",
+          "nullsNotDistinct": false,
+          "columns": [
+            "task_id",
+            "evidence_version"
+          ]
+        },
+        "release_candidate_environment_pair": {
+          "name": "release_candidate_environment_pair",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "environment_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "release_candidate_binding": {
+          "name": "release_candidate_binding",
+          "value": "(\"itervane\".\"release_candidates\".\"evidence_version\" > 0 AND \"itervane\".\"release_candidates\".\"fingerprint\" ~ '^[a-f0-9]{64}$'\n    AND \"itervane\".\"release_candidates\".\"document\"->>'version' = '1' AND \"itervane\".\"release_candidates\".\"document\"->>'origin' IN ('trusted_fixture', 'formal_verification')\n    AND \"itervane\".\"release_candidates\".\"document\"->'releaseEligible' = 'false'::jsonb\n    AND \"itervane\".\"release_candidates\".\"document\"->>'evidenceVersion' = \"itervane\".\"release_candidates\".\"evidence_version\"::text\n    AND \"itervane\".\"release_candidates\".\"document\"->>'projectId' = \"itervane\".\"release_candidates\".\"project_id\"::text AND \"itervane\".\"release_candidates\".\"document\"->>'taskId' = \"itervane\".\"release_candidates\".\"task_id\"::text\n    AND \"itervane\".\"release_candidates\".\"document\"->>'runId' = \"itervane\".\"release_candidates\".\"run_id\"::text\n    AND \"itervane\".\"release_candidates\".\"document\"#>>'{target,applicationId}' = \"itervane\".\"release_candidates\".\"application_id\"::text\n    AND \"itervane\".\"release_candidates\".\"document\"#>>'{target,environmentId}' = \"itervane\".\"release_candidates\".\"environment_id\"::text\n    AND octet_length(\"itervane\".\"release_candidates\".\"document\"::text) <= 8192) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.release_decisions": {
+      "name": "release_decisions",
+      "schema": "itervane",
+      "columns": {
+        "candidate_id": {
+          "name": "candidate_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "self_confirmed": {
+          "name": "self_confirmed",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "decided_at": {
+          "name": "decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "release_decisions_candidate_id_release_candidates_id_fk": {
+          "name": "release_decisions_candidate_id_release_candidates_id_fk",
+          "tableFrom": "release_decisions",
+          "tableTo": "release_candidates",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "candidate_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "release_decisions_actor_id_principals_id_fk": {
+          "name": "release_decisions_actor_id_principals_id_fk",
+          "tableFrom": "release_decisions",
+          "tableTo": "principals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "actor_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "release_decisions_candidate_id_version_pk": {
+          "name": "release_decisions_candidate_id_version_pk",
+          "columns": [
+            "candidate_id",
+            "version"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "release_decision_request": {
+          "name": "release_decision_request",
+          "nullsNotDistinct": false,
+          "columns": [
+            "candidate_id",
+            "actor_id",
+            "idempotency_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "release_decision_action_version": {
+          "name": "release_decision_action_version",
+          "value": "(\"itervane\".\"release_decisions\".\"version\" = 1 AND \"itervane\".\"release_decisions\".\"action\" IN ('confirm', 'reject'))\n    OR (\"itervane\".\"release_decisions\".\"version\" = 2 AND \"itervane\".\"release_decisions\".\"action\" = 'revoke')"
+        },
+        "release_decision_self_confirmed": {
+          "name": "release_decision_self_confirmed",
+          "value": "NOT \"itervane\".\"release_decisions\".\"self_confirmed\" OR \"itervane\".\"release_decisions\".\"action\" = 'confirm'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.release_operations": {
+      "name": "release_operations",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "candidate_id": {
+          "name": "candidate_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "approval_version": {
+          "name": "approval_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "wakeup_job_id": {
+          "name": "wakeup_job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "observation": {
+          "name": "observation",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "release_operation_environment_hold": {
+          "name": "release_operation_environment_hold",
+          "columns": [
+            {
+              "expression": "environment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"itervane\".\"release_operations\".\"state\" IN ('dispatching', 'reconciling')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "release_operation_candidate_scope_fk": {
+          "name": "release_operation_candidate_scope_fk",
+          "tableFrom": "release_operations",
+          "tableTo": "release_candidates",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "candidate_id",
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id",
+            "environment_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "release_operation_decision_fk": {
+          "name": "release_operation_decision_fk",
+          "tableFrom": "release_operations",
+          "tableTo": "release_decisions",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "candidate_id",
+            "approval_version"
+          ],
+          "columnsTo": [
+            "candidate_id",
+            "version"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "release_operation_candidate_unique": {
+          "name": "release_operation_candidate_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "candidate_id"
+          ]
+        },
+        "release_operation_wakeup_unique": {
+          "name": "release_operation_wakeup_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "wakeup_job_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "release_operation_single_approval": {
+          "name": "release_operation_single_approval",
+          "value": "\"itervane\".\"release_operations\".\"approval_version\" = 1"
+        },
+        "release_operation_state": {
+          "name": "release_operation_state",
+          "value": "\"itervane\".\"release_operations\".\"state\" IN ('queued', 'dispatching', 'reconciling', 'verified_fixture', 'verified_formal', 'blocked')"
+        },
+        "release_operation_wakeup_recoverable": {
+          "name": "release_operation_wakeup_recoverable",
+          "value": "\"itervane\".\"release_operations\".\"wakeup_job_id\" IS NULL OR \"itervane\".\"release_operations\".\"state\" IN ('queued', 'reconciling')"
+        },
+        "release_operation_observation": {
+          "name": "release_operation_observation",
+          "value": "(\n    (\"itervane\".\"release_operations\".\"state\" <> 'verified_fixture' AND \"itervane\".\"release_operations\".\"observation\" IS NULL) OR\n    (\"itervane\".\"release_operations\".\"state\" = 'verified_fixture' AND \"itervane\".\"release_operations\".\"observation\"->>'origin' = 'trusted_fixture'\n      AND \"itervane\".\"release_operations\".\"observation\"->>'operationId' = \"itervane\".\"release_operations\".\"id\"::text\n      AND \"itervane\".\"release_operations\".\"observation\"->>'environmentId' = \"itervane\".\"release_operations\".\"environment_id\"::text\n      AND \"itervane\".\"release_operations\".\"observation\"->'healthy' = 'true'::jsonb AND \"itervane\".\"release_operations\".\"observation\"->'accessProtected' = 'true'::jsonb\n      AND octet_length(\"itervane\".\"release_operations\".\"observation\"::text) <= 4096)\n  ) IS TRUE"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.repositories": {
+      "name": "repositories",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "url": {
+          "name": "url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "repositories_project_id_projects_id_fk": {
+          "name": "repositories_project_id_projects_id_fk",
+          "tableFrom": "repositories",
+          "tableTo": "projects",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "repository_project_pair": {
+          "name": "repository_project_pair",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "project_id"
+          ]
+        },
+        "repository_url_unique": {
+          "name": "repository_url_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "project_id",
+            "url"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "itervane.run_runtime": {
+      "name": "run_runtime",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_id": {
+          "name": "checkpoint_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "checkpoint_step": {
+          "name": "checkpoint_step",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": -2
+        },
+        "resume_pending": {
+          "name": "resume_pending",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "resume_count": {
+          "name": "resume_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "tools_used": {
+          "name": "tools_used",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "max_tools": {
+          "name": "max_tools",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 8
+        },
+        "waiting_for_task_id": {
+          "name": "waiting_for_task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "run_runtime_run_id_task_runs_id_fk": {
+          "name": "run_runtime_run_id_task_runs_id_fk",
+          "tableFrom": "run_runtime",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "run_runtime_task_id_tasks_id_fk": {
+          "name": "run_runtime_task_id_tasks_id_fk",
+          "tableFrom": "run_runtime",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "run_runtime_waiting_for_task_id_tasks_id_fk": {
+          "name": "run_runtime_waiting_for_task_id_tasks_id_fk",
+          "tableFrom": "run_runtime",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "waiting_for_task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "runtime_limits": {
+          "name": "runtime_limits",
+          "value": "\"itervane\".\"run_runtime\".\"resume_count\" >= 0 AND \"itervane\".\"run_runtime\".\"tools_used\" >= 0 AND \"itervane\".\"run_runtime\".\"max_tools\" BETWEEN 1 AND 32"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.task_events": {
+      "name": "task_events",
+      "schema": "itervane",
+      "columns": {
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "sequence": {
+          "name": "sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "task_state",
+          "typeSchema": "itervane",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_kind": {
+          "name": "actor_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'principal'"
+        },
+        "worker_id": {
+          "name": "worker_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "detail": {
+          "name": "detail",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "task_events_task_id_tasks_id_fk": {
+          "name": "task_events_task_id_tasks_id_fk",
+          "tableFrom": "task_events",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "task_events_actor_id_principals_id_fk": {
+          "name": "task_events_actor_id_principals_id_fk",
+          "tableFrom": "task_events",
+          "tableTo": "principals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "actor_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "task_events_task_id_sequence_pk": {
+          "name": "task_events_task_id_sequence_pk",
+          "columns": [
+            "task_id",
+            "sequence"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "event_sequence_positive": {
+          "name": "event_sequence_positive",
+          "value": "\"itervane\".\"task_events\".\"sequence\" > 0"
+        },
+        "event_actor_kind": {
+          "name": "event_actor_kind",
+          "value": "(\"itervane\".\"task_events\".\"actor_kind\" = 'principal' AND \"itervane\".\"task_events\".\"worker_id\" IS NULL) OR (\"itervane\".\"task_events\".\"actor_kind\" = 'worker' AND \"itervane\".\"task_events\".\"worker_id\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.task_runs": {
+      "name": "task_runs",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "agent_role",
+          "typeSchema": "itervane",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "task_state",
+          "typeSchema": "itervane",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "wakeup_job_id": {
+          "name": "wakeup_job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "task_runs_task_id_tasks_id_fk": {
+          "name": "task_runs_task_id_tasks_id_fk",
+          "tableFrom": "task_runs",
+          "tableTo": "tasks",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "task_run_generation_unique": {
+          "name": "task_run_generation_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "task_id",
+            "generation"
+          ]
+        },
+        "task_run_task_pair": {
+          "name": "task_run_task_pair",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "task_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "run_generation_positive": {
+          "name": "run_generation_positive",
+          "value": "\"itervane\".\"task_runs\".\"generation\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.tasks": {
+      "name": "tasks",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "repository_id": {
+          "name": "repository_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_by": {
+          "name": "requested_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "commit": {
+          "name": "commit",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "purpose": {
+          "name": "purpose",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "data_class": {
+          "name": "data_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_key": {
+          "name": "request_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_hash": {
+          "name": "request_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "task_state",
+          "typeSchema": "itervane",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "locale": {
+          "name": "locale",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'en'"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "tasks_project_id_projects_id_fk": {
+          "name": "tasks_project_id_projects_id_fk",
+          "tableFrom": "tasks",
+          "tableTo": "projects",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "project_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "tasks_requested_by_principals_id_fk": {
+          "name": "tasks_requested_by_principals_id_fk",
+          "tableFrom": "tasks",
+          "tableTo": "principals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "requested_by"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "task_repository_project_fk": {
+          "name": "task_repository_project_fk",
+          "tableFrom": "tasks",
+          "tableTo": "repositories",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "repository_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "id",
+            "project_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "task_project_pair": {
+          "name": "task_project_pair",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "project_id"
+          ]
+        },
+        "task_request_unique": {
+          "name": "task_request_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "project_id",
+            "requested_by",
+            "request_key"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "task_version_positive": {
+          "name": "task_version_positive",
+          "value": "\"itervane\".\"tasks\".\"version\" > 0 AND \"itervane\".\"tasks\".\"generation\" > 0"
+        },
+        "task_data_class": {
+          "name": "task_data_class",
+          "value": "\"itervane\".\"tasks\".\"data_class\" IN ('synthetic', 'public')"
+        },
+        "task_fixed_commit": {
+          "name": "task_fixed_commit",
+          "value": "\"itervane\".\"tasks\".\"commit\" ~ '^([a-f0-9]{40}|[a-f0-9]{64})$'"
+        },
+        "task_locale": {
+          "name": "task_locale",
+          "value": "\"itervane\".\"tasks\".\"locale\" IN ('en', 'zh-CN')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.tool_calls": {
+      "name": "tool_calls",
+      "schema": "itervane",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_hash": {
+          "name": "key_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_hash": {
+          "name": "input_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tool": {
+          "name": "tool",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fence": {
+          "name": "fence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "result": {
+          "name": "result",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "tool_calls_run_id_task_runs_id_fk": {
+          "name": "tool_calls_run_id_task_runs_id_fk",
+          "tableFrom": "tool_calls",
+          "tableTo": "task_runs",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "tool_calls_run_id_key_hash_pk": {
+          "name": "tool_calls_run_id_key_hash_pk",
+          "columns": [
+            "run_id",
+            "key_hash"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "tool_call_status": {
+          "name": "tool_call_status",
+          "value": "\n  \"itervane\".\"tool_calls\".\"status\" IN ('reserved', 'success', 'business_error', 'infrastructure_error') OR (\"itervane\".\"tool_calls\".\"tool\" = 'source.inspect' AND \"itervane\".\"tool_calls\".\"status\" = 'unknown')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "itervane.workspace_members": {
+      "name": "workspace_members",
+      "schema": "itervane",
+      "columns": {
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "grant_id": {
+          "name": "grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "workspace_members_workspace_id_workspaces_id_fk": {
+          "name": "workspace_members_workspace_id_workspaces_id_fk",
+          "tableFrom": "workspace_members",
+          "tableTo": "workspaces",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workspace_members_principal_id_principals_id_fk": {
+          "name": "workspace_members_principal_id_principals_id_fk",
+          "tableFrom": "workspace_members",
+          "tableTo": "principals",
+          "schemaTo": "itervane",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "workspace_members_workspace_id_principal_id_pk": {
+          "name": "workspace_members_workspace_id_principal_id_pk",
+          "columns": [
+            "workspace_id",
+            "principal_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {
+        "one_workspace_owner": {
+          "name": "one_workspace_owner",
+          "nullsNotDistinct": false,
+          "columns": [
+            "workspace_id"
+          ]
+        },
+        "workspace_owner_grant": {
+          "name": "workspace_owner_grant",
+          "nullsNotDistinct": false,
+          "columns": [
+            "grant_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "itervane.workspaces": {
+      "name": "workspaces",
+      "schema": "itervane",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "singleton": {
+          "name": "singleton",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "one_workspace": {
+          "name": "one_workspace",
+          "nullsNotDistinct": false,
+          "columns": [
+            "singleton"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "workspace_singleton": {
+          "name": "workspace_singleton",
+          "value": "\"itervane\".\"workspaces\".\"singleton\" = true"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "itervane.agent_role": {
+      "name": "agent_role",
+      "schema": "itervane",
+      "values": [
+        "audit",
+        "repair",
+        "verify",
+        "operations",
+        "rule-extraction"
+      ]
+    },
+    "itervane.task_state": {
+      "name": "task_state",
+      "schema": "itervane",
+      "values": [
+        "queued",
+        "running",
+        "waiting_approval",
+        "waiting_input",
+        "reconciling",
+        "succeeded",
+        "failed",
+        "cancel_requested",
+        "cancelled",
+        "needs_human"
+      ]
+    }
+  },
+  "schemas": {
+    "itervane": "itervane"
+  },
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

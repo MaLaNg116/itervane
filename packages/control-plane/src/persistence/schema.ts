@@ -614,6 +614,21 @@ export const operationsExecutionSchedules = domain.table('operations_execution_s
     foreignColumns: [taskRuns.id, taskRuns.taskId] }),
 ]);
 
+export const operationsExecutionIntents = domain.table('operations_execution_intents', {
+  executionId: uuid('execution_id').primaryKey(),
+  decisionVersion: integer('decision_version').notNull(),
+  proposalFingerprint: text('proposal_fingerprint').notNull(),
+  generation: integer('generation').notNull(),
+  workerId: uuid('worker_id').notNull(),
+  fence: integer('fence').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
+}, t => [
+  foreignKey({ name: 'operations_execution_intent_schedule_fk', columns: [t.executionId],
+    foreignColumns: [operationsExecutionSchedules.executionId] }),
+  check('operations_execution_intent_binding', sql`${t.decisionVersion} = 1 AND ${t.generation} = 1
+    AND ${t.fence} > 0 AND ${t.proposalFingerprint} ~ '^[a-f0-9]{64}$'`),
+]);
+
 export const formalReleaseSteps = domain.table('formal_release_steps', {
   operationId: uuid('operation_id').notNull().references(() => releaseOperations.id),
   kind: text('kind').$type<'archive' | 'registry' | 'komodo_config' | 'komodo_dispatch'>().notNull(),

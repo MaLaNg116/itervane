@@ -9,6 +9,7 @@ import { DomainError } from '../service/errors.js';
 import { readOperationsDiagnosis, readOperationsRequest } from '../service/operations-requests.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, enqueue, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope, type TaskRow } from './authority.js';
+import { recoverOperationsExecutionSlot } from './operations-execution-lease.js';
 import { recoverClaimedRelease, recoverKomodoLease, recoverRegistryLease } from './release-queue.js';
 
 export type CurrentExecution = { task: TaskRow; run: typeof taskRuns.$inferSelect; runtime: typeof runRuntime.$inferSelect;
@@ -49,11 +50,11 @@ export class ExecutionCoordinator {
 
   async recoverExpired(tx: Transaction, workerId: string) {
     const slot = await lockSlot(tx);
-    if (!slot.taskId || slot.live) return;
+    if (!slot.taskId) return;
+    if (await recoverOperationsExecutionSlot(tx, this.database, slot, workerId) || slot.live) return;
     const [task] = await tx.select().from(tasks).where(eq(tasks.id, slot.taskId)).for('update');
     if (task && slot.runId) {
       const [runtime] = await tx.select({ reason: runRuntime.reason }).from(runRuntime).where(eq(runRuntime.runId, slot.runId));
-      if (runtime?.reason?.startsWith('operations_execution_')) throw new ExecutionLost();
       if (runtime?.reason?.startsWith('release_')) {
         if (runtime.reason === 'release_claimed') await recoverClaimedRelease(tx, this.database, task, slot.runId, workerId, true);
         else if (['release_registry_prepared', 'release_registry_reconciling', 'release_registry_verified'].includes(runtime.reason)) {
