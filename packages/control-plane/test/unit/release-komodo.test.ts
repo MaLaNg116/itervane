@@ -168,6 +168,27 @@ it('independently reads the running image identity and keeps only the enrolled r
   ]);
 });
 
+it('reads the stopped container identity and keeps full precision for its last start', async () => {
+  const stopped = { ...container, State: { ...container.State, Status: 'exited', Running: false, StartedAt: '2026-11-22T08:15:13.345678901Z' } };
+  fetchKomodo.mockResolvedValueOnce(Response.json(configured)).mockResolvedValueOnce(Response.json(stopped));
+  await expect(release.inspectStoppedRuntime(target, approvedRuntime, runtimeNetwork, authorization)).resolves.toEqual({
+    state: 'exited', startedAt: '2026-11-22T08:15:13.345678901Z', imageReference: approved,
+    containerId: container.Id, configDigest: approvedRuntime.configDigest, network: runtimeNetwork, runtimeConfigSha256: target.runtimeConfigSha256,
+  });
+  expect(fetchKomodo.mock.calls.every(([url]) => String(url).startsWith(origin + '/read/'))).toBe(true);
+});
+
+it.each([
+  container.State,
+  { ...container.State, Status: 'exited', Running: false },
+  { ...container.State, Status: 'exited', Running: false, StartedAt: '0001-01-01T00:00:00Z' },
+  { ...container.State, Status: 'exited', Running: false, StartedAt: '2026-11-22T08:15:13Z', Restarting: true },
+])('rejects an unproven stopped runtime', async state => {
+  fetchKomodo.mockResolvedValueOnce(Response.json(configured)).mockResolvedValueOnce(Response.json({ ...container, State: state }));
+  await expect(release.inspectStoppedRuntime(target, approvedRuntime, runtimeNetwork, authorization))
+    .rejects.toMatchObject({ step: 'InspectDeploymentContainer', reason: 'response' });
+});
+
 it.each([
   ['running image digest', { Image: 'sha256:' + '8'.repeat(64) }, 'binding'],
   ['reported image reference', { Config: { Image: previousImage } }, 'binding'],

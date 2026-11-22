@@ -1,4 +1,4 @@
-import { deepStrictEqual, equal, match, notEqual, ok } from 'node:assert/strict';
+import { deepStrictEqual, equal, match, notEqual, ok, rejects } from 'node:assert/strict';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
+import { getCACertificates, setDefaultCACertificates } from 'node:tls';
 import { promisify } from 'node:util';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
@@ -27,6 +28,9 @@ import { formalReleaseQueue } from '../../src/persistence/database.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
 import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
+import { KomodoReleaseClient } from '../../src/runtime/release-komodo.js';
+import { createKeycloakRolloutTokenSource, ReleaseRolloutVerifier } from '../../src/runtime/release-rollout.js';
+import { ReleaseIngressError } from '../../src/runtime/release-traefik.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
 import { registerOperationsTarget } from '../../src/service/operations-targets.js';
 import { fingerprintRolloutCheck, registerReleaseTarget } from '../../src/service/release-targets.js';
@@ -1101,10 +1105,47 @@ async function probe() {
             finally { await native.close(); }
           }
         };
+        const verifyRestartReadback = async () => {
+          phase = 'operations_restart_readback';
+          const { containerId, imageReference: reference, configDigest, version } = proof.runtime;
+          const expected = { containerId, reference, configDigest };
+          const adapter = new KomodoReleaseClient(target.binding.komodo.origin, target.credentials);
+          const verifier = new ReleaseRolloutVerifier(adapter, createKeycloakRolloutTokenSource(ingress.check.probeIdentity, ingress.probeSecret));
+          const subject = { containerId, version, image, rolloutCheckSha256, check: ingress.check,
+            target: { ...target.binding, imageRepository: targetSettings.imageRepository, registryOrigin: targetSettings.registryOrigin } };
+          const authorize = async () => {};
+          const trusted = getCACertificates('default');
+          const fixtureCertificates = readFileSync(ingress.caFile, 'utf8').match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g);
+          equal(fixtureCertificates?.length, 2);
+          setDefaultCACertificates([...trusted, ...fixtureCertificates!]);
+          try {
+            await target.setOwnedContainerRunning(false, expected);
+            const stopped = await verifier.captureRestartBaseline(subject, authorize);
+            equal(stopped.state, 'exited');
+            equal(stopped.containerId, containerId);
+            await rejects(verifier.observeRestart(subject, stopped, authorize), {
+              name: 'KomodoReleaseError', step: 'InspectDeploymentContainer', reason: 'response',
+            });
+            await target.setOwnedContainerRunning(true, expected);
+            const recovered = await poll(async () => {
+              try { return await verifier.observeRestart(subject, stopped, authorize); }
+              catch (error) {
+                if (error instanceof ReleaseIngressError && error.reason === 'health_failed') return undefined;
+                throw error;
+              }
+            }, 15_000, 'operations_restart_health');
+            deepStrictEqual(recovered.runtime, proof.runtime);
+            ok(recovered.startedAt > stopped.startedAt);
+            return { version, manifestDigest: image.manifestDigest, configDigest, sameContainer: recovered.runtime.containerId === containerId,
+              stoppedStart: stopped.startedAt, recoveredStart: recovered.startedAt, protectedStatus: recovered.runtime.anonymousStatus,
+              healthStatus: recovered.runtime.healthStatus };
+          } finally { setDefaultCACertificates(trusted); }
+        };
         const operations = operationsRun ? await verifyNativeObservation() : undefined;
+        const restartReadback = operationsRun ? await verifyRestartReadback() : undefined;
         return {
           sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
-          ...(operations ? { operations: { ...operations, whiskersCleanup: true } } : {}),
+          ...(operations ? { operations: { ...operations, whiskersCleanup: true, restartReadback } } : {}),
           ...('before' in prepared
             ? { retry: { before: prepared.before, after, retrySha256: prepared.retrySha256, generation } }
             : ('dependencyPatchSha256' in prepared
