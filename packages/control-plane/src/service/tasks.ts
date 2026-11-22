@@ -17,17 +17,18 @@ import { appendEvent, enqueue, lockSlot } from '../runtime/authority.js';
 import { blockQueuedRelease } from '../runtime/release-queue.js';
 import { databaseNow } from './releases.js';
 
-function presentTask(task: typeof tasks.$inferSelect, runId: string) {
-  return taskDtoSchema.parse({ id: task.id, projectId: task.projectId, requestedBy: task.requestedBy, runId,
+function presentTask(task: typeof tasks.$inferSelect, run: Pick<typeof taskRuns.$inferSelect, 'id' | 'role'>) {
+  return taskDtoSchema.parse({ id: task.id, projectId: task.projectId, requestedBy: task.requestedBy, runId: run.id,
+    ...(run.role === 'operations' ? { workflow: run.role } : {}),
     source: { repositoryId: task.repositoryId, commit: task.commit }, purpose: task.purpose, dataClass: task.dataClass,
     state: task.state, version: task.version, locale: task.locale, createdAt: task.createdAt.toISOString() });
 }
 
 async function taskView(tx: Transaction, taskId: string) {
-  const [row] = await tx.select({ task: tasks, runId: taskRuns.id }).from(tasks)
+  const [row] = await tx.select({ task: tasks, run: { id: taskRuns.id, role: taskRuns.role } }).from(tasks)
     .innerJoin(taskRuns, and(eq(taskRuns.taskId, tasks.id), eq(taskRuns.generation, tasks.generation))).where(eq(tasks.id, taskId));
   if (!row) throw new DomainError('not_found');
-  return presentTask(row.task, row.runId);
+  return presentTask(row.task, row.run);
 }
 
 type TaskAdmission = Pick<typeof tasks.$inferInsert,
@@ -53,7 +54,8 @@ export class TaskService {
       if (!replay) throw new DomainError('idempotency_conflict');
       return replay;
     }
-    await tx.insert(taskRuns).values({ id: runId, taskId, generation: 1, role: operations ? 'operations' : 'audit' });
+    const run = { id: runId, role: operations ? 'operations' : 'audit' } as const;
+    await tx.insert(taskRuns).values({ ...run, taskId, generation: 1 });
     await tx.insert(runRuntime).values({ runId, taskId, ...(operations ? { maxTools: 2 } : {}) });
     if (operations) {
       const { projectId, applicationId, environmentId, releaseOperationId } = operations.document;
@@ -61,7 +63,7 @@ export class TaskService {
     }
     await enqueue(tx, this.database, task, runId);
     await tx.insert(taskEvents).values({ taskId, sequence: 1, type: 'task.accepted', state: 'queued', actorId: task.requestedBy });
-    return { task: presentTask(task, runId), replayed: false };
+    return { task: presentTask(task, run), replayed: false };
   }
 
   async admit(identity: VerifiedIdentity, raw: unknown) {
@@ -85,8 +87,11 @@ export class TaskService {
 
   async admitOperations(identity: VerifiedIdentity, raw: unknown, installation?: OperationsEnrollmentScope) {
     const input = parseInput(startOperationsTaskSchema, raw);
-    const { projectId, environmentId, idempotencyKey, locale } = input;
-    const requestHash = createHash('sha256').update(JSON.stringify({ workflow: 'operations', projectId, environmentId, locale })).digest('hex');
+    const { projectId, environmentId, idempotencyKey, locale, expectedReleaseOperationId } = input;
+    // An omitted expectation keeps the request fingerprint of earlier MCP and HTTP submissions.
+    const requestHash = createHash('sha256').update(JSON.stringify({
+      workflow: 'operations', projectId, environmentId, locale, expectedReleaseOperationId,
+    })).digest('hex');
     return this.database.db.transaction(async tx => {
       const actor = await requireActor(tx, identity);
       await requireProject(tx, actor, projectId, true);
@@ -96,6 +101,7 @@ export class TaskService {
       if (replay) return replay;
       const target = await readOperationsObservationTarget(tx, actor, { projectId, environmentId });
       if (installation && installation.enrollmentSha256 !== target.enrollmentSha256) throw new DomainError('unavailable');
+      if (expectedReleaseOperationId && expectedReleaseOperationId !== target.releaseOperationId) throw new DomainError('version_conflict');
       return this.insertTask(tx, { ...scope, repositoryId: target.source.repositoryId, commit: target.source.commit,
         purpose: translate(locale, 'operations.task.purpose'), dataClass: target.dataClass, locale }, freezeOperationsRequest(target));
     });
@@ -114,10 +120,10 @@ export class TaskService {
     parseInput(idSchema, projectId); limit = parseInput(listQuerySchema, { limit }).limit;
     return this.database.db.transaction(async tx => {
       const actor = await requireActor(tx, identity); await requireProject(tx, actor, projectId);
-      const rows = await tx.select({ task: tasks, runId: taskRuns.id }).from(tasks)
+      const rows = await tx.select({ task: tasks, run: { id: taskRuns.id, role: taskRuns.role } }).from(tasks)
         .innerJoin(taskRuns, and(eq(taskRuns.taskId, tasks.id), eq(taskRuns.generation, tasks.generation))).where(eq(tasks.projectId, projectId))
         .orderBy(desc(tasks.createdAt), desc(tasks.id)).limit(limit);
-      return rows.map(row => presentTask(row.task, row.runId));
+      return rows.map(row => presentTask(row.task, row.run));
     });
   }
 

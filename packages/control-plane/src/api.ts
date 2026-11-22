@@ -5,6 +5,7 @@ import {
   admissionDtoSchema, applicationDtoSchema, capabilitiesSchema, environmentDtoSchema,
   idSchema, listQuerySchema, meDtoSchema, projectAccessDtoSchema, portalConfigSchema, projectDtoSchema, repositoryDtoSchema, taskDtoSchema, taskEventDtoSchema,
   negotiateLocale, sourceInspectionDtoSchema, ruleIdSchema, ruleQuerySchema, preauditAdmissionSchema, preauditDtoSchema, sha256Schema, type Locale,
+  operationsLaunchViewSchema,
 } from '@itervane/contracts';
 import { AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
 import type { Database } from './persistence/database.js';
@@ -171,6 +172,10 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
     app.get('/v1/tasks/:taskId/operations', async request => {
       const { taskId } = parseInput(taskParam, request.params);
       return operations.get(identity(request), taskId, request.locale);
+    });
+    app.get('/v1/tasks/:taskId/operations-option', async request => {
+      const { taskId } = parseInput(taskParam, request.params);
+      return operationsLaunchViewSchema.parse(await operations.getLaunchOption(identity(request), taskId, operationsApi));
     });
   }
   app.get('/v1/projects/:projectId/tasks', async request => {

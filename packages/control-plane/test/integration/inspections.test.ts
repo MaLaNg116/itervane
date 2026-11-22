@@ -10,7 +10,7 @@ import type { AgentEvidence } from '@itervane/agent';
 import { createFormalVerification } from '@itervane/agent';
 import { admissionDtoSchema, apiErrorSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
-  formalVerificationResultSchema, operationsObservationViewSchema, translate, verificationViewSchema,
+  formalVerificationResultSchema, operationsLaunchViewSchema, operationsObservationViewSchema, taskDtoSchema, translate, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type FormalReleaseManifest, type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
@@ -2470,14 +2470,26 @@ it('shares one authorized diagnosis across opt-in HTTP and MCP and fences a repl
   const clients: Client[] = [];
   try {
     const url = '/v1/operations/diagnoses';
-    const payload = { ...fixture.scope, idempotencyKey: randomUUID(), locale: 'zh-CN' };
+    const payload = { ...fixture.scope, idempotencyKey: randomUUID(), locale: 'zh-CN', expectedReleaseOperationId: fixture.operationId };
     const headers = { authorization: `Bearer ${await issuer.token('owner')}`, 'accept-language': 'zh-CN' };
+    const launchPath = `/v1/tasks/${task.id}/operations-option`;
+    const readLaunch = async (path = launchPath) => {
+      const response = await app.inject({ url: path, headers });
+      expect(response.statusCode).toBe(200);
+      return operationsLaunchViewSchema.parse(response.json());
+    };
     expect((await disabled.inject({ method: 'POST', url, headers, payload })).statusCode).toBe(404);
+    expect((await disabled.inject({ url: launchPath, headers })).statusCode).toBe(404);
     expect((await disabled.inject({ url: '/v1/capabilities', headers })).json()).toMatchObject({ stage: 'p1-e', operations: false });
     expect((await app.inject({ url: '/v1/capabilities', headers })).json()).toMatchObject({ stage: 'p3-a', operations: true });
     const post = (input: Record<string, unknown> = payload, requestHeaders = headers) => app.inject({ method: 'POST', url, headers: requestHeaders, payload: input });
     expect((await post({ ...payload, environmentId: randomUUID() })).statusCode).toBe(404);
     expect((await post({ ...payload, containerId: fixture.runtime.containerId })).statusCode).toBe(400);
+    expect(await readLaunch()).toEqual({ option: { ...fixture.scope, releaseOperationId: fixture.operationId } });
+    const changed = await post({ ...payload, expectedReleaseOperationId: randomUUID() });
+    expect(changed.statusCode).toBe(409);
+    expect(apiErrorSchema.parse(changed.json()).error.code).toBe('version_conflict');
+    expect(await database.storage.db.select().from(operationsRequests)).toHaveLength(0);
 
     const subject = 'diagnosis-api-viewer';
     const principalId = randomUUID();
@@ -2485,10 +2497,16 @@ it('shares one authorized diagnosis across opt-in HTTP and MCP and fences a repl
     await database.storage.db.insert(projectMembers).values({ projectId: fixture.scope.projectId, principalId, role: 'viewer' });
     const viewerHeaders = { authorization: `Bearer ${await issuer.token(subject)}`, 'accept-language': 'en' };
     expect((await post(payload, viewerHeaders)).statusCode).toBe(403);
+    expect((await app.inject({ url: launchPath, headers: viewerHeaders })).statusCode).toBe(403);
     const accepted = await post();
     expect(accepted.statusCode).toBe(202);
     const admission = admissionDtoSchema.parse(accepted.json());
-    expect(admission).toMatchObject({ replayed: false, task: { state: 'queued', purpose: '诊断已发布应用' } });
+    expect(admission).toMatchObject({ replayed: false, task: { state: 'queued', purpose: '诊断已发布应用', workflow: 'operations' } });
+    expect(await readLaunch(`/v1/tasks/${admission.task.id}/operations-option`)).toEqual({ option: null });
+    const listed = (await app.inject({ url: `/v1/projects/${fixture.scope.projectId}/tasks`, headers })).json().items;
+    const records = taskDtoSchema.array().parse(listed);
+    expect(records.find(record => record.id === admission.task.id)?.workflow).toBe('operations');
+    expect(records.find(record => record.id === task.id)).not.toHaveProperty('workflow');
     const resultPath = `/v1/tasks/${admission.task.id}/operations`;
     expect((await disabled.inject({ url: resultPath, headers })).statusCode).toBe(404);
 
@@ -2537,6 +2555,7 @@ it('shares one authorized diagnosis across opt-in HTTP and MCP and fences a repl
     expect(response.body).not.toContain(operationsFixtureKey);
 
     await registerOperationsTarget(database.storage, { ...fixture.registration, whiskers: { ...fixture.registration.whiskers, serverId: 'next-server' } });
+    expect(await readLaunch()).toEqual({ option: null });
     expect((await post(payload)).statusCode).toBe(200);
     const stale = await post({ ...payload, idempotencyKey: randomUUID() });
     expect(stale.statusCode).toBe(503);
@@ -2544,6 +2563,7 @@ it('shares one authorized diagnosis across opt-in HTTP and MCP and fences a repl
     expect(await database.storage.db.select().from(operationsRequests)).toHaveLength(1);
 
     await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
+    expect((await app.inject({ url: launchPath, headers: viewerHeaders })).statusCode).toBe(404);
     expect((await app.inject({ url: resultPath, headers: viewerHeaders })).statusCode).toBe(404);
     expect(apiErrorSchema.parse((await viewer.callTool(query)).structuredContent).error.code).toBe('not_found');
   } finally {

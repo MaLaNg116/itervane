@@ -24,7 +24,16 @@ export type OperationsTargetInput = z.infer<typeof operationsTargetInputSchema>;
 export const startOperationsTaskSchema = z.strictObject({
   projectId: idSchema, environmentId: idSchema,
   idempotencyKey: z.string().min(1).max(128), locale: localeSchema.default('en'),
+  expectedReleaseOperationId: idSchema.optional(),
 });
+
+export type StartOperationsTask = z.infer<typeof startOperationsTaskSchema>;
+
+export const operationsLaunchOptionSchema = z.strictObject({
+  projectId: idSchema, environmentId: idSchema, releaseOperationId: idSchema,
+});
+export const operationsLaunchViewSchema = z.strictObject({ option: operationsLaunchOptionSchema.nullable() });
+export type OperationsLaunchOption = z.infer<typeof operationsLaunchOptionSchema>;
 
 export const operationsRequestBindingSchema = z.strictObject({
   version: z.literal(1), projectId: idSchema, applicationId: idSchema, environmentId: idSchema, grantId: idSchema,
