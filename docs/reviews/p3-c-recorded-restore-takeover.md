@@ -6,4 +6,4 @@
 2. 继任进程以更高的代次核验同一原生更新和同一容器。恢复回执绑定 B 的固定镜像、入口保护和健康结果，释放环境和全局执行槽。中英文 HTTP 与 MCP 逐语种比较。 [同一应用验证](https://github.com/MaLaNg116/itervane/blob/7b3a6f5e082b241f72b030b658b664564a916da0/packages/control-plane/test/native/worker-inspection.ts#L1140)
 3. 最后再次演练缺少部署回执的 B → A。实际容器运行 A，治理记录保留最后核验的 B，处置继续待人工核对，环境拒绝冲突发布。两类接管使用同一固定目标与入口。 [托管断言](https://github.com/MaLaNg116/itervane/blob/7b3a6f5e082b241f72b030b658b664564a916da0/.github/workflows/native-runner.yml#L239)
 
-TypeScript、248 项单元和差异检查通过。实际进程中断、撤权与恢复结算由托管 `protected-release-restore` 核验。审批过期、发送前撤销、目标变化和公开参考安装继续按 C2d4c3 验收。 [托管检查](https://github.com/MaLaNg116/itervane/pull/118/checks)
+TypeScript、248 项单元、11 项 PostgreSQL 17.12 处置接管与围栏专项和差异检查通过。实际进程中断、撤权与恢复结算由托管 `protected-release-restore` 核验。审批过期、发送前撤销、目标变化和公开参考安装继续按 C2d4c3 验收。 [托管检查](https://github.com/MaLaNg116/itervane/pull/118/checks)
