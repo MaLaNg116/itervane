@@ -56,7 +56,9 @@ export const operationsRestartContinueInputSchema = operationsRestartApprovalInp
   expectedVersion: revision,
   idempotencyKey: idSchema,
 });
-export const operationsRestartResumeBindingSchema = operationsRestartApprovalInputSchema.extend(operationsRestartWriterProofSchema.shape);
+export const operationsRestartResumeBindingSchema = operationsRestartApprovalInputSchema.extend({
+  ...operationsRestartWriterProofSchema.shape, runtimeBaselineSha256: sha256Schema,
+});
 export const operationsRestartResumeOutcomeSchema = operationsRestartApprovalInputSchema.extend({
   outcome: z.enum(['pending', 'acknowledged', 'unknown']),
 });

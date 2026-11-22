@@ -57,12 +57,23 @@ export type RolloutSubject = {
 };
 
 type AuthorizeObservation = () => Promise<void>;
-type RestartSubject = RolloutSubject & Pick<OperationsRestartBaseline, 'containerId'> & { version: string };
+export type RestartSubject = RolloutSubject & Pick<OperationsRestartBaseline, 'containerId'> & { version: string };
 
 function installedCheck(input: RolloutSubject) {
   const parsed = releaseRolloutCheckSchema.safeParse(input.check);
   if (!parsed.success || fingerprintRolloutCheck(parsed.data) !== input.rolloutCheckSha256) throw new ReleaseIngressError('rollout_profile');
   return parsed.data;
+}
+
+export function matchRestartBaseline(input: RestartSubject, raw: unknown) {
+  const check = installedCheck(input);
+  const baseline = operationsRestartBaselineSchema.parse(raw);
+  const reference = `${releaseRegistryHost(input.target.registryOrigin)}/${input.target.imageRepository}@${input.image.manifestDigest}`;
+  if (baseline.containerId !== input.containerId || baseline.configDigest !== input.image.configDigest ||
+      baseline.imageReference !== reference || baseline.runtimeConfigSha256 !== input.target.runtimeConfigSha256 || baseline.network !== check.network) {
+    throw new ReleaseIngressError('runtime_changed');
+  }
+  return baseline;
 }
 
 export class ReleaseRolloutVerifier {
@@ -76,25 +87,15 @@ export class ReleaseRolloutVerifier {
   async captureRestartBaseline(input: RestartSubject, authorize: AuthorizeObservation, signal?: AbortSignal) {
     const check = installedCheck(input);
     const baseline = await this.komodo.inspectStoppedRuntime(input.target, input.image, check.network, authorize, signal);
-    return this.matchRestartBaseline(input, check, baseline);
+    return matchRestartBaseline(input, baseline);
   }
 
   async observeRestart(input: RestartSubject, baseline: OperationsRestartBaseline, authorize: AuthorizeObservation, signal?: AbortSignal) {
     // Reject a stale baseline before reading a container or requesting a probe credential.
-    const checked = this.matchRestartBaseline(input, installedCheck(input), baseline);
+    const checked = matchRestartBaseline(input, baseline);
     const health = await this.observeStableRuntime(input, authorize, signal, checked);
     if (health.runtime.version !== input.version) throw new ReleaseIngressError('health_failed');
     return operationsRestartRecoveryObservationSchema.parse(health);
-  }
-
-  private matchRestartBaseline(input: RestartSubject, check: ReleaseRolloutCheck, raw: OperationsRestartBaseline) {
-    const baseline = operationsRestartBaselineSchema.parse(raw);
-    const reference = `${releaseRegistryHost(input.target.registryOrigin)}/${input.target.imageRepository}@${input.image.manifestDigest}`;
-    if (baseline.containerId !== input.containerId || baseline.configDigest !== input.image.configDigest ||
-        baseline.imageReference !== reference || baseline.runtimeConfigSha256 !== input.target.runtimeConfigSha256 || baseline.network !== check.network) {
-      throw new ReleaseIngressError('runtime_changed');
-    }
-    return baseline;
   }
 
   private async observeStableRuntime(input: RolloutSubject, authorize: AuthorizeObservation, signal?: AbortSignal,

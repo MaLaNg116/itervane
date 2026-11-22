@@ -44,7 +44,7 @@ export async function requireOperationsExecutionApproval(tx: Transaction, task: 
   if (sha256(JSON.stringify(current)) !== proposal.fingerprint) throw new DomainError('version_conflict');
   const now = await databaseNow(tx);
   if (proposal.validUntil <= now) throw new DomainError('unsupported_state');
-  return { frozen, decision, now, whiskers: basis.whiskers };
+  return { frozen, decision, now, whiskers: basis.whiskers, publishedVersion: basis.publishedVersion };
 }
 
 export class OperationsExecutionAdmission {

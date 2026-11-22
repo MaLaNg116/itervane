@@ -1,5 +1,7 @@
+import { sha256 } from '@itervane/runner';
 import { ExecutionLost } from './authority.js';
 import type { OperationsExecutionCoordinator, OperationsExecutionLease } from './operations-execution-lease.js';
+import type { ReleaseRolloutVerifier } from './release-rollout.js';
 import type { WhiskersRestartClient } from './whiskers-restart.js';
 import { loadWhiskersWriter, WhiskersWriterInstallationRejected, type WhiskersWriterFiles } from './whiskers-writer-installation.js';
 
@@ -8,7 +10,8 @@ type RestartDispatchStatus = 'awaiting_approval' | 'reconciling' | 'not_sent' | 
 export class OperationsRestartWorker {
   readonly #writeKey: string;
 
-  constructor(private readonly execution: OperationsExecutionCoordinator, private readonly files: WhiskersWriterFiles, writeKey: string) {
+  constructor(private readonly execution: OperationsExecutionCoordinator, private readonly verifier: Pick<ReleaseRolloutVerifier, 'captureRestartBaseline'>,
+    private readonly files: WhiskersWriterFiles, writeKey: string) {
     this.#writeKey = writeKey;
   }
 
@@ -50,10 +53,15 @@ export class OperationsRestartWorker {
       const current = await loadWhiskersWriter(this.files, this.#writeKey);
       signal.throwIfAborted();
       if (current.proof.installationSha256 !== installed.proof.installationSha256) throw new WhiskersWriterInstallationRejected();
+      const baseline = await this.verifier.captureRestartBaseline(plan.subject, async () => {
+        signal.throwIfAborted();
+        await this.execution.planRestartConnection(scope, current.proof);
+      }, signal);
+      signal.throwIfAborted();
       if (plan.approval) {
-        await this.execution.prepareRestartResume(scope, { ...current.proof, ...plan.approval });
+        await this.execution.prepareRestartResume(scope, { ...current.proof, ...plan.approval, runtimeBaselineSha256: sha256(JSON.stringify(baseline)) });
       } else {
-        const written = await this.execution.prepareDispatch(scope, current.proof);
+        const written = await this.execution.prepareDispatch(scope, current.proof, baseline);
         if (!written.restartRequest) throw new WhiskersWriterInstallationRejected();
         callSha256 = written.restartRequest.callSha256;
       }
