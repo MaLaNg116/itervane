@@ -1,5 +1,6 @@
 import {
-  komodoReleaseTargetSchema, komodoResourceIdSchema, ociDigestSchema, releaseKomodoConfigurationSchema, releaseKomodoOriginSchema,
+  komodoReleaseTargetSchema, komodoResourceIdSchema, ociDigestSchema, operationsRestartBaselineSchema,
+  operationsRuntimeStartedAtSchema, releaseKomodoConfigurationSchema, releaseKomodoOriginSchema,
   releaseKomodoUpdateSchema, releaseRegistryHost, type ReleaseRegistryImageProof,
 } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
@@ -32,12 +33,18 @@ const update = z.object({
   target: z.object({ type: z.literal('Deployment'), id: komodoResourceIdSchema }),
   status: releaseKomodoUpdateSchema.shape.status, success: z.boolean(),
 });
+const stableContainerState = z.object({ Paused: z.literal(false), Restarting: z.literal(false),
+  StartedAt: z.iso.datetime().max(30).optional() });
+const containerState = z.discriminatedUnion('Status', [
+  stableContainerState.extend({ Status: z.literal('running'), Running: z.literal(true), Dead: z.literal(false) }),
+  stableContainerState.extend({ Status: z.literal('exited'), Running: z.literal(false), Dead: z.literal(false) }),
+  stableContainerState.extend({ Status: z.literal('dead'), Running: z.literal(false), Dead: z.literal(true) }),
+]);
 const deployedContainer = z.object({
   Id: z.string().regex(/^[a-f0-9]{64}$/),
   Name: z.string().regex(/^\/[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/),
   Image: ociDigestSchema,
-  State: z.object({ Status: z.literal('running'), Running: z.literal(true), Paused: z.literal(false),
-    Restarting: z.literal(false), Dead: z.literal(false) }),
+  State: containerState,
   Config: z.object({ Image: imageReference }),
   HostConfig: z.object({
     NetworkMode: deploymentNetwork, Privileged: z.literal(false), PublishAllPorts: z.literal(false),
@@ -49,6 +56,13 @@ const deployedContainer = z.object({
 const routes = { ListApiKeys: 'read', GetDeployment: 'read', InspectDeploymentContainer: 'read',
   UpdateDeployment: 'write', Deploy: 'execute', GetUpdate: 'read' } as const;
 type Method = keyof typeof routes;
+
+function normalizeContainerStart(raw?: string) {
+  if (!raw) return undefined;
+  const [whole, fraction = ''] = raw.slice(0, -1).split('.');
+  // Docker serializes UTC with up to nine digits of precision. Keep all digits for stable comparisons.
+  return operationsRuntimeStartedAtSchema.safeParse(`${whole}.${fraction.padEnd(9, '0')}Z`).data;
+}
 
 export class KomodoReleaseError extends Error {
   constructor(readonly step: Method | 'configuration' | 'target', readonly reason: 'binding' | 'transport' | 'http' | 'response',
@@ -178,6 +192,23 @@ export class KomodoReleaseClient {
 
   async inspectRuntime(raw: KomodoReleaseTarget, image: Pick<ReleaseRegistryImageProof, 'manifestDigest' | 'configDigest'>,
     network: string, authorize: Authorize, signal?: AbortSignal) {
+    const { runtime, state, startedAt } = await this.inspectBoundContainer(raw, image, network, authorize, signal);
+    if (state !== 'running') throw new KomodoReleaseError('InspectDeploymentContainer', 'response');
+    return { ...runtime, ...(startedAt ? { startedAt } : {}) };
+  }
+
+  async inspectStoppedRuntime(raw: KomodoReleaseTarget, image: Pick<ReleaseRegistryImageProof, 'manifestDigest' | 'configDigest'>,
+    network: string, authorize: Authorize, signal?: AbortSignal) {
+    const { runtime, state, startedAt } = await this.inspectBoundContainer(raw, image, network, authorize, signal);
+    const { containerId, configDigest, imageReference, runtimeConfigSha256 } = runtime;
+    const stopped = operationsRestartBaselineSchema.safeParse({ containerId, configDigest, imageReference, runtimeConfigSha256,
+      network: runtime.network, state, startedAt });
+    if (!stopped.success) throw new KomodoReleaseError('InspectDeploymentContainer', 'response');
+    return stopped.data;
+  }
+
+  private async inspectBoundContainer(raw: KomodoReleaseTarget, image: Pick<ReleaseRegistryImageProof, 'manifestDigest' | 'configDigest'>,
+    network: string, authorize: Authorize, signal?: AbortSignal) {
     const target = this.binding(raw);
     const reference = this.approvedReference(target, image.manifestDigest);
     const digest = ociDigestSchema.safeParse(image.configDigest);
@@ -190,8 +221,9 @@ export class KomodoReleaseClient {
     if (container.Config.Image !== reference || container.Image !== digest.data || container.HostConfig.NetworkMode !== expectedNetwork.data
       || networks.length !== 1 || networks[0] !== expectedNetwork.data) throw new KomodoReleaseError('InspectDeploymentContainer', 'binding');
     // The native response includes container environment and networking details. Keep only facts needed for rollout verification.
-    return { ...configured, containerId: container.Id, containerName: container.Name.slice(1),
-      configDigest: container.Image, network: expectedNetwork.data };
+    return { runtime: { ...configured, containerId: container.Id, containerName: container.Name.slice(1),
+      configDigest: container.Image, network: expectedNetwork.data }, state: container.State.Status,
+      startedAt: normalizeContainerStart(container.State.StartedAt) };
   }
 
   async configureImage(raw: KomodoReleaseTarget, release: { previousImage: string; manifestDigest: string },

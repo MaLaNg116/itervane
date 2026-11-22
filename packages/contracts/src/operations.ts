@@ -4,6 +4,7 @@ import { localeSchema } from './i18n.js';
 import { sha256Schema } from './inspection.js';
 import { idSchema, serviceOriginSchema, sourceRefSchema } from './primitives.js';
 import { ociDigestSchema } from './qualified-standard-image.js';
+import { releaseRuntimeObservationSchema } from './release.js';
 
 const revision = z.int().min(1).max(2_147_483_647);
 
@@ -58,6 +59,16 @@ export const operationsRestartContinueInputSchema = operationsRestartApprovalInp
 export const operationsRestartResumeBindingSchema = operationsRestartApprovalInputSchema.extend(operationsRestartWriterProofSchema.shape);
 export const operationsRestartResumeOutcomeSchema = operationsRestartApprovalInputSchema.extend({
   outcome: z.enum(['pending', 'acknowledged', 'unknown']),
+});
+
+export const operationsRuntimeStartedAtSchema = z.iso.datetime({ precision: 9 }).refine(value => Date.parse(value) > 0);
+export const operationsRestartBaselineSchema = releaseRuntimeObservationSchema.pick({
+  containerId: true, configDigest: true, imageReference: true, runtimeConfigSha256: true, network: true,
+}).extend({ state: z.enum(['exited', 'dead']), startedAt: operationsRuntimeStartedAtSchema });
+export type OperationsRestartBaseline = z.infer<typeof operationsRestartBaselineSchema>;
+
+export const operationsRestartRecoveryObservationSchema = z.strictObject({
+  runtime: releaseRuntimeObservationSchema, startedAt: operationsRuntimeStartedAtSchema,
 });
 
 export const operationsTargetInputSchema = z.strictObject({
