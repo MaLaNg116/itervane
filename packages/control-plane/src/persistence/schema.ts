@@ -7,7 +7,7 @@ import {
   type OperationsDiagnosisObservation, type OperationsDiagnosisReceipt, type OperationsDiagnosisSection,
   type OperationsObservationReceipt, type OperationsProposal, type OperationsRequestBinding, type OperationsRestartBaseline,
   type OperationsRestartInstallation, type OperationsRestartRecoveryFailure, type OperationsRestartRecoveryProof, type OperationsRestartRequest,
-  type OperationsRestorePlan,
+  type OperationsRestorePlan, type OperationsRestoreRecoveryFailure, type OperationsRestoreRecoveryProof,
   type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt,
   type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
@@ -675,6 +675,35 @@ export const operationsRestoreSteps = domain.table('operations_restore_steps', {
   check('operations_restore_step_binding', sql`${t.kind} IN ('configure', 'deploy') AND ${t.fence} > 0 AND ${t.planSha256} ~ '^[a-f0-9]{64}$'`),
   check('operations_restore_step_receipt', sql`((${t.receipt} IS NULL AND ${t.recordedAt} IS NULL)
     OR (jsonb_typeof(${t.receipt}) = 'object' AND octet_length(${t.receipt}::text) <= 4096 AND ${t.recordedAt} >= ${t.sentAt})) IS TRUE`),
+]);
+
+export const operationsRestoreRecoveries = domain.table('operations_restore_recoveries', {
+  executionId: uuid('execution_id').notNull().references(() => operationsExecutionIntents.executionId),
+  attempt: integer('attempt').notNull(),
+  fence: integer('fence').notNull(),
+  workerId: uuid('worker_id').notNull(),
+  state: text('state').$type<'observing' | 'verified' | 'retry' | 'manual_review'>().notNull().default('observing'),
+  failure: text('failure').$type<OperationsRestoreRecoveryFailure>(),
+  proof: jsonb('proof').$type<OperationsRestoreRecoveryProof>(),
+  proofSha256: text('proof_sha256'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+}, t => [
+  primaryKey({ columns: [t.executionId, t.attempt] }),
+  unique('operations_restore_recovery_fence').on(t.executionId, t.fence),
+  check('operations_restore_recovery_coordinates', sql`${t.attempt} BETWEEN 1 AND 3 AND ${t.fence} > 0`),
+  check('operations_restore_recovery_lifecycle', sql`((
+    (${t.state} = 'observing' AND ${t.completedAt} IS NULL AND ${t.failure} IS NULL AND ${t.proof} IS NULL AND ${t.proofSha256} IS NULL)
+    OR (${t.completedAt} >= ${t.createdAt} AND (
+      (${t.state} = 'verified' AND ${t.failure} IS NULL AND jsonb_typeof(${t.proof}) = 'object'
+        AND octet_length(${t.proof}::text) <= 4096 AND ${t.proofSha256} ~ '^[a-f0-9]{64}$')
+      OR (${t.proof} IS NULL AND ${t.proofSha256} IS NULL AND (
+        (${t.state} = 'retry' AND ${t.attempt} < 3 AND ${t.failure} IN ('update_pending', 'unavailable', 'unhealthy', 'lease_expired'))
+        OR (${t.state} = 'manual_review' AND (${t.failure} IN ('target_changed', 'missing_update', 'update_failed')
+          OR (${t.attempt} = 3 AND ${t.failure} IN ('update_pending', 'unavailable', 'unhealthy', 'lease_expired'))))
+      ))
+    ))
+  ) IS TRUE)`),
 ]);
 
 export const operationsRestartRequests = domain.table('operations_restart_requests', {
