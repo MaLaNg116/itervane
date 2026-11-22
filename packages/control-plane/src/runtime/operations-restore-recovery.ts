@@ -99,9 +99,14 @@ export async function finishRestoreRecovery(tx: Transaction, database: Database,
     .where(and(eq(operationsRestoreRecoveries.executionId, execution.id), eq(operationsRestoreRecoveries.attempt, attempt.attempt),
       eq(operationsRestoreRecoveries.state, 'observing'))).returning();
   if (!record?.completedAt) throw new ExecutionLost();
+  if (state === 'verified') {
+    const [released] = await tx.update(operationsExecutions).set({ state: 'recovered' })
+      .where(and(eq(operationsExecutions.id, execution.id), eq(operationsExecutions.state, 'reserved'))).returning({ id: operationsExecutions.id });
+    if (!released) throw new ExecutionLost();
+  }
   const reason = proof ? 'operations_restore_recovery_verified' : retry ? 'operations_execution_reconciling' : 'operations_restore_recovery_manual';
   await tx.update(runRuntime).set({ reason }).where(eq(runRuntime.runId, schedule.runId));
-  await appendEvent(tx, task, 'task.operations_restore_recovery_recorded', state === 'manual_review' ? 'needs_human' : 'reconciling', {
+  await appendEvent(tx, task, 'task.operations_restore_recovery_recorded', state === 'verified' ? 'succeeded' : retry ? 'reconciling' : 'needs_human', {
     workerId, reason, operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: attempt.fence,
       recoveryAttempt: attempt.attempt, ...(proofSha256 ? { recoverySha256: proofSha256 } : {}) },
   });

@@ -132,7 +132,8 @@ export type OperationsLaunchOption = z.infer<typeof operationsLaunchOptionSchema
 
 export const operationsRequestBindingSchema = z.strictObject({
   version: z.literal(1), projectId: idSchema, applicationId: idSchema, environmentId: idSchema, grantId: idSchema,
-  releaseTaskId: idSchema, releaseOperationId: idSchema, source: sourceRefSchema, dataClass: taskDtoSchema.shape.dataClass,
+  releaseTaskId: idSchema, releaseOperationId: idSchema, restoreExecutionId: idSchema.optional(),
+  source: sourceRefSchema, dataClass: taskDtoSchema.shape.dataClass,
   targetRevision: revision, mappingSha256: sha256Schema, enrollmentRevision: revision, enrollmentSha256: sha256Schema,
   containerId: sha256Schema, manifestDigest: ociDigestSchema, configDigest: ociDigestSchema,
 });

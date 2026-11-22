@@ -428,6 +428,13 @@
       "when": 1795352199660,
       "tag": "0060_operations_authority_clock",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1795354165414,
+      "tag": "0061_operations_current_publication",
+      "breakpoints": true
     }
   ]
 }

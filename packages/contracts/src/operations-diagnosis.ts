@@ -22,7 +22,7 @@ const verifiedRelease = z.strictObject({
 });
 const releaseEvidence = z.strictObject({ current: verifiedRelease, previous: verifiedRelease.nullable() })
   .refine(evidence => !evidence.previous || evidence.previous.operationId !== evidence.current.operationId
-    && evidence.previous.verifiedAt <= evidence.current.verifiedAt, 'Previous release must precede the current release');
+    && evidence.previous.manifestDigest !== evidence.current.manifestDigest, 'Recovery requires a distinct verified release');
 const observation = { kind: z.literal('operations_section'), proofSha256: sha256Schema };
 export const operationsDiagnosisObservationSchema = z.discriminatedUnion('section', [
   z.strictObject({ ...observation, section: z.literal('container'), result: whiskersObservationSchema }),
