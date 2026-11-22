@@ -6,18 +6,22 @@ import type { databaseFixture } from '../helpers/database.js';
 type TestDatabase = Awaited<ReturnType<typeof databaseFixture>>;
 const acknowledgements = {
   restart: {
-    table: 'operations_restart_resumes', key: 67310548,
+    table: 'operations_restart_resumes', column: 'execution_id', key: 67310548,
     when: "OLD.state = 'prepared' AND NEW.state = 'acknowledged'",
   },
   restore: {
-    table: 'operations_restore_steps', key: 67310549,
+    table: 'operations_restore_steps', column: 'execution_id', key: 67310549,
     when: "OLD.kind = 'deploy' AND OLD.receipt IS NULL AND NEW.receipt IS NOT NULL",
+  },
+  restore_reconcile: {
+    table: 'run_runtime', column: 'run_id', key: 67310550,
+    when: "OLD.reason = 'operations_execution_dispatch_intended' AND NEW.reason = 'operations_execution_reconciling'",
   },
 } as const;
 
-export async function holdOperationsAcknowledgement(db: TestDatabase, kind: keyof typeof acknowledgements, executionId: string) {
-  const id = idSchema.parse(executionId);
-  const { table, key, when } = acknowledgements[kind];
+export async function holdOperationsAcknowledgement(db: TestDatabase, kind: keyof typeof acknowledgements, recordId: string) {
+  const id = idSchema.parse(recordId);
+  const { table, column, key, when } = acknowledgements[kind];
   const barrier = `pause_${kind}_test_acknowledgement`;
   const session = await db.admin.connect();
   let locked = false;
@@ -44,7 +48,7 @@ export async function holdOperationsAcknowledgement(db: TestDatabase, kind: keyo
     const holder = rows[0]!.pid;
     await session.query('SELECT pg_advisory_lock($1)', [key]);
     locked = true;
-    // This trigger is installed in a dedicated disposable database and only matches one validated execution ID.
+    // The disposable database barrier matches one validated execution or run ID.
     await session.query(`
       CREATE FUNCTION itervane.${barrier}() RETURNS trigger
         LANGUAGE plpgsql SET search_path = pg_catalog AS $$
@@ -54,7 +58,7 @@ export async function holdOperationsAcknowledgement(db: TestDatabase, kind: keyo
       END;
       $$;
       CREATE TRIGGER ${barrier} BEFORE UPDATE ON itervane.${table}
-        FOR EACH ROW WHEN (${when} AND NEW.execution_id = '${id}'::uuid)
+        FOR EACH ROW WHEN (${when} AND NEW.${column} = '${id}'::uuid)
         EXECUTE FUNCTION itervane.${barrier}()
     `);
     installed = true;
