@@ -11,9 +11,10 @@ import { createFormalOperations, createFormalVerification } from '@itervane/agen
 import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseTargetSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
-  operationsProposalViewSchema, operationsRestartRequestSchema, taskDtoSchema, translate, verificationViewSchema,
+  operationsProposalViewSchema, operationsRestartRequestSchema, taskDtoSchema, translate, verificationViewSchema, whiskersRestartImageDigest,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type OperationsDiagnosisObservation, type OperationsDiagnosisSection,
+  type OperationsRestartInstallation,
   type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
@@ -30,7 +31,7 @@ import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, fo
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
   operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
   operationsDiagnosisRuntime, operationsExecutionIntents, operationsExecutions, operationsExecutionSchedules, operationsObservations,
-  operationsProposals, operationsRequests, operationsRestartRequests, operationsRestartResumes,
+  operationsProposals, operationsRequests, operationsRestartInstallations, operationsRestartRequests, operationsRestartResumes, operationsTargets,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskEvents, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
@@ -71,6 +72,7 @@ import { OperationsDecisionService } from '../../src/service/operations-decision
 import { OperationsExecutionAdmission } from '../../src/service/operations-execution-admission.js';
 import { OperationsObservationViewService } from '../../src/service/operations-observation-view.js';
 import { OperationsProposalService, readOperationsProposal } from '../../src/service/operations-proposals.js';
+import { changeOperationsRestartInstallation } from '../../src/service/operations-restart-installations.js';
 import { freezeOperationsRequest, readOperationsDiagnosis, readOperationsRequest } from '../../src/service/operations-requests.js';
 import { readOperationsObservationTarget, readOperationsReleaseEvidence, registerOperationsTarget } from '../../src/service/operations-targets.js';
 import { publishFormalRepair } from '../../src/service/repair-result.js';
@@ -2878,22 +2880,71 @@ async function fetchOperationsWakeup() {
   }, { timeout: 8_000, interval: 50 });
 }
 
+function restartInstallation(fixture: Awaited<ReturnType<typeof installedOperationsFixture>>): OperationsRestartInstallation {
+  return { version: 1, installationId: randomUUID(), environmentId: fixture.scope.environmentId,
+    enrollmentSha256: fixture.enrollment.fingerprint, whiskers: fixture.registration.whiskers, imageDigest: whiskersRestartImageDigest,
+    policySha256: sha256('sealed Confirm policy'), rolesSha256: sha256('read-only Operator role map'), credentialSha256: sha256(randomUUID()) };
+}
+
+async function registerRestartInstallation(installation: OperationsRestartInstallation, expectedActiveId: string | null = null) {
+  const receipt = await changeOperationsRestartInstallation(database.storage, { action: 'register', expectedActiveId, installation });
+  return { installationId: receipt.installationId, installationSha256: receipt.installationSha256, credentialSha256: installation.credentialSha256 };
+}
+
+it('registers one immutable Whiskers write installation without altering the read enrollment', async () => {
+  const fixture = await installedOperationsFixture();
+  const initial = restartInstallation(fixture);
+  const before = await database.storage.db.select().from(operationsTargets);
+  await expect(registerRestartInstallation({ ...initial, whiskers: { ...initial.whiskers, serverId: 'unregistered' } }))
+    .rejects.toMatchObject({ code: 'version_conflict' });
+  await expect(registerRestartInstallation({ ...initial, enrollmentSha256: sha256('not the enrollment') }))
+    .rejects.toMatchObject({ code: 'version_conflict' });
+  await expect(changeOperationsRestartInstallation(database.storage, { action: 'register', expectedActiveId: null,
+    installation: { ...initial, writeKey: 'fixture secret never stored' } })).rejects.toMatchObject({ code: 'invalid_input' });
+  const [first, duplicate] = await Promise.all([registerRestartInstallation(initial), registerRestartInstallation(initial)]);
+  expect(duplicate).toEqual(first);
+  const rotated = await Promise.allSettled([registerRestartInstallation(restartInstallation(fixture), first.installationId),
+    registerRestartInstallation(restartInstallation(fixture), first.installationId)]);
+  const winner = rotated.find(result => result.status === 'fulfilled');
+  const stale = rotated.find(result => result.status === 'rejected');
+  expect(stale).toMatchObject({ status: 'rejected', reason: { code: 'version_conflict' } });
+  if (!winner) throw new Error('Expected one rotation');
+  const rows = await database.storage.db.select().from(operationsRestartInstallations).orderBy(operationsRestartInstallations.id);
+  expect(rows).toHaveLength(2);
+  expect(rows.find(row => row.id === initial.installationId)?.retiredAt).toBeInstanceOf(Date);
+  expect(rows.filter(row => row.retiredAt === null).map(row => row.id)).toEqual([winner.value.installationId]);
+  await expect(registerRestartInstallation({ ...initial, installationId: randomUUID() }, winner.value.installationId))
+    .rejects.toMatchObject({ code: 'version_conflict' });
+  expect(await database.storage.db.select().from(operationsRestartInstallations).orderBy(operationsRestartInstallations.id)).toEqual(rows);
+  await expect(database.storage.db.update(operationsRestartInstallations).set({ retiredAt: null })
+    .where(eq(operationsRestartInstallations.id, initial.installationId)))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restart_writer_is_immutable' } });
+
+  const retire = () => changeOperationsRestartInstallation(database.storage, {
+    action: 'retire', environmentId: fixture.scope.environmentId, installationId: winner.value.installationId,
+  });
+  const retired = await retire();
+  expect(retired.retiredAt).toBeInstanceOf(Date);
+  expect(await retire()).toEqual(retired);
+  expect(await database.storage.db.select().from(operationsTargets)).toEqual(before);
+});
+
 async function prepareNativeRestart(action: Awaited<ReturnType<typeof queuedOperationsLease>>) {
   const scope = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
   if (!scope) throw new Error('Expected an initial restart lease');
-  const credentialSha256 = sha256('dedicated restart caller');
-  const { restartRequest, intent } = await action.runtime.prepareDispatch(scope, { credentialSha256 });
+  const writer = await registerRestartInstallation(restartInstallation(action.fixture));
+  const { restartRequest, intent } = await action.runtime.prepareDispatch(scope, writer);
   if (!restartRequest) throw new Error('Expected a frozen native restart request');
-  return { scope, restartRequest, intent, credentialSha256,
+  return { scope, restartRequest, intent, writer, credentialSha256: writer.credentialSha256,
     approval: { callSha256: restartRequest.callSha256, approvalId: randomUUID().replaceAll('-', '') } };
 }
 
 it('atomically pauses a bound Whiskers approval and frees the shared execution slot', async () => {
   const action = await queuedOperationsLease();
   const release = await competingPublication(action.fixture);
-  const { scope, restartRequest, intent, credentialSha256, approval } = await prepareNativeRestart(action);
+  const { scope, restartRequest, intent, writer, credentialSha256, approval } = await prepareNativeRestart(action);
   expect(restartRequest).toMatchObject({
-    executionId: action.execution.id, approvalId: null,
+    executionId: action.execution.id, approvalId: null, writerInstallationId: writer.installationId,
     document: { version: 1, tool: 'restart_container', credentialSha256,
       target: { ...action.fixture.registration.whiskers, containerId: action.fixture.runtime.containerId } },
   });
@@ -2968,6 +3019,10 @@ it('rejects a forged Whiskers restart target despite a valid platform intent', a
   await expect(database.storage.db.insert(operationsRestartRequests).values({
     executionId: action.execution.id, callSha256: sha256(JSON.stringify(document)), document,
   })).rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restart_request_binding_required' } });
+  const correctTarget = { ...document, target: { ...document.target, containerId: action.fixture.runtime.containerId } };
+  await expect(database.storage.db.insert(operationsRestartRequests).values({
+    executionId: action.execution.id, callSha256: sha256(JSON.stringify(correctTarget)), document: correctTarget,
+  })).rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restart_request_writer_required' } });
   expect(await database.storage.db.select().from(operationsRestartRequests)).toEqual([]);
 });
 
@@ -2989,7 +3044,7 @@ it('fences a Whiskers restart approval receipt after the sender loses its lease'
 
 async function pausedWhiskersRestart() {
   const action = await queuedOperationsLease();
-  const { scope, approval, credentialSha256 } = await prepareNativeRestart(action);
+  const { scope, approval, writer } = await prepareNativeRestart(action);
   await action.runtime.pauseForRestartApproval(scope, approval);
   const runtime = new OperationsExecutionCoordinator(coordinator, action.installed, operationsPortal);
   const human = await decisionIdentity();
@@ -3003,8 +3058,57 @@ async function pausedWhiskersRestart() {
     if (claimed?.mode !== 'restart_resume') throw new Error('Expected a restart continuation lease');
     return claimed;
   };
-  return { action, runtime, human, next, request, lease, approval, binding: { ...approval, credentialSha256 } };
+  return { action, runtime, human, next, request, lease, approval, writer, binding: { ...approval, ...writer } };
 }
+
+it('requires the matching active Whiskers write installation before a native intent is recorded', async () => {
+  const action = await queuedOperationsLease();
+  const scope = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!scope) throw new Error('Expected an initial restart lease');
+  const document = restartInstallation(action.fixture);
+  const guessed = { installationId: document.installationId, installationSha256: sha256('other policy'), credentialSha256: document.credentialSha256 };
+  await expect(action.runtime.prepareDispatch(scope, guessed)).rejects.toMatchObject({ code: 'version_conflict' });
+  const writer = await registerRestartInstallation(document);
+  await expect(action.runtime.prepareDispatch(scope, guessed)).rejects.toMatchObject({ code: 'version_conflict' });
+  expect(await database.storage.db.select().from(operationsExecutionIntents)).toEqual([]);
+  const target = { ...action.fixture.registration.whiskers, containerId: action.fixture.runtime.containerId };
+  await expect(action.runtime.prepareDispatch(scope, writer)).resolves.toMatchObject({
+    restartRequest: { writerInstallationId: writer.installationId, document: { target, credentialSha256: writer.credentialSha256 } },
+  });
+});
+
+it.each([false, true])('reconciles Whiskers writer rotation without changing read scope (queued=%s)', async queued => {
+  const { action, runtime, request, writer, binding } = await pausedWhiskersRestart();
+  let obsoleteJob: Awaited<ReturnType<typeof fetchOperationsWakeup>> | undefined;
+  if (queued) {
+    await request();
+    obsoleteJob = await fetchOperationsWakeup();
+  }
+  await expect(registerRestartInstallation({ ...restartInstallation(action.fixture), credentialSha256: writer.credentialSha256 }, writer.installationId))
+    .rejects.toMatchObject({ code: 'version_conflict' });
+  expect((await action.fixture.taskService.get(identity, action.schedule.taskId)).state).toBe(queued ? 'queued' : 'waiting_approval');
+  await registerRestartInstallation(restartInstallation(action.fixture), writer.installationId);
+  if (obsoleteJob) await expect(runtime.claim(obsoleteJob, randomUUID())).resolves.toBeNull();
+  expect((await action.fixture.taskService.get(identity, action.schedule.taskId)).state).toBe('reconciling');
+  expect((await database.storage.db.select().from(operationsRestartRequests))[0]).toMatchObject({ writerInstallationId: writer.installationId });
+  if (queued) expect((await database.storage.db.select().from(operationsRestartResumes))[0]).toMatchObject({ state: 'blocked' });
+  const readOnly = await runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  expect(readOnly?.mode).toBe('reconcile');
+  expect((await database.storage.db.select().from(operationsExecutions))[0]?.state).toBe('reserved');
+  if (!readOnly) throw new Error('Expected a reconciliation lease');
+  await expect(runtime.prepareRestartResume(readOnly, binding)).rejects.toBeInstanceOf(ExecutionLost);
+});
+
+it('retains a late Whiskers approval after retirement of the recorded writer', async () => {
+  const action = await queuedOperationsLease();
+  const { scope, approval, writer } = await prepareNativeRestart(action);
+  await changeOperationsRestartInstallation(database.storage, {
+    action: 'retire', environmentId: action.fixture.scope.environmentId, installationId: writer.installationId,
+  });
+  await expect(action.runtime.pauseForRestartApproval(scope, approval)).resolves.toMatchObject(approval);
+  await expect(action.fixture.taskService.get(identity, scope.taskId)).resolves.toMatchObject({ state: 'reconciling' });
+  await expect(action.runtime.claim(await fetchOperationsWakeup(), randomUUID())).resolves.toMatchObject({ mode: 'reconcile' });
+});
 
 it('deduplicates human restart continuation and binds its send intent to the original credential', async () => {
   const { action, runtime, human, next, lease, binding } = await pausedWhiskersRestart();
