@@ -14,3 +14,13 @@
 | 真实浏览器 | Vite 生产构建通过，Chrome 与 Keycloak 的 1 项专项通过 |
 
 C2 接入批准后的运维派发、下游确认和恢复验证。当前交付记录人工决定，并保留绑定版本、权限及失效原因供后续核对。
+
+托管并发用例发现原断言遗漏决策服务随回执返回的任务 ID。修订断言后，使用 PostgreSQL 17.12 复测同一提案只有一个决定成功，另一个返回版本冲突，并核对成功回执关联原诊断任务。 [原托管检查](https://github.com/MaLaNg116/itervane/actions/runs/44983678709/job/137089535117)
+
+## 主线同步后的复验
+
+同步 #84 后，固定代码 `b95bdcfb7bbe3c97127dd51d685b4aa4bbe61b99` 通过 224 项单元、四项真实 PostgreSQL 17.12 专项和托管常规检查。复审覆盖门户审批客户端、项目权限、提案指纹及版本、英文与中文展示以及连接失败后的幂等键。 [常规检查](https://github.com/MaLaNg116/itervane/actions/runs/44996741041)
+
+同版安装态运维场景首次在标准应用返修阶段提前退出。该次产物未包含完整的发布与诊断回执，无法确定退出原因。其他八项检查结束后单独重试该作业，第二次运行的九项检查全部通过。 [首次安装态运行](https://github.com/MaLaNg116/itervane/actions/runs/44996736228/job/137129269232) · [第二次运行](https://github.com/MaLaNg116/itervane/actions/runs/44996736228/attempts/2)
+
+重试产物使用 PostgreSQL 17.12，包含第二代标准应用返修、同一已发布目标的容器、发布、日志和指标证据。HTTP 与 MCP 回执一致，临时 Whiskers 实例完成清理。源码指纹为 `140e55da85c3b2bc7c91cf1b2369a09d40d8481af655bbd8b9a32bc0609bd166`。 [安装态验收](https://github.com/MaLaNg116/itervane/actions/runs/44996736228/job/137136561542) · [原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/44996736229)
