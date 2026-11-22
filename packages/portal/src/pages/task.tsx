@@ -15,6 +15,7 @@ import { TaskAudit } from './task-audit.js';
 import { TaskRepair } from './task-repair.js';
 import { TaskVerification } from './task-verification.js';
 import { TaskRelease } from './task-release.js';
+import { TaskOperations } from './task-operations.js';
 
 const controlText = {
   cancel: { title: 'cancelTitle', help: 'cancelHelp', confirm: 'confirmCancel' },
@@ -35,7 +36,7 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
   const { api, locale } = usePortal(); const t = useText(); const cache = useQueryClient();
   const access = useRemote(`/v1/projects/${task.projectId}/access`, projectAccessDtoSchema, { poll: true });
   const events = useRemote(`/v1/tasks/${task.id}/events?limit=100`, z.object({ items: taskEventDtoSchema.array() }).strict(), { poll: true, localized: true });
-  const inspection = useRemote(`/v1/tasks/${task.id}/source-inspection`, sourceInspectionDtoSchema, { poll: true });
+  const operations = task.workflow === 'operations';
   const [confirmation, setConfirmation] = useState<{ action: keyof typeof controlText; expectedVersion: number } | null>(null);
   const returnButton = useRef<HTMLButtonElement>(null);
   const inFlight = useRef(false);
@@ -84,16 +85,15 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
       {events.isPending ? <Loading locale={locale} /> : events.error ? <Failure error={events.error} locale={locale} retry={() => { void events.refetch(); }} />
         : events.data.items.length ? <ActivityTimeline items={events.data.items} /> : <p className="muted">{t('emptyEvents')}</p>}
     </Panel>
-    <Panel title={t('inspection')} data-testid="source-inspection">
-      {inspection.isPending ? <Loading locale={locale} /> : inspection.error ? <Failure error={inspection.error} locale={locale} retry={() => { void inspection.refetch(); }} />
-        : <InspectionDetails inspection={inspection.data} />}
-    </Panel>
+    {operations ? <TaskOperations task={task} /> : <TaskInspection taskId={task.id} />}
     </div>
-    <TaskAudit taskId={task.id} />
-    <TaskRepair taskId={task.id} canWrite={canWrite} disabled={control.isPending}
-      onResume={() => setConfirmation({ action: 'repair', expectedVersion: task.version })} />
-    <TaskVerification taskId={task.id} runId={task.runId} revision={task.version} />
-    <TaskRelease task={task} />
+    {!operations && <>
+      <TaskAudit taskId={task.id} />
+      <TaskRepair taskId={task.id} canWrite={canWrite} disabled={control.isPending}
+        onResume={() => setConfirmation({ action: 'repair', expectedVersion: task.version })} />
+      <TaskVerification taskId={task.id} runId={task.runId} revision={task.version} />
+      <TaskRelease task={task} canWrite={canWrite} />
+    </>}
     {canWrite && <Dialog open={confirmation !== null} disablePointerDismissal onOpenChange={(open, event) => {
       if (open) return;
       if (inFlight.current) event.cancel();
@@ -124,6 +124,15 @@ const inspectionStatus = {
 const scanStatus = { completed: 'scanCompleted', failed: 'scanFailed', unavailable: 'scanUnavailable', unsupported: 'scanUnsupported' } as const;
 const scanReason = { timeout: 'scanTimeout', scanner_error: 'scanError', invalid_report: 'scanInvalid', missing_inventory: 'scanNoInventory',
   database_unavailable: 'scanNoDatabase', empty_source: 'scanEmptySource' } as const;
+
+function TaskInspection({ taskId }: { taskId: string }) {
+  const { locale } = usePortal(); const t = useText();
+  const inspection = useRemote(`/v1/tasks/${taskId}/source-inspection`, sourceInspectionDtoSchema, { poll: true });
+  return <Panel title={t('inspection')} data-testid="source-inspection">
+    {inspection.isPending ? <Loading locale={locale} /> : inspection.error ? <Failure error={inspection.error} locale={locale} retry={() => { void inspection.refetch(); }} />
+      : <InspectionDetails inspection={inspection.data} />}
+  </Panel>;
+}
 
 function InspectionDetails({ inspection }: { inspection: SourceInspectionDto }) {
   const { locale } = usePortal(); const t = useText();
