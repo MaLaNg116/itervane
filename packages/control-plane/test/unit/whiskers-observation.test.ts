@@ -56,6 +56,49 @@ it('uses one bound tool call and projects only the matching runtime facts', asyn
   expect(authorize).toHaveBeenCalledTimes(3);
 });
 
+it('limits the native log tail to forty lines and retains only signal counts', async () => {
+  reply = textReply('Logs for /fixture (last 40 lines):\nready\nWARNING synthetic detail\nError private fixture text\n');
+  const report = await new WhiskersObservationClient(binding, key).observeLogs(authorize);
+  expect(report).toEqual({ containerId: binding.containerId, serverId: binding.serverId, observedAt: expect.any(String),
+    tailLines: 40, lines: 3, warningLines: 1, errorLines: 1 });
+  expect(toolCalls).toEqual([{ name: 'get_container_logs', arguments: { containerId: binding.containerId, serverId: binding.serverId, lines: 40 } }]);
+  expect(authorize).toHaveBeenCalledTimes(3);
+});
+
+it('rejects wrong log windows and returns no evidence before a final authorization check', async () => {
+  const client = new WhiskersObservationClient(binding, key);
+  for (const invalid of ['Logs for fixture (last 100 lines):\nprivate fixture text',
+    'Logs for fixture (last 40 lines):\n' + 'unexpected line\n'.repeat(41)]) {
+    reply = textReply(invalid);
+    await expect(client.observeLogs(authorize)).rejects.toMatchObject({ reason: 'response', message: 'whiskers_observation_response' });
+  }
+  reply = textReply('Logs for fixture (last 40 lines):\nWARNING');
+  authorize.mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('revoked'));
+  await expect(client.observeLogs(authorize)).rejects.toThrow('revoked');
+});
+
+it('projects bounded container metrics and distinguishes the native no-samples response', async () => {
+  const client = new WhiskersObservationClient(binding, key);
+  reply = textReply(`Metrics for container ${binding.containerId.slice(0, 12)} (last 1h):\nCPU: avg 1.2%, max 2.0%, min 0.5%\nMemory: avg 3,1%, max 4,0%, min 2,0%\nData points: 12\n`);
+  await expect(client.observeMetrics(authorize)).resolves.toEqual({ containerId: binding.containerId, serverId: binding.serverId,
+    observedAt: expect.any(String), status: 'observed', period: '1h', cpu: { average: 1.2, maximum: 2, minimum: 0.5 },
+    memory: { average: 3.1, maximum: 4, minimum: 2 }, dataPoints: 12 });
+  reply = textReply('No metrics available for this container yet.');
+  await expect(client.observeMetrics(authorize)).resolves.toMatchObject({ status: 'unavailable', reason: 'no_samples' });
+  expect(toolCalls).toEqual(Array.from({ length: 2 }, () => ({
+    name: 'get_container_metrics', arguments: { containerId: binding.containerId, serverId: binding.serverId, period: '1h' },
+  })));
+});
+
+it('fails closed on misattributed or inconsistent metric observations', async () => {
+  const client = new WhiskersObservationClient(binding, key);
+  const metrics = (id: string, values: string) => textReply(`Metrics for container ${id} (last 1h):\nCPU: ${values}\nData points: 10\n`);
+  reply = metrics('d'.repeat(12), 'avg 1.2%, max 2.0%, min 0.5%');
+  await expect(client.observeMetrics(authorize)).rejects.toMatchObject({ reason: 'binding' });
+  reply = metrics(binding.containerId.slice(0, 12), 'avg 9.0%, max 2.0%, min 0.5%');
+  await expect(client.observeMetrics(authorize)).rejects.toMatchObject({ reason: 'response' });
+});
+
 it('rejects an insecure origin, shortened container ID or missing initial authority before connecting', async () => {
   expect(() => new WhiskersObservationClient({ ...binding, origin: 'http://ops.example.invalid' }, key)).toThrow('whiskers_observation_binding');
   expect(() => new WhiskersObservationClient({ ...binding, containerId: 'some-container' }, key)).toThrow('whiskers_observation_binding');

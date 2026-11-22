@@ -1,4 +1,7 @@
-import { sha256Schema, whiskersEndpointSchema, whiskersObservationSchema, whiskersReadKeySchema } from '@itervane/contracts';
+import {
+  operationsLogObservationSchema, operationsLogTailLines, operationsMetricObservationSchema, operationsMetricPeriod,
+  sha256Schema, whiskersEndpointSchema, whiskersObservationSchema, whiskersReadKeySchema,
+} from '@itervane/contracts';
 import { Client, StreamableHTTPClientTransport, type CallToolResult } from '@modelcontextprotocol/client';
 import { z } from 'zod';
 
@@ -12,6 +15,7 @@ const detailHeader = /^Name: [^\r\n]{1,256}\r?\nID: ([a-f0-9]{64})\r?\nImage: [^
 
 type Binding = z.output<typeof bindingSchema>;
 type Authorize = () => Promise<void>;
+type ReadTool = 'get_container_details' | 'get_container_logs' | 'get_container_metrics';
 
 export class WhiskersObservationError extends Error {
   constructor(readonly reason: 'binding' | 'timeout' | 'transport' | 'response') {
@@ -20,16 +24,63 @@ export class WhiskersObservationError extends Error {
   }
 }
 
-function observation(result: CallToolResult, binding: Binding) {
+function responseText(result: CallToolResult) {
   const block = result.content[0];
   if (result.isError || result.content.length !== 1 || block?.type !== 'text' || Buffer.byteLength(block.text) > toolTextLimit) {
     throw new WhiskersObservationError('response');
   }
-  const header = detailHeader.exec(block.text);
+  return block.text;
+}
+
+function observation(text: string, binding: Binding) {
+  const header = detailHeader.exec(text);
   const state = whiskersObservationSchema.shape.state.safeParse(header?.[2]);
   if (!header || !state.success) throw new WhiskersObservationError('response');
   if (header[1] !== binding.containerId || header[3] !== binding.serverId) throw new WhiskersObservationError('binding');
   return { containerId: binding.containerId, serverId: binding.serverId, state: state.data, observedAt: new Date().toISOString() };
+}
+
+function logObservation(text: string, binding: Binding) {
+  const header = /^Logs for \/?[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127} \(last (\d{1,3}) lines\):\r?\n/.exec(text);
+  if (!header || Number(header[1]) !== operationsLogTailLines) throw new WhiskersObservationError('response');
+  // Summarize untrusted application output before it can enter an Agent, checkpoint or event.
+  const body = text.slice(header[0].length).replace(/\r?\n$/, '');
+  const lines = body ? body.split(/\r?\n/) : [];
+  const report = operationsLogObservationSchema.safeParse({
+    containerId: binding.containerId, serverId: binding.serverId, observedAt: new Date().toISOString(),
+    tailLines: operationsLogTailLines, lines: lines.length,
+    warningLines: lines.filter(line => /\bwarn(?:ing)?\b/i.test(line)).length,
+    errorLines: lines.filter(line => /\b(error|fatal|exception)\b/i.test(line)).length,
+  });
+  if (!report.success) throw new WhiskersObservationError('response');
+  return report.data;
+}
+
+function metricSeries(line: string | undefined, name: 'CPU' | 'Memory') {
+  const parts = /^(CPU|Memory): avg (\d{1,6}[.,]\d)%, max (\d{1,6}[.,]\d)%, min (\d{1,6}[.,]\d)%$/.exec(line ?? '');
+  if (!parts || parts[1] !== name) throw new WhiskersObservationError('response');
+  const [average, maximum, minimum] = parts.slice(2).map(value => Number(value.replace(',', '.')));
+  return { average, maximum, minimum };
+}
+
+function metricObservation(text: string, binding: Binding) {
+  const scope = { containerId: binding.containerId, serverId: binding.serverId,
+    observedAt: new Date().toISOString(), period: operationsMetricPeriod };
+  if (text === 'No metrics available for this container yet.') return operationsMetricObservationSchema.parse({
+    ...scope, status: 'unavailable', reason: 'no_samples',
+  });
+  const lines = text.replace(/\r?\n$/, '').split(/\r?\n/);
+  if (![3, 4].includes(lines.length)) throw new WhiskersObservationError('response');
+  const header = /^Metrics for container ([a-f0-9]{12}) \(last 1h\):$/.exec(lines[0] ?? '');
+  if (!header) throw new WhiskersObservationError('response');
+  if (header[1] !== binding.containerId.slice(0, 12)) throw new WhiskersObservationError('binding');
+  const points = /^Data points: ([1-9]\d{0,5})$/.exec(lines.at(-1) ?? '');
+  const report = operationsMetricObservationSchema.safeParse({
+    ...scope, status: 'observed', cpu: metricSeries(lines[1], 'CPU'),
+    memory: lines.length === 4 ? metricSeries(lines[2], 'Memory') : null, dataPoints: points ? Number(points[1]) : undefined,
+  });
+  if (!report.success) throw new WhiskersObservationError('response');
+  return report.data;
 }
 
 export class WhiskersObservationClient {
@@ -44,7 +95,20 @@ export class WhiskersObservationClient {
     this.#readKey = key.data;
   }
 
-  async observe(authorize: Authorize, signal?: AbortSignal) {
+  observe(authorize: Authorize, signal?: AbortSignal) {
+    return this.read('get_container_details', {}, observation, authorize, signal);
+  }
+
+  observeLogs(authorize: Authorize, signal?: AbortSignal) {
+    return this.read('get_container_logs', { lines: operationsLogTailLines }, logObservation, authorize, signal);
+  }
+
+  observeMetrics(authorize: Authorize, signal?: AbortSignal) {
+    return this.read('get_container_metrics', { period: operationsMetricPeriod }, metricObservation, authorize, signal);
+  }
+
+  private async read<T>(name: ReadTool, options: { lines?: typeof operationsLogTailLines; period?: typeof operationsMetricPeriod },
+    project: (text: string, binding: Binding) => T, authorize: Authorize, signal?: AbortSignal) {
     signal?.throwIfAborted();
     await authorize();
     const timeout = AbortSignal.timeout(requestTimeout);
@@ -92,10 +156,10 @@ export class WhiskersObservationClient {
       await authorize();
       requireTime();
       const { containerId, serverId } = this.#binding;
-      const raw = await client.callTool({ name: 'get_container_details', arguments: { containerId, serverId } }, { signal: active })
+      const raw = await client.callTool({ name, arguments: { containerId, serverId, ...options } }, { signal: active })
         .catch(protocolFailure);
       requireTime();
-      const observed = observation(raw, this.#binding);
+      const observed = project(responseText(raw), this.#binding);
       await authorize();
       requireTime();
       return observed;
