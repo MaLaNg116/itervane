@@ -21,4 +21,6 @@ C2 接入批准后的运维派发、下游确认和恢复验证。当前交付�
 
 同步 #84 后，固定代码 `b95bdcfb7bbe3c97127dd51d685b4aa4bbe61b99` 通过 224 项单元、四项真实 PostgreSQL 17.12 专项和托管常规检查。复审覆盖门户审批客户端、项目权限、提案指纹及版本、英文与中文展示以及连接失败后的幂等键。 [常规检查](https://github.com/MaLaNg116/itervane/actions/runs/44996741041)
 
-同版安装态运维场景在标准应用返修阶段提前退出。该次产物没有生成完整的发布与诊断回执，具体错误仍待复跑确认。GitHub 要求先等同一工作流的通用回归结束，再单独重试失败作业。 [首次安装态运行](https://github.com/MaLaNg116/itervane/actions/runs/44996736228/job/137129269232)
+同版安装态运维场景首次在标准应用返修阶段提前退出。该次产物未包含完整的发布与诊断回执，无法确定退出原因。其他八项检查结束后单独重试该作业，第二次运行的九项检查全部通过。 [首次安装态运行](https://github.com/MaLaNg116/itervane/actions/runs/44996736228/job/137129269232) · [第二次运行](https://github.com/MaLaNg116/itervane/actions/runs/44996736228/attempts/2)
+
+重试产物使用 PostgreSQL 17.12，包含第二代标准应用返修、同一已发布目标的容器、发布、日志和指标证据。HTTP 与 MCP 回执一致，临时 Whiskers 实例完成清理。源码指纹为 `140e55da85c3b2bc7c91cf1b2369a09d40d8481af655bbd8b9a32bc0609bd166`。 [安装态验收](https://github.com/MaLaNg116/itervane/actions/runs/44996736228/job/137136561542) · [原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/44996736229)
