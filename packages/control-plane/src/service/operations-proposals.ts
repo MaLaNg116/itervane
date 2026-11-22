@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { freezeOperationsProposalSchema, idSchema, operationsProposalSchema, type OperationsProposal } from '@itervane/contracts';
+import { freezeOperationsProposalSchema, idSchema, komodoReleaseTargetSchema, operationsProposalSchema, operationsRestorePlanSchema,
+  type OperationsProposal, type OperationsRestorePlan } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { eq } from 'drizzle-orm';
 import type { VerifiedIdentity } from '../auth/identity.js';
@@ -43,6 +44,7 @@ export async function readOperationsProposalBasis(tx: Transaction, task: typeof 
   const target = await readOperationsObservationTarget(tx, requester, request.document, { includePrevious: recommendation.code === 'review_rollback' });
   if (freezeOperationsRequest(target).sha256 !== request.sha256) throw new DomainError('version_conflict');
   let action: OperationsProposal['action'] = { kind: 'restart' };
+  let restorePlan: OperationsRestorePlan | undefined;
   if (recommendation.code === 'review_rollback') {
     const release = diagnosis.facts.find(({ data }) => data.section === 'release')?.data;
     const priorFact = release?.section === 'release' ? release.result.previous : undefined;
@@ -52,10 +54,17 @@ export async function readOperationsProposalBasis(tx: Transaction, task: typeof 
         || previous.verifiedAt !== priorFact.verifiedAt) throw new DomainError('version_conflict');
     action = { kind: 'rollback', restore: { operationId: previous.releaseOperationId, manifestDigest: previous.manifestDigest,
       configDigest: previous.configDigest, proofSha256: previous.proofSha256 } };
+    restorePlan = operationsRestorePlanSchema.parse({ version: 1, environmentId, targetRevision: target.targetRevision,
+      mappingSha256: target.mappingSha256, rolloutCheckSha256: target.releaseTarget.rolloutCheckSha256,
+      target: komodoReleaseTargetSchema.strip().parse(target.releaseTarget),
+      current: { operationId: target.releaseOperationId, manifestDigest: target.manifestDigest, configDigest: target.configDigest,
+        proofSha256: target.proofSha256, containerId: target.containerId },
+      restore: { ...action.restore, publishedVersion: previous.version },
+    });
   }
   // The database timestamp anchors the window to the diagnosis, including across Worker clocks or request retries.
   const validUntil = new Date(diagnosis.recordedAt.getTime() + target.approvalTtlSeconds * 1_000);
-  return { run, environmentId, validUntil, whiskers: target.whiskers, publishedVersion: target.version, document: {
+  return { run, environmentId, validUntil, whiskers: target.whiskers, publishedVersion: target.version, restorePlan, document: {
     version: 1 as const, diagnosis: { taskId: task.id, runId: run.id, sha256: diagnosis.sha256, observedAt },
     target: request.document, targetProofSha256: target.proofSha256, action, validUntil: validUntil.toISOString(),
   } };

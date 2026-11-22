@@ -15,7 +15,8 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseTargetSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
   operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartExecutionViewSchema, operationsRestartRecoveryProofSchema,
-  operationsRestartRequestSchema, operationsRestartSubmissionSchema, taskDtoSchema, translate, verificationViewSchema, whiskersRestartImageDigest,
+  operationsRestartRequestSchema, operationsRestartSubmissionSchema, operationsRestorePlanSchema, taskDtoSchema, translate, verificationViewSchema,
+  whiskersRestartImageDigest,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type OperationsDiagnosisObservation, type OperationsDiagnosisSection,
   type OperationsRestartInstallation,
@@ -2113,12 +2114,13 @@ function observedRuntime(binding: Awaited<ReturnType<FormalRolloutCoordinator['a
     anonymousStatus: 401 as const, healthStatus: 200 as const, version: 'standard-v2' };
 }
 
-async function finishTestRollout({ image, update }: Awaited<ReturnType<typeof parkForRollout>>) {
+async function finishTestRollout({ image, update }: Awaited<ReturnType<typeof parkForRollout>>, version?: string) {
   const observe = new FormalRolloutCoordinator(database.storage, releaseOrigin);
   const scope = await observe.claimNext(randomUUID());
   if (!scope) throw new Error('Expected formal rollout attempt');
   const binding = await observe.authorize(scope);
   const runtime = observedRuntime(binding);
+  if (version) runtime.version = version;
   await observe.settle(scope, { version: 1, ...binding.decision, rolloutFence: scope.fence, generation: binding.manifest.generation,
     targetRevision: binding.manifest.target.revision, mappingSha256: binding.manifest.target.mappingSha256,
     manifestDigest: image.manifestDigest, update, runtime });
@@ -2798,37 +2800,84 @@ it('freezes one immutable restart proposal from the settled diagnosis under conc
     .toMatchObject({ cause: { code: '23514', message: 'operations_proposal_is_immutable' } });
 });
 
-it('freezes the exact rollback image cited after a repeated publication of the current image', async () => {
+it('binds a rollback intent and read-only takeover to the approved image after a repeated publication', async () => {
   const first = await installedOperationsFixture();
   task = (await first.taskService.admit(identity, { projectId: first.scope.projectId, source: task.source, purpose: 'Different verified release',
     dataClass: 'synthetic', locale: 'zh-CN', idempotencyKey: randomUUID() })).task;
   const release = { existingTarget: first.target, imageVariant: 'second verified release' };
-  const second = await finishTestRollout(await parkForRollout(await queuedFormalRelease(release), true, 'd'.repeat(24)));
+  const second = await finishTestRollout(await parkForRollout(await queuedFormalRelease(release), true, 'd'.repeat(24)), 'standard-v3');
   task = (await first.taskService.admit(identity, { projectId: first.scope.projectId, source: task.source, purpose: 'Same image published again',
     dataClass: 'synthetic', locale: 'zh-CN', idempotencyKey: randomUUID() })).task;
   const next = await queuedFormalRelease(release);
-  const { runtime, image } = await finishTestRollout(await parkForRollout(next, true, 'c'.repeat(24)));
+  const { runtime, image } = await finishTestRollout(await parkForRollout(next, true, 'c'.repeat(24)), 'standard-v3');
   expect(image.manifestDigest).toBe(second.image.manifestDigest);
   const { diagnosis, installed, task: diagnosed, service } = await settleProposalDiagnosis('rollback', { ...first, ...next, runtime, image });
   const input = { diagnosisSha256: diagnosis.sha256 };
   const { proposal } = await service.freeze(identity, diagnosed.id, input);
-  expect(readOperationsProposal(proposal)).toMatchObject({
+  const frozen = readOperationsProposal(proposal);
+  expect(frozen).toMatchObject({
     target: { releaseOperationId: next.operationId, manifestDigest: image.manifestDigest },
     action: { kind: 'rollback', restore: { operationId: first.operationId, manifestDigest: first.image.manifestDigest,
       configDigest: first.image.configDigest, proofSha256: expect.stringMatching(/^[a-f0-9]{64}$/) } },
   });
+  if (frozen.action.kind !== 'rollback') throw new Error('Expected an approved rollback image');
   expect(first.image.manifestDigest).not.toBe(image.manifestDigest);
-  await new OperationsDecisionService(database.storage, installed, operationsPortal).decide(await decisionIdentity(), proposal.id, {
-    action: 'confirm', expectedVersion: 0, fingerprint: proposal.fingerprint, idempotencyKey: randomUUID(),
-  });
-  const { execution, schedule } = await new OperationsExecutionAdmission(database.storage, installed).enqueue({
-    proposalId: proposal.id, fingerprint: proposal.fingerprint, decisionVersion: 1,
-  });
+  const owner = await decisionIdentity();
+  const approvals = new OperationsDecisionService(database.storage, installed, operationsPortal);
+  const coordinates = { proposalId: proposal.id, fingerprint: proposal.fingerprint, decisionVersion: 1 };
+  await approvals.decide(owner, proposal.id, { fingerprint: coordinates.fingerprint, action: 'confirm', expectedVersion: 0, idempotencyKey: randomUUID() });
+  const { execution, schedule } = await new OperationsExecutionAdmission(database.storage, installed).enqueue(coordinates);
   expect(execution).toMatchObject({ proposalId: proposal.id, proposalFingerprint: proposal.fingerprint, state: 'reserved' });
   await expect(first.taskService.get(identity, schedule.taskId)).resolves.toMatchObject({
     state: 'queued', runId: schedule.runId, purpose: translate('zh-CN', 'operations.execution.rollback'),
   });
   expect(await database.storage.db.select().from(releaseOperations)).toHaveLength(3);
+
+  const executor = new OperationsExecutionCoordinator(coordinator, installed);
+  const scope = await executor.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!scope) throw new Error('Expected the rollback dispatch lease');
+  const { deploymentId, serverId, imageRepository, registryOrigin, runtimeConfigSha256, komodo, rolloutCheckSha256 } = next.target;
+  const plan = operationsRestorePlanSchema.parse({ version: 1, environmentId: first.scope.environmentId,
+    targetRevision: frozen.target.targetRevision, mappingSha256: frozen.target.mappingSha256, rolloutCheckSha256,
+    target: { deploymentId, serverId, imageRepository, registryOrigin, runtimeConfigSha256, komodo },
+    current: { operationId: next.operationId, containerId: runtime.containerId, manifestDigest: image.manifestDigest,
+      configDigest: image.configDigest, proofSha256: frozen.targetProofSha256 },
+    restore: { ...frozen.action.restore, publishedVersion: first.runtime.version },
+  });
+  const intentBinding = { executionId: execution.id, proposalFingerprint: proposal.fingerprint, decisionVersion: 1,
+    generation: scope.generation, workerId: scope.workerId, fence: scope.fence };
+  await expect(database.storage.db.insert(operationsExecutionIntents).values(intentBinding))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restore_plan_authority_required' } });
+  const alteredPlans = [
+    { ...plan, restore: { ...plan.restore, publishedVersion: runtime.version } },
+    { ...plan, restore: { ...plan.restore, manifestDigest: 'sha256:' + sha256('unverified restore image') } },
+    { ...plan, target: { ...plan.target, deploymentId: 'c'.repeat(24) } },
+  ];
+  for (const changed of alteredPlans) {
+    await expect(database.storage.db.insert(operationsExecutionIntents).values({
+      ...intentBinding, restorePlan: changed, restorePlanSha256: sha256(JSON.stringify(changed)),
+    })).rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restore_plan_authority_required' } });
+  }
+  await database.admin.query(`ALTER TABLE itervane.task_events ADD CONSTRAINT injected_restore_intent_event_failure
+    CHECK (type <> 'task.operations_execution_dispatch_intended') NOT VALID`);
+  try {
+    await expect(executor.prepareDispatch(scope))
+      .rejects.toMatchObject({ cause: { code: '23514', constraint: 'injected_restore_intent_event_failure' } });
+    expect(await database.storage.db.select().from(operationsExecutionIntents)).toEqual([]);
+  } finally { await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_restore_intent_event_failure'); }
+  const { intent } = await executor.prepareDispatch(scope);
+  expect(intent).toMatchObject({ ...intentBinding, restorePlan: plan, restorePlanSha256: sha256(JSON.stringify(plan)) });
+  await approvals.decide(owner, proposal.id, { fingerprint: coordinates.fingerprint, action: 'revoke', expectedVersion: 1, idempotencyKey: randomUUID() });
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await coordinator.reconcile(randomUUID());
+  const reader = await executor.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!reader) throw new Error('Expected read-only takeover');
+  expect(reader).toMatchObject({ mode: 'reconcile', fence: scope.fence + 1 });
+  await expect(executor.prepareDispatch(reader)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(executor.readRestoreIntent(scope)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(executor.readRestoreIntent(reader)).resolves.toEqual({ plan, sha256: intent.restorePlanSha256 });
+  expect(await database.storage.db.select().from(operationsExecutionIntents)).toEqual([intent]);
+  expect(await database.storage.db.select({ state: operationsExecutions.state }).from(operationsExecutions)).toEqual([{ state: 'reserved' }]);
 });
 
 it.each(['wait', 'expired', 'replaced', 'publishing', 'revoked'] as const)('limits proposal admission after %s', async mode => {

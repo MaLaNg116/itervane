@@ -1,8 +1,9 @@
 import {
   idSchema, maxOperationsRestartResumes, operationsRestartApprovalInputSchema, operationsRestartContinueInputSchema,
-  operationsRestartResumeBindingSchema, operationsRestartResumeOutcomeSchema, operationsRestartWriterProofSchema,
+  operationsRestartResumeBindingSchema, operationsRestartResumeOutcomeSchema, operationsRestartWriterProofSchema, operationsRestorePlanSchema,
   type OperationsRestartInstallation, type OperationsRestartWriterProof,
 } from '@itervane/contracts';
+import { sha256 } from '@itervane/runner';
 import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { fromDrizzle, type Job } from 'pg-boss';
@@ -241,13 +242,15 @@ export class OperationsExecutionCoordinator {
     const restart = rawRestartProof === undefined ? undefined : parseInput(operationsRestartWriterProofSchema, rawRestartProof);
     return this.withLease(scope, async (tx, { execution, task, proposal, diagnosis, reason }) => {
       if (scope.mode !== 'dispatch' || reason !== 'operations_execution_claimed') throw new ExecutionLost();
-      const { frozen, whiskers, publishedVersion } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
+      const { frozen, whiskers, publishedVersion, restorePlan } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation,
+        execution.decisionVersion);
       if (restart && frozen.action.kind !== 'restart') throw new DomainError('unsupported_state');
       if (restart) await requireOperationsRestartWriter(tx, frozen.target, whiskers, restart);
       const baseline = restart ? matchRestartBaseline(await readOperationsRestartSubject(tx, frozen.target, publishedVersion), observedBaseline) : undefined;
       const [intent] = await tx.insert(operationsExecutionIntents).values({ executionId: execution.id,
         decisionVersion: execution.decisionVersion, proposalFingerprint: execution.proposalFingerprint,
-        generation: scope.generation, workerId: scope.workerId, fence: scope.fence }).returning();
+        generation: scope.generation, workerId: scope.workerId, fence: scope.fence,
+        restorePlan: restorePlan ?? null, restorePlanSha256: restorePlan ? sha256(JSON.stringify(restorePlan)) : null }).returning();
       if (!intent) throw new DomainError('unavailable');
       const dispatchReason = 'operations_execution_dispatch_intended';
       await tx.update(runRuntime).set({ reason: dispatchReason }).where(eq(runRuntime.runId, scope.runId));
@@ -259,6 +262,19 @@ export class OperationsExecutionCoordinator {
         operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: scope.fence },
       });
       return { intent, proposal: frozen, ...(restartRequest ? { restartRequest } : {}) };
+    });
+  }
+
+  async readRestoreIntent(scope: OperationsExecutionLease) {
+    return this.withLease(scope, async (_tx, { intent, proposal }) => {
+      const { action, target } = readOperationsProposal(proposal);
+      if (scope.mode !== 'reconcile' || action.kind !== 'rollback' || !intent?.restorePlan
+          || target.environmentId !== this.installation.environmentId
+          || target.enrollmentSha256 !== this.installation.enrollmentSha256) throw new ExecutionLost();
+      const plan = operationsRestorePlanSchema.parse(intent.restorePlan);
+      const fingerprint = sha256(JSON.stringify(plan));
+      if (fingerprint !== intent.restorePlanSha256) throw new Error('operations_restore_plan_integrity');
+      return { plan, sha256: fingerprint };
     });
   }
 

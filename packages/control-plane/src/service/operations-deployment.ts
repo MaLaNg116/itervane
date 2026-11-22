@@ -102,7 +102,7 @@ export async function readPublishedOperationsDeployment(tx: Transaction, scope: 
   const previous = earlier ? checkedRelease(earlier, mapping, target) : null;
   return { projectId, environmentId, applicationId: environment.applicationId,
     targetRevision: mapping.revision, mappingSha256: mapping.sha256, deploymentId: target.deploymentId,
-    approvalTtlSeconds: target.approvalTtlSeconds, ...current, previous };
+    approvalTtlSeconds: target.approvalTtlSeconds, releaseTarget: target, ...current, previous };
 }
 
 export async function readOperationsDeployment(tx: Transaction, actor: Actor, scope: { projectId: string; environmentId: string },
