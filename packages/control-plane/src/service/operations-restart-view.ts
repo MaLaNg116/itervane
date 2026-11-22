@@ -5,7 +5,7 @@ import type { VerifiedIdentity } from '../auth/identity.js';
 import type { OperationsEnrollmentScope } from '../config.js';
 import type { Database } from '../persistence/database.js';
 import { operationsExecutions, operationsExecutionSchedules, operationsProposals, operationsRestartRecoveries,
-  operationsRestartRequests, runRuntime, tasks } from '../persistence/schema.js';
+  operationsRestartRequests, runRuntime, taskEvents, tasks } from '../persistence/schema.js';
 import { readOperationsRestartRequest } from '../runtime/operations-restart-request.js';
 import { latestRestartResume } from '../runtime/operations-restart-resume.js';
 import { isHumanWorkspaceOwner, requireActor, requireProjectAccess, type Actor, type Transaction } from './access.js';
@@ -23,13 +23,14 @@ async function readExecution(tx: Transaction, proposalId: string, projectId: str
     .where(eq(operationsRestartRecoveries.executionId, operationsExecutions.id)).orderBy(desc(operationsRestartRecoveries.attempt))
     .limit(1).as('latest_recovery');
   const [row] = await tx.select({ execution: operationsExecutions, schedule: operationsExecutionSchedules,
-    task: { id: tasks.id, version: tasks.version, state: tasks.state }, reason: runRuntime.reason,
+    task: { id: tasks.id, version: tasks.version, state: tasks.state }, reason: runRuntime.reason, detail: taskEvents.detail,
     nativeApprovalId: operationsRestartRequests.approvalId,
     recovery: { state: latestRecovery.state, failure: latestRecovery.failure, proofSha256: latestRecovery.proofSha256 },
   }).from(operationsExecutions)
     .innerJoin(operationsExecutionSchedules, eq(operationsExecutionSchedules.executionId, operationsExecutions.id))
     .innerJoin(tasks, and(eq(tasks.id, operationsExecutionSchedules.taskId), eq(tasks.projectId, projectId)))
     .innerJoin(runRuntime, and(eq(runRuntime.runId, operationsExecutionSchedules.runId), eq(runRuntime.taskId, tasks.id)))
+    .innerJoin(taskEvents, and(eq(taskEvents.taskId, tasks.id), eq(taskEvents.sequence, tasks.version)))
     .leftJoin(operationsRestartRequests, eq(operationsRestartRequests.executionId, operationsExecutions.id))
     .leftJoinLateral(latestRecovery, sql`true`).where(eq(operationsExecutions.proposalId, proposalId));
   return row;
@@ -56,7 +57,7 @@ export class OperationsRestartViewService {
           const current = await readExecution(tx, proposal.id, task.projectId);
           if (current) {
             const { execution, schedule, task: actionTask, nativeApprovalId, recovery } = current;
-            const reason = taskEventReasonSchema.parse(current.reason);
+            const reason = taskEventReasonSchema.parse(current.detail.reason ?? current.reason);
             if (execution.proposalFingerprint !== proposal.fingerprint) throw new Error('operations_restart_view_receipt');
             view.execution = { id: execution.id, taskId: actionTask.id, runId: schedule.runId, taskVersion: actionTask.version,
               proposalId: proposal.id, releaseOperationId: frozen.target.releaseOperationId, state: actionTask.state,

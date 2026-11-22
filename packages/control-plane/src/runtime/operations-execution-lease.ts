@@ -22,7 +22,8 @@ import { appendEvent, assertLeaseLive, assignSlot, clearSlot, ExecutionLost, loc
   type ExecutionScope } from './authority.js';
 import type { ExecutionCoordinator } from './coordinator.js';
 import { closeUndispatchedOperationsExecution, operationsExecutionWakeupSchema, replaceOperationsExecutionWakeup } from './operations-execution-queue.js';
-import { attachOperationsRestartApproval, prepareOperationsRestartRequest, readOperationsRestartRequest, readOperationsRestartSubject } from './operations-restart-request.js';
+import { attachOperationsRestartApproval, prepareOperationsRestartRequest, readOperationsRestartRequest, readOperationsRestartSubject,
+  reconcileUnavailableRestart } from './operations-restart-request.js';
 import { findActiveRestartRecovery, finishRestartRecovery, proveRestartRecovery, readRestartRecoveryBinding, startRestartRecovery,
   type RecoveryFailure } from './operations-restart-recovery.js';
 import { blockQueuedRestartResume, latestRestartResume } from './operations-restart-resume.js';
@@ -454,6 +455,7 @@ export class OperationsExecutionCoordinator {
     idSchema.parse(workerId);
     const database = this.coordinator.database;
     await database.db.transaction(tx => this.coordinator.recoverExpired(tx, workerId));
+    await this.reconcileExpiredRestartApproval(workerId);
     const candidates = await database.db.select({ id: operationsExecutionSchedules.executionId, jobId: operationsExecutionSchedules.wakeupJobId })
       .from(operationsExecutionSchedules).innerJoin(tasks, eq(tasks.id, operationsExecutionSchedules.taskId))
       .where(and(inArray(tasks.state, ['queued', 'reconciling']), isNotNull(operationsExecutionSchedules.wakeupJobId))).limit(20);
@@ -475,6 +477,28 @@ export class OperationsExecutionCoordinator {
         await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation);
       });
     }
+  }
+
+  private async reconcileExpiredRestartApproval(workerId: string) {
+    const database = this.coordinator.database;
+    const [candidate] = await database.db.select({ id: operationsExecutions.id }).from(operationsExecutions)
+      .innerJoin(operationsProposals, eq(operationsProposals.id, operationsExecutions.proposalId))
+      .innerJoin(operationsExecutionSchedules, eq(operationsExecutionSchedules.executionId, operationsExecutions.id))
+      .innerJoin(tasks, eq(tasks.id, operationsExecutionSchedules.taskId))
+      .where(and(eq(operationsExecutions.environmentId, this.installation.environmentId), eq(operationsExecutions.state, 'reserved'),
+        eq(tasks.state, 'waiting_approval'), sql`${operationsProposals.validUntil} <= clock_timestamp()`));
+    if (!candidate) return;
+
+    await database.db.transaction(async tx => {
+      await lockSlot(tx);
+      const current = await lockOperationsExecution(tx, candidate.id);
+      if (!current || current.execution.state !== 'reserved' || current.task.state !== 'waiting_approval'
+          || current.reason !== 'operations_execution_native_approval' || current.proposal.validUntil > await databaseNow(tx)) return;
+      const { action, target } = readOperationsProposal(current.proposal);
+      if (action.kind !== 'restart' || target.enrollmentSha256 !== this.installation.enrollmentSha256) return;
+      // The native request may still exist. The existing hold stays in place during read-only recovery.
+      await reconcileUnavailableRestart(tx, database, { proposalId: current.proposal.id, expiryWorkerId: workerId });
+    });
   }
 
   private async withLease<T>(scope: OperationsExecutionLease, run: (tx: Transaction, bound: BoundExecution) => Promise<T>) {

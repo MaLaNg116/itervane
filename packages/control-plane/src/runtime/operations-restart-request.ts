@@ -57,7 +57,7 @@ export async function attachOperationsRestartApproval(tx: Transaction, execution
 
 // Call with the environment locked. A paused request retains its original receipt and environment hold.
 export async function reconcileUnavailableRestart(tx: Transaction, database: Database,
-  disabled: { proposalId: string; actorId: string } | { writerInstallationId: string }) {
+  disabled: { proposalId: string; actorId: string } | { writerInstallationId: string } | { proposalId: string; expiryWorkerId: string }) {
   const [paused] = await tx.select({ schedule: operationsExecutionSchedules, task: tasks, proposalId: operationsExecutions.proposalId }).from(operationsExecutions)
     .innerJoin(operationsExecutionSchedules, eq(operationsExecutionSchedules.executionId, operationsExecutions.id))
     .innerJoin(operationsRestartRequests, eq(operationsRestartRequests.executionId, operationsExecutions.id))
@@ -80,7 +80,9 @@ export async function reconcileUnavailableRestart(tx: Transaction, database: Dat
   const reason = 'operations_execution_reconciling';
   await tx.update(runRuntime).set({ reason }).where(eq(runRuntime.runId, schedule.runId));
   await appendEvent(tx, task, 'task.operations_execution_recovered', 'reconciling', {
-    ...('actorId' in disabled ? { actorId: disabled.actorId } : {}), reason, operationsExecution: { executionId: schedule.executionId, proposalId },
+    ...('actorId' in disabled ? { actorId: disabled.actorId } : {}),
+    ...('expiryWorkerId' in disabled ? { workerId: disabled.expiryWorkerId, reason: 'operations_restart_approval_expired' } : { reason }),
+    operationsExecution: { executionId: schedule.executionId, proposalId },
   });
   await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation);
 }
