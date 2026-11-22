@@ -281,6 +281,13 @@
       "when": 1795306708839,
       "tag": "0039_operations_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1795307571453,
+      "tag": "0040_operations_observations",
+      "breakpoints": true
     }
   ]
 }

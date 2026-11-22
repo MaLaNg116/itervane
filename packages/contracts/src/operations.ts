@@ -34,3 +34,19 @@ export const operationsRequestBindingSchema = z.strictObject({
 });
 
 export type OperationsRequestBinding = z.infer<typeof operationsRequestBindingSchema>;
+
+export const whiskersReadKeySchema = z.string().regex(/^[a-f0-9]{64}$/);
+
+export const whiskersObservationSchema = z.strictObject({
+  containerId: sha256Schema,
+  serverId: whiskersEndpointSchema.shape.serverId,
+  state: z.enum(['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead']),
+  observedAt: z.iso.datetime({ precision: 3 }),
+});
+
+export const operationsObservationReceiptSchema = z.strictObject({
+  version: z.literal(1), taskId: idSchema, runId: idSchema, releaseOperationId: idSchema,
+  bindingSha256: sha256Schema, fence: revision, observation: whiskersObservationSchema,
+});
+
+export type OperationsObservationReceipt = z.infer<typeof operationsObservationReceiptSchema>;
