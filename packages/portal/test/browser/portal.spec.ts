@@ -4,7 +4,8 @@ import { test as base, expect, type Page } from '@playwright/test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { admissionDtoSchema, catalogDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema, formalReleaseDecisionResultSchema,
   formalReleaseViewSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema, operationsObservationViewSchema, operationsProposalViewSchema,
-  operationsRestartContinueInputSchema, operationsRestartEnqueueInputSchema, operationsRestartExecutionViewSchema,
+  operationsEnqueueInputSchema, operationsRestartContinueInputSchema, operationsRestartEnqueueInputSchema, operationsRestartExecutionViewSchema,
+  operationsRestoreExecutionViewSchema,
   preauditDtoSchema, releaseDecisionInputSchema, sourceInspectionDtoSchema, taskDtoSchema, translate, verificationViewSchema,
   type FormalReleaseCandidateDto, type Locale, type OperationsRestartExecutionView, type TaskDto } from '@itervane/contracts';
 import { browserStack } from './stack.js';
@@ -900,6 +901,111 @@ test('queues a restart, revalidates continuation, and displays bilingual recover
   expiredNeedsReview = true;
   await expect(execution.getByRole('status')).toHaveText(translate('en', 'reason.operations_restart_recovery_manual'));
   await expect(execution.getByRole('button', { name: 'Resume restart', exact: true })).toHaveCount(0);
+  await expectMotionCsp(page);
+});
+
+test('rechecks a version restore confirmation and displays its bilingual receipt', async ({ page, stack }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await observeMotion(page, stack.origin);
+  const project = await seedProject(stack);
+  const authorization = authorizationFrom(page);
+  await login(page, stack);
+  await expect(page.getByRole('link', { name: project.title, exact: true })).toBeVisible();
+  const task = await admit(stack, authorization(), project);
+  await paused(stack, task.id);
+  const observedAt = new Date().toISOString();
+  const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+  const taskVersion = task.version + 2;
+  const proposalId = randomUUID();
+  const executionId = randomUUID();
+  const coordinates = { id: executionId, taskId: randomUUID(), runId: randomUUID(), proposalId, taskVersion: 1 };
+  const updateId = '8'.repeat(24);
+  const proofSha256 = digest('verified version restore');
+  const current = { operationId: randomUUID(), manifestDigest: `sha256:${digest('new image')}` };
+  const restore = { operationId: randomUUID(), manifestDigest: `sha256:${digest('original image')}` };
+  const payload = { fingerprint: digest(proposalId), decisionVersion: 1 };
+  const path = `${stack.origin}/v1/tasks/${task.id}`;
+  const localeOf = (request: { headers: () => Record<string, string> }): Locale => request.headers()['accept-language'] === 'zh-CN' ? 'zh-CN' : 'en';
+  const requests: unknown[] = [];
+  let maySubmit = false;
+  let state: 'queued' | 'succeeded' | null = null;
+  await page.route(path, async route => {
+    const response = await route.fetch();
+    return response.ok() ? route.fulfill({ json: taskDtoSchema.parse({ ...task, version: taskVersion,
+      state: 'succeeded', workflow: 'operations' }) }) : route.fulfill({ response });
+  });
+  await page.route(`${path}/operations`, route => {
+    const locale = localeOf(route.request());
+    const containerEvidence = digest('restore diagnosis container');
+    const releaseEvidence = digest('restore diagnosis release');
+    return route.fulfill({ json: operationsObservationViewSchema.parse({ version: 1, taskId: task.id, runId: task.runId, taskVersion,
+      applicationId: randomUUID(), environmentId: randomUUID(), releaseOperationId: current.operationId, state: 'succeeded',
+      observation: { state: 'exited', stateLabel: translate(locale, 'operations.container.exited'), observedAt, receiptSha256: digest('observation') },
+      diagnosis: { receiptSha256: digest('diagnosis'), previousReleaseOperationId: restore.operationId, hypotheses: [],
+        recommendation: { code: 'review_rollback', message: translate(locale, 'operations.proposal_confirmed'), evidenceIds: [containerEvidence, releaseEvidence] },
+        facts: [{ section: 'container', evidenceId: containerEvidence, proofSha256: digest('container proof'), result: { state: 'exited', observedAt } },
+          { section: 'release', evidenceId: releaseEvidence, proofSha256: digest('release proof'), result: {
+            current: { ...current, verifiedAt: observedAt }, previous: { ...restore, verifiedAt: observedAt },
+          } }],
+      }, reason: 'operations_diagnosed', reasonMessage: translate(locale, 'reason.operations_diagnosed'),
+      message: translate(locale, 'task.operations_observed'), locale,
+    }) });
+  });
+  const decision = { version: 1, action: 'confirm', actorId: randomUUID(), selfConfirmed: true, decidedAt: observedAt };
+  await page.route(`${path}/operations-proposal`, route => {
+    const locale = localeOf(route.request());
+    return route.fulfill({ json: operationsProposalViewSchema.parse({ taskId: task.id, runId: task.runId, taskVersion, locale, draft: null,
+      proposal: { id: proposalId, fingerprint: payload.fingerprint, kind: 'rollback', status: 'confirmed',
+        message: translate(locale, 'operations.proposal_confirmed'), validUntil: new Date(Date.parse(observedAt) + 300_000).toISOString(),
+        current, restore, actions: [], decisions: [decision] },
+    }) });
+  });
+  await page.route(`${path}/operations-restore`, route => {
+    const locale = localeOf(route.request());
+    const verified = state === 'succeeded';
+    const reason = verified ? 'operations_restore_recovery_verified' : 'operations_execution_queued';
+    const execution = state ? { ...coordinates, releaseOperationId: current.operationId, restore, state, reason,
+      message: translate(locale, `reason.${reason}`), environmentHeld: !verified, nativeUpdateId: verified ? updateId : null,
+      recovery: verified ? { state: 'verified', failure: null, proof: { proofSha256, version: 'standard-v2', verifiedAt: observedAt } } : null,
+    } : null;
+    return route.fulfill({ json: operationsRestoreExecutionViewSchema.parse({ taskId: task.id, runId: task.runId, locale, execution,
+      action: maySubmit && !state ? { kind: 'enqueue', proposalId, ...payload } : null,
+    }) });
+  });
+  await page.route(`${stack.origin}/v1/operations/proposals/${proposalId}/restore`, route => {
+    requests.push(operationsEnqueueInputSchema.parse(route.request().postDataJSON()));
+    state = 'queued';
+    return route.fulfill({ status: 202, json: { executionId, replayed: false } });
+  });
+
+  await page.goto(`${stack.origin}/#/tasks/${task.id}`);
+  const execution = page.getByTestId('operations-restore-execution');
+  const queue = execution.getByRole('button', { name: 'Queue version restore', exact: true });
+  await expect(page.getByTestId('operations-proposal')).toBeVisible();
+  await expect(queue).toHaveCount(0);
+  maySubmit = true;
+  await queue.click();
+  const dialog = page.getByRole('dialog', { name: 'Queue this approved version restore?' });
+  await expect(dialog.getByText(restore.manifestDigest, { exact: true })).toBeVisible();
+  maySubmit = false;
+  await expect(dialog).toHaveCount(0);
+  expect(requests).toEqual([]);
+  maySubmit = true;
+  await queue.click();
+  await dialog.getByRole('button', { name: 'Queue version restore', exact: true }).click();
+  await expect(execution.getByRole('status')).toHaveText(translate('en', 'reason.operations_execution_queued'));
+  expect(requests).toEqual([payload]);
+  state = 'succeeded';
+  await language(page, 'zh-CN');
+  await expect(execution.getByRole('status')).toHaveText(translate('zh-CN', 'reason.operations_restore_recovery_verified'));
+  const disclosures = (await motionProbe(page)).disclosures;
+  await execution.locator('summary').filter({ hasText: '版本恢复回执' }).press('Enter');
+  await expect(execution.getByText('standard-v2', { exact: true })).toBeVisible();
+  await expect(execution.getByText(updateId, { exact: true })).toBeVisible();
+  await expect(execution.getByText(proofSha256, { exact: true })).toBeVisible();
+  await expect(execution.getByText('已释放', { exact: true })).toBeVisible();
+  await expect.poll(async () => (await motionProbe(page)).disclosures).toBeGreaterThan(disclosures);
+  await expect(execution.getByRole('button', { name: '提交版本恢复', exact: true })).toHaveCount(0);
   await expectMotionCsp(page);
 });
 
