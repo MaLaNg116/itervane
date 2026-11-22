@@ -19,3 +19,5 @@
 本机 TypeScript、232 项单元和迁移一致性通过。扩展 PostgreSQL 17.12 回归 10 项通过，既有撤权测试一度遇到 `operations_decision_owner_required`。包含该用例的第二轮五项专项全部通过。首次失败的具体原因待确认。
 
 托管检验按 PR 检查记录归档。当前分开验证派发事务与原生挂载材料。将持久化处置、原生批准后派发及独立健康结算接入同一标准应用的工作由后续批次完成。 [托管检查](https://github.com/MaLaNg116/itervane/pull/96/checks)
+
+原生 Whiskers `1075ebe` 的 19 项通过，含真实挂载策略装载和一次审批重启。初版 KVM 在既有诊断的日志读取处失败。分支仍携带只允许容器详情的旧夹具，`c75388a` 同步主线 `9f9d327` 已验收的三项只读名单，重新启动受影响的场景。 [原生报告](https://github.com/MaLaNg116/itervane/actions/runs/45002323151) · [日志失败作业](https://github.com/MaLaNg116/itervane/actions/runs/45002323209/job/137146348881) · [主线夹具修复](https://github.com/MaLaNg116/itervane/commit/9f9d3278a5451a95a6463aa23f9c18a3cf57181d)
