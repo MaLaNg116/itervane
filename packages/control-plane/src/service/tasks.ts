@@ -4,6 +4,7 @@ import { fromDrizzle } from 'pg-boss';
 import { cancelTaskSchema, resumeTaskSchema, idSchema, listQuerySchema, startOperationsTaskSchema, startTaskSchema, taskDtoSchema, taskEventDtoSchema, translate,
   eventReasonMessages, retrySourceInspectionReasonSchema, taskEventReasonSchema, type Locale, type MessageKey } from '@itervane/contracts';
 import type { VerifiedIdentity } from '../auth/identity.js';
+import type { OperationsEnrollmentScope } from '../config.js';
 import { queueName, type Database } from '../persistence/database.js';
 import { formalAuditInputs, formalAuditResults, operationsRequests, releaseCandidates, releaseOperations, repositories,
   runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
@@ -82,17 +83,19 @@ export class TaskService {
     });
   }
 
-  async admitOperations(identity: VerifiedIdentity, raw: unknown) {
+  async admitOperations(identity: VerifiedIdentity, raw: unknown, installation?: OperationsEnrollmentScope) {
     const input = parseInput(startOperationsTaskSchema, raw);
     const { projectId, environmentId, idempotencyKey, locale } = input;
     const requestHash = createHash('sha256').update(JSON.stringify({ workflow: 'operations', projectId, environmentId, locale })).digest('hex');
     return this.database.db.transaction(async tx => {
       const actor = await requireActor(tx, identity);
       await requireProject(tx, actor, projectId, true);
+      if (installation && installation.environmentId !== environmentId) throw new DomainError('not_found');
       const scope = { projectId, requestedBy: actor.principalId, requestKey: idempotencyKey, requestHash };
       const replay = await replayAdmission(tx, scope);
       if (replay) return replay;
       const target = await readOperationsObservationTarget(tx, actor, { projectId, environmentId });
+      if (installation && installation.enrollmentSha256 !== target.enrollmentSha256) throw new DomainError('unavailable');
       return this.insertTask(tx, { ...scope, repositoryId: target.source.repositoryId, commit: target.source.commit,
         purpose: translate(locale, 'operations.task.purpose'), dataClass: target.dataClass, locale }, freezeOperationsRequest(target));
     });

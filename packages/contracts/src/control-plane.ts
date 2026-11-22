@@ -61,11 +61,11 @@ export const portalConfigSchema = z.discriminatedUnion('enabled', [
     redirectUri: z.url(), postLogoutRedirectUri: z.url() }).strict(),
 ]);
 export const capabilitiesSchema = z.object({
-  stage: z.literal('p1-e'), taskAdmission: z.literal(true), taskExecution: z.literal(false), durableScheduling: z.literal(true),
+  stage: z.enum(['p1-e', 'p3-a']), taskAdmission: z.literal(true), taskExecution: z.literal(false), durableScheduling: z.literal(true),
   ruleQuery: z.literal(true), limitedTextPreaudit: z.literal(true), autonomousAgents: z.literal(false),
   sourceInspectionPlanning: z.literal(true), sourceSnapshots: z.literal(false), sourceScanning: z.literal(false),
   portal: z.boolean(), browserLogin: z.boolean(),
-  externalMcp: z.boolean(), sandbox: z.literal(false), deployment: z.literal(false), operations: z.literal(false),
+  externalMcp: z.boolean(), sandbox: z.literal(false), deployment: z.literal(false), operations: z.boolean(),
 }).strict();
 export const apiErrorSchema = z.object({ error: z.object({
   code: z.enum(['invalid_input', 'unauthenticated', 'forbidden', 'not_found', 'conflict',

@@ -12,6 +12,19 @@ it('requires identity and database configuration before starting a listener', ()
   expect(runtimeConfig(configured)).toMatchObject({ host: '127.0.0.1', port: 4310 });
 });
 
+it('enables the operations API only for a complete enrollment and keeps the Read key in the Worker', () => {
+  const environmentId = '01020304-1000-4000-8000-010203040506';
+  const enrollmentSha256 = 'a'.repeat(64);
+  const readKey = 'b'.repeat(64);
+  const installation = { ...configured, ITERVANE_OPERATIONS_ENVIRONMENT_ID: environmentId,
+    ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollmentSha256, ITERVANE_OPERATIONS_WHISKERS_READ_KEY: readKey };
+  expect(runtimeConfig(installation)).not.toHaveProperty('operationsApi');
+  expect(runtimeConfig({ ...installation, ITERVANE_OPERATIONS_API_ENABLED: '1' })).toHaveProperty('operationsApi', { environmentId, enrollmentSha256 });
+  expect(workerConfig(installation).operations).toEqual({ environmentId, enrollmentSha256, readKey });
+  expect(() => runtimeConfig({ ...configured, ITERVANE_OPERATIONS_API_ENABLED: '1' })).toThrow();
+  expect(() => runtimeConfig({ ...installation, ITERVANE_OPERATIONS_API_ENABLED: 'true' })).toThrow();
+});
+
 it('does not reuse the runtime credential as an implicit migration credential', () => {
   expect(() => migrationConfig(configured)).toThrow();
   expect(migrationConfig({ ITERVANE_MIGRATION_DATABASE_URL: 'postgresql://localhost/itervane' })).toBe('postgresql://localhost/itervane');
