@@ -2075,7 +2075,19 @@ it('rejects direct formal rollout lease changes outside the recorded handoff and
   await parkForRollout(submitted);
   await expect(insert(2, 45)).rejects.toMatchObject({ code: '23514', message: 'formal_rollout_lease_required' });
   await expect(insert(1, 46)).rejects.toMatchObject({ code: '23514', message: 'formal_rollout_lease_required' });
+  const rollback = new Error('rollback legacy lease probe');
+  await expect(database.storage.db.transaction(async tx => {
+    const legacy = await tx.execute<{ bounded: boolean }>(sql`INSERT
+      INTO itervane.formal_release_rollout_attempts (operation_id, fence, worker_id, lease_until)
+      VALUES (${operationId}, 1, ${randomUUID()}, clock_timestamp() + interval '45 seconds')
+      RETURNING lease_until > created_at AND lease_until <= created_at + interval '45 seconds' AS bounded`);
+    expect(legacy.rows[0]?.bounded).toBe(true);
+    throw rollback;
+  })).rejects.toBe(rollback);
   expect(await observer.claimNext(randomUUID())).toMatchObject({ operationId, fence: 1 });
+  const lease = await database.storage.pool.query<{ exact: boolean }>(`SELECT lease_until - created_at = interval '45 seconds' AS exact
+    FROM itervane.formal_release_rollout_attempts WHERE operation_id=$1`, [operationId]);
+  expect(lease.rows[0]?.exact).toBe(true);
   await expect(insert(2, 45)).rejects.toMatchObject({ code: '23514', message: 'formal_rollout_lease_required' });
   await expect(database.storage.pool.query("UPDATE itervane.formal_release_rollout_attempts SET state='expired' WHERE operation_id=$1", [operationId]))
     .rejects.toMatchObject({ code: '23514', message: 'formal_rollout_attempt_is_immutable' });

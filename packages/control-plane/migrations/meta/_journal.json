@@ -351,6 +351,13 @@
       "when": 1795327400373,
       "tag": "0049_rollout_timestamp_order",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1795328041378,
+      "tag": "0050_rollout_claim_timestamp",
+      "breakpoints": true
     }
   ]
 }

@@ -127,7 +127,7 @@ export class FormalRolloutCoordinator {
       const fence = (previous?.fence ?? 0) + 1;
       const scope = Object.freeze({ operationId: next.operationId, workerId, fence });
       await tx.insert(formalReleaseRolloutAttempts).values({ ...scope,
-        leaseUntil: sql`clock_timestamp() + ${this.leaseSeconds} * interval '1 second'` });
+        leaseUntil: sql`statement_timestamp() + ${this.leaseSeconds} * interval '1 second'` });
       await appendEvent(tx, pending.task, 'task.release_rollout_claimed', pending.task.state, {
         workerId, releaseDecision: { ...releaseDecisionBinding(pending), rolloutFence: fence },
       });
