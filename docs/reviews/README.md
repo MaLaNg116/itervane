@@ -103,6 +103,7 @@
 | 098 | P3-C2c3b1 重启前停止快照与续发复核 | [#98](https://github.com/MaLaNg116/itervane/pull/98)，依赖 #97 | [停止快照导读](p3-c-restart-baseline.md) | TypeScript、244 项单元、PostgreSQL 17.12 专项及迁移一致性已验证，[托管检查](https://github.com/MaLaNg116/itervane/pull/98/checks) |
 | 099 | P3-C2c3b2 停止快照、只读核对和原子结算 | [#99](https://github.com/MaLaNg116/itervane/pull/99)，依赖 #98 | [独立结算导读](p3-c-restart-settlement.md) | TypeScript、244 项单元、九项 PostgreSQL 17.12 专项与迁移一致性通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/45006369277) |
 | 100 | P3-C2c3c1 专用重启 Worker 与 Komodo 读身份 | [#100](https://github.com/MaLaNg116/itervane/pull/100)，依赖 #99 | [安装导读](p3-c-installed-restart-worker.md) | TypeScript、246 项单元及真库队列分派通过，[原生权限检查](https://github.com/MaLaNg116/itervane/actions/runs/45007441246) |
+| 101 | P3-C2c3c2a 绑定原批准的人工提交和双语回执 | [#101](https://github.com/MaLaNg116/itervane/pull/101)，依赖 #100 | [人工入口导读](p3-c-restart-operator-api.md) | TypeScript、246 项单元、三项 PostgreSQL 17.12 HTTP/MCP 专项通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/101/checks) |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
