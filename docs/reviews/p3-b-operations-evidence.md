@@ -7,3 +7,5 @@
 3. 原生验收在独立宿主使用临时 Read 密钥。对退出样例读取两行预知信号，对运行样例查实际采集点，并核对无样本和清理。同一生产适配器由测试直接调用。 [原生用例](https://github.com/MaLaNg116/itervane/blob/edba27dee48e991351e3a0854fed55001799dac5/packages/portal/test/native/whiskers.ts#L178) · [强制验收](https://github.com/MaLaNg116/itervane/blob/edba27dee48e991351e3a0854fed55001799dac5/.github/workflows/native-whiskers.yml)
 
 本机 TypeScript、215 项单元检查通过，含四项新的日志和指标协议验证。实际采样与清理由托管独立宿主验收。B2 和 B3 接续运维 Agent 的证据选择与正式任务持久化。
+
+固定验收版本 `d9678aedd1daae4eb95a49feff392d93630aa745` 通过托管 Whiskers 0.15.0 验收。必过条件包含停止容器的日志信号、运行容器的指标样本、明确无样本返回和夹具清理。 [原生验证](https://github.com/MaLaNg116/itervane/actions/runs/44972075364) · [脱敏验收材料](https://github.com/MaLaNg116/itervane/actions/runs/44972075364/artifacts/14733773893)
