@@ -27,7 +27,8 @@ import { runtimeConfig, workerConfig, type OperationsWorkflowScope } from '../..
 import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
-  operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults, operationsDiagnosisRuntime, operationsObservations, operationsProposals, operationsRequests,
+  operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
+  operationsDiagnosisRuntime, operationsObservations, operationsProposals, operationsRequests,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskEvents, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
@@ -63,6 +64,7 @@ import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
 import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { FormalReleaseService } from '../../src/service/formal-release.js';
 import { readOperationsDeployment } from '../../src/service/operations-deployment.js';
+import { OperationsDecisionService } from '../../src/service/operations-decisions.js';
 import { OperationsObservationViewService } from '../../src/service/operations-observation-view.js';
 import { OperationsProposalService, readOperationsProposal } from '../../src/service/operations-proposals.js';
 import { freezeOperationsRequest, readOperationsDiagnosis, readOperationsRequest } from '../../src/service/operations-requests.js';
@@ -2728,7 +2730,7 @@ async function settleProposalDiagnosis(kind: 'restart' | 'rollback' | 'observe',
   return { ...context, diagnosis, service: new OperationsProposalService(database.storage, installed) };
 }
 
-it('freezes one immutable restart proposal from the signed-off diagnosis under concurrent requests', async () => {
+it('freezes one immutable restart proposal from the settled diagnosis under concurrent requests', async () => {
   const current = await settleProposalDiagnosis('restart');
   const { fixture, diagnosis, task, service } = current;
   const input = { diagnosisSha256: diagnosis.sha256 };
@@ -2800,6 +2802,105 @@ it.each(['wait', 'expired', 'replaced', 'publishing', 'revoked'] as const)('limi
   const code = mode === 'publishing' ? 'conflict' : mode === 'replaced' || mode === 'revoked' ? 'version_conflict' : 'unsupported_state';
   await expect(service.freeze(identity, diagnosed.id, { diagnosisSha256: diagnosis.sha256 })).rejects.toMatchObject({ code });
   expect(await database.storage.db.select().from(operationsProposals)).toEqual([]);
+});
+
+const operationsPortal = 'itervane-operations-decision-portal';
+const decisionIdentity = (subject = 'owner') => issuer.token(subject, { azp: operationsPortal }).then(createIdentityVerifier(issuer.config));
+
+it('records an owner portal confirmation once and retains its revocation alongside the diagnosis', async () => {
+  const { fixture, installed, diagnosis, task, service } = await settleProposalDiagnosis('restart');
+  const { proposal } = await service.freeze(identity, task.id, { diagnosisSha256: diagnosis.sha256 });
+  const decisions = new OperationsDecisionService(database.storage, installed, operationsPortal);
+  const owner = await decisionIdentity();
+  const subject = 'operations-non-owner';
+  const principalId = randomUUID();
+  await database.storage.db.insert(principals).values({ id: principalId, issuer: issuer.config.issuer, subject });
+  await database.storage.db.insert(projectMembers).values({ projectId: fixture.scope.projectId, principalId, role: 'maintainer' });
+  const input = { action: 'confirm', expectedVersion: 0, fingerprint: proposal.fingerprint, idempotencyKey: randomUUID() };
+  await expect(decisions.decide(identity, proposal.id, input)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(decisions.decide(await decisionIdentity(subject), proposal.id, input)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(new OperationsDecisionService(database.storage, installed).decide(owner, proposal.id, input)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(decisions.decide(owner, proposal.id, { ...input, fingerprint: sha256('different frozen proposal') })).rejects
+    .toMatchObject({ code: 'version_conflict' });
+  await expect(decisions.decide(owner, proposal.id, { ...input, action: 'revoke' })).rejects.toMatchObject({ code: 'unsupported_state' });
+
+  const results = await Promise.all([decisions.decide(owner, proposal.id, input), decisions.decide(owner, proposal.id, input)]);
+  expect(results.map(item => item.replayed).sort()).toEqual([false, true]);
+  const [membership] = await database.storage.db.select().from(workspaceMembers);
+  expect(results[0]?.decision).toMatchObject({ proposalId: proposal.id, action: 'confirm', version: 1,
+    actorId: proposal.proposedBy, grantId: membership?.grantId, selfConfirmed: true });
+  await expect(decisions.decide(owner, proposal.id, { ...input, action: 'reject' })).rejects.toMatchObject({ code: 'idempotency_conflict' });
+  await expect(decisions.decide(owner, proposal.id, { ...input, action: 'reject', idempotencyKey: randomUUID() })).rejects
+    .toMatchObject({ code: 'version_conflict' });
+
+  const revoke = { ...input, action: 'revoke', expectedVersion: 1, idempotencyKey: randomUUID() };
+  expect(await decisions.decide(owner, proposal.id, revoke)).toMatchObject({ replayed: false, decision: { action: 'revoke', version: 2, selfConfirmed: false } });
+  expect(await decisions.decide(owner, proposal.id, revoke)).toMatchObject({ replayed: true });
+  expect(await database.storage.db.select().from(operationsDecisions)).toHaveLength(2);
+  expect(await database.storage.db.select().from(releaseOperations)).toHaveLength(1);
+  await expect(database.storage.db.delete(operationsDecisions)).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'operations_decision_is_immutable' } });
+  await expect(new OperationsObservationViewService(database.storage).get(identity, task.id, 'zh-CN')).resolves
+    .toMatchObject({ state: 'succeeded', diagnosis: { receiptSha256: diagnosis.sha256 } });
+});
+
+it('serializes competing owner decisions for a proposal submitted by a project maintainer', async () => {
+  const { fixture, installed, diagnosis, task, service } = await settleProposalDiagnosis('restart');
+  const subject = 'operations-proposer';
+  const principalId = randomUUID();
+  await database.storage.db.insert(principals).values({ id: principalId, issuer: issuer.config.issuer, subject });
+  await database.storage.db.insert(projectMembers).values({ projectId: fixture.scope.projectId, principalId, role: 'maintainer' });
+  const { proposal } = await service.freeze(await decisionIdentity(subject), task.id, { diagnosisSha256: diagnosis.sha256 });
+  const decisions = new OperationsDecisionService(database.storage, installed, operationsPortal);
+  const owner = await decisionIdentity();
+  const input = { expectedVersion: 0, fingerprint: proposal.fingerprint };
+  const attempts = await Promise.allSettled([
+    decisions.decide(owner, proposal.id, { ...input, action: 'confirm', idempotencyKey: randomUUID() }),
+    decisions.decide(owner, proposal.id, { ...input, action: 'reject', idempotencyKey: randomUUID() }),
+  ]);
+  expect(attempts).toEqual(expect.arrayContaining([
+    expect.objectContaining({ status: 'fulfilled', value: { replayed: false, decision: expect.objectContaining({ version: 1, selfConfirmed: false }) } }),
+    expect.objectContaining({ status: 'rejected', reason: expect.objectContaining({ code: 'version_conflict' }) }),
+  ]));
+  const before = (await database.storage.db.select().from(operationsDecisions)).at(0);
+  expect(before?.actorId).not.toBe(principalId);
+  await expect(decisions.decide(owner, proposal.id, { ...input, expectedVersion: 1, action: 'confirm', idempotencyKey: randomUUID() }))
+    .rejects.toMatchObject({ code: 'unsupported_state' });
+});
+
+it.each(['replaced', 'proposer_revoked', 'publishing', 'expired'] as const)('blocks human confirmation when the proposal is %s', async mode => {
+  if (mode === 'expired') await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_results
+    ALTER COLUMN created_at SET DEFAULT (now() - interval '1788 seconds')`);
+  const { fixture, installed, diagnosis, task: diagnosed, service } = await settleProposalDiagnosis('restart')
+    .finally(async () => {
+      if (mode === 'expired') await database.admin.query('ALTER TABLE itervane.operations_diagnosis_results ALTER COLUMN created_at SET DEFAULT now()');
+    });
+  const subject = 'operations-decision-requester';
+  const principalId = randomUUID();
+  const membership = { projectId: fixture.scope.projectId, principalId, role: 'maintainer' };
+  await database.storage.db.insert(principals).values({ id: principalId, issuer: issuer.config.issuer, subject });
+  await database.storage.db.insert(projectMembers).values(membership);
+  const { proposal } = await service.freeze(await decisionIdentity(subject), diagnosed.id, { diagnosisSha256: diagnosis.sha256 });
+  if (mode === 'replaced') await registerOperationsTarget(database.storage, { ...fixture.registration,
+    whiskers: { ...fixture.registration.whiskers, serverId: 'changed-after-proposal' } });
+  if (mode === 'proposer_revoked') {
+    await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
+    await database.storage.db.insert(projectMembers).values(membership);
+  }
+  if (mode === 'publishing') {
+    task = (await fixture.taskService.admit(identity, { projectId: fixture.scope.projectId, source: task.source, purpose: 'Another approved release',
+      dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
+    await queuedFormalRelease({ existingTarget: fixture.target });
+  }
+  if (mode === 'expired') await vi.waitFor(async () => {
+    const time = await database.storage.pool.query<{ expired: boolean }>('SELECT clock_timestamp() >= $1 AS expired', [proposal.validUntil]);
+    expect(time.rows[0]?.expired).toBe(true);
+  }, { timeout: 15_000, interval: 300 });
+  const code = { replaced: 'version_conflict', proposer_revoked: 'forbidden', publishing: 'conflict', expired: 'unsupported_state' }[mode];
+  await expect(new OperationsDecisionService(database.storage, installed, operationsPortal).decide(await decisionIdentity(), proposal.id, {
+    action: 'confirm', expectedVersion: 0, fingerprint: proposal.fingerprint, idempotencyKey: randomUUID(),
+  })).rejects.toMatchObject({ code });
+  expect(await database.storage.db.select().from(operationsDecisions)).toEqual([]);
 });
 
 it('drops a pending operations diagnosis fetch after the installed server is changed', async () => {
