@@ -5,7 +5,8 @@ import {
   admissionDtoSchema, applicationDtoSchema, capabilitiesSchema, environmentDtoSchema,
   idSchema, listQuerySchema, meDtoSchema, projectAccessDtoSchema, portalConfigSchema, projectDtoSchema, repositoryDtoSchema, taskDtoSchema, taskEventDtoSchema,
   negotiateLocale, sourceInspectionDtoSchema, ruleIdSchema, ruleQuerySchema, preauditAdmissionSchema, preauditDtoSchema, sha256Schema, type Locale,
-  operationsLaunchViewSchema,
+  operationsLaunchViewSchema, operationsRestartEnqueueInputSchema, operationsRestartSubmissionSchema,
+  operationsRestartWriterProofSchema, type OperationsRestartWriterProof,
 } from '@itervane/contracts';
 import { AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
 import type { Database } from './persistence/database.js';
@@ -26,6 +27,10 @@ import { OperationsObservationViewService } from './service/operations-observati
 import { OperationsDecisionService } from './service/operations-decisions.js';
 import { OperationsProposalViewService } from './service/operations-proposal-view.js';
 import { OperationsProposalService } from './service/operations-proposals.js';
+import { OperationsExecutionAdmission } from './service/operations-execution-admission.js';
+import { OperationsRestartViewService } from './service/operations-restart-view.js';
+import { ExecutionCoordinator } from './runtime/coordinator.js';
+import { OperationsExecutionCoordinator } from './runtime/operations-execution-lease.js';
 
 declare module 'fastify' {
   interface FastifyRequest { verifiedIdentity: VerifiedIdentity | null; locale: Locale }
@@ -36,6 +41,7 @@ const projectParam = z.object({ projectId: idSchema }).strict();
 const taskParam = z.object({ taskId: idSchema }).strict();
 const candidateParam = z.strictObject({ candidateId: idSchema });
 const proposalParam = z.strictObject({ proposalId: idSchema });
+const executionParam = z.strictObject({ executionId: idSchema });
 const identity = (request: FastifyRequest) => {
   if (!request.verifiedIdentity) throw new AuthenticationError();
   return request.verifiedIdentity;
@@ -43,7 +49,8 @@ const identity = (request: FastifyRequest) => {
 const limit = (request: FastifyRequest) => parseInput(listQuerySchema, request.query).limit;
 
 export type ApiConfig = IdentityConfig & { publicUrl?: string; portalClientId?: string; operationsApi?: OperationsWorkflowScope };
-export function createApi(database: Database, config: ApiConfig, options: { logger?: boolean; portalRoot?: string } = {}) {
+export function createApi(database: Database, config: ApiConfig,
+  options: { logger?: boolean; portalRoot?: string; operationsRestartWriter?: OperationsRestartWriterProof } = {}) {
   const verify = createIdentityVerifier(config);
   const resources = new ResourceService(database); const tasks = new TaskService(database);
   const inspections = new InspectionService(database); const audits = new FormalAuditService(database);
@@ -187,6 +194,10 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
     const proposals = new OperationsProposalService(database, operationsApi);
     const decisions = new OperationsDecisionService(database, operationsApi, config.portalClientId);
     const views = new OperationsProposalViewService(database, operationsApi, config.portalClientId);
+    const restartOperator = config.portalClientId && options.operationsRestartWriter
+      ? { clientId: config.portalClientId, writer: operationsRestartWriterProofSchema.parse(options.operationsRestartWriter) }
+      : undefined;
+    const restarts = new OperationsRestartViewService(database, operationsApi, restartOperator);
     app.get('/v1/tasks/:taskId/operations-proposal', async request => {
       const { taskId } = parseInput(taskParam, request.params);
       return views.get(identity(request), taskId, request.locale);
@@ -201,6 +212,25 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
       const { taskId } = await decisions.decide(identity(request), proposalId, request.body);
       return views.get(identity(request), taskId, request.locale);
     });
+    app.get('/v1/tasks/:taskId/operations-execution', async request => {
+      const { taskId } = parseInput(taskParam, request.params);
+      return restarts.get(identity(request), taskId, request.locale);
+    });
+    if (restartOperator) {
+      const admission = new OperationsExecutionAdmission(database, operationsApi);
+      const coordinator = new OperationsExecutionCoordinator(new ExecutionCoordinator(database), operationsApi, restartOperator.clientId);
+      app.post('/v1/operations/proposals/:proposalId/execution', async (request, reply) => {
+        const { proposalId } = parseInput(proposalParam, request.params);
+        const input = parseInput(operationsRestartEnqueueInputSchema, request.body);
+        const { execution, replayed } = await admission.enqueue({ ...input, proposalId }, { ...restartOperator, identity: identity(request) });
+        return reply.code(replayed ? 200 : 202).send(operationsRestartSubmissionSchema.parse({ executionId: execution.id, replayed }));
+      });
+      app.post('/v1/operations/executions/:executionId/continue', async (request, reply) => {
+        const { executionId } = parseInput(executionParam, request.params);
+        const { replayed } = await coordinator.requestRestartResume(identity(request), executionId, request.body, restartOperator.writer);
+        return reply.code(replayed ? 200 : 202).send(operationsRestartSubmissionSchema.parse({ executionId, replayed }));
+      });
+    }
   }
   app.get('/v1/projects/:projectId/tasks', async request => {
     const { projectId } = parseInput(projectParam, request.params);
