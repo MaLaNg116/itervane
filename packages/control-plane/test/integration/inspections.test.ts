@@ -11,7 +11,7 @@ import { createFormalOperations, createFormalVerification } from '@itervane/agen
 import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseTargetSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
-  operationsProposalViewSchema, taskDtoSchema, translate, verificationViewSchema,
+  operationsProposalViewSchema, operationsRestartRequestSchema, taskDtoSchema, translate, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type OperationsDiagnosisObservation, type OperationsDiagnosisSection,
   type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
@@ -30,7 +30,7 @@ import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, fo
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
   operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
   operationsDiagnosisRuntime, operationsExecutionIntents, operationsExecutions, operationsExecutionSchedules, operationsObservations,
-  operationsProposals, operationsRequests,
+  operationsProposals, operationsRequests, operationsRestartRequests,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskEvents, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
@@ -2877,6 +2877,115 @@ async function fetchOperationsWakeup() {
     return job;
   }, { timeout: 8_000, interval: 50 });
 }
+
+async function prepareNativeRestart(action: Awaited<ReturnType<typeof queuedOperationsLease>>) {
+  const scope = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!scope) throw new Error('Expected an initial restart lease');
+  const credentialSha256 = sha256('dedicated restart caller');
+  const { restartRequest, intent } = await action.runtime.prepareDispatch(scope, { credentialSha256 });
+  if (!restartRequest) throw new Error('Expected a frozen native restart request');
+  return { scope, restartRequest, intent, credentialSha256,
+    approval: { callSha256: restartRequest.callSha256, approvalId: randomUUID().replaceAll('-', '') } };
+}
+
+it('atomically pauses a bound Whiskers approval and frees the shared execution slot', async () => {
+  const action = await queuedOperationsLease();
+  const release = await competingPublication(action.fixture);
+  const { scope, restartRequest, intent, credentialSha256, approval } = await prepareNativeRestart(action);
+  expect(restartRequest).toMatchObject({
+    executionId: action.execution.id, approvalId: null,
+    document: { version: 1, tool: 'restart_container', credentialSha256,
+      target: { ...action.fixture.registration.whiskers, containerId: action.fixture.runtime.containerId } },
+  });
+  expect(restartRequest.callSha256).toBe(sha256(JSON.stringify(operationsRestartRequestSchema.parse(restartRequest.document))));
+  expect(restartRequest.createdAt.getTime()).toBeGreaterThanOrEqual(intent.createdAt.getTime());
+  const recorded = await action.runtime.pauseForRestartApproval(scope, approval);
+  expect(recorded).toMatchObject({ executionId: action.execution.id, ...approval, receivedAt: expect.any(Date) });
+  expect(recorded.receivedAt!.getTime()).toBeGreaterThanOrEqual(restartRequest.createdAt.getTime());
+  await expect(action.runtime.pauseForRestartApproval(scope, approval)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(action.fixture.taskService.get(identity, action.schedule.taskId)).resolves.toMatchObject({ state: 'waiting_approval' });
+  for (const locale of ['en', 'zh-CN'] as const) {
+    expect((await action.fixture.taskService.events(identity, action.schedule.taskId, 10, locale)).at(-1))
+      .toMatchObject({ type: 'task.operations_execution_native_approval', reason: 'operations_execution_native_approval',
+        state: 'waiting_approval', workerId: scope.workerId, reasonMessage: translate(locale, 'reason.operations_execution_native_approval') });
+  }
+  expect((await database.storage.pool.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
+  await expect(release.confirm()).rejects.toMatchObject({ code: 'conflict' });
+  await action.runtime.reconcile(randomUUID());
+  expect(await database.storage.boss.fetch(operationsExecutionQueue)).toEqual([]);
+  const unrelated = (await action.fixture.taskService.admit(identity, { projectId: task.projectId, source: task.source,
+    purpose: 'Development while waiting for native approval', dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
+  await expect(claim()).resolves.toMatchObject({ taskId: unrelated.id });
+  await action.decide('revoke');
+  await expect(action.fixture.taskService.get(identity, scope.taskId)).resolves.toMatchObject({ state: 'reconciling' });
+  expect((await fetchOperationsWakeup()).data).toMatchObject({ executionId: action.execution.id, runId: scope.runId });
+  expect((await database.storage.db.select().from(operationsRestartRequests))[0]).toMatchObject(approval);
+});
+
+it('rolls back a Whiskers approval unless the matching pause and lease release commit', async () => {
+  const action = await queuedOperationsLease();
+  const { scope, approval } = await prepareNativeRestart(action);
+  await expect(action.runtime.pauseForRestartApproval(scope, { ...approval, callSha256: sha256('another request') }))
+    .rejects.toMatchObject({ code: 'version_conflict' });
+  await expect(database.storage.db.update(operationsRestartRequests).set({ approvalId: approval.approvalId })
+    .where(eq(operationsRestartRequests.executionId, action.execution.id)))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restart_approval_must_pause' } });
+  await database.admin.query(`ALTER TABLE itervane.task_events ADD CONSTRAINT injected_restart_pause_failure
+    CHECK (type <> 'task.operations_execution_native_approval') NOT VALID`);
+  try {
+    await expect(action.runtime.pauseForRestartApproval(scope, approval))
+      .rejects.toMatchObject({ cause: { code: '23514', constraint: 'injected_restart_pause_failure' } });
+    expect((await database.storage.db.select().from(operationsRestartRequests))[0]).toMatchObject({ approvalId: null, receivedAt: null });
+    expect((await database.storage.pool.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: scope.taskId });
+    await expect(action.fixture.taskService.get(identity, scope.taskId)).resolves.toMatchObject({ state: 'running' });
+  } finally { await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_restart_pause_failure'); }
+  await expect(action.runtime.pauseForRestartApproval(scope, approval)).resolves.toMatchObject(approval);
+  await expect(database.storage.db.update(operationsRestartRequests).set({ approvalId: randomUUID().replaceAll('-', '') }))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restart_request_is_immutable' } });
+});
+
+it('retains a late Whiskers approval receipt after platform withdrawal', async () => {
+  const action = await queuedOperationsLease();
+  const { scope, approval } = await prepareNativeRestart(action);
+  await action.decide('revoke');
+  await expect(action.runtime.pauseForRestartApproval(scope, approval)).resolves.toMatchObject(approval);
+  expect(await database.storage.db.select().from(operationsDecisions)).toHaveLength(2);
+  expect((await database.storage.db.select().from(operationsExecutions))[0]).toMatchObject({ state: 'reserved' });
+  await expect(action.fixture.taskService.get(identity, scope.taskId)).resolves.toMatchObject({ state: 'reconciling' });
+  await expect(action.fixture.taskService.resume(identity, scope.taskId, { expectedVersion: 4 }))
+    .rejects.toMatchObject({ code: 'unsupported_state' });
+  const pending = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  expect(pending).toMatchObject({ mode: 'reconcile', fence: scope.fence + 1 });
+});
+
+it('rejects a forged Whiskers restart target despite a valid platform intent', async () => {
+  const action = await queuedOperationsLease();
+  const scope = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!scope) throw new Error('Expected an initial restart lease');
+  await action.runtime.prepareDispatch(scope);
+  const document = { version: 1, tool: 'restart_container', credentialSha256: sha256('dedicated restart caller'),
+    target: { ...action.fixture.registration.whiskers, containerId: sha256('different container') } } as const;
+  await expect(database.storage.db.insert(operationsRestartRequests).values({
+    executionId: action.execution.id, callSha256: sha256(JSON.stringify(document)), document,
+  })).rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restart_request_binding_required' } });
+  expect(await database.storage.db.select().from(operationsRestartRequests)).toEqual([]);
+});
+
+it('fences a Whiskers restart approval receipt after the sender loses its lease', async () => {
+  const action = await queuedOperationsLease();
+  const { scope, approval } = await prepareNativeRestart(action);
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await expect(database.storage.db.update(operationsRestartRequests).set({ approvalId: approval.approvalId })
+    .where(eq(operationsRestartRequests.executionId, action.execution.id)))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restart_request_lease_required' } });
+  await action.runtime.reconcile(randomUUID());
+  const resumed = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!resumed) throw new Error('Expected a reconciliation lease');
+  expect(resumed.mode).toBe('reconcile');
+  await expect(action.runtime.pauseForRestartApproval(scope, approval)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(action.runtime.pauseForRestartApproval(resumed, approval)).rejects.toBeInstanceOf(ExecutionLost);
+  expect((await database.storage.db.select().from(operationsRestartRequests))[0]).toMatchObject({ approvalId: null });
+});
 
 it('uses the shared slot for operations and fences replaced wakeups', async () => {
   const action = await queuedOperationsLease();
