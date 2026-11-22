@@ -1,4 +1,4 @@
-import { idSchema } from '@itervane/contracts';
+import { idSchema, operationsRestartApprovalInputSchema, sha256Schema } from '@itervane/contracts';
 import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { fromDrizzle, type Job } from 'pg-boss';
@@ -8,7 +8,7 @@ import { operationsExecutionIntents, operationsExecutionSchedules, operationsExe
   tasks } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { expireUndispatchedOperations, lockEnvironmentForEffect } from '../service/environment-effects.js';
-import { DomainError } from '../service/errors.js';
+import { DomainError, parseInput } from '../service/errors.js';
 import { lockOperationsDiagnosisTask, requireOperationsExecutionApproval } from '../service/operations-execution-admission.js';
 import { readOperationsProposal } from '../service/operations-proposals.js';
 import { databaseNow } from '../service/releases.js';
@@ -16,6 +16,7 @@ import { appendEvent, assertLeaseLive, assignSlot, clearSlot, ExecutionLost, loc
   type ExecutionScope } from './authority.js';
 import type { ExecutionCoordinator } from './coordinator.js';
 import { operationsExecutionWakeupSchema, replaceOperationsExecutionWakeup } from './operations-execution-queue.js';
+import { attachOperationsRestartApproval, prepareOperationsRestartRequest } from './operations-restart-request.js';
 
 export type OperationsExecutionLease = ExecutionScope & Readonly<{ executionId: string; mode: 'dispatch' | 'reconcile' }>;
 
@@ -134,21 +135,51 @@ export class OperationsExecutionCoordinator {
     });
   }
 
-  async prepareDispatch(scope: OperationsExecutionLease) {
+  async prepareDispatch(scope: OperationsExecutionLease, restart?: { credentialSha256: string }) {
+    const credentialSha256 = restart && parseInput(sha256Schema, restart.credentialSha256);
     return this.withLease(scope, async (tx, { execution, task, proposal, diagnosis, reason }) => {
       if (scope.mode !== 'dispatch' || reason !== 'operations_execution_claimed') throw new ExecutionLost();
-      const { frozen } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
+      const { frozen, whiskers } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
+      if (credentialSha256 && frozen.action.kind !== 'restart') throw new DomainError('unsupported_state');
       const [intent] = await tx.insert(operationsExecutionIntents).values({ executionId: execution.id,
         decisionVersion: execution.decisionVersion, proposalFingerprint: execution.proposalFingerprint,
         generation: scope.generation, workerId: scope.workerId, fence: scope.fence }).returning();
       if (!intent) throw new DomainError('unavailable');
       const dispatchReason = 'operations_execution_dispatch_intended';
       await tx.update(runRuntime).set({ reason: dispatchReason }).where(eq(runRuntime.runId, scope.runId));
+      const restartRequest = credentialSha256 ? await prepareOperationsRestartRequest(tx, execution.id, {
+        version: 1, tool: 'restart_container', target: { ...whiskers, containerId: frozen.target.containerId }, credentialSha256,
+      }) : undefined;
       await appendEvent(tx, task, 'task.operations_execution_dispatch_intended', 'running', {
         workerId: scope.workerId, reason: dispatchReason,
         operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: scope.fence },
       });
-      return { intent, proposal: frozen };
+      return { intent, proposal: frozen, ...(restartRequest ? { restartRequest } : {}) };
+    });
+  }
+
+  async pauseForRestartApproval(scope: OperationsExecutionLease, raw: unknown) {
+    const approval = parseInput(operationsRestartApprovalInputSchema, raw);
+    return this.withLease(scope, async (tx, { execution, schedule, task, reason, diagnosis, proposal }) => {
+      if (scope.mode !== 'dispatch' || reason !== 'operations_execution_dispatch_intended') throw new ExecutionLost();
+      let canAwaitApproval = true;
+      try { await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion); }
+      catch (error) {
+        if (!(error instanceof DomainError)) throw error;
+        canAwaitApproval = false;
+      }
+      const recorded = await attachOperationsRestartApproval(tx, execution.id, approval);
+      const pauseReason = canAwaitApproval ? 'operations_execution_native_approval' : 'operations_execution_reconciling';
+      const pauseState = canAwaitApproval ? 'waiting_approval' : 'reconciling';
+      await tx.update(runRuntime).set({ reason: pauseReason }).where(eq(runRuntime.runId, scope.runId));
+      await appendEvent(tx, task, 'task.operations_execution_native_approval', pauseState, {
+        workerId: scope.workerId, reason: pauseReason,
+        operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: scope.fence,
+          nativeApprovalId: approval.approvalId, nativeCallSha256: approval.callSha256 },
+      });
+      if (!canAwaitApproval) await replaceOperationsExecutionWakeup(tx, this.coordinator.database, schedule, task.generation);
+      await clearSlot(tx);
+      return recorded;
     });
   }
 

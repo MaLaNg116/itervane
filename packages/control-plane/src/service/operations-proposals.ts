@@ -55,7 +55,7 @@ export async function readOperationsProposalBasis(tx: Transaction, task: typeof 
   }
   // The database timestamp anchors the window to the diagnosis, including across Worker clocks or request retries.
   const validUntil = new Date(diagnosis.recordedAt.getTime() + target.approvalTtlSeconds * 1_000);
-  return { run, environmentId, validUntil, document: {
+  return { run, environmentId, validUntil, whiskers: target.whiskers, document: {
     version: 1 as const, diagnosis: { taskId: task.id, runId: run.id, sha256: diagnosis.sha256, observedAt },
     target: request.document, targetProofSha256: target.proofSha256, action, validUntil: validUntil.toISOString(),
   } };

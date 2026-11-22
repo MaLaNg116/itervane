@@ -1,9 +1,7 @@
-import { operationsLogTailLines, operationsMetricPeriod, sha256Schema, whiskersEndpointSchema } from '@itervane/contracts';
+import { operationsLogTailLines, operationsMetricPeriod, type WhiskersContainerBinding } from '@itervane/contracts';
 import { Client, StreamableHTTPClientTransport, type CallToolResult } from '@modelcontextprotocol/client';
-import type { z } from 'zod';
 
-export const whiskersContainerBindingSchema = whiskersEndpointSchema.extend({ containerId: sha256Schema });
-export type WhiskersContainerBinding = z.output<typeof whiskersContainerBindingSchema>;
+export { whiskersContainerBindingSchema, type WhiskersContainerBinding } from '@itervane/contracts';
 export type WhiskersMcpFailure = 'binding' | 'timeout' | 'transport' | 'response';
 export type WhiskersReadTool = 'get_container_details' | 'get_container_logs' | 'get_container_metrics';
 type Tool = WhiskersReadTool | 'restart_container';

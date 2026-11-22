@@ -6,6 +6,7 @@ import type { OperationsEnrollmentScope } from '../config.js';
 import type { Database } from '../persistence/database.js';
 import { operationsDecisions, operationsExecutions, operationsProposals, operationsRequests, tasks } from '../persistence/schema.js';
 import { closeUndispatchedOperationsExecution } from '../runtime/operations-execution-queue.js';
+import { reconcileWithdrawnRestart } from '../runtime/operations-restart-request.js';
 import { isHumanWorkspaceOwner, requireActor, requireProjectAccess, requireStoredActor } from './access.js';
 import { lockEnvironmentForEffect } from './environment-effects.js';
 import { DomainError, parseInput } from './errors.js';
@@ -67,6 +68,7 @@ export class OperationsDecisionService {
         const [closed] = await tx.select({ id: operationsExecutions.id }).from(operationsExecutions)
           .where(and(eq(operationsExecutions.proposalId, proposalId), eq(operationsExecutions.blockedReason, 'approval_revoked')));
         if (closed) await closeUndispatchedOperationsExecution(tx, this.database, closed.id, 'approval_revoked', actor.principalId);
+        else await reconcileWithdrawnRestart(tx, this.database, proposalId, actor.principalId);
       }
       return { taskId: task.id, decision, replayed: false };
     });
