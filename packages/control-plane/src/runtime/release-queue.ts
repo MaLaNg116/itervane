@@ -5,12 +5,15 @@ import { fromDrizzle } from 'pg-boss';
 import { formalReleaseQueue, releaseFixtureQueue, type Database } from '../persistence/database.js';
 import { environments, formalReleaseSteps, releaseCandidates, releaseOperations, runRuntime, taskEvents } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
+import { lockEnvironmentForEffect, requireNoOperationsHold } from '../service/environment-effects.js';
 import { DomainError } from '../service/errors.js';
 import { appendEvent, type TaskRow } from './authority.js';
 
 export async function enqueueReleaseOperation(tx: Transaction, database: Database, queue: typeof releaseFixtureQueue | typeof formalReleaseQueue, scope: {
   candidateId: string; environmentId: string; approvalVersion: number;
 }) {
+  await lockEnvironmentForEffect(tx, scope.environmentId);
+  await requireNoOperationsHold(tx, scope.environmentId);
   const id = randomUUID();
   await tx.insert(releaseOperations).values({
     id, ...scope, wakeupJobId: queue === formalReleaseQueue ? id : null,
