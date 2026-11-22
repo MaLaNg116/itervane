@@ -2894,9 +2894,15 @@ it.each(['operations', 'release', 'concurrent'] as const)('serializes a real que
   if (first === 'operations') {
     await action.reserve();
     await expect(publication.confirm()).rejects.toMatchObject({ code: 'conflict' });
-    await expect(database.storage.db.insert(releaseOperations).values({ id: randomUUID(), candidateId: publication.candidateId,
-      environmentId: action.proposal.environmentId, approvalVersion: 1 })).rejects
-      .toMatchObject({ cause: { code: '23514', message: 'release_environment_reserved_by_operations' } });
+    // Include a valid decision so the database reaches the environment guard after its approval checks.
+    await expect(database.storage.db.transaction(async tx => {
+      const [owner] = await tx.select().from(workspaceMembers);
+      if (!owner) throw new Error('Missing fixture owner');
+      await tx.insert(releaseDecisions).values({ candidateId: publication.candidateId, version: 1, action: 'confirm',
+        actorId: owner.principalId, grantId: owner.grantId, idempotencyKey: randomUUID(), selfConfirmed: true, decidedAt: new Date() });
+      await tx.insert(releaseOperations).values({ id: randomUUID(), candidateId: publication.candidateId,
+        environmentId: action.proposal.environmentId, approvalVersion: 1 });
+    })).rejects.toMatchObject({ cause: { code: '23514', message: 'release_environment_reserved_by_operations' } });
     expect(await database.storage.db.select().from(releaseDecisions).where(eq(releaseDecisions.candidateId, publication.candidateId))).toEqual([]);
     await action.decide('revoke');
     expect(await publication.confirm()).toMatchObject({ operationId: expect.any(String) });
@@ -3001,7 +3007,8 @@ it('serializes competing owner decisions for a proposal submitted by a project m
     decisions.decide(owner, proposal.id, { ...input, action: 'reject', idempotencyKey: randomUUID() }),
   ]);
   expect(attempts).toEqual(expect.arrayContaining([
-    expect.objectContaining({ status: 'fulfilled', value: { replayed: false, decision: expect.objectContaining({ version: 1, selfConfirmed: false }) } }),
+    expect.objectContaining({ status: 'fulfilled', value: { taskId: task.id, replayed: false,
+      decision: expect.objectContaining({ version: 1, selfConfirmed: false }) } }),
     expect.objectContaining({ status: 'rejected', reason: expect.objectContaining({ code: 'version_conflict' }) }),
   ]));
   const before = (await database.storage.db.select().from(operationsDecisions)).at(0);
