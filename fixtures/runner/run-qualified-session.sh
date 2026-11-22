@@ -17,7 +17,7 @@ node=$(command -v node)
 case "$scenario" in
   regression) features=(--enable-repair --enable-verification) ;;
   standard-build) features=(--enable-verification --enable-standard-build --enable-standard-baseline) ;;
-  standard-oci|protected-release|protected-release-npm|protected-release-drift|protected-release-faults|protected-release-operations|protected-release-restore)
+  standard-oci|protected-release|protected-release-npm|protected-release-drift|protected-release-faults|protected-release-operations|protected-release-restore|protected-release-restore-authorization)
     artifacts="$directory/artifacts"
     sudo -n install -d -m 0700 -o "$runner" -g "$runner" "$artifacts"
     features=(--enable-repair --enable-verification --enable-standard-build --enable-standard-baseline --enable-standard-oci --artifact-store "$artifacts")
@@ -171,7 +171,7 @@ if [[ "$scenario" == protected-release-operations ]]; then
     --outfile=.reports/p0/qualified-restart-worker.mjs
   sudo -n install -m 0444 .reports/p0/qualified-restart-worker.mjs "$shared/restart-worker.mjs"
 fi
-if [[ "$scenario" == protected-release-restore ]]; then
+if [[ "$scenario" == protected-release-restore* ]]; then
   pnpm exec esbuild packages/control-plane/src/entries/restore-worker.ts --bundle --platform=node --format=esm --target=node24 \
     '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
     --outfile=.reports/p0/qualified-restore-worker.mjs
@@ -238,7 +238,7 @@ PY
     check_archive faults.health.after "${archive_reports[0]}"
     archive_reports+=("$reports/runner-faults-oci-artifact.json")
     check_archive faults.identity.after "${archive_reports[1]}"
-  elif [[ "$scenario" == protected-release-restore ]]; then
+  elif [[ "$scenario" == protected-release-restore* ]]; then
     check_archive dualVersion.first.build "${archive_reports[0]}"
     archive_reports+=("$reports/runner-restore-oci-artifact.json")
     check_archive dualVersion.second.build "${archive_reports[1]}"

@@ -70,7 +70,7 @@ async function submitRestore({ db, diagnosis, diagnosisSha256, current, previous
   return { executionId, approvedBy, proposal, runId: queued.execution.runId };
 }
 
-async function waitForRestore({ diagnosis, request }: NativeRestoreInput, executionId: string, expected: 'succeeded' | 'needs_human') {
+async function waitForRestore({ diagnosis, request }: NativeRestoreInput, executionId: string, expected: 'succeeded' | 'needs_human' | 'cancelled') {
   const deadline = performance.now() + 90_000;
   while (performance.now() < deadline) {
     const view = operationsRestoreExecutionViewSchema.parse(await request(receiptPath(diagnosis), { portal: true }));
@@ -123,14 +123,19 @@ async function interruptRestoreSender(input: NativeRestoreInput, interruption: R
 
 async function interruptBeforeReconciliation(input: NativeRestoreInput, queued: Awaited<ReturnType<typeof submitRestore>>,
   interruption: RestoreInterruption) {
-  const { db, request } = input;
-  const { executionId, proposal, runId } = queued;
+  const { db } = input;
+  const { executionId, runId } = queued;
   const applied = await interruptRestoreSender(input, interruption, 'restore_reconcile', runId);
   const [dispatch] = (await db.admin.query<{ receipt: unknown; worker_id: string; fence: number }>(`
     SELECT receipt, worker_id, fence FROM itervane.operations_restore_steps
     WHERE execution_id=$1 AND kind='deploy' AND recorded_at IS NOT NULL`, [executionId])).rows;
   ok(dispatch);
   const { updateId } = releaseKomodoUpdateSchema.parse(dispatch.receipt);
+  await revokeRestoreApproval(input, queued.proposal);
+  return { applied, updateId, sender: dispatch.worker_id, sendFence: dispatch.fence };
+}
+
+async function revokeRestoreApproval({ request }: NativeRestoreInput, proposal: Awaited<ReturnType<typeof submitRestore>>['proposal']) {
   const decisionPath = `/v1/operations/proposals/${proposal.id}/decisions`;
   const revoked = operationsProposalViewSchema.parse(await request(decisionPath, { portal: true, payload: {
     action: 'revoke', expectedVersion: 1, fingerprint: proposal.fingerprint, idempotencyKey: randomUUID(),
@@ -139,7 +144,6 @@ async function interruptBeforeReconciliation(input: NativeRestoreInput, queued: 
   equal(revoked.proposal?.decisions.at(-1)?.action, 'revoke');
   await request(`/v1/operations/proposals/${proposal.id}/restore`, { portal: true,
     payload: { fingerprint: proposal.fingerprint, decisionVersion: 1 }, status: 409 });
-  return { applied, updateId, sender: dispatch.worker_id, sendFence: dispatch.fence };
 }
 
 export async function proveNativeRestore(input: NativeRestoreInput, interruption?: RestoreInterruption) {
@@ -277,4 +281,53 @@ export async function proveInterruptedNativeRestore(input: NativeRestoreInput & 
     sendFence: record.send_fence, readFence: record.read_fence, sendSteps: record.sends,
     reason: 'missing_update', acknowledgementMissing: true, changedWorker: true, matchingRuntimeBeforeAndAfter: true,
     environmentHeld: view.execution.environmentHeld, publicationBlocked: true, slotReleased: true, httpMcpAgreement: true };
+}
+
+type RestoreDenial = { kind: 'revoked' | 'expired' } | { kind: 'target_changed'; startOriginal: () => Promise<void> };
+
+export async function proveDeniedNativeRestore(input: NativeRestoreInput, denial: RestoreDenial) {
+  const { db, request, current, previous, startWorker } = input;
+  const { executionId, proposal } = await submitRestore(input);
+  if (denial.kind === 'revoked') {
+    await revokeRestoreApproval(input, proposal);
+  } else {
+    if (denial.kind === 'target_changed') {
+      await denial.startOriginal();
+    } else {
+      const [ttl] = (await db.admin.query<{ remaining_ms: number }>(`
+        SELECT greatest(0, ceil(extract(epoch FROM (valid_until - clock_timestamp())) * 1000))::int AS remaining_ms
+        FROM itervane.operations_proposals WHERE id=$1`, [proposal.id])).rows;
+      ok(ttl && ttl.remaining_ms <= 60_000);
+      await delay(ttl.remaining_ms + 100);
+      await request(`/v1/operations/proposals/${proposal.id}/restore`, { portal: true,
+        payload: { fingerprint: proposal.fingerprint, decisionVersion: 1 }, status: 409 });
+    }
+    await startWorker();
+  }
+  const result = await waitForRestore(input, executionId, denial.kind === 'revoked' ? 'cancelled' : 'needs_human');
+  const held = denial.kind === 'target_changed';
+  const blockedReason = denial.kind === 'revoked' ? 'approval_revoked' : denial.kind === 'expired' ? 'proposal_expired' : null;
+  const { execution } = result;
+  const manualReason = execution.recovery?.failure ?? null;
+  equal(result.action, null);
+  equal(execution.nativeUpdateId, null);
+  equal(execution.releaseOperationId, current.operationId);
+  deepStrictEqual(execution.restore, summary(previous));
+  equal(execution.environmentHeld, held);
+  deepStrictEqual(execution.recovery, held ? { state: 'manual_review', failure: 'missing_update', proof: null } : null);
+
+  const { rows } = await db.admin.query(`
+    SELECT effect.state, effect.blocked_reason, schedule.wakeup_job_id,
+      (SELECT count(*)::int FROM itervane.operations_execution_intents WHERE execution_id=effect.id) AS intents,
+      (SELECT count(*)::int FROM itervane.operations_restore_steps WHERE execution_id=effect.id) AS writes,
+      (SELECT task_id FROM itervane.execution_slot WHERE id=1) AS slot_task
+    FROM itervane.operations_executions effect
+    JOIN itervane.operations_execution_schedules schedule ON schedule.execution_id=effect.id
+    WHERE effect.id=$1`, [executionId]);
+  deepStrictEqual(rows, [{ state: held ? 'reserved' : 'blocked', blocked_reason: blockedReason,
+    wakeup_job_id: null, intents: held ? 1 : 0, writes: 0, slot_task: null }]);
+  await compareLocalizedReceipts(input, result);
+  return { executionId, outcome: denial.kind, currentOperationId: current.operationId, requestedOperationId: previous.operationId,
+    state: execution.state, blockedReason, manualReason,
+    writes: 0, environmentHeld: held, slotReleased: true, httpMcpAgreement: true };
 }

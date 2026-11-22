@@ -55,7 +55,7 @@ import type { KomodoInterruption, runKomodoReleaseFixture } from './komodo-relea
 import type { RegistryImportMarker } from './release-recovery.js';
 import { temporaryRegistry } from './registry-fixture.js';
 import { openProtectedIngress } from './protected-ingress.js';
-import { proveInterruptedNativeRestore, proveNativeRestore } from './restore-proof.js';
+import { proveDeniedNativeRestore, proveInterruptedNativeRestore, proveNativeRestore } from './restore-proof.js';
 import { proveNativeRestart, type DiagnosisHttp, type DiagnosisReaders } from './restart-proof.js';
 
 type NativeDiagnosisPublication = {
@@ -308,7 +308,8 @@ async function probe() {
   const driftRun = buildMode === 'protected-release-drift';
   const faultRun = buildMode === 'protected-release-faults';
   const operationsRun = buildMode === 'protected-release-operations';
-  const restoreRun = buildMode === 'protected-release-restore';
+  const restoreAuthorityRun = buildMode === 'protected-release-restore-authorization';
+  const restoreRun = buildMode === 'protected-release-restore' || restoreAuthorityRun;
   const protectedRun = buildMode === 'protected-release' || dependencyRun || driftRun || faultRun || operationsRun || restoreRun;
   const ociRun = buildMode === 'standard-oci' || protectedRun;
   const buildRun = buildMode === 'standard-build' || buildMode === 'standard-build-missing-cache' || ociRun;
@@ -641,6 +642,7 @@ async function probe() {
           environmentId: environment.id, ...target.binding, imageRepository: 'testing/standard', registryOrigin: registry.origin,
           verificationProfileSha256: verificationProfileFingerprint(automaticProfile), rolloutCheckSha256, rolloutCheck: ingress.check,
           recoveryPlanSha256: sha256('native protected release recovery plan'),
+          ...(restoreAuthorityRun ? { approvalTtlSeconds: 60 } : {}),
         };
         const mapping = await registerReleaseTarget(db.storage, targetSettings);
 
@@ -1105,10 +1107,44 @@ async function probe() {
             const baseline = await reader.inspectStoppedRuntime(boundTarget, second.report, target.endpoint.network, authorizeRead);
             equal(baseline.state, 'exited');
             equal(baseline.containerId, stopped.containerId);
-
-            const { accepted, ...stoppedDiagnosis } = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, {
+            const stoppedPublication = {
               taskId: second.report.taskId, operationId: second.report.operationId, containerId: stopped.containerId,
-            }, {
+            };
+
+            if (restoreAuthorityRun) {
+              const proveDenied = async (kind: 'revoked' | 'expired' | 'target_changed') => {
+                const result = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, stoppedPublication, {
+                  kind: 'rollback', previousOperationId: first.report.operationId,
+                  verify(diagnosis, diagnosisSha256, readers) {
+                    phase = `operations_native_restore_denied_${kind}`;
+                    return proveDeniedNativeRestore({ db, diagnosis, diagnosisSha256, current: second.proof, previous: first.proof,
+                      ...readers, startWorker: startRestoreProcess,
+                    }, kind === 'target_changed' ? {
+                      kind, async startOriginal() {
+                        await target.setOwnedContainerRunning(true, { containerId: stopped.containerId, reference: stopped.imageReference,
+                          configDigest: stopped.configDigest });
+                        equal((await observeApplied(second.proof)).containerId, stopped.containerId);
+                      },
+                    } : { kind });
+                  },
+                });
+                ok(result.accepted);
+                if (kind !== 'revoked') await stopRestoreProcess('TERM');
+                const live = await reader.inspectTarget(boundTarget, authorizeRead);
+                equal(live.imageReference, stopped.imageReference);
+                if (kind === 'target_changed') equal((await observeApplied(second.proof)).containerId, stopped.containerId);
+                else deepStrictEqual(await reader.inspectStoppedRuntime(boundTarget, second.report, target.endpoint.network, authorizeRead), baseline);
+                return { ...result.accepted, diagnosisRunId: result.runId, originalContainerRetained: true };
+              };
+              const revoked = await proveDenied('revoked');
+              const expired = await proveDenied('expired');
+              const targetChanged = await proveDenied('target_changed');
+              const anonymous = await ingress.anonymousHealthStatus();
+              ok(anonymous === 401 || anonymous === 403);
+              return { authorization: { revoked, expired, targetChanged, anonymousStatus: anonymous, distinctKomodoReader: true } };
+            }
+
+            const { accepted, ...stoppedDiagnosis } = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, stoppedPublication, {
               kind: 'rollback', previousOperationId: first.report.operationId,
               verify(diagnosis, diagnosisSha256, readers) {
                 phase = 'operations_native_restore_submission';
@@ -1175,9 +1211,9 @@ async function probe() {
             ok(interrupted.accepted);
             await stopRestoreProcess('TERM');
             notEqual(interrupted.runId, recorded.runId);
-            return { ...accepted.report, distinctKomodoReader: true, stoppedState: baseline.state, stoppedDiagnosis, postRestoreDiagnosis,
+            return { restoration: { ...accepted.report, distinctKomodoReader: true, stoppedState: baseline.state, stoppedDiagnosis, postRestoreDiagnosis,
               recordedTakeover: { ...settled.report, diagnosisRunId: recorded.runId, diagnosisRestoreExecutionId: recorded.restoreExecutionId },
-              interruption: { ...interrupted.accepted, diagnosisRunId: interrupted.runId, diagnosisRestoreExecutionId: interrupted.restoreExecutionId } };
+              interruption: { ...interrupted.accepted, diagnosisRunId: interrupted.runId, diagnosisRestoreExecutionId: interrupted.restoreExecutionId } } };
           } finally {
             try { await worker?.stop('TERM'); worker = undefined; }
             finally { await native.close(); }
@@ -1214,20 +1250,28 @@ async function probe() {
           equal(latest.previous.releaseOperationId, first.report.operationId);
           equal(latest.previous.manifestDigest, first.report.manifestDigest);
 
-          const restoration = await verifyNativeRestore(second);
+          const { restoration, authorization } = await verifyNativeRestore(second);
           const restored = await history();
           equal(restored.releaseOperationId, second.report.operationId);
-          ok('restoreExecutionId' in restored);
-          equal(restored.restoreExecutionId, restoration.recordedTakeover.executionId);
-          equal(restored.containerId, restoration.recordedTakeover.restoredContainerId);
-          equal(restored.updateId, restoration.recordedTakeover.updateId);
           equal(restored.previous?.releaseOperationId, first.report.operationId);
+          if (restoration) {
+            ok('restoreExecutionId' in restored);
+            equal(restored.restoreExecutionId, restoration.recordedTakeover.executionId);
+            equal(restored.containerId, restoration.recordedTakeover.restoredContainerId);
+            equal(restored.updateId, restoration.recordedTakeover.updateId);
+          } else {
+            ok(authorization);
+            equal(restored.containerId, second.proof.runtime.containerId);
+            equal(restored.updateId, second.proof.update.updateId);
+          }
           await assertDrained(controllerUid, staging);
           return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, release: first.report,
             dualVersion: { first: { release: first.report, build: after }, second: { release: second.report, build: next.after },
               currentOperationId: latest.releaseOperationId, previousOperationId: latest.previous.releaseOperationId,
               applicationId: application.id, environmentId: environment.id, mappingSha256: mapping.fingerprint,
-              sameTarget: true, sameProtectedIngress: true }, restoration: { ...restoration, whiskersCleanup: true } };
+              sameTarget: true, sameProtectedIngress: true },
+            ...(restoration ? { restoration: { ...restoration, whiskersCleanup: true } }
+              : { restoreAuthorization: { ...authorization, whiskersCleanup: true } }) };
         }
 
         const verifyNativeObservation = async () => {

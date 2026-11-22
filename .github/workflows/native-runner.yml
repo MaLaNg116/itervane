@@ -51,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm, protected-release-drift, protected-release-faults, protected-release-operations, protected-release-restore]
+        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm, protected-release-drift, protected-release-faults, protected-release-operations, protected-release-restore, protected-release-restore-authorization]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -207,7 +207,7 @@ jobs:
           if [[ "$NATIVE_SCENARIO" == protected-release-npm ]]; then
             jq -e '.release.repairCategory == "npm_dependency" and .dependency.advisoryId != null' "$report" >/dev/null
           fi
-          if [[ "$NATIVE_SCENARIO" == protected-release-restore ]]; then
+          if [[ "$NATIVE_SCENARIO" == protected-release-restore* ]]; then
             jq -e '.dualVersion as $versions | $versions.first.release as $first | $versions.second.release as $second |
               $versions.sameTarget and $versions.sameProtectedIngress and
               $versions.currentOperationId == $second.operationId and $versions.previousOperationId == $first.operationId and
@@ -216,6 +216,20 @@ jobs:
               $first.configDigest != $second.configDigest and
               ([$first, $second] | all(.healthStatus == 200 and (.anonymousStatus == 401 or .anonymousStatus == 403) and
                 .httpMcpAgreement and .approvalDeniedWithoutPortal))' "$report" >/dev/null
+          fi
+          if [[ "$NATIVE_SCENARIO" == protected-release-restore-authorization ]]; then
+            jq -e '.dualVersion.first.release as $first | .dualVersion.second.release as $second | .restoreAuthorization as $cases |
+              $cases.distinctKomodoReader and $cases.whiskersCleanup and ($cases.anonymousStatus == 401 or $cases.anonymousStatus == 403) and
+              $cases.revoked.state == "cancelled" and $cases.revoked.blockedReason == "approval_revoked" and
+              ($cases.revoked.environmentHeld == false) and $cases.expired.state == "needs_human" and
+              $cases.expired.blockedReason == "proposal_expired" and ($cases.expired.environmentHeld == false) and
+              $cases.targetChanged.state == "needs_human" and $cases.targetChanged.manualReason == "missing_update" and $cases.targetChanged.environmentHeld and
+              ([$cases.revoked, $cases.expired, $cases.targetChanged] |
+                (map(.executionId) | unique | length) == 3 and (map(.diagnosisRunId) | unique | length) == 3 and
+                all(.currentOperationId == $second.operationId and .requestedOperationId == $first.operationId and
+                  .writes == 0 and .originalContainerRetained and .slotReleased and .httpMcpAgreement))' "$report" >/dev/null
+          fi
+          if [[ "$NATIVE_SCENARIO" == protected-release-restore ]]; then
             jq -e '.dualVersion.first.release as $first | .dualVersion.second.release as $second | .restoration as $restored |
               $restored.stoppedState == "exited" and $restored.currentOperationId == $second.operationId and
               $restored.restoredOperationId == $first.operationId and $restored.restoredVersion == $first.version and
