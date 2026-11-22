@@ -8,7 +8,7 @@ on:
       - 'fixtures/whiskers/**'
       - 'fixtures/komodo/Dockerfile'
       - 'packages/portal/test/native/whiskers*.ts'
-      - 'packages/control-plane/src/runtime/whiskers-observation.ts'
+      - 'packages/control-plane/src/runtime/whiskers-*.ts'
       - 'packages/contracts/src/operations.ts'
       - 'packages/contracts/src/primitives.ts'
       - 'packages/verification/src/native/whiskers.ts'
@@ -43,11 +43,12 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Verify bound observations and an approved native restart
         run: pnpm probe:whiskers
-      - name: Require real read-only observation evidence
+      - name: Require native confirmation and observation evidence
         run: |
           jq -e '.status == "passed" and
             ([.checks[] | select(.status == "passed") | .id] |
-              contains(["bound-observe-running", "bound-observe-stopped", "bound-observe-unknown", "bound-observe-timeout",
+              contains(["pending", "approved", "binding", "applied", "consumed", "audit",
+                "bound-observe-running", "bound-observe-stopped", "bound-observe-unknown", "bound-observe-timeout",
                 "bound-log-signals", "bound-metrics-present", "bound-metrics-unavailable", "clean"]))' \
               .reports/p0/whiskers-native.json >/dev/null
       - name: Retain sanitized Whiskers evidence
