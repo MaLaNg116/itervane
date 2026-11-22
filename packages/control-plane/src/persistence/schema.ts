@@ -4,7 +4,7 @@ import {
   agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairInput, type FormalRepairResult, type FormalRepairRetry,
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
-  type OperationsRequestBinding, type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt,
+  type OperationsObservationReceipt, type OperationsRequestBinding, type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt,
   type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
   type ReleaseKomodoCompletion, type ReleaseKomodoConfiguration, type ReleaseKomodoIntent, type ReleaseRolloutFailure, type ReleaseRolloutProof,
@@ -501,6 +501,14 @@ export const operationsRequests = domain.table('operations_requests', {
     AND ${t.document}->>'environmentId' = ${t.environmentId}::text AND ${t.document}->>'releaseOperationId' = ${t.releaseOperationId}::text
     AND octet_length(${t.document}::text) <= 4096) IS TRUE`),
 ]);
+
+export const operationsObservations = domain.table('operations_observations', {
+  runId: uuid('run_id').primaryKey().references(() => operationsRequests.runId),
+  workerId: uuid('worker_id').notNull(), fence: integer('fence').notNull(), bindingSha256: text('binding_sha256').notNull(),
+  sha256: text('sha256').notNull(), document: jsonb('document').$type<OperationsObservationReceipt>().notNull(), createdAt: createdAt(),
+}, t => [check('operations_observation_binding', sql`(${t.fence} > 0 AND ${t.bindingSha256} ~ '^[a-f0-9]{64}$' AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+  AND ${t.document}->>'version' = '1' AND ${t.document}->>'runId' = ${t.runId}::text AND ${t.document}->>'fence' = ${t.fence}::text
+  AND ${t.document}->>'bindingSha256' = ${t.bindingSha256} AND octet_length(${t.document}::text) <= 4096) IS TRUE`)]);
 
 export const formalReleaseSteps = domain.table('formal_release_steps', {
   operationId: uuid('operation_id').notNull().references(() => releaseOperations.id),

@@ -130,6 +130,12 @@ export const en = {
   'reason.permission_revoked': 'The requesting principal no longer has the required project permission.',
   'operations.task.purpose': 'Diagnose the published application',
   'reason.operations_unavailable': 'The read-only operations workflow is unavailable.',
+  'reason.operations_target_changed': 'The published target or installed operations binding has changed.',
+  'reason.operations_release_busy': 'The environment has a pending release that requires reconciliation.',
+  'reason.operations_timeout': 'The read-only observation timed out.',
+  'reason.operations_invalid_observation': 'The downstream response could not establish the bound container state.',
+  'task.operations_started': 'Read-only operations observation started.',
+  'task.operations_observed': 'The bound container state was recorded.',
   'reason.budget_exhausted': 'The persistent tool budget has been exhausted.', 'reason.cancelled': 'The execution acknowledged cancellation.',
   'reason.cancelled_or_interrupted': 'The execution received a stop signal.', 'reason.execution_error': 'Preflight could not finish and requires investigation.',
   'reason.child_task': 'A linked task must finish before this workflow can continue.', 'reason.tool_denied': 'The requested tool is outside the allowed catalog.',
@@ -275,6 +281,11 @@ export const zhCN: Record<MessageKey, string> = {
   'reason.lease_expired': '上一次执行的租约已过期。', 'reason.expired_cancel': '上一次租约过期后已确认取消。',
   'reason.permission_revoked': '任务提交者已失去所需的项目权限。', 'reason.budget_exhausted': '持久化工具预算已耗尽。',
   'operations.task.purpose': '诊断已发布应用', 'reason.operations_unavailable': '只读运维工作流当前不可用。',
+  'reason.operations_target_changed': '已发布目标或已安装的运维绑定发生变化。',
+  'reason.operations_release_busy': '环境仍有待处理或待核对的发布。',
+  'reason.operations_timeout': '只读观察超时。',
+  'reason.operations_invalid_observation': '下游回执无法确认绑定容器的状态。',
+  'task.operations_started': '已开始只读运维观察。', 'task.operations_observed': '已记录绑定容器的状态。',
   'reason.cancelled': '执行者已确认取消。', 'reason.cancelled_or_interrupted': '执行者收到停止信号。',
   'reason.execution_error': '前置检查未能完成，需要排查。', 'reason.child_task': '此工作流需等待关联任务完成后才能继续。',
   'reason.tool_denied': '请求的工具不在允许目录中。',
@@ -306,7 +317,8 @@ export const taskEventTypes = ['task.accepted', 'task.cancelled', 'task.started'
   'task.release_komodo_update_recorded', 'task.release_komodo_dispatch_observed', 'task.release_komodo_reconciling',
   'task.release_komodo_config_recheck_started', 'task.release_komodo_dispatch_recheck_started',
   'task.release_komodo_manual_review', 'task.release_komodo_awaiting_rollout',
-  'task.release_rollout_claimed', 'task.release_rollout_manual_review', 'task.release_rollout_verified'] as const;
+  'task.release_rollout_claimed', 'task.release_rollout_manual_review', 'task.release_rollout_verified',
+  'task.operations_started', 'task.operations_observed'] as const;
 
 export const eventReasonMessages = {
   runner_unavailable: 'tool.runner_unavailable', lease_expired: 'reason.lease_expired', expired_cancel: 'reason.expired_cancel',
@@ -333,6 +345,8 @@ export const eventReasonMessages = {
   repair_retry_configuration_changed: 'reason.repair_retry_configuration_changed', repair_retry_limit: 'reason.repair_retry_limit',
   permission_revoked: 'reason.permission_revoked', budget_exhausted: 'reason.budget_exhausted', cancelled: 'reason.cancelled',
   operations_unavailable: 'reason.operations_unavailable',
+  operations_target_changed: 'reason.operations_target_changed', operations_release_busy: 'reason.operations_release_busy',
+  operations_timeout: 'reason.operations_timeout', operations_invalid_observation: 'reason.operations_invalid_observation',
   cancelled_or_interrupted: 'reason.cancelled_or_interrupted', execution_error: 'reason.execution_error', child_task: 'reason.child_task',
   'project.describe': 'tool.project_describe', 'source.inspect': 'tool.source_inspect', unsupported: 'reason.tool_denied',
 } as const satisfies Record<string, MessageKey>;

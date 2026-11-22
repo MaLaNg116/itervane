@@ -6,6 +6,7 @@ import { eventReasonMessages, sourceInspectionObservationSchema, sourceInspectio
   type SourceInspectionPauseReason, type StandardVerificationProfile, type ToolResult } from '@itervane/contracts';
 import { queueName, type Database } from '../persistence/database.js';
 import type { runRuntime } from '../persistence/schema.js';
+import type { OperationsInstallation } from '../config.js';
 import { DomainError } from '../service/errors.js';
 import { publishFormalRepair } from '../service/repair-result.js';
 import { readRepairRetry, verificationProfileFingerprint } from '../service/repair-retry.js';
@@ -16,6 +17,7 @@ import { ExecutionCoordinator } from './coordinator.js';
 import { runFormalAudit, type AuditModel } from './formal-audit.js';
 import { runFormalRepair, type FormalRepairOptions } from './formal-repair.js';
 import { runFormalVerification, type FormalVerificationOptions } from './formal-verification.js';
+import { OperationsExecutionError, runOperationsObservation } from './operations-execution.js';
 import { repairPolicyFingerprint } from './repair-execution.js';
 import { ToolGateway } from './tools.js';
 import type { InspectionRunner } from './source-inspection.js';
@@ -50,6 +52,7 @@ export class DurableWorker {
   private readonly auditModel: AuditModel | undefined;
   private readonly repair: FormalRepairOptions | undefined;
   private readonly verification: VerificationOptions | undefined;
+  readonly #operations: OperationsInstallation | undefined;
   private active: Promise<boolean> | undefined;
   private abort: AbortController | undefined;
   private closing = false;
@@ -57,12 +60,13 @@ export class DurableWorker {
 
   constructor(readonly database: Database, connectionString: string,
     options: { leaseSeconds?: number; runner?: InspectionRunner; auditModel?: AuditModel;
-      repair?: FormalRepairOptions; verification?: VerificationOptions } = {}) {
+      repair?: FormalRepairOptions; verification?: VerificationOptions; operations?: OperationsInstallation } = {}) {
     this.coordinator = new ExecutionCoordinator(database, options);
     this.gateway = new ToolGateway(this.coordinator, options.runner);
     this.auditModel = options.auditModel;
     this.repair = options.repair;
     this.verification = options.verification;
+    this.#operations = options.operations;
     if (this.verification && (!options.runner || !options.auditModel)) throw new Error('Incomplete verification Worker');
     const pool = new pg.Pool({ connectionString, max: 2, connectionTimeoutMillis: 3_000, statement_timeout: 5_000, idle_in_transaction_session_timeout: 5_000 });
     pool.on('error', () => console.error(JSON.stringify({ level: 'error', code: 'infrastructure_error', component: 'checkpointer' })));
@@ -81,7 +85,7 @@ export class DurableWorker {
     if (this.closing) return false;
     const [job] = await this.database.boss.fetch(queueName);
     if (!job) return false;
-    const scope = await this.coordinator.claim(job, this.id);
+    const scope = await this.coordinator.claim(job, this.id, this.#operations?.environmentId ?? null);
     if (scope && !this.closing) await this.execute(scope);
     return true;
   }
@@ -95,12 +99,16 @@ export class DurableWorker {
         .finally(() => { heartbeat = undefined; });
     }, this.coordinator.leaseSeconds * 1_000 / 3);
     timer.unref();
-    let phase: 'preflight' | 'audit' | 'repair' | 'verification' = 'preflight';
+    let phase: 'preflight' | 'audit' | 'repair' | 'verification' | 'operations' = 'preflight';
     try {
       const { runtime, retry, role } = await this.coordinator.withLease(scope, async (tx, current) => ({
         runtime: current.runtime, retry: await readRepairRetry(tx, current.task, scope), role: current.run.role,
       }));
-      if (role === 'operations') return await this.coordinator.stop(scope, 'operations_unavailable');
+      if (role === 'operations') {
+        phase = 'operations';
+        if (!this.#operations) return await this.coordinator.stop(scope, 'operations_unavailable');
+        return await runOperationsObservation(this.coordinator, scope, this.#operations, controller.signal);
+      }
       if (retry && (!this.repair || !this.verification || retry.repairPolicySha256 !== repairPolicyFingerprint(this.repair)
           || retry.verificationProfileSha256 !== verificationProfileFingerprint(this.verification.profile))) {
         return await this.coordinator.stop(scope, 'repair_retry_configuration_changed');
@@ -128,7 +136,8 @@ export class DurableWorker {
         const reason = error instanceof BudgetExhausted ? 'budget_exhausted'
           : error instanceof DomainError && ['forbidden', 'not_found'].includes(error.code) ? 'permission_revoked'
           : error instanceof ExecutionLost ? 'cancelled' : controller.signal.aborted ? 'cancelled_or_interrupted'
-          : phase === 'verification' ? 'verification_unavailable'
+          : error instanceof OperationsExecutionError ? error.reason
+          : phase === 'operations' ? 'operations_unavailable' : phase === 'verification' ? 'verification_unavailable'
           : phase === 'repair' ? 'repair_failed' : phase === 'audit' ? 'audit_failed' : 'execution_error';
         try { await this.coordinator.stop(scope, reason, error instanceof ExecutionLost); }
         catch (stopError) { if (!(stopError instanceof ExecutionLost)) throw stopError; }

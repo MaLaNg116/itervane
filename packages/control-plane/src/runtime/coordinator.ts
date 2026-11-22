@@ -10,18 +10,20 @@ import { appendEvent, assertLeaseLive, assignSlot, clearSlot, enqueue, Execution
   type ExecutionScope, type TaskRow } from './authority.js';
 import { recoverClaimedRelease, recoverKomodoLease, recoverRegistryLease } from './release-queue.js';
 
-type Current = { task: TaskRow; run: typeof taskRuns.$inferSelect; runtime: typeof runRuntime.$inferSelect };
+type Current = { task: TaskRow; run: typeof taskRuns.$inferSelect; runtime: typeof runRuntime.$inferSelect;
+  operationsRequest: Awaited<ReturnType<typeof readOperationsRequest>> | undefined };
 
 export async function authorizeRun(tx: Transaction, task: TaskRow, runId: string, role?: Current['run']['role']) {
   const access = await requireProjectAccess(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
   if (role === 'operations') {
-    const { document } = await readOperationsRequest(tx, task, runId);
-    if (document.grantId !== access.grantId) throw new DomainError('forbidden');
+    const operationsRequest = await readOperationsRequest(tx, task, runId);
+    if (operationsRequest.document.grantId !== access.grantId) throw new DomainError('forbidden');
+    return { ...access, operationsRequest };
   } else if (task.generation !== 1) {
     const [retry] = await tx.select({ grantId: formalRepairRetries.grantId }).from(formalRepairRetries).where(eq(formalRepairRetries.runId, runId));
     if (retry && retry.grantId !== access.grantId) throw new DomainError('forbidden');
   }
-  return access;
+  return { ...access, operationsRequest: undefined };
 }
 
 export class ExecutionCoordinator {
@@ -35,8 +37,8 @@ export class ExecutionCoordinator {
     return this.database.db.transaction(async tx => {
       const { slot, task, run, runtime } = await lockExecution(tx, scope, options.allowCancel);
       if (runtime.reason?.startsWith('release_')) throw new ExecutionLost();
-      if (options.authorize !== false) await authorizeRun(tx, task, scope.runId, run.role);
-      const result = await action(tx, { task, run, runtime });
+      const access = options.authorize === false ? undefined : await authorizeRun(tx, task, scope.runId, run.role);
+      const result = await action(tx, { task, run, runtime, operationsRequest: access?.operationsRequest });
       await assertLeaseLive(tx, slot.leaseUntil);
       return result;
     });
@@ -64,7 +66,7 @@ export class ExecutionCoordinator {
     await clearSlot(tx);
   }
 
-  async claim(job: Job<unknown>, workerId: string): Promise<ExecutionScope | null> {
+  async claim(job: Job<unknown>, workerId: string, operationsEnvironmentId: string | null = null): Promise<ExecutionScope | null> {
     idSchema.parse(workerId);
     const parsed = wakeupSchema.safeParse(job.data);
     return this.database.db.transaction(async tx => {
@@ -82,16 +84,20 @@ export class ExecutionCoordinator {
       if (slot.taskId) {
         await settle(); await enqueue(tx, this.database, task, run.id, true); return null;
       }
-      try { await authorizeRun(tx, task, run.id, run.role); }
+      let access: Awaited<ReturnType<typeof authorizeRun>>;
+      try { access = await authorizeRun(tx, task, run.id, run.role); }
       catch (error) {
         if (!(error instanceof DomainError)) throw error;
         await appendEvent(tx, task, 'task.needs_human', 'needs_human', { workerId,
           reason: error.code === 'unsupported_state' && run.role === 'operations' ? 'operations_unavailable' : 'permission_revoked' });
         await settle(); return null;
       }
+      if (access.operationsRequest && access.operationsRequest.document.environmentId !== operationsEnvironmentId) {
+        await settle(); await enqueue(tx, this.database, task, run.id, true); return null;
+      }
       const completed = await settle();
       if (completed.affected !== 1) return null;
-      await appendEvent(tx, task, 'task.started', 'running', { workerId });
+      await appendEvent(tx, task, run.role === 'operations' ? 'task.operations_started' : 'task.started', 'running', { workerId });
       return assignSlot(tx, task, run.id, workerId, this.leaseSeconds);
     });
   }

@@ -1,6 +1,6 @@
 import { posix } from 'node:path';
 import { z } from 'zod';
-import { auditModelProtocolSchema, idSchema, npmUpgradeApprovalsSchema, sha256Schema, standardVerificationProfileSchema } from '@itervane/contracts';
+import { auditModelProtocolSchema, idSchema, npmUpgradeApprovalsSchema, sha256Schema, standardVerificationProfileSchema, whiskersReadKeySchema } from '@itervane/contracts';
 import { safeEndpoint } from '@itervane/model';
 import { sourcePath } from '@itervane/runner';
 import { validateIdentityConfig } from './auth/identity.js';
@@ -43,9 +43,16 @@ function workerRunnerConfig(env: NodeJS.ProcessEnv) {
   }).parse(address) : undefined;
 }
 
+const operationsInstallationSchema = z.strictObject({ environmentId: idSchema, enrollmentSha256: sha256Schema, readKey: whiskersReadKeySchema });
+export type OperationsInstallation = Readonly<z.infer<typeof operationsInstallationSchema>>;
+
 export function workerConfig(env: NodeJS.ProcessEnv = process.env) {
   const worker = sharedWorkerConfig(env);
   const runner = workerRunnerConfig(env);
+  const operationsSettings = { environmentId: env.ITERVANE_OPERATIONS_ENVIRONMENT_ID,
+    enrollmentSha256: env.ITERVANE_OPERATIONS_ENROLLMENT_SHA256, readKey: env.ITERVANE_OPERATIONS_WHISKERS_READ_KEY };
+  const operations = Object.values(operationsSettings).some(value => value !== undefined)
+    ? operationsInstallationSchema.parse(operationsSettings) : undefined;
   const selected = env.ITERVANE_AUDIT_MODEL_PROVIDER;
   const repairEnabled = z.enum(['0', '1']).parse(env.ITERVANE_FORMAL_REPAIR ?? '0') === '1';
   if (repairEnabled && (!runner || !selected)) throw new Error('Formal repair requires a qualified Runner and a configured model');
@@ -59,7 +66,7 @@ export function workerConfig(env: NodeJS.ProcessEnv = process.env) {
   if (verificationProfile && (!selected || runner?.imageSha256 !== verificationProfile.runnerImageSha256)) {
     throw new Error('Formal verification requires a configured model and the same qualified Runner image');
   }
-  const options = { ...worker, runner, repairProtectedPaths, npmRepairApprovals, verificationProfile };
+  const options = { ...worker, runner, operations, repairProtectedPaths, npmRepairApprovals, verificationProfile };
   if (selected === undefined) return { ...options, auditModel: undefined };
   const protocol = auditModelProtocolSchema.parse(selected);
   const prefix = protocol === 'anthropic' ? 'ANTHROPIC' : 'OPENAI';
