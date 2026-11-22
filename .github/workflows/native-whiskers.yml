@@ -9,6 +9,7 @@ on:
       - 'fixtures/komodo/Dockerfile'
       - 'packages/portal/test/native/whiskers*.ts'
       - 'packages/control-plane/src/runtime/whiskers-observation.ts'
+      - 'packages/contracts/src/operations.ts'
       - 'packages/contracts/src/primitives.ts'
       - 'packages/verification/src/native/whiskers.ts'
       - 'packages/verification/src/report.ts'
@@ -46,7 +47,8 @@ jobs:
         run: |
           jq -e '.status == "passed" and
             ([.checks[] | select(.status == "passed") | .id] |
-              contains(["bound-observe-running", "bound-observe-stopped", "bound-observe-unknown", "bound-observe-timeout", "clean"]))' \
+              contains(["bound-observe-running", "bound-observe-stopped", "bound-observe-unknown", "bound-observe-timeout",
+                "bound-log-signals", "bound-metrics-present", "bound-metrics-unavailable", "clean"]))' \
               .reports/p0/whiskers-native.json >/dev/null
       - name: Retain sanitized Whiskers evidence
         if: always()

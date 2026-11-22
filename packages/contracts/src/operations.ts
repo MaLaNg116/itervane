@@ -53,6 +53,25 @@ export const whiskersObservationSchema = z.strictObject({
   observedAt: z.iso.datetime({ precision: 3 }),
 });
 
+const scopedObservation = whiskersObservationSchema.pick({ containerId: true, serverId: true, observedAt: true });
+export const operationsLogTailLines = 40;
+const logLineCount = z.int().min(0).max(operationsLogTailLines);
+export const operationsLogObservationSchema = scopedObservation.extend({
+  tailLines: z.literal(operationsLogTailLines), lines: logLineCount,
+  warningLines: logLineCount, errorLines: logLineCount,
+}).refine(report => report.warningLines <= report.lines && report.errorLines <= report.lines, 'Log signals exceed the observed lines');
+
+export const operationsMetricPeriod = '1h';
+const percentage = z.number().min(0).max(100_000);
+const usageSeries = z.strictObject({ average: percentage, maximum: percentage, minimum: percentage })
+  .refine(series => series.minimum <= series.average && series.average <= series.maximum, 'Metrics must be ordered');
+const metricObservation = scopedObservation.extend({ period: z.literal(operationsMetricPeriod) });
+export const operationsMetricObservationSchema = z.discriminatedUnion('status', [
+  metricObservation.extend({ status: z.literal('unavailable'), reason: z.literal('no_samples') }),
+  metricObservation.extend({ status: z.literal('observed'), cpu: usageSeries, memory: usageSeries.nullable(),
+    dataPoints: z.int().min(1).max(100_000) }),
+]);
+
 export const operationsObservationReceiptSchema = z.strictObject({
   version: z.literal(1), taskId: idSchema, runId: idSchema, releaseOperationId: idSchema,
   bindingSha256: sha256Schema, fence: revision, observation: whiskersObservationSchema,
