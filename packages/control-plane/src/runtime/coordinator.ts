@@ -11,11 +11,11 @@ import { appendEvent, assertLeaseLive, assignSlot, clearSlot, enqueue, Execution
   type ExecutionScope, type TaskRow } from './authority.js';
 import { recoverClaimedRelease, recoverKomodoLease, recoverRegistryLease } from './release-queue.js';
 
-type Current = { task: TaskRow; run: typeof taskRuns.$inferSelect; runtime: typeof runRuntime.$inferSelect;
+export type CurrentExecution = { task: TaskRow; run: typeof taskRuns.$inferSelect; runtime: typeof runRuntime.$inferSelect;
   operationsRequest: Awaited<ReturnType<typeof readOperationsRequest>> | undefined;
   operationsDiagnosis: Awaited<ReturnType<typeof readOperationsDiagnosis>> };
 
-export async function authorizeRun(tx: Transaction, task: TaskRow, runId: string, role?: Current['run']['role']) {
+export async function authorizeRun(tx: Transaction, task: TaskRow, runId: string, role?: CurrentExecution['run']['role']) {
   const access = await requireProjectAccess(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
   if (role === 'operations') {
     const operationsRequest = await readOperationsRequest(tx, task, runId);
@@ -35,7 +35,7 @@ export class ExecutionCoordinator {
     if (!Number.isInteger(this.leaseSeconds) || this.leaseSeconds < 2 || this.leaseSeconds > 60) throw new Error('Invalid lease duration');
   }
 
-  async withLease<T>(scope: ExecutionScope, action: (tx: Transaction, current: Current) => Promise<T>, options: { allowCancel?: boolean; authorize?: boolean } = {}) {
+  async withLease<T>(scope: ExecutionScope, action: (tx: Transaction, current: CurrentExecution) => Promise<T>, options: { allowCancel?: boolean; authorize?: boolean } = {}) {
     return this.database.db.transaction(async tx => {
       const { slot, task, run, runtime } = await lockExecution(tx, scope, options.allowCancel);
       if (runtime.reason?.startsWith('release_')) throw new ExecutionLost();

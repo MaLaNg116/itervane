@@ -7,17 +7,19 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
-import { createFormalVerification } from '@itervane/agent';
+import { createFormalOperations, createFormalVerification } from '@itervane/agent';
 import { admissionDtoSchema, apiErrorSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseTargetSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
   formalVerificationResultSchema, operationsLaunchViewSchema, operationsObservationViewSchema, taskDtoSchema, translate, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
-  type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
+  type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type OperationsDiagnosisObservation, type OperationsDiagnosisSection,
+  type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
 import { canonicalRepairCommand, canonicalRepairObservation, canonicalVerificationCommand, prepareQualifiedVerificationRequest,
   scannerProfiles, sha256, verifyQualifiedVerificationReceipt } from '@itervane/runner';
 import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../verification/src/agent/npm-repair-fixture.js';
+import { scriptedOperations } from '../../../verification/src/agent/operations-fixture.js';
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
@@ -25,7 +27,8 @@ import type { OperationsWorkflowScope } from '../../src/config.js';
 import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
-  operationsDiagnosisInputs, operationsDiagnosisReads, operationsObservations, operationsRequests, principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
+  operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisRuntime, operationsObservations, operationsRequests,
+  principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
@@ -2398,6 +2401,172 @@ async function claimOperations(installed: OperationsWorkflowScope) {
   return coordinator.claim(job, randomUUID(), installed);
 }
 
+async function startDiagnosis() {
+  const fixture = await installedOperationsFixture();
+  const installed = diagnosisInstallation(fixture);
+  const { task } = await fixture.taskService.admitOperations(identity, { ...fixture.scope, locale: 'zh-CN', idempotencyKey: randomUUID() }, installed);
+  const scope = await claimOperations(installed);
+  if (!scope) throw new Error('Expected diagnosis lease');
+  const input = await coordinator.withLease(scope, async (_tx, current) => current.operationsDiagnosis);
+  if (!input) throw new Error('Expected frozen diagnosis input');
+  const operations = { environmentId: installed.environmentId, enrollmentSha256: installed.enrollmentSha256,
+    inputSha256: input.sha256, providerSha256: input.providerSha256 };
+  return { fixture, installed, task, scope, input, operations };
+}
+
+async function reclaimDiagnosis(scope: ExecutionScope, installed: OperationsWorkflowScope) {
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp() - interval '1 second' WHERE run_id=$1 AND fence=$2",
+    [scope.runId, scope.fence]);
+  await database.storage.db.transaction(tx => coordinator.recoverExpired(tx, randomUUID()));
+  const current = await claimOperations(installed);
+  if (!current) throw new Error('Expected recovered diagnosis lease');
+  expect(current).toMatchObject({ runId: scope.runId, fence: scope.fence + 1 });
+  return current;
+}
+
+it('recovers only published diagnosis checkpoints and acknowledged writes after lease loss', async () => {
+  const { scope, installed, operations } = await startDiagnosis();
+  const saver = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+  const replacementSaver = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+  try {
+    const guard = new GuardedCheckpointer(coordinator, scope, saver, { operations });
+    const config = { configurable: { thread_id: `operations:${scope.runId}` } };
+    const preflight = new GuardedCheckpointer(coordinator, scope, saver);
+    const first = emptyCheckpoint();
+    await expect(guard.getTuple({ configurable: { ...config.configurable, checkpoint_id: first.id } })).rejects.toBeInstanceOf(ExecutionLost);
+    await expect(guard.getTuple({ configurable: { thread_id: preflight.threadId } })).rejects.toBeInstanceOf(ExecutionLost);
+    await expect(preflight.getTuple({ configurable: { thread_id: preflight.threadId } })).rejects.toBeInstanceOf(ExecutionLost);
+    expect(await guard.getTuple(config)).toBeUndefined();
+    for (const mismatch of [{ inputSha256: sha256('incorrect diagnosis input') }, { providerSha256: sha256('different model') }]) {
+      const wrong = new GuardedCheckpointer(coordinator, scope, saver, { operations: { ...operations, ...mismatch } });
+      await expect(wrong.getTuple(config)).rejects.toBeInstanceOf(ExecutionLost);
+    }
+    const bound = await guard.put(config, first, { source: 'input', step: -1, parents: {} }, {});
+    const metadata = { source: 'loop', step: 0, parents: {} } as const;
+    await expect(guard.put(bound, first, metadata, {})).rejects.toBeInstanceOf(ExecutionLost);
+    await guard.putWrites(bound, [['reserved', 'container']], 'recorded-node');
+    await saver.putWrites(bound, [['reserved', 'logs']], 'unpublished-node');
+
+    const orphan = emptyCheckpoint();
+    const retiring = new AbortController();
+    const interrupted = new GuardedCheckpointer(coordinator, scope, saver, { operations, signal: retiring.signal });
+    const put = saver.put.bind(saver);
+    const hook = vi.spyOn(saver, 'put').mockImplementationOnce(async (...args) => {
+      const saved = await put(...args);
+      retiring.abort(new Error('Worker retired before pointer publication'));
+      return saved;
+    });
+    try { await expect(interrupted.put(bound, orphan, metadata, {})).rejects.toThrow('Worker retired before pointer publication'); }
+    finally { hook.mockRestore(); }
+    expect((await saver.getTuple({ configurable: { ...config.configurable, checkpoint_id: orphan.id } }))?.checkpoint.id).toBe(orphan.id);
+    expect((await guard.getTuple(config))?.checkpoint.id).toBe(first.id);
+    await expect(guard.getTuple({ configurable: { ...config.configurable, checkpoint_id: orphan.id } })).rejects.toBeInstanceOf(ExecutionLost);
+
+    const recovered = await reclaimDiagnosis(scope, installed);
+    await expect(guard.getTuple(config)).rejects.toBeInstanceOf(ExecutionLost);
+    await expect(guard.put(bound, emptyCheckpoint(), metadata, {})).rejects.toBeInstanceOf(ExecutionLost);
+    await expect(guard.putWrites(bound, [['reserved', 'release']], 'expired-node')).rejects.toBeInstanceOf(ExecutionLost);
+    const pointer = operationsDiagnosisRuntime;
+    await expect(database.storage.db.update(pointer).set({ checkpointId: orphan.id, checkpointStep: 0 }).where(eq(pointer.runId, scope.runId)))
+      .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_diagnosis_pointer_lease_required' } });
+    const replacement = new GuardedCheckpointer(coordinator, recovered, replacementSaver, { operations });
+    const tuple = await replacement.getTuple(config);
+    expect(tuple?.checkpoint.id).toBe(first.id);
+    expect(tuple?.pendingWrites).toEqual([['recorded-node', 'reserved', 'container']]);
+    const next = emptyCheckpoint();
+    await replacement.put(bound, next, metadata, {});
+    expect((await database.storage.db.select().from(pointer)).at(0)).toMatchObject({
+      runId: scope.runId, inputSha256: operations.inputSha256, checkpointId: next.id, checkpointStep: 0,
+      workerId: recovered.workerId, publishedFence: recovered.fence,
+    });
+    await expect(database.storage.db.update(pointer).set({ checkpointId: first.id }).where(eq(pointer.runId, scope.runId)))
+      .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_diagnosis_pointer_regression' } });
+  } finally { await Promise.all([saver.end(), replacementSaver.end()]); }
+});
+
+it.each(['cancel', 'revoke', 'remap'] as const)('denies diagnosis checkpoint reads and writes after %s', async mode => {
+  const { fixture, task, scope, operations } = await startDiagnosis();
+  const saver = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+  try {
+    const guard = new GuardedCheckpointer(coordinator, scope, saver, { operations });
+    const config = { configurable: { thread_id: guard.threadId } };
+    const first = emptyCheckpoint();
+    const bound = await guard.put(config, first, { source: 'input', step: -1, parents: {} }, {});
+    if (mode === 'cancel') {
+      const current = await fixture.taskService.get(identity, task.id);
+      await fixture.taskService.cancel(identity, task.id, { expectedVersion: current.version });
+    } else if (mode === 'revoke') {
+      await database.storage.db.delete(workspaceMembers);
+    } else {
+      await registerOperationsTarget(database.storage, { ...fixture.registration,
+        whiskers: { ...fixture.registration.whiskers, serverId: 'updated-diagnosis-enrollment' } });
+    }
+    const expected = mode === 'revoke' ? { code: 'not_found' }
+      : mode === 'remap' ? { reason: 'operations_target_changed' } : { message: 'execution_lost' };
+    await expect(guard.getTuple(config)).rejects.toMatchObject(expected);
+    await expect(guard.put(bound, emptyCheckpoint(), { source: 'loop', step: 0, parents: {} }, {})).rejects.toMatchObject(expected);
+    await expect(guard.putWrites(bound, [['late', true]], 'expired')).rejects.toMatchObject(expected);
+    expect((await saver.getTuple(config))?.checkpoint.id).toBe(first.id);
+  } finally { await saver.end(); }
+});
+
+it('resumes a diagnosis Agent from its stored evidence and final checkpoint without duplicating observations', async () => {
+  const { fixture, installed, scope, input, operations } = await startDiagnosis();
+  const store = new OperationsEvidenceStore(coordinator, installed);
+  const container = { containerId: fixture.runtime.containerId, serverId: fixture.registration.whiskers.serverId,
+    observedAt: new Date().toISOString(), state: 'running' } as const;
+  const metrics = { containerId: container.containerId, serverId: container.serverId, observedAt: container.observedAt,
+    status: 'observed', period: '1h', dataPoints: 3, cpu: { minimum: 1, average: 3, maximum: 9 },
+    memory: { minimum: 45, average: 92, maximum: 98 } } satisfies Extract<OperationsDiagnosisObservation, { section: 'metrics' }>['result'];
+  const readDownstream = vi.fn(async (execution: ExecutionScope, section: OperationsDiagnosisSection) => {
+    if (section === 'container') return { proofSha256: sha256('frozen container fact'), result: container };
+    if (section === 'metrics') return { proofSha256: sha256('frozen metrics fact'), result: metrics };
+    if (section === 'release') return coordinator.withLease(execution, async (tx, current) =>
+      readOperationsReleaseEvidence(tx, await requireActor(tx, identity), current.operationsRequest!));
+    throw new Error('Unexpected observation');
+  });
+  const model = scriptedOperations();
+  const complete = vi.fn(model.complete);
+  const run = async (execution: ExecutionScope, pauseAfter?: 'decision' | 'reservation') => {
+    const saver = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+    try {
+      return await createFormalOperations({
+        input, serverId: container.serverId, checkpointer: new GuardedCheckpointer(coordinator, execution, saver, { operations }),
+        model: { ...model, complete }, providerSha256: operations.providerSha256,
+        authorize: (_agent, signal) => coordinator.withLease(execution, async () => !signal.aborted),
+        async read({ section, operationId }) {
+          const reserved = await store.reserve(execution, section, operationId);
+          if (reserved.state === 'recorded') return reserved.evidence;
+          const fact = await readDownstream(execution, section);
+          return store.record(execution, operationId, { ...fact, kind: 'operations_section', section });
+        },
+      }).run(pauseAfter ? { pauseAfter } : undefined);
+    } finally { await saver.end(); }
+  };
+  expect(await run(scope, 'decision')).toMatchObject({ status: 'paused', usage: { turns: 1, toolCalls: 0 } });
+  const paused = await run(scope, 'reservation');
+  expect(paused).toMatchObject({ status: 'paused', usage: { turns: 1, toolCalls: 1 } });
+  const operationId = sha256(paused.bindingSha256 + ':1');
+  await store.reserve(scope, 'container', operationId);
+  await store.record(scope, operationId, { ...await readDownstream(scope, 'container'), kind: 'operations_section', section: 'container' });
+  const successor = await reclaimDiagnosis(scope, installed);
+  const completed = await run(successor);
+  expect(completed).toMatchObject({
+    status: 'completed', reason: 'operations_review_complete', checkpointId: expect.any(String), usage: { turns: 4, toolCalls: 3 },
+    formalOperations: { recommendation: { code: 'continue_observation' }, hypotheses: [{ code: 'memory_pressure' }] },
+  });
+  const budget = (await database.storage.db.select().from(runRuntime).where(eq(runRuntime.runId, scope.runId))).at(0);
+  expect(budget).toMatchObject({ checkpointId: null, toolsUsed: 3, maxTools: 4 });
+  expect(readDownstream.mock.calls.map(([, section]) => section)).toEqual(['container', 'metrics', 'release']);
+  expect(complete).toHaveBeenCalledTimes(4);
+  expect(await run(successor)).toEqual(completed);
+  expect(readDownstream).toHaveBeenCalledTimes(3);
+  expect(complete).toHaveBeenCalledTimes(4);
+  expect((await database.storage.db.select().from(operationsDiagnosisRuntime)).at(0)).toMatchObject({
+    checkpointId: completed.checkpointId, workerId: successor.workerId, publishedFence: successor.fence,
+  });
+});
+
 it('freezes diagnostic mode once and admits only a matching operations Worker', async () => {
   const fixture = await installedOperationsFixture();
   const installed = diagnosisInstallation(fixture);
@@ -2466,16 +2635,7 @@ it('reserves one budget per evidence section, replays its record and limits succ
   [original.runId, original.workerId, original.fence, request!.sha256, sha256(JSON.stringify(legacy)), JSON.stringify(legacy)]))
     .rejects.toMatchObject({ code: '23514', message: 'operations_diagnosis_settlement_required' });
 
-  const reclaim = async (scope: ExecutionScope) => {
-    await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp() - interval '1 second' WHERE run_id=$1 AND fence=$2",
-      [scope.runId, scope.fence]);
-    await database.storage.db.transaction(tx => coordinator.recoverExpired(tx, randomUUID()));
-    const current = await claimOperations(installed);
-    if (!current) throw new Error('Expected recovered diagnosis lease');
-    expect(current).toMatchObject({ runId: scope.runId, fence: scope.fence + 1 });
-    return current;
-  };
-  const successor = await reclaim(original);
+  const successor = await reclaimDiagnosis(original, installed);
   await expect(store.record(successor, logsId, logs)).rejects.toBeInstanceOf(ExecutionLost);
   await expect(store.reserve(successor, 'logs', logsId)).resolves.toMatchObject({ state: 'reserved' });
   await expect(store.record(original, logsId, logs)).rejects.toBeInstanceOf(ExecutionLost);
@@ -2487,11 +2647,11 @@ it('reserves one budget per evidence section, replays its record and limits succ
 
   const metricsId = sha256('planned metrics observation');
   await store.reserve(successor, 'metrics', metricsId);
-  const third = await reclaim(successor);
+  const third = await reclaimDiagnosis(successor, installed);
   await expect(store.reserve(third, 'logs', logsId)).resolves.toEqual({ state: 'recorded', evidence: logs });
   await expect(store.reserve(third, 'logs', sha256('different operation'))).rejects.toMatchObject({ code: 'version_conflict' });
   await store.reserve(third, 'metrics', metricsId);
-  const fourth = await reclaim(third);
+  const fourth = await reclaimDiagnosis(third, installed);
   await expect(store.reserve(fourth, 'metrics', metricsId)).rejects.toBeInstanceOf(BudgetExhausted);
   expect(await database.storage.db.select().from(operationsDiagnosisReads)).toEqual(expect.arrayContaining([
     expect.objectContaining({ section: 'logs', state: 'recorded', attempts: 2, fence: successor.fence }),
