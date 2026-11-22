@@ -23,7 +23,7 @@ import { operationsDecision, scriptedOperations } from '../../../verification/sr
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
-import type { OperationsWorkflowScope } from '../../src/config.js';
+import { runtimeConfig, type OperationsWorkflowScope } from '../../src/config.js';
 import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
@@ -3061,18 +3061,26 @@ it('shares one authorized diagnosis across opt-in HTTP and MCP and fences a repl
 
 it('serves the same authorized bilingual diagnosis and facts over HTTP and MCP', async () => {
   const fixture = await installedOperationsFixture();
+  const publishedTaskId = task.id;
   const operations = diagnosisInstallation(fixture);
   const { environmentId, enrollmentSha256, diagnosisProviderSha256 } = operations;
   const publicUrl = 'http://127.0.0.1:4329';
-  const app = createApi(database.storage, { ...issuer.config, publicUrl, operationsApi: {
-    environmentId, enrollmentSha256, diagnosisProviderSha256,
-  } }, { logger: false });
+  const app = createApi(database.storage, runtimeConfig({
+    DATABASE_URL: database.runtimeUrl, ITERVANE_OIDC_ISSUER: issuer.config.issuer, ITERVANE_OIDC_AUDIENCE: issuer.config.audience,
+    ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_OPERATIONS_API_ENABLED: '1', ITERVANE_OPERATIONS_ENVIRONMENT_ID: environmentId,
+    ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollmentSha256, ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: diagnosisProviderSha256,
+  }), { logger: false });
   const auditModel = { adapter: scriptedOperations(), providerSha256: diagnosisProviderSha256 };
   const worker = new DurableWorker(database.storage, database.runtimeUrl, { operations, auditModel, leaseSeconds: 30 });
   const viewer = new Client({ name: 'diagnosis-view-test', version: '0.0.0' });
   try {
+    const headers = { authorization: `Bearer ${await issuer.token('owner')}` };
+    expect((await app.inject({ url: '/v1/capabilities', headers })).json()).toMatchObject({ stage: 'p3-b', operations: true });
+    expect((await app.inject({ url: `/v1/tasks/${publishedTaskId}/operations-option`, headers })).json()).toEqual({
+      option: { ...fixture.scope, releaseOperationId: fixture.operationId, diagnosis: true },
+    });
     const start = await app.inject({ method: 'POST', url: '/v1/operations/diagnoses',
-      headers: { authorization: `Bearer ${await issuer.token('owner')}` },
+      headers,
       payload: { ...fixture.scope, locale: 'zh-CN', idempotencyKey: randomUUID(), expectedReleaseOperationId: fixture.operationId } });
     expect(start.statusCode).toBe(202);
     const { task } = admissionDtoSchema.parse(start.json());

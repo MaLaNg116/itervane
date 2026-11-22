@@ -6,7 +6,7 @@ import { eventReasonMessages, sourceInspectionObservationSchema, sourceInspectio
   type SourceInspectionPauseReason, type StandardVerificationProfile, type ToolResult } from '@itervane/contracts';
 import { queueName, type Database } from '../persistence/database.js';
 import type { runRuntime } from '../persistence/schema.js';
-import type { OperationsInstallation, OperationsWorkflowScope } from '../config.js';
+import type { OperationsInstallation } from '../config.js';
 import { DomainError } from '../service/errors.js';
 import { publishFormalRepair } from '../service/repair-result.js';
 import { readRepairRetry, verificationProfileFingerprint } from '../service/repair-retry.js';
@@ -25,7 +25,6 @@ import type { InspectionRunner } from './source-inspection.js';
 import { prepareFormalVerificationInput } from './verification-input.js';
 
 type VerificationOptions = FormalVerificationOptions & { profile: StandardVerificationProfile };
-type OperationsOptions = OperationsInstallation & OperationsWorkflowScope;
 type PreflightRuntime = Pick<typeof runRuntime.$inferSelect, 'checkpointId' | 'resumeCount' | 'resumePending'>;
 
 const State = Annotation.Root({
@@ -54,7 +53,7 @@ export class DurableWorker {
   private readonly auditModel: AuditModel | undefined;
   private readonly repair: FormalRepairOptions | undefined;
   private readonly verification: VerificationOptions | undefined;
-  readonly #operations: OperationsOptions | undefined;
+  readonly #operations: OperationsInstallation | undefined;
   private active: Promise<boolean> | undefined;
   private abort: AbortController | undefined;
   private closing = false;
@@ -62,7 +61,7 @@ export class DurableWorker {
 
   constructor(readonly database: Database, connectionString: string,
     options: { leaseSeconds?: number; runner?: InspectionRunner; auditModel?: AuditModel;
-      repair?: FormalRepairOptions; verification?: VerificationOptions; operations?: OperationsOptions } = {}) {
+      repair?: FormalRepairOptions; verification?: VerificationOptions; operations?: OperationsInstallation } = {}) {
     this.coordinator = new ExecutionCoordinator(database, options);
     this.gateway = new ToolGateway(this.coordinator, options.runner);
     this.auditModel = options.auditModel;

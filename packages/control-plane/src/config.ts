@@ -18,13 +18,16 @@ export function canonicalPublicUrl(value: string): string {
 }
 
 const operationsEnrollmentScopeSchema = z.strictObject({ environmentId: idSchema, enrollmentSha256: sha256Schema });
-const operationsInstallationSchema = operationsEnrollmentScopeSchema.extend({ readKey: whiskersReadKeySchema });
+const operationsWorkflowScopeSchema = operationsEnrollmentScopeSchema.extend({ diagnosisProviderSha256: sha256Schema.optional() });
+const operationsInstallationSchema = operationsWorkflowScopeSchema.extend({ readKey: whiskersReadKeySchema });
 export type OperationsEnrollmentScope = Readonly<z.infer<typeof operationsEnrollmentScopeSchema>>;
 export type OperationsInstallation = Readonly<z.infer<typeof operationsInstallationSchema>>;
-export type OperationsWorkflowScope = OperationsEnrollmentScope & Readonly<{ diagnosisProviderSha256?: string }>;
+export type OperationsWorkflowScope = Readonly<z.infer<typeof operationsWorkflowScopeSchema>>;
 
 function operationsEnvironment(env: NodeJS.ProcessEnv) {
-  return { environmentId: env.ITERVANE_OPERATIONS_ENVIRONMENT_ID, enrollmentSha256: env.ITERVANE_OPERATIONS_ENROLLMENT_SHA256 };
+  const diagnosisProviderSha256 = env.ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256;
+  return { environmentId: env.ITERVANE_OPERATIONS_ENVIRONMENT_ID, enrollmentSha256: env.ITERVANE_OPERATIONS_ENROLLMENT_SHA256,
+    ...(diagnosisProviderSha256 !== undefined ? { diagnosisProviderSha256 } : {}) };
 }
 
 export function runtimeConfig(env: NodeJS.ProcessEnv = process.env) {
@@ -36,7 +39,7 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env) {
   validateIdentityConfig(config);
   const portalClientId = env.ITERVANE_PORTAL_CLIENT_ID ? z.string().trim().min(1).max(255).parse(env.ITERVANE_PORTAL_CLIENT_ID) : undefined;
   const operationsApi = z.enum(['0', '1']).parse(env.ITERVANE_OPERATIONS_API_ENABLED ?? '0') === '1'
-    ? operationsEnrollmentScopeSchema.parse(operationsEnvironment(env)) : undefined;
+    ? operationsWorkflowScopeSchema.parse(operationsEnvironment(env)) : undefined;
   return { ...config, publicUrl: canonicalPublicUrl(env.ITERVANE_PUBLIC_URL ?? `http://127.0.0.1:${config.port}`),
     ...(portalClientId ? { portalClientId } : {}), ...(operationsApi ? { operationsApi } : {}) };
 }
@@ -62,6 +65,7 @@ export function workerConfig(env: NodeJS.ProcessEnv = process.env) {
   const operations = Object.values(operationsSettings).some(value => value !== undefined)
     ? operationsInstallationSchema.parse(operationsSettings) : undefined;
   const selected = env.ITERVANE_AUDIT_MODEL_PROVIDER;
+  if (operations?.diagnosisProviderSha256 && !selected) throw new Error('Formal operations diagnosis requires a configured model');
   const repairEnabled = z.enum(['0', '1']).parse(env.ITERVANE_FORMAL_REPAIR ?? '0') === '1';
   if (repairEnabled && (!runner || !selected)) throw new Error('Formal repair requires a qualified Runner and a configured model');
   const additionalProtections = repairEnabled

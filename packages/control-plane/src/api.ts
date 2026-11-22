@@ -100,7 +100,8 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
   app.get('/v1/me', async request => meDtoSchema.parse(await resources.me(identity(request))));
   app.get('/v1/capabilities', async request => {
     await resources.me(identity(request));
-    return capabilitiesSchema.parse({ stage: operationsApi ? 'p3-a' : 'p1-e', taskAdmission: true, taskExecution: false, durableScheduling: true, externalMcp: true,
+    const stage = operationsApi?.diagnosisProviderSha256 ? 'p3-b' : operationsApi ? 'p3-a' : 'p1-e';
+    return capabilitiesSchema.parse({ stage, taskAdmission: true, taskExecution: false, durableScheduling: true, externalMcp: true,
       ruleQuery: true, limitedTextPreaudit: true, autonomousAgents: false,
       sourceInspectionPlanning: true, sourceSnapshots: false, sourceScanning: false,
       portal: portalAvailable, browserLogin: portalAvailable && Boolean(config.portalClientId), sandbox: false, deployment: false, operations: Boolean(operationsApi) });

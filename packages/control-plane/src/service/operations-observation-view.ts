@@ -3,7 +3,7 @@ import { eventReasonMessages, idSchema, operationsObservationReceiptSchema, oper
 import { sha256 } from '@itervane/runner';
 import { and, eq } from 'drizzle-orm';
 import type { VerifiedIdentity } from '../auth/identity.js';
-import type { OperationsEnrollmentScope } from '../config.js';
+import type { OperationsWorkflowScope } from '../config.js';
 import type { Database } from '../persistence/database.js';
 import { operationsObservations, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
 import { requireActor, requireProject } from './access.js';
@@ -15,7 +15,7 @@ import { readOperationsObservationTarget } from './operations-targets.js';
 export class OperationsObservationViewService {
   constructor(private readonly database: Database) {}
 
-  async getLaunchOption(identity: VerifiedIdentity, taskId: string, installation: OperationsEnrollmentScope) {
+  async getLaunchOption(identity: VerifiedIdentity, taskId: string, installation: OperationsWorkflowScope) {
     parseInput(idSchema, taskId);
     return this.database.db.transaction(async tx => {
       const actor = await requireActor(tx, identity);
@@ -28,7 +28,8 @@ export class OperationsObservationViewService {
         throw error;
       });
       if (!target || target.releaseTaskId !== taskId || target.enrollmentSha256 !== installation.enrollmentSha256) return { option: null };
-      return { option: { ...scope, releaseOperationId: target.releaseOperationId } };
+      return { option: { ...scope, releaseOperationId: target.releaseOperationId,
+        ...(installation.diagnosisProviderSha256 ? { diagnosis: true as const } : {}) } };
     });
   }
 
