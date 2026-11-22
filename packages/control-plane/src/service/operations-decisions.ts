@@ -5,7 +5,7 @@ import type { VerifiedIdentity } from '../auth/identity.js';
 import type { OperationsEnrollmentScope } from '../config.js';
 import type { Database } from '../persistence/database.js';
 import { operationsDecisions, operationsExecutions, operationsProposals, operationsRequests, tasks } from '../persistence/schema.js';
-import { closeQueuedOperationsExecution } from '../runtime/operations-execution-queue.js';
+import { closeUndispatchedOperationsExecution } from '../runtime/operations-execution-queue.js';
 import { isHumanWorkspaceOwner, requireActor, requireProjectAccess, requireStoredActor } from './access.js';
 import { lockEnvironmentForEffect } from './environment-effects.js';
 import { DomainError, parseInput } from './errors.js';
@@ -66,7 +66,7 @@ export class OperationsDecisionService {
       if (input.action === 'revoke') {
         const [closed] = await tx.select({ id: operationsExecutions.id }).from(operationsExecutions)
           .where(and(eq(operationsExecutions.proposalId, proposalId), eq(operationsExecutions.blockedReason, 'approval_revoked')));
-        if (closed) await closeQueuedOperationsExecution(tx, this.database, closed.id, 'approval_revoked', actor.principalId);
+        if (closed) await closeUndispatchedOperationsExecution(tx, this.database, closed.id, 'approval_revoked', actor.principalId);
       }
       return { taskId: task.id, decision, replayed: false };
     });
