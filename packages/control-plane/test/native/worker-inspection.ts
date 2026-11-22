@@ -11,7 +11,8 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import {
   admissionDtoSchema, applicationDtoSchema, auditFindingsPerScan, environmentDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema,
   formalRepairDtoSchema, formalRepairPatchDtoSchema, formalReleaseResultSchema, formalReleaseViewSchema, idSchema, komodoResourceIdSchema, projectDtoSchema,
-  formalRepairRetrySchema, formalVerificationInputSchema, formalVerificationResultSchema, operationsObservationReceiptSchema,
+  formalRepairRetrySchema, formalVerificationInputSchema, formalVerificationResultSchema, operationsDiagnosisReceiptSchema,
+  operationsObservationReceiptSchema, operationsObservationViewSchema,
   qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
   repositoryDtoSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sha256Schema, sourceInspectionDtoSchema,
   qualifiedImageArchiveSchema, qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
@@ -20,8 +21,10 @@ import {
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier } from '../../src/auth/identity.js';
+import { runtimeConfig, workerConfig } from '../../src/config.js';
 import { formalReleaseQueue } from '../../src/persistence/database.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
+import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
 import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
 import { registerOperationsTarget } from '../../src/service/operations-targets.js';
@@ -668,10 +671,10 @@ async function probe() {
           ITERVANE_RELEASE_KOMODO_SECRET: target.credentials.secret, ITERVANE_RELEASE_PROBE_SECRET: ingress.probeSecret });
         const readResult = async (locale: Locale, taskId = current.id) =>
           formalReleaseViewSchema.parse(await request(`/v1/tasks/${taskId}/release`, undefined, false, locale));
-        const withEnglishReader = async <T>(read: (lookup: Client) => Promise<T>) => {
+        const withEnglishReader = async <T>(read: (lookup: Client) => Promise<T>, endpoint = address) => {
           const reader = new Client({ name: 'itervane-native-release-reader', version: '0.0.0' });
           try {
-            await reader.connect(new StreamableHTTPClientTransport(new URL(`${address}/mcp`), {
+            await reader.connect(new StreamableHTTPClientTransport(new URL(`${endpoint}/mcp`), {
               requestInit: { headers: { Authorization: `Bearer ${mcpToken}`, 'Accept-Language': 'en' } },
             }));
             return await read(reader);
@@ -898,6 +901,96 @@ async function probe() {
         equal(english.locale, 'en');
         notEqual(chinese.message, english.message);
 
+        const verifyInstalledDiagnosis = async (enrollmentSha256: string, readKey: string) => {
+          phase = 'operations_formal_installation';
+          const providerEnv = { ITERVANE_AUDIT_MODEL_PROVIDER: 'anthropic', ANTHROPIC_BASE_URL: audit.baseURL, ANTHROPIC_MODEL: auditFixtureModel };
+          const configuration = workerConfig({ DATABASE_URL: db.runtimeUrl, ...providerEnv, ANTHROPIC_API_KEY: auditFixtureKey }).auditModel;
+          ok(configuration);
+          const { providerSha256 } = configuredAuditModel(configuration);
+          const installed = { ITERVANE_OPERATIONS_ENVIRONMENT_ID: environment.id, ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollmentSha256,
+            ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: providerSha256 };
+          const diagnosisApi = createApi(db.storage, runtimeConfig({
+            DATABASE_URL: db.runtimeUrl, ITERVANE_OIDC_ISSUER: oidc.config.issuer, ITERVANE_OIDC_AUDIENCE: oidc.config.audience,
+            ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_OPERATIONS_API_ENABLED: '1', ...installed,
+          }), { logger: false });
+          const reader = new Client({ name: 'itervane-native-diagnosis', version: '0.0.0' });
+          try {
+            const endpoint = await diagnosisApi.listen({ host: '127.0.0.1', port: 0 });
+            const http = async (path: string, locale: Locale = 'zh-CN') => {
+              const response = await fetch(endpoint + path, { headers: { Authorization: await authorization(), 'Accept-Language': locale },
+                signal: AbortSignal.timeout(5_000) });
+              if (!response.ok) { await response.body?.cancel(); throw new Error(`fixture_diagnosis_http_${response.status}`); }
+              return response.json() as Promise<unknown>;
+            };
+            await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp', endpoint), {
+              requestInit: { headers: { Authorization: `Bearer ${mcpToken}`, 'Accept-Language': 'zh-CN' } },
+            }));
+            const capability = await http('/v1/capabilities') as { stage: string; operations: boolean };
+            equal(capability.stage, 'p3-b');
+            equal(capability.operations, true);
+            deepStrictEqual(await http(`/v1/tasks/${current.id}/operations-option`), {
+              option: { projectId: project.id, environmentId: environment.id, releaseOperationId: operationId, diagnosis: true },
+            });
+            const { task: diagnosis } = admissionDtoSchema.parse((await reader.callTool({
+              name: 'start_operations_diagnosis', arguments: { projectId: project.id, environmentId: environment.id,
+                expectedReleaseOperationId: operationId, idempotencyKey: randomUUID(), locale: 'zh-CN' },
+            })).structuredContent);
+            equal(diagnosis.state, 'queued');
+            const initialCalls = audit.calls.length;
+            worker = await startScopedWorker(bundle, ['PATH=/usr/bin:/bin', 'LANG=C.UTF-8', 'ITERVANE_WORKER_POLL_MS=100',
+              'ITERVANE_WORKER_LEASE_SECONDS=30', ...Object.entries({ ...installed, ...providerEnv }).map(([name, value]) => `${name}=${value}`),
+            ], { DATABASE_URL: db.runtimeUrl, ITERVANE_OPERATIONS_WHISKERS_READ_KEY: readKey, ANTHROPIC_API_KEY: auditFixtureKey });
+
+            phase = 'operations_formal_investigation';
+            await poll(async () => {
+              const item = taskDtoSchema.parse(await http(`/v1/tasks/${diagnosis.id}`));
+              if (item.state === 'needs_human' || item.state === 'failed') {
+                const events = await http(`/v1/tasks/${item.id}/events`) as { items?: unknown[] };
+                throw new Error(taskEventDtoSchema.safeParse(events.items?.at(-1)).data?.reason ?? 'operations_diagnosis_failed');
+              }
+              return item.state === 'succeeded' ? true : undefined;
+            }, 50_000, 'operations_diagnosis');
+            await worker.stop('TERM'); worker = undefined;
+            deepStrictEqual(audit.calls.slice(initialCalls), ['read_operations', 'read_operations', 'read_operations', 'read_operations', 'finish_role']);
+
+            phase = 'operations_formal_evidence';
+            const { rows } = await db.admin.query<{ document: unknown; sha256: string; container_id: string; tools_used: number }>(
+              `SELECT result.document, result.sha256, observation.document#>>'{observation,containerId}' AS container_id, runtime.tools_used
+                FROM itervane.operations_diagnosis_results result
+                JOIN itervane.operations_observations observation ON observation.run_id=result.run_id
+                JOIN itervane.run_runtime runtime ON runtime.run_id=result.run_id WHERE result.run_id=$1`, [diagnosis.runId]);
+            equal(rows.length, 1);
+            const row = rows[0]!;
+            const receipt = operationsDiagnosisReceiptSchema.parse(row.document);
+            equal(receipt.providerSha256, providerSha256);
+            equal(receipt.runId, diagnosis.runId);
+            equal(receipt.taskId, diagnosis.id);
+            equal(sha256(JSON.stringify(receipt)), row.sha256);
+            equal(row.tools_used, 4);
+            equal(row.container_id, proof.runtime.containerId);
+            deepStrictEqual(receipt.reads.map(item => item.section), ['container', 'release', 'logs', 'metrics']);
+            const readDiagnosis = async (lookup: Client, locale: Locale) => {
+              const response = operationsObservationViewSchema.parse(await http(`/v1/tasks/${diagnosis.id}/operations`, locale));
+              const result = (await lookup.callTool({ name: 'get_operations_result', arguments: { taskId: diagnosis.id } })).structuredContent;
+              deepStrictEqual(operationsObservationViewSchema.parse(result), response);
+              equal(response.releaseOperationId, operationId);
+              equal(response.diagnosis?.receiptSha256, row.sha256);
+              equal(response.observation?.state, 'running');
+              const projected = JSON.stringify(response);
+              for (const secret of [readKey, row.container_id]) ok(!projected.includes(secret));
+              return response;
+            };
+            const zh = await readDiagnosis(reader, 'zh-CN');
+            const en = await withEnglishReader(lookup => readDiagnosis(lookup, 'en'), endpoint);
+            deepStrictEqual(zh.diagnosis?.facts, en.diagnosis?.facts);
+            notEqual(zh.diagnosis?.recommendation.message, en.diagnosis?.recommendation.message);
+            return { runId: diagnosis.runId, releaseOperationId: operationId, sha256: row.sha256,
+              sections: receipt.reads.map(item => item.section), matchedPublishedTarget: true, httpMcpAgreement: true, model: 'scripted_anthropic_fixture' };
+          } finally {
+            try { await reader.close(); } finally { await diagnosisApi.close(); }
+          }
+        };
+
         const verifyNativeObservation = async () => {
           phase = 'operations_whiskers_installation';
           const native = await openNativeWhiskersReadScope();
@@ -960,6 +1053,7 @@ async function probe() {
               return latest.message;
             };
             notEqual(await compareReader(client, 'zh-CN'), await withEnglishReader(lookup => compareReader(lookup, 'en')));
+            const diagnosis = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey);
             equal((await target.observeContainer(proof.runtime.imageReference, image.configDigest)).containerId, receipt.observation.containerId);
             const [counts] = (await db.admin.query(`SELECT
               (SELECT count(*)::int FROM itervane.release_operations WHERE environment_id=$1) AS releases,
@@ -969,7 +1063,7 @@ async function probe() {
             return { taskId: diagnostic.id, runId: diagnostic.runId, releaseOperationId: operationId, bindingSha256: receipt.bindingSha256,
               containerId: receipt.observation.containerId, state: receipt.observation.state, observedAt: receipt.observation.observedAt,
               fence: receipt.fence, receipts: rows.length, reads: row.tools_used, releaseDispatches: 1, slotReleased: true,
-              matchedPublishedTarget: true, httpMcpAgreement: true };
+              matchedPublishedTarget: true, httpMcpAgreement: true, diagnosis };
           } finally {
             try { await worker?.stop('TERM'); worker = undefined; }
             finally { await native.close(); }

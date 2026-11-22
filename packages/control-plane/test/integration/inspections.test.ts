@@ -23,7 +23,7 @@ import { operationsDecision, scriptedOperations } from '../../../verification/sr
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
-import { runtimeConfig, type OperationsWorkflowScope } from '../../src/config.js';
+import { runtimeConfig, workerConfig, type OperationsWorkflowScope } from '../../src/config.js';
 import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
@@ -3062,7 +3062,12 @@ it('shares one authorized diagnosis across opt-in HTTP and MCP and fences a repl
 it('serves the same authorized bilingual diagnosis and facts over HTTP and MCP', async () => {
   const fixture = await installedOperationsFixture();
   const publishedTaskId = task.id;
-  const operations = diagnosisInstallation(fixture);
+  const provider = await auditProtocolFixture();
+  const model = workerConfig({ DATABASE_URL: database.runtimeUrl, ITERVANE_AUDIT_MODEL_PROVIDER: 'anthropic',
+    ANTHROPIC_BASE_URL: provider.baseURL, ANTHROPIC_API_KEY: auditFixtureKey, ANTHROPIC_MODEL: auditFixtureModel }).auditModel;
+  if (!model) throw new Error('Expected the protocol fixture model');
+  const auditModel = configuredAuditModel(model);
+  const operations = { ...installedOperations(fixture), diagnosisProviderSha256: auditModel.providerSha256 };
   const { environmentId, enrollmentSha256, diagnosisProviderSha256 } = operations;
   const publicUrl = 'http://127.0.0.1:4329';
   const app = createApi(database.storage, runtimeConfig({
@@ -3070,7 +3075,6 @@ it('serves the same authorized bilingual diagnosis and facts over HTTP and MCP',
     ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_OPERATIONS_API_ENABLED: '1', ITERVANE_OPERATIONS_ENVIRONMENT_ID: environmentId,
     ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollmentSha256, ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: diagnosisProviderSha256,
   }), { logger: false });
-  const auditModel = { adapter: scriptedOperations(), providerSha256: diagnosisProviderSha256 };
   const worker = new DurableWorker(database.storage, database.runtimeUrl, { operations, auditModel, leaseSeconds: 30 });
   const viewer = new Client({ name: 'diagnosis-view-test', version: '0.0.0' });
   try {
@@ -3096,6 +3100,8 @@ it('serves the same authorized bilingual diagnosis and facts over HTTP and MCP',
 
     const downstream = scopedWhiskers(fixture, undefined, 'running');
     try { expect(await worker.tick()).toBe(true); } finally { downstream.restore(); }
+    expect(downstream.tools).toEqual(['get_container_details', 'get_container_logs', 'get_container_metrics']);
+    expect(provider.calls).toEqual(['read_operations', 'read_operations', 'read_operations', 'read_operations', 'finish_role']);
 
     const address = await app.listen({ host: '127.0.0.1', port: 0 });
     const token = await issuer.token(subject, { aud: `${publicUrl}/mcp`, scope: 'itervane:read' });
@@ -3108,7 +3114,7 @@ it('serves the same authorized bilingual diagnosis and facts over HTTP and MCP',
     const zh = operationsObservationViewSchema.parse(chinese.json());
     expect(operationsObservationViewSchema.parse((await viewer.callTool(payload)).structuredContent)).toEqual(zh);
     expect(en.diagnosis).toMatchObject({
-      hypotheses: [{ code: 'memory_pressure', evidenceIds: [expect.any(String)] }],
+      hypotheses: [],
       recommendation: { code: 'continue_observation', evidenceIds: [expect.any(String), expect.any(String)] },
     });
     expect(zh.diagnosis?.receiptSha256).toBe(en.diagnosis?.receiptSha256);
@@ -3117,10 +3123,11 @@ it('serves the same authorized bilingual diagnosis and facts over HTTP and MCP',
     expect(zh.diagnosis?.facts).toEqual(en.diagnosis?.facts);
     expect(en.diagnosis?.facts).toMatchObject([
       { section: 'container', result: { state: 'running' } },
-      { section: 'metrics', result: { status: 'observed', dataPoints: 3, memory: { average: 92 } } },
       { section: 'release', result: { current: { operationId: fixture.operationId }, previous: null } },
+      { section: 'logs', result: { lines: 2, errorLines: 1 } },
+      { section: 'metrics', result: { status: 'observed', dataPoints: 3, memory: { average: 92 } } },
     ]);
-    for (const value of [operationsFixtureKey, fixture.runtime.containerId, fixture.registration.whiskers.origin]) {
+    for (const value of [operationsFixtureKey, fixture.runtime.containerId, fixture.registration.whiskers.origin, 'local-log-canary-value']) {
       expect(english.body).not.toContain(value);
       expect(chinese.body).not.toContain(value);
     }
@@ -3138,7 +3145,7 @@ it('serves the same authorized bilingual diagnosis and facts over HTTP and MCP',
     expect(apiErrorSchema.parse((await viewer.callTool(payload)).structuredContent).error.code).toBe('not_found');
   } finally {
     await viewer.close();
-    await Promise.all([app.close(), worker.close()]);
+    await Promise.all([app.close(), worker.close(), provider.close()]);
   }
 });
 

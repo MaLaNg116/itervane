@@ -211,7 +211,11 @@ jobs:
             jq -e '.operations.releaseOperationId == .release.operationId and .operations.state == "running" and
               .operations.receipts == 1 and .operations.reads == 1 and .operations.releaseDispatches == 1 and
               .operations.matchedPublishedTarget and .operations.httpMcpAgreement and .operations.slotReleased and
-              .operations.whiskersCleanup' "$report" >/dev/null
+              .operations.whiskersCleanup and
+              .operations.diagnosis.releaseOperationId == .release.operationId and
+              .operations.diagnosis.sections == ["container", "release", "logs", "metrics"] and
+              .operations.diagnosis.matchedPublishedTarget and .operations.diagnosis.httpMcpAgreement and
+              .operations.diagnosis.model == "scripted_anthropic_fixture"' "$report" >/dev/null
           fi
       - name: Retain independent KVM evidence
         if: always()

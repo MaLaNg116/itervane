@@ -42,6 +42,17 @@ function selectTool(observations: AgentEvidence[]) {
   } };
 }
 
+function selectOperations(observations: AgentEvidence[]) {
+  const readings = observations.flatMap(({ id, data }) => data.kind === 'operations_section' ? [{ id, data }] : []);
+  for (const section of ['container', 'release', 'logs', 'metrics'] as const) {
+    const observed = readings.find(item => item.data.section === section);
+    if (!observed) return { name: 'read_operations', input: { section } };
+    if ('containerId' in observed.data.result || 'serverId' in observed.data.result) throw new Error('operations_fixture_private_target');
+  }
+  return { name: 'finish_role', input: { hypotheses: [], recommendation: { code: 'continue_observation',
+    evidenceIds: readings.filter(item => item.data.section === 'container' || item.data.section === 'release').map(item => item.id) } } };
+}
+
 function selectRetryRepair(observations: AgentEvidence[], handoff: Awaited<ReturnType<typeof auditContext>>['handoff']) {
   const candidate = observations.find(item => item.data.kind === 'repair_candidate');
   if (candidate) return { name: 'finish_role', input: { evidenceId: candidate.id, summary: '已提交候选修改并等待独立复验。' } };
@@ -96,6 +107,7 @@ export async function auditProtocolFixture(options: { repairRetry?: boolean; dep
       }
       const locale = goal === agentText('zh-CN').formalVerification.goal ? 'zh-CN' : 'en';
       const selected = role === 'verify' ? verificationFixtureCall(observations, locale)
+        : role === 'operations' ? selectOperations(observations)
         : role === 'repair' && options.dependencyRepair ? selectDependencyRepair(observations, handoff)
         : role === 'repair' && options.repairRetry ? selectRetryRepair(observations, handoff) : selectTool(observations);
       calls.push(selected.name);
