@@ -1,12 +1,16 @@
-import { idSchema, operationsRestartApprovalInputSchema, sha256Schema } from '@itervane/contracts';
+import {
+  idSchema, maxOperationsRestartResumes, operationsRestartApprovalInputSchema, operationsRestartContinueInputSchema,
+  operationsRestartResumeBindingSchema, operationsRestartResumeOutcomeSchema, sha256Schema,
+} from '@itervane/contracts';
 import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { fromDrizzle, type Job } from 'pg-boss';
+import type { VerifiedIdentity } from '../auth/identity.js';
 import type { OperationsEnrollmentScope } from '../config.js';
 import { operationsExecutionQueue, type Database } from '../persistence/database.js';
-import { operationsExecutionIntents, operationsExecutionSchedules, operationsExecutions, operationsProposals, runRuntime, taskRuns,
-  tasks } from '../persistence/schema.js';
-import type { Transaction } from '../service/access.js';
+import { operationsExecutionIntents, operationsExecutionSchedules, operationsExecutions, operationsProposals, operationsRestartResumes,
+  runRuntime, taskRuns, tasks } from '../persistence/schema.js';
+import { isHumanWorkspaceOwner, requireActor, requireProjectAccess, type Transaction } from '../service/access.js';
 import { expireUndispatchedOperations, lockEnvironmentForEffect } from '../service/environment-effects.js';
 import { DomainError, parseInput } from '../service/errors.js';
 import { lockOperationsDiagnosisTask, requireOperationsExecutionApproval } from '../service/operations-execution-admission.js';
@@ -16,9 +20,10 @@ import { appendEvent, assertLeaseLive, assignSlot, clearSlot, ExecutionLost, loc
   type ExecutionScope } from './authority.js';
 import type { ExecutionCoordinator } from './coordinator.js';
 import { operationsExecutionWakeupSchema, replaceOperationsExecutionWakeup } from './operations-execution-queue.js';
-import { attachOperationsRestartApproval, prepareOperationsRestartRequest } from './operations-restart-request.js';
+import { attachOperationsRestartApproval, prepareOperationsRestartRequest, readOperationsRestartRequest } from './operations-restart-request.js';
+import { blockQueuedRestartResume, latestRestartResume } from './operations-restart-resume.js';
 
-export type OperationsExecutionLease = ExecutionScope & Readonly<{ executionId: string; mode: 'dispatch' | 'reconcile' }>;
+export type OperationsExecutionLease = ExecutionScope & Readonly<{ executionId: string; mode: 'dispatch' | 'restart_resume' | 'reconcile' }>;
 
 // Callers lock the execution slot first. The diagnosis and environment locks also serialize approval and release.
 async function lockOperationsExecution(tx: Transaction, executionId: string) {
@@ -46,7 +51,18 @@ type BoundExecution = NonNullable<Awaited<ReturnType<typeof lockOperationsExecut
 function wakeupMode({ execution, task, reason, intent }: BoundExecution): OperationsExecutionLease['mode'] | undefined {
   if (execution.state !== 'reserved') return;
   if (!intent && task.state === 'queued' && reason === 'operations_execution_queued') return 'dispatch';
+  if (intent && task.state === 'queued' && reason === 'operations_restart_resume_queued') return 'restart_resume';
   if (intent && task.state === 'reconciling' && reason === 'operations_execution_reconciling') return 'reconcile';
+}
+
+async function reconcileBlockedRestartResume(tx: Transaction, database: Database, { execution, schedule, task }: BoundExecution, workerId: string) {
+  const blocked = await blockQueuedRestartResume(tx, execution.id);
+  const reason = 'operations_execution_reconciling';
+  await tx.update(runRuntime).set({ reason }).where(eq(runRuntime.runId, schedule.runId));
+  await appendEvent(tx, task, 'task.operations_execution_recovered', 'reconciling', {
+    workerId, reason, operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, resumeAttempt: blocked.attempt },
+  });
+  await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation);
 }
 
 export async function recoverOperationsExecutionSlot(tx: Transaction, database: Database,
@@ -67,9 +83,10 @@ export async function recoverOperationsExecutionSlot(tx: Transaction, database: 
     if (task.state !== 'running') throw new ExecutionLost();
     const expired = !intent && await expireUndispatchedOperations(tx, database, execution.environmentId, task.requestedBy, workerId);
     if (!expired) {
-      const reason = intent ? 'operations_execution_reconciling' : 'operations_execution_queued';
+      const restartUnsent = bound.reason === 'operations_restart_resume_claimed' && (await latestRestartResume(tx, execution.id))?.state === 'queued';
+      const reason = restartUnsent ? 'operations_restart_resume_queued' : intent ? 'operations_execution_reconciling' : 'operations_execution_queued';
       await tx.update(runRuntime).set({ reason }).where(eq(runRuntime.runId, schedule.runId));
-      await appendEvent(tx, task, 'task.operations_execution_recovered', intent ? 'reconciling' : 'queued', {
+      await appendEvent(tx, task, 'task.operations_execution_recovered', reason === 'operations_execution_reconciling' ? 'reconciling' : 'queued', {
         workerId, reason, operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: slot.fence },
       });
       await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation);
@@ -80,7 +97,8 @@ export async function recoverOperationsExecutionSlot(tx: Transaction, database: 
 }
 
 export class OperationsExecutionCoordinator {
-  constructor(private readonly coordinator: ExecutionCoordinator, private readonly installation: OperationsEnrollmentScope) {}
+  constructor(private readonly coordinator: ExecutionCoordinator, private readonly installation: OperationsEnrollmentScope,
+    private readonly humanClientId?: string) {}
 
   async claim(job: Job<unknown>, workerId: string): Promise<OperationsExecutionLease | null> {
     idSchema.parse(workerId);
@@ -102,23 +120,29 @@ export class OperationsExecutionCoordinator {
       const { execution, schedule, task, proposal, diagnosis } = bound;
       if (mode === 'dispatch' && await expireUndispatchedOperations(tx, database, execution.environmentId, task.requestedBy, workerId)) return null;
       const { target } = readOperationsProposal(proposal);
-      let eligible = !slot.taskId && target.environmentId === this.installation.environmentId
+      const eligible = !slot.taskId && target.environmentId === this.installation.environmentId
         && target.enrollmentSha256 === this.installation.enrollmentSha256;
-      if (eligible && mode === 'dispatch') {
+      let authorized = true;
+      if (eligible && mode !== 'reconcile') {
         try { await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion); }
         catch (error) {
           if (!(error instanceof DomainError)) throw error;
-          eligible = false;
+          authorized = false;
         }
       }
       if ((await complete()).affected !== 1) return null;
-      if (!eligible) {
+      if (!authorized && mode === 'restart_resume') {
+        await reconcileBlockedRestartResume(tx, database, bound, workerId);
+        return null;
+      }
+      if (!eligible || !authorized) {
         await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation, slot.taskId ? 1 : 5);
         return null;
       }
 
       const lease = await assignSlot(tx, task, schedule.runId, workerId, this.coordinator.leaseSeconds);
-      const reason = mode === 'dispatch' ? 'operations_execution_claimed' : 'operations_execution_reconciling';
+      const reason = mode === 'dispatch' ? 'operations_execution_claimed'
+        : mode === 'restart_resume' ? 'operations_restart_resume_claimed' : 'operations_execution_reconciling';
       await tx.update(runRuntime).set({ reason }).where(eq(runRuntime.runId, schedule.runId));
       await appendEvent(tx, task, 'task.operations_execution_started', 'running', {
         workerId, reason, operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: lease.fence },
@@ -129,8 +153,10 @@ export class OperationsExecutionCoordinator {
   }
 
   async heartbeat(scope: OperationsExecutionLease) {
-    await this.withLease(scope, async (tx, { diagnosis, proposal, execution, intent }) => {
-      if (!intent) await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
+    await this.withLease(scope, async (tx, { diagnosis, proposal, execution, intent, reason }) => {
+      if (!intent || reason === 'operations_restart_resume_claimed') {
+        await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
+      }
       await renewSlot(tx, this.coordinator.leaseSeconds);
     });
   }
@@ -183,6 +209,115 @@ export class OperationsExecutionCoordinator {
     });
   }
 
+  async requestRestartResume(identity: VerifiedIdentity, rawExecutionId: unknown, raw: unknown) {
+    const executionId = parseInput(idSchema, rawExecutionId);
+    const input = parseInput(operationsRestartContinueInputSchema, raw);
+    const database = this.coordinator.database;
+    return database.db.transaction(async tx => {
+      await lockSlot(tx);
+      const bound = await lockOperationsExecution(tx, executionId);
+      if (!bound) throw new DomainError('not_found');
+      const { task, diagnosis, proposal, schedule, execution, reason } = bound;
+      const actor = await requireActor(tx, identity);
+      const { project } = await requireProjectAccess(tx, actor, task.projectId, true);
+      if (!isHumanWorkspaceOwner(identity, actor, project.workspaceId, this.humanClientId)) throw new DomainError('forbidden');
+
+      const { decision, now } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
+      if (identity.expiresAt * 1_000 <= now.getTime()) throw new DomainError('unauthenticated');
+      if (actor.principalId !== decision.actorId || actor.workspaceGrantId !== decision.grantId) throw new DomainError('forbidden');
+      const request = await readOperationsRestartRequest(tx, executionId);
+      if (request.approvalId !== input.approvalId || request.callSha256 !== input.callSha256) throw new DomainError('version_conflict');
+
+      const [duplicate] = await tx.select().from(operationsRestartResumes)
+        .where(and(eq(operationsRestartResumes.executionId, executionId), eq(operationsRestartResumes.idempotencyKey, input.idempotencyKey)));
+      if (duplicate) {
+        if (duplicate.expectedVersion !== input.expectedVersion) throw new DomainError('idempotency_conflict');
+        return { resume: duplicate, replayed: true };
+      }
+      if (task.version !== input.expectedVersion) throw new DomainError('version_conflict');
+      if (execution.state !== 'reserved' || task.state !== 'waiting_approval' || reason !== 'operations_execution_native_approval'
+          || schedule.wakeupJobId) throw new DomainError('unsupported_state');
+      const prior = await latestRestartResume(tx, executionId);
+      if (prior && (prior.state !== 'pending' || prior.attempt >= maxOperationsRestartResumes)) throw new DomainError('unsupported_state');
+      const [resume] = await tx.insert(operationsRestartResumes).values({ ...input, executionId, actorId: actor.principalId,
+        grantId: actor.workspaceGrantId, attempt: (prior?.attempt ?? 0) + 1 }).returning();
+      if (!resume) throw new DomainError('unavailable');
+      const queued = 'operations_restart_resume_queued';
+      await tx.update(runRuntime).set({ reason: queued }).where(eq(runRuntime.runId, schedule.runId));
+      await appendEvent(tx, task, 'task.operations_restart_resume_requested', 'queued', {
+        actorId: actor.principalId, reason: queued,
+        operationsExecution: { executionId, proposalId: execution.proposalId, resumeAttempt: resume.attempt },
+      });
+      await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation);
+      return { resume, replayed: false };
+    });
+  }
+
+  async prepareRestartResume(scope: OperationsExecutionLease, raw: unknown) {
+    const binding = parseInput(operationsRestartResumeBindingSchema, raw);
+    return this.withLease(scope, async (tx, { execution, diagnosis, proposal, task, reason }) => {
+      if (scope.mode !== 'restart_resume' || reason !== 'operations_restart_resume_claimed') throw new ExecutionLost();
+      const { frozen, whiskers, decision } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
+      const request = await readOperationsRestartRequest(tx, execution.id);
+      if (request.approvalId !== binding.approvalId || request.callSha256 !== binding.callSha256
+          || request.document.credentialSha256 !== binding.credentialSha256 || request.document.target.containerId !== frozen.target.containerId
+          || request.document.target.origin !== whiskers.origin || request.document.target.serverId !== whiskers.serverId) {
+        throw new DomainError('version_conflict');
+      }
+      const checked = await latestRestartResume(tx, execution.id);
+      if (checked?.state !== 'queued' || checked.approvalId !== binding.approvalId || checked.callSha256 !== binding.callSha256
+          || checked.actorId !== decision.actorId || checked.grantId !== decision.grantId) throw new ExecutionLost();
+      const [resume] = await tx.update(operationsRestartResumes).set({ state: 'prepared', workerId: scope.workerId, fence: scope.fence })
+        .where(and(eq(operationsRestartResumes.executionId, execution.id), eq(operationsRestartResumes.attempt, checked.attempt))).returning();
+      if (!resume) throw new ExecutionLost();
+      const prepared = 'operations_restart_resume_prepared';
+      await tx.update(runRuntime).set({ reason: prepared }).where(eq(runRuntime.runId, scope.runId));
+      await appendEvent(tx, task, 'task.operations_restart_resume_prepared', 'running', {
+        workerId: scope.workerId, reason: prepared,
+        operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: scope.fence, resumeAttempt: resume.attempt },
+      });
+      return { resume, request };
+    });
+  }
+
+  async blockRestartResume(scope: OperationsExecutionLease) {
+    await this.withLease(scope, async (tx, current) => {
+      if (scope.mode !== 'restart_resume' || current.reason !== 'operations_restart_resume_claimed') throw new ExecutionLost();
+      await reconcileBlockedRestartResume(tx, this.coordinator.database, current, scope.workerId);
+      await clearSlot(tx);
+    });
+  }
+
+  async recordRestartResume(scope: OperationsExecutionLease, raw: unknown) {
+    const result = parseInput(operationsRestartResumeOutcomeSchema, raw);
+    return this.withLease(scope, async (tx, { execution, schedule, task, proposal, diagnosis, reason }) => {
+      if (scope.mode !== 'restart_resume' || reason !== 'operations_restart_resume_prepared') throw new ExecutionLost();
+      const current = await latestRestartResume(tx, execution.id);
+      if (current?.state !== 'prepared' || current.fence !== scope.fence || current.workerId !== scope.workerId
+          || current.approvalId !== result.approvalId || current.callSha256 !== result.callSha256) throw new ExecutionLost();
+      let wait = result.outcome === 'pending' && current.attempt < maxOperationsRestartResumes;
+      if (wait) {
+        try { await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion); }
+        catch (error) {
+          if (!(error instanceof DomainError)) throw error;
+          wait = false;
+        }
+      }
+      const [resume] = await tx.update(operationsRestartResumes).set({ state: result.outcome })
+        .where(and(eq(operationsRestartResumes.executionId, execution.id), eq(operationsRestartResumes.attempt, current.attempt))).returning();
+      if (!resume?.recordedAt) throw new ExecutionLost();
+      const nextReason = wait ? 'operations_execution_native_approval' : 'operations_execution_reconciling';
+      await tx.update(runRuntime).set({ reason: nextReason }).where(eq(runRuntime.runId, scope.runId));
+      await appendEvent(tx, task, 'task.operations_restart_resume_recorded', wait ? 'waiting_approval' : 'reconciling', {
+        workerId: scope.workerId, reason: nextReason,
+        operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: scope.fence, resumeAttempt: current.attempt },
+      });
+      if (!wait) await replaceOperationsExecutionWakeup(tx, this.coordinator.database, schedule, task.generation);
+      await clearSlot(tx);
+      return resume;
+    });
+  }
+
   async reconcile(workerId: string) {
     idSchema.parse(workerId);
     const database = this.coordinator.database;
@@ -222,7 +357,8 @@ export class OperationsExecutionCoordinator {
       const { intent, reason } = bound;
       const active = scope.mode === 'dispatch'
         ? (!intent && reason === 'operations_execution_claimed') || (intent?.fence === scope.fence && reason === 'operations_execution_dispatch_intended')
-        : intent && intent.fence < scope.fence && reason === 'operations_execution_reconciling';
+        : intent && intent.fence < scope.fence && (scope.mode === 'reconcile' ? reason === 'operations_execution_reconciling'
+          : reason === 'operations_restart_resume_claimed' || reason === 'operations_restart_resume_prepared');
       if (!active) throw new ExecutionLost();
       const result = await run(tx, bound);
       await assertLeaseLive(tx, slot.leaseUntil);
