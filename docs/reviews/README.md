@@ -107,7 +107,7 @@
 | 102 | P3-C2c3c2b1 等待过期与只读接管 | [#102](https://github.com/MaLaNg116/itervane/pull/102)，依赖 #101 | [过期核对导读](p3-c-restart-approval-expiry.md) | TypeScript、246 项单元、三项 PostgreSQL 17.12 过期与撤销专项通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/102/checks) |
 | 103 | P3-C2c3c2b2 双语重启确认、续发和回执 | [#103](https://github.com/MaLaNg116/itervane/pull/103)，依赖 #102 | [重启门户导读](p3-c-restart-operator-portal.md) | TypeScript、246 项单元、真实 Chrome 与 Keycloak 的重启及诊断场景通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/103/checks) |
 | 104 | P3-C2c3c3a 同一应用原生重启联验 | [#104](https://github.com/MaLaNg116/itervane/pull/104)，依赖 #103 | [原生重启导读](p3-c-native-restart-loop.md) | TypeScript、246 项单元及 [同一应用的托管原生重启、401／200 和恢复结算](https://github.com/MaLaNg116/itervane/actions/runs/45012147918/job/137176585371)通过 |
-| 105 | P3-C2c3c3b 原生应答中断、撤销和只读接管 | [#105](https://github.com/MaLaNg116/itervane/pull/105)，依赖 #104 | [中断导读](p3-c-native-restart-takeover.md) | TypeScript、246 项单元及四项真实 PostgreSQL 专项通过，等待 [托管接管场景](https://github.com/MaLaNg116/itervane/actions/runs/45013638152) |
+| 105 | P3-C2c3c3b 原生应答中断、撤销和只读接管 | [#105](https://github.com/MaLaNg116/itervane/pull/105)，依赖 #104 | [中断导读](p3-c-native-restart-takeover.md) | TypeScript、四项真实 PostgreSQL 专项及 [实际中断、只读接管和发布互斥](https://github.com/MaLaNg116/itervane/actions/runs/45013638152/job/137181164011)通过 |
 | 106 | P3-C2c3c3c 自托管重启参考安装 | [#106](https://github.com/MaLaNg116/itervane/pull/106)，依赖 #105 | [安装导读](p3-c-restart-reference-installation.md) | TypeScript、246 项单元及四项真实 PostgreSQL 专项通过，等待 [托管验证](https://github.com/MaLaNg116/itervane/pull/106/checks) |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
