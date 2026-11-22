@@ -78,6 +78,7 @@
 | 072 | P3-A2-C1/C2 双语诊断回执及 HTTP/MCP 接入 | [#72](https://github.com/MaLaNg116/itervane/pull/72)，已合入 main | [接入导读](p3-a-observation-interfaces.md) | 211 项单元、四项 PostgreSQL 17.12 专项、[托管 CI](https://github.com/MaLaNg116/itervane/actions/runs/44971558927)及[九组 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44969436588)通过 |
 | 073 | P3-A2-C3 双语容器观察门户 | [#73](https://github.com/MaLaNg116/itervane/pull/73)，基于已合入 #72 的 main | [门户导读](p3-a-observation-portal.md) | 211 项单元、三项 PostgreSQL 专项、Chrome/Keycloak 及[托管常规检查](https://github.com/MaLaNg116/itervane/actions/runs/44971450039)通过，[KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44971339106)运行中 |
 | 074 | P3-B1 Whiskers 日志信号与指标证据 | [#74](https://github.com/MaLaNg116/itervane/pull/74)，依赖 #73 | [日志和指标导读](p3-b-operations-evidence.md) | 215 项单元与[托管原生日志和指标](https://github.com/MaLaNg116/itervane/actions/runs/44972075364)通过，[KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44972075435)运行中 |
+| 待合入 | P3-B2 运维 ReAct 调查和证据化结论 | 依赖 #74 | [调查循环导读](p3-b-operations-harness.md) | 223 项单元、四项 PostgreSQL 17.12 检查点回归与两条本机实模样例通过 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
