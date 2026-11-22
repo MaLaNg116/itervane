@@ -602,6 +602,18 @@ export const operationsExecutions = domain.table('operations_executions', {
     OR (${t.state} = 'blocked' AND ${t.closedAt} >= ${t.createdAt} AND ${t.blockedReason} IN ('approval_revoked', 'proposal_expired'))) IS TRUE`),
 ]);
 
+export const operationsExecutionSchedules = domain.table('operations_execution_schedules', {
+  executionId: uuid('execution_id').primaryKey().references(() => operationsExecutions.id),
+  taskId: uuid('task_id').notNull(),
+  runId: uuid('run_id').notNull(),
+  wakeupJobId: uuid('wakeup_job_id'),
+}, t => [
+  unique('operations_execution_scheduled_task').on(t.taskId),
+  unique('operations_execution_scheduled_wakeup').on(t.wakeupJobId),
+  foreignKey({ name: 'operations_execution_scheduled_run_fk', columns: [t.runId, t.taskId],
+    foreignColumns: [taskRuns.id, taskRuns.taskId] }),
+]);
+
 export const formalReleaseSteps = domain.table('formal_release_steps', {
   operationId: uuid('operation_id').notNull().references(() => releaseOperations.id),
   kind: text('kind').$type<'archive' | 'registry' | 'komodo_config' | 'komodo_dispatch'>().notNull(),

@@ -1,9 +1,9 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { fromDrizzle, type Job } from 'pg-boss';
 import { idSchema, komodoReleasePhases, wakeupSchema, type SourceInspectionPauseReason, type TaskEventReason } from '@itervane/contracts';
 import type { OperationsWorkflowScope } from '../config.js';
 import { queueName, type Database } from '../persistence/database.js';
-import { formalRepairRetries, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
+import { formalRepairRetries, operationsExecutionSchedules, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { requireProjectAccess, requireStoredActor, type Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
 import { readOperationsDiagnosis, readOperationsRequest } from '../service/operations-requests.js';
@@ -38,7 +38,7 @@ export class ExecutionCoordinator {
   async withLease<T>(scope: ExecutionScope, action: (tx: Transaction, current: CurrentExecution) => Promise<T>, options: { allowCancel?: boolean; authorize?: boolean } = {}) {
     return this.database.db.transaction(async tx => {
       const { slot, task, run, runtime } = await lockExecution(tx, scope, options.allowCancel);
-      if (runtime.reason?.startsWith('release_')) throw new ExecutionLost();
+      if (runtime.reason?.startsWith('release_') || runtime.reason?.startsWith('operations_execution_')) throw new ExecutionLost();
       const access = options.authorize === false ? undefined : await authorizeRun(tx, task, scope.runId, run.role);
       const result = await action(tx, { task, run, runtime, operationsRequest: access?.operationsRequest,
         operationsDiagnosis: access?.operationsDiagnosis });
@@ -53,6 +53,7 @@ export class ExecutionCoordinator {
     const [task] = await tx.select().from(tasks).where(eq(tasks.id, slot.taskId)).for('update');
     if (task && slot.runId) {
       const [runtime] = await tx.select({ reason: runRuntime.reason }).from(runRuntime).where(eq(runRuntime.runId, slot.runId));
+      if (runtime?.reason?.startsWith('operations_execution_')) throw new ExecutionLost();
       if (runtime?.reason?.startsWith('release_')) {
         if (runtime.reason === 'release_claimed') await recoverClaimedRelease(tx, this.database, task, slot.runId, workerId, true);
         else if (['release_registry_prepared', 'release_registry_reconciling', 'release_registry_verified'].includes(runtime.reason)) {
@@ -79,11 +80,13 @@ export class ExecutionCoordinator {
       if (!parsed.success) { await settle(); return null; }
       const input = parsed.data;
       const [task] = await tx.select().from(tasks).where(eq(tasks.id, input.taskId)).for('update');
-      const [bound] = await tx.select({ run: taskRuns, reason: runRuntime.reason }).from(taskRuns)
-        .innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id)).where(eq(taskRuns.id, input.runId));
+      const [bound] = await tx.select({ run: taskRuns, reason: runRuntime.reason, executionId: operationsExecutionSchedules.executionId }).from(taskRuns)
+        .innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id))
+        .leftJoin(operationsExecutionSchedules, eq(operationsExecutionSchedules.taskId, taskRuns.taskId)).where(eq(taskRuns.id, input.runId));
       const run = bound?.run;
       if (!task || !run || task.state !== 'queued' || task.generation !== input.generation || run.taskId !== task.id
-        || run.generation !== input.generation || run.wakeupJobId !== job.id || bound?.reason?.startsWith('release_')) { await settle(); return null; }
+        || run.generation !== input.generation || run.wakeupJobId !== job.id
+        || bound?.executionId || bound?.reason?.startsWith('release_')) { await settle(); return null; }
       if (slot.taskId) {
         await settle(); await enqueue(tx, this.database, task, run.id, true); return null;
       }
@@ -160,7 +163,9 @@ export class ExecutionCoordinator {
     const candidates = await this.database.db.select({ task: tasks, run: taskRuns }).from(tasks)
       .innerJoin(taskRuns, and(eq(taskRuns.taskId, tasks.id), eq(taskRuns.generation, tasks.generation)))
       .innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id))
-      .where(and(eq(tasks.state, 'queued'), sql`left(coalesce(${runRuntime.reason}, ''), 8) <> 'release_'`)).limit(20);
+      .leftJoin(operationsExecutionSchedules, eq(operationsExecutionSchedules.taskId, tasks.id))
+      .where(and(eq(tasks.state, 'queued'), isNull(operationsExecutionSchedules.executionId),
+        sql`left(coalesce(${runRuntime.reason}, ''), 8) <> 'release_'`)).limit(20);
     for (const candidate of candidates) {
       const jobs = candidate.run.wakeupJobId ? await this.database.boss.findJobs(queueName, { id: candidate.run.wakeupJobId }) : [];
       const job = jobs[0];
@@ -169,11 +174,12 @@ export class ExecutionCoordinator {
       await this.database.db.transaction(async tx => {
         const slot = await lockSlot(tx);
         const [task] = await tx.select().from(tasks).where(eq(tasks.id, candidate.task.id)).for('update');
-        const [bound] = await tx.select({ run: taskRuns, reason: runRuntime.reason }).from(taskRuns)
-          .innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id)).where(eq(taskRuns.id, candidate.run.id));
+        const [bound] = await tx.select({ run: taskRuns, reason: runRuntime.reason, executionId: operationsExecutionSchedules.executionId }).from(taskRuns)
+          .innerJoin(runRuntime, eq(runRuntime.runId, taskRuns.id))
+          .leftJoin(operationsExecutionSchedules, eq(operationsExecutionSchedules.taskId, taskRuns.taskId)).where(eq(taskRuns.id, candidate.run.id));
         const run = bound?.run;
         if (!task || !run || task.state !== 'queued' || run.wakeupJobId !== candidate.run.wakeupJobId
-            || slot.taskId === task.id || bound?.reason?.startsWith('release_')) return;
+            || slot.taskId === task.id || bound?.executionId || bound?.reason?.startsWith('release_')) return;
         if (job) await this.database.boss.cancel(queueName, job, { db: fromDrizzle(tx, sql) });
         await enqueue(tx, this.database, task, run.id);
       });

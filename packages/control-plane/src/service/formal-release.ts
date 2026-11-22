@@ -340,7 +340,7 @@ export class FormalReleaseService {
       };
       await tx.insert(releaseDecisions).values(decision);
       const operationId = input.action === 'confirm' ? await enqueueReleaseOperation(tx, this.database, formalReleaseQueue, {
-        candidateId, environmentId: row.environmentId, approvalVersion: decision.version,
+        candidateId, environmentId: row.environmentId, approvalVersion: decision.version, actorId: decision.actorId,
       }) : operation?.id;
       if (input.action === 'confirm') await tx.update(taskRuns).set({ wakeupJobId: null }).where(eq(taskRuns.id, row.runId));
       await tx.update(runRuntime).set({ reason: input.action === 'confirm' ? 'release_queued' : null }).where(eq(runRuntime.runId, row.runId));

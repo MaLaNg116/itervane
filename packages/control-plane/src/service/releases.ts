@@ -167,7 +167,7 @@ export class ReleaseCandidateService {
       };
       await tx.insert(releaseDecisions).values(decision);
       const operationId = decision.action === 'confirm' ? await enqueueReleaseOperation(tx, this.database, releaseFixtureQueue, {
-        candidateId, environmentId: candidate.environmentId, approvalVersion: decision.version,
+        candidateId, environmentId: candidate.environmentId, approvalVersion: decision.version, actorId: decision.actorId,
       }) : null;
       const decided = { confirm: 'confirmed', reject: 'rejected', revoke: 'revoked' } as const;
       return { candidate: present(candidate, manifest, [...history, decision], decided[input.action], locale), operationId, replayed: false };

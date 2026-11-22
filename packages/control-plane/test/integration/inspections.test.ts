@@ -25,11 +25,11 @@ import { scriptedVerification } from '../../../verification/src/agent/verificati
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { runtimeConfig, workerConfig, type OperationsWorkflowScope } from '../../src/config.js';
-import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
+import { formalReleaseQueue, operationsExecutionQueue, queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
   operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
-  operationsDiagnosisRuntime, operationsExecutions, operationsObservations, operationsProposals, operationsRequests,
+  operationsDiagnosisRuntime, operationsExecutions, operationsExecutionSchedules, operationsObservations, operationsProposals, operationsRequests,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskEvents, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
@@ -2791,10 +2791,13 @@ it('freezes only the exact previously verified image cited by a rollback diagnos
   await new OperationsDecisionService(database.storage, installed, operationsPortal).decide(await decisionIdentity(), proposal.id, {
     action: 'confirm', expectedVersion: 0, fingerprint: proposal.fingerprint, idempotencyKey: randomUUID(),
   });
-  const { execution } = await new OperationsExecutionAdmission(database.storage, installed).reserve({
+  const { execution, schedule } = await new OperationsExecutionAdmission(database.storage, installed).enqueue({
     proposalId: proposal.id, fingerprint: proposal.fingerprint, decisionVersion: 1,
   });
   expect(execution).toMatchObject({ proposalId: proposal.id, proposalFingerprint: proposal.fingerprint, state: 'reserved' });
+  await expect(first.taskService.get(identity, schedule.taskId)).resolves.toMatchObject({
+    state: 'queued', runId: schedule.runId, purpose: translate('zh-CN', 'operations.execution.rollback'),
+  });
   expect(await database.storage.db.select().from(releaseOperations)).toHaveLength(2);
 });
 
@@ -2835,7 +2838,8 @@ async function restartExecutionCandidate(prepared?: Awaited<ReturnType<typeof in
   const decide = (action: 'confirm' | 'revoke', idempotencyKey = randomUUID()) => decisionService.decide(owner, proposal.id, {
     action, expectedVersion: action === 'confirm' ? 0 : 1, fingerprint: proposal.fingerprint, idempotencyKey,
   });
-  return { fixture, diagnosed, diagnosis, proposal, admission, input, decide, reserve: () => admission.reserve(input) };
+  return { fixture, diagnosed, diagnosis, proposal, admission, input, decide,
+    reserve: () => admission.reserve(input), enqueue: () => admission.enqueue(input) };
 }
 
 async function competingPublication(fixture: Awaited<ReturnType<typeof installedOperationsFixture>>) {
@@ -2843,6 +2847,103 @@ async function competingPublication(fixture: Awaited<ReturnType<typeof installed
     purpose: 'Competing approved release', dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
   return preparedFormalRelease({ existingTarget: fixture.target });
 }
+
+it('atomically queues one approved operations execution without reusing the diagnosis run', async () => {
+  const action = await restartExecutionCandidate();
+  await expect(action.enqueue()).rejects.toMatchObject({ code: 'unsupported_state' });
+  const { decision } = await action.decide('confirm');
+  const taskCount = (await database.storage.db.select({ id: taskRecords.id }).from(taskRecords)).length;
+  await database.admin.query(`ALTER TABLE itervane.operations_execution_schedules ADD CONSTRAINT injected_schedule_failure
+    CHECK (false) NOT VALID`);
+  try {
+    const failure: unknown = await action.enqueue().then(() => undefined, (error: unknown) => error);
+    expect(failure instanceof Error && failure.cause instanceof Error ? failure.cause.message : null).toContain('injected_schedule_failure');
+    expect(await database.storage.db.select().from(operationsExecutions)).toEqual([]);
+    expect(await database.storage.db.select().from(operationsExecutionSchedules)).toEqual([]);
+    expect(await database.storage.db.select({ id: taskRecords.id }).from(taskRecords)).toHaveLength(taskCount);
+    expect(await database.storage.boss.fetch(operationsExecutionQueue)).toEqual([]);
+  } finally {
+    await database.admin.query('ALTER TABLE itervane.operations_execution_schedules DROP CONSTRAINT injected_schedule_failure');
+  }
+  const held = await action.reserve();
+  const queued = await Promise.all([action.enqueue(), action.enqueue()]);
+  expect(queued.map(item => item.replayed).sort()).toEqual([false, true]);
+  const { execution, schedule } = queued[0]!;
+  expect(execution.id).toBe(held.execution.id);
+  expect(queued[1]?.schedule).toEqual(schedule);
+  expect(schedule.taskId).not.toBe(action.diagnosed.id);
+  expect(schedule.runId).not.toBe(action.diagnosed.runId);
+  const taskService = action.fixture.taskService;
+  await expect(taskService.get(identity, schedule.taskId)).resolves.toMatchObject({
+    runId: schedule.runId, projectId: action.diagnosed.projectId, requestedBy: decision.actorId,
+    workflow: 'operations', source: action.diagnosed.source, locale: 'zh-CN', state: 'queued',
+    purpose: translate('zh-CN', 'operations.execution.restart'),
+  });
+  for (const locale of ['en', 'zh-CN'] as const) {
+    const events = await taskService.events(identity, schedule.taskId, 10, locale);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'task.accepted', reason: 'operations_execution_queued',
+      reasonMessage: translate(locale, 'reason.operations_execution_queued') });
+  }
+  await expect(taskService.get(identity, action.diagnosed.id)).resolves.toMatchObject({ state: 'succeeded', version: action.diagnosed.version + 2 });
+  await expect(taskService.cancel(identity, schedule.taskId, { expectedVersion: 1 })).rejects.toMatchObject({ code: 'unsupported_state' });
+  await expect(taskService.resume(identity, schedule.taskId, { expectedVersion: 1 })).rejects.toMatchObject({ code: 'unsupported_state' });
+  await coordinator.reconcile(randomUUID());
+  const [ordinaryRun] = await database.storage.db.select().from(taskRuns).where(eq(taskRuns.id, schedule.runId));
+  expect(ordinaryRun).toMatchObject({ wakeupJobId: null, generation: 1, state: 'queued' });
+
+  const wakeups = await database.storage.boss.fetch(operationsExecutionQueue, { batchSize: 2 });
+  expect(wakeups).toHaveLength(1);
+  expect(wakeups[0]).toMatchObject({ id: schedule.wakeupJobId, data: { executionId: execution.id,
+    taskId: schedule.taskId, runId: schedule.runId, generation: 1 } });
+});
+
+it('closes a fetched operations execution only with the durable revocation and task event', async () => {
+  const action = await restartExecutionCandidate();
+  const { decision } = await action.decide('confirm');
+  const { execution, schedule } = await action.enqueue();
+  const [active] = await database.storage.boss.fetch(operationsExecutionQueue, { includeMetadata: true });
+  expect(active).toMatchObject({ id: schedule.wakeupJobId, state: 'active' });
+  await expect(database.storage.db.insert(operationsDecisions).values({
+    proposalId: action.proposal.id, version: 2, actorId: decision.actorId, grantId: decision.grantId,
+    action: 'revoke', idempotencyKey: randomUUID(), selfConfirmed: false, decidedAt: sql`clock_timestamp()`,
+  })).rejects.toMatchObject({ cause: { code: '23514', message: 'operations_execution_schedule_must_close' } });
+  const revoke = randomUUID();
+  await database.admin.query(`ALTER TABLE itervane.operations_execution_schedules ADD CONSTRAINT injected_schedule_closure_failure
+    CHECK (wakeup_job_id IS NOT NULL) NOT VALID`);
+  try {
+    await expect(action.decide('revoke', revoke)).rejects.toMatchObject({ cause: { code: '23514', constraint: 'injected_schedule_closure_failure' } });
+    expect(await database.storage.db.select().from(operationsDecisions)).toHaveLength(1);
+    expect((await database.storage.db.select().from(operationsExecutions))[0]).toMatchObject({ state: 'reserved' });
+    expect((await database.storage.boss.findJobs(operationsExecutionQueue, { id: execution.id }))[0]?.state).toBe('active');
+    await expect(action.fixture.taskService.get(identity, schedule.taskId)).resolves.toMatchObject({ state: 'queued', version: 1 });
+  } finally {
+    await database.admin.query('ALTER TABLE itervane.operations_execution_schedules DROP CONSTRAINT injected_schedule_closure_failure');
+  }
+  await action.decide('revoke', revoke);
+  expect(await action.decide('revoke', revoke)).toMatchObject({ replayed: true });
+  await expect(action.enqueue()).rejects.toMatchObject({ code: 'unsupported_state' });
+  expect((await database.storage.db.select().from(operationsExecutionSchedules))[0]).toMatchObject({ wakeupJobId: null });
+  expect((await database.storage.boss.findJobs(operationsExecutionQueue, { id: execution.id }))[0]?.state).toBe('cancelled');
+  await expect(action.fixture.taskService.get(identity, schedule.taskId)).resolves.toMatchObject({ state: 'cancelled', version: 2 });
+  expect((await action.fixture.taskService.events(identity, schedule.taskId, 10, 'zh-CN')).at(-1))
+    .toMatchObject({ actorId: decision.actorId, type: 'task.cancelled', reason: 'operations_execution_revoked' });
+});
+
+it('serializes scheduling and withdrawal of the same approved operations proposal', async () => {
+  const action = await restartExecutionCandidate();
+  await action.decide('confirm');
+  const [admission, revocation] = await Promise.allSettled([action.enqueue(), action.decide('revoke')]);
+  expect(revocation.status).toBe('fulfilled');
+  expect(await database.storage.boss.fetch(operationsExecutionQueue)).toEqual([]);
+  if (admission.status === 'fulfilled') {
+    await expect(action.fixture.taskService.get(identity, admission.value.schedule.taskId)).resolves.toMatchObject({ state: 'cancelled' });
+    expect((await database.storage.db.select().from(operationsExecutions))[0]).toMatchObject({ state: 'blocked', blockedReason: 'approval_revoked' });
+  } else {
+    expect(admission.reason).toMatchObject({ code: 'unsupported_state' });
+    expect(await database.storage.db.select().from(operationsExecutionSchedules)).toEqual([]);
+  }
+});
 
 it('reserves an approved operations execution only once and closes it atomically on revocation', async () => {
   const action = await restartExecutionCandidate();
@@ -2935,7 +3036,7 @@ it.each(['grant', 'target'] as const)('rejects an approved execution when its %s
   expect(await database.storage.db.select().from(operationsExecutions)).toEqual([]);
 });
 
-it('reclaims an undispatched operations reservation at expiry and admits the waiting release', async () => {
+it.each(['reserved', 'queued'] as const)('reclaims an undispatched %s operations reservation at expiry and admits the waiting release', async mode => {
   const fixture = await installedOperationsFixture();
   const publication = await competingPublication(fixture);
   await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_results
@@ -2943,7 +3044,8 @@ it('reclaims an undispatched operations reservation at expiry and admits the wai
   const action = await restartExecutionCandidate(fixture).finally(() =>
     database.admin.query('ALTER TABLE itervane.operations_diagnosis_results ALTER COLUMN created_at SET DEFAULT now()'));
   await action.decide('confirm');
-  await action.reserve();
+  const scheduled = mode === 'queued' ? await action.enqueue() : undefined;
+  if (!scheduled) await action.reserve();
   await vi.waitFor(async () => {
     const expired = await database.storage.pool.query<{ value: boolean }>('SELECT clock_timestamp() >= $1 AS value', [action.proposal.validUntil]);
     expect(expired.rows[0]?.value).toBe(true);
@@ -2953,7 +3055,15 @@ it('reclaims an undispatched operations reservation at expiry and admits the wai
   expect((await database.storage.db.select().from(operationsExecutions))[0]).toMatchObject({
     state: 'blocked', blockedReason: 'proposal_expired', closedAt: expect.any(Date),
   });
-});
+  if (scheduled) {
+    const { schedule } = scheduled;
+    expect((await database.storage.db.select().from(operationsExecutionSchedules))[0]).toMatchObject({ wakeupJobId: null });
+    expect(await database.storage.boss.fetch(operationsExecutionQueue)).toEqual([]);
+    await expect(action.fixture.taskService.get(identity, schedule.taskId)).resolves.toMatchObject({ state: 'needs_human' });
+    expect((await action.fixture.taskService.events(identity, schedule.taskId, 10, 'en')).at(-1))
+      .toMatchObject({ reason: 'operations_execution_expired', reasonMessage: translate('en', 'reason.operations_execution_expired') });
+  }
+}, 45_000);
 
 it('records an owner portal confirmation once and retains its revocation alongside the diagnosis', async () => {
   const { fixture, installed, diagnosis, task, service } = await settleProposalDiagnosis('restart');
