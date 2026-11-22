@@ -1,10 +1,10 @@
 import { z } from 'zod';
-import { localeSchema } from './i18n.js';
+import { localeSchema, taskEventReasonSchema } from './i18n.js';
 import { sha256Schema } from './inspection.js';
 import {
   operationsLogObservationSchema, operationsMetricObservationSchema, operationsRequestBindingSchema, whiskersObservationSchema,
 } from './operations.js';
-import { idSchema } from './primitives.js';
+import { idSchema, taskStateSchema } from './primitives.js';
 import { ociDigestSchema } from './qualified-standard-image.js';
 
 export const operationsDiagnosisInputSchema = z.strictObject({
@@ -68,3 +68,39 @@ export const operationsDiagnosisReceiptSchema = z.strictObject({
   && new Set(receipt.reads.map(read => read.operationId)).size === receipt.reads.length,
 'Recorded reads must match the diagnosis facts and tool budget');
 export type OperationsDiagnosisReceipt = z.infer<typeof operationsDiagnosisReceiptSchema>;
+
+const privateScope = { containerId: true, serverId: true } as const;
+const evidenceBinding = { evidenceId: sha256Schema, proofSha256: sha256Schema };
+const publicMetrics = z.discriminatedUnion('status', [
+  operationsMetricObservationSchema.options[0].omit(privateScope), operationsMetricObservationSchema.options[1].omit(privateScope),
+]);
+const diagnosisFactView = z.discriminatedUnion('section', [
+  z.strictObject({ ...evidenceBinding, section: z.literal('container'), result: whiskersObservationSchema.omit(privateScope) }),
+  z.strictObject({ ...evidenceBinding, section: z.literal('release'), result: releaseEvidence }),
+  z.strictObject({ ...evidenceBinding, section: z.literal('logs'), result: z.strictObject(operationsLogObservationSchema.shape).omit(privateScope)
+    .refine(log => log.warningLines <= log.lines && log.errorLines <= log.lines, 'Log signals exceed the observed lines') }),
+  z.strictObject({ ...evidenceBinding, section: z.literal('metrics'), result: publicMetrics }),
+]);
+
+const displayLabel = { message: z.string().min(1).max(320) };
+const diagnosisView = z.strictObject({
+  receiptSha256: sha256Schema,
+  hypotheses: z.array(finishOperationsInputSchema.shape.hypotheses.element.extend(displayLabel)).max(operationsHypothesisCodes.length),
+  recommendation: finishOperationsInputSchema.shape.recommendation.extend(displayLabel),
+  previousReleaseOperationId: idSchema.nullable(),
+  facts: z.array(diagnosisFactView).min(2).max(operationsDiagnosisSections.length),
+});
+
+export const operationsObservationViewSchema = z.strictObject({
+  version: z.literal(1), taskId: idSchema, runId: idSchema, taskVersion: z.int().min(1).max(2_147_483_647),
+  applicationId: idSchema, environmentId: idSchema, releaseOperationId: idSchema,
+  state: taskStateSchema, observation: whiskersObservationSchema.pick({ state: true, observedAt: true }).extend({
+    stateLabel: z.string().min(1).max(120), receiptSha256: sha256Schema,
+  }).nullable(),
+  diagnosis: diagnosisView.optional(),
+  message: z.string().min(1).max(320), reason: taskEventReasonSchema.nullable(),
+  reasonMessage: z.string().min(1).max(320).nullable(), locale: localeSchema,
+}).refine(view => (view.state === 'succeeded') === (view.observation !== null) && (!view.diagnosis || view.state === 'succeeded'),
+'Completed observation evidence is required');
+
+export type OperationsObservationView = z.infer<typeof operationsObservationViewSchema>;
