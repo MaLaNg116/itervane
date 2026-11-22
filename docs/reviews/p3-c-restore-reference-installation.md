@@ -9,3 +9,5 @@
 TypeScript、249 项单元、六项 PostgreSQL 17.12 专项和差异检查通过。托管装机与故障回归的实证由下方检查保存。 [托管检查](https://github.com/MaLaNg116/itervane/pull/120/checks)
 
 交付提交 `0ca526c2fdffa287404f6ecef6e35527232440e0` 已通过正式装机入口的三种原生授权负例。报告源码指纹为 `15476565d83577908fcc380ca2d9587e048bd8ab9fda1603c46234fd60e44ac9`，三条路径写步骤为零，入口匿名返回 401，双语回执一致。 [装机授权任务](https://github.com/MaLaNg116/itervane/actions/runs/45047388626/job/137284851063) · [归档](https://github.com/MaLaNg116/itervane/actions/runs/45047388626/artifacts/14764158151)
+
+同一提交和源码指纹通过自托管入口的原生恢复与中断接管。恢复后授权健康返回 200，匿名返回 401，HTTP 与 MCP 回执一致。已记录更新的接管核对原更新并释放环境。无法确定更新的接管保留 `missing_update` 和发布闸门。 [装机恢复任务](https://github.com/MaLaNg116/itervane/actions/runs/45047388626/job/137284851366) · [归档](https://github.com/MaLaNg116/itervane/actions/runs/45047388626/artifacts/14765210187)
