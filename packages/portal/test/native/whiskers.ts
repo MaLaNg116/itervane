@@ -3,6 +3,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { chromium, type Browser } from '@playwright/test';
 import { localeSchema, type Check } from '@itervane/contracts';
 import { WhiskersObservationClient, WhiskersObservationError } from '../../../control-plane/src/runtime/whiskers-observation.js';
+import { WhiskersRestartClient } from '../../../control-plane/src/runtime/whiskers-restart.js';
 import { confirmationId, toolText, WhiskersProbeClient, whiskersOrigin, whiskersVersion } from '../../../verification/src/native/whiskers.js';
 import { executeProbe, report } from '../../../verification/src/report.js';
 import { eligibleHost, WhiskersFixture } from './whiskers-fixture.js';
@@ -109,11 +110,18 @@ async function run() {
     requireProof(!observed.isError && observedText?.includes('ID: ' + a.id) && observedText.includes('State: running'));
     record('observe', ' Whiskers ' + whiskersVersion + '.');
 
+    const restart = new WhiskersRestartClient({ origin: whiskersOrigin, serverId: 'local', containerId: a.id }, key);
+    let allowedApproval: string | undefined;
+    const authorizeRestart: Parameters<WhiskersRestartClient['requestApproval']>[0] = async (_phase, attempt, target) => {
+      requireProof(target.origin === whiskersOrigin && target.serverId === 'local' && target.containerId === a.id
+        && (attempt.kind !== 'resume' || attempt.approvalId === allowedApproval));
+    };
     step = 'pending-confirmation';
-    const id = confirmationId(await client.restart(a.id));
-    requireProof(id && await unchanged());
-    const pendingId = confirmationId(await client.restart(a.id));
-    requireProof(pendingId === id && await unchanged());
+    const request = await restart.requestApproval(authorizeRestart);
+    requireProof(request.status === 'awaiting_approval' && await unchanged());
+    const id = allowedApproval = request.approvalId;
+    const pending = await restart.resume(id, authorizeRestart);
+    requireProof(pending.status === 'awaiting_approval' && pending.approvalId === id && await unchanged());
     record('pending', ' Approval=' + id + '.');
 
     step = 'browser-approval';
@@ -130,21 +138,21 @@ async function run() {
     step = 'approved-reconnect';
     await client.close();
     clients.delete(client);
-    const resumed = await connect(key);
     step = 'approved-dispatch';
     // Exactly one dispatch after approval. An error leads to a read-only
     // observation of the actual fixture and exits without redispatch.
-    const result = await resumed.restart(a.id);
+    const result = await restart.resume(id, authorizeRestart);
     const restarted = await fixture.snapshot(fixture.primary);
-    requireProof(!result.isError && toolText(result)?.includes(fixture.primary) && toolText(result)?.endsWith('restarted.')
+    requireProof(result.status === 'acknowledged' && result.approvalId === id
       && restarted.id === a.id && Date.parse(restarted.started) > Date.parse(a.started)
       && await unchanged(restarted.started) && await fixture.healthy(fixture.primary));
     record('applied');
 
     step = 'used-approval';
-    const replay = confirmationId(await resumed.restart(a.id));
-    requireProof(replay && ![id, differentCaller, differentTarget].includes(replay) && await unchanged(restarted.started));
-    record('consumed', ' Approval=' + replay + '.');
+    const replay = await restart.requestApproval(authorizeRestart);
+    requireProof(replay.status === 'awaiting_approval' && ![id, differentCaller, differentTarget].includes(replay.approvalId)
+      && await unchanged(restarted.started));
+    record('consumed', ' Approval=' + replay.approvalId + '.');
 
     step = 'native-restart-audit';
     await observeRestartAudit(page, fixture.primary, primaryKey);
