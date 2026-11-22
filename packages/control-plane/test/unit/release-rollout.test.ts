@@ -1,5 +1,6 @@
 import { releaseRolloutCheckSchema, type OperationsRestartBaseline, type ReleaseRolloutCheck } from '@itervane/contracts';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { KomodoReleaseError } from '../../src/runtime/release-komodo.js';
 import { ReleaseRolloutVerifier } from '../../src/runtime/release-rollout.js';
 import { fingerprintRolloutCheck } from '../../src/service/release-targets.js';
 
@@ -124,6 +125,39 @@ it('refuses a baseline from another container, a restart during health verificat
   await expect(verifier.observeRestart(restartInput, stopped, authenticate)).rejects.toMatchObject({ reason: 'runtime_changed' });
   inspectRuntime.mockResolvedValue(restarted);
   await expect(verifier.observeRestart({ ...restartInput, version: 'v1' }, stopped, authenticate)).rejects.toMatchObject({ reason: 'health_failed' });
+});
+
+it('observes an authenticated application 503 for the published version while preserving the release health gate', async () => {
+  inspectRuntime.mockResolvedValue(restarted);
+  emulateIngress({}, authorized => authorized ? Response.json({ status: 'unhealthy', version: 'v2' }, { status: 503 })
+    : new Response(null, { status: 401 }));
+  await expect(verifier.observeApplicationHealth(restartInput, authenticate)).resolves.toEqual({
+    status: 'unhealthy', reason: 'application_unhealthy', evidenceSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  await expect(verifier.observe(input, authenticate)).rejects.toMatchObject({ reason: 'health_failed' });
+});
+
+it('declines to attribute a proxy error, mismatched version or replacement container to the published runtime', async () => {
+  inspectRuntime.mockResolvedValue(restarted);
+  emulateIngress({}, authorized => authorized ? new Response('Service unavailable', { status: 503 }) : new Response(null, { status: 401 }));
+  await expect(verifier.observeApplicationHealth(restartInput, authenticate)).rejects.toMatchObject({ reason: 'health_failed' });
+  emulateIngress({}, authorized => authorized ? Response.json({ status: 'unhealthy', version: 'v1' }, { status: 503 })
+    : new Response(null, { status: 401 }));
+  await expect(verifier.observeApplicationHealth(restartInput, authenticate)).rejects.toMatchObject({ reason: 'runtime_changed' });
+  tokenSource.mockClear();
+  inspectRuntime.mockResolvedValue({ ...restarted, containerId: '2'.repeat(64) });
+  await expect(verifier.observeApplicationHealth(restartInput, authenticate)).rejects.toMatchObject({ reason: 'runtime_changed' });
+  expect(tokenSource).not.toHaveBeenCalled();
+});
+
+it('requires an independently confirmed stopped state for the same container', async () => {
+  inspectRuntime.mockRejectedValue(new KomodoReleaseError('InspectDeploymentContainer', 'response'));
+  await expect(verifier.observeApplicationHealth(restartInput, authenticate)).resolves.toMatchObject({
+    status: 'unhealthy', reason: 'runtime_stopped',
+  });
+  inspectStoppedRuntime.mockResolvedValue({ ...stopped, containerId: '2'.repeat(64) });
+  await expect(verifier.observeApplicationHealth(restartInput, authenticate)).rejects.toMatchObject({ reason: 'runtime_changed' });
+  expect(tokenSource).not.toHaveBeenCalled();
 });
 
 it.each([

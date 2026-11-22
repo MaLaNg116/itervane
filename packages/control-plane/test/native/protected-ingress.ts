@@ -160,14 +160,15 @@ export async function openProtectedIngress(
     ]);
     await docker(['config', '--quiet']);
 
-    phase = 'identity';
-    started = true;
-    await docker(['up', '--detach', '--no-build', 'keycloak'], 180_000);
-    await untilReady(async () => {
+    const waitForIdentity = () => untilReady(async () => {
       const discovery = await execute('curl', ['--noproxy', '*', '--silent', '--fail', '--max-time', '2',
         '--cacert', idp.cert, issuer + '/.well-known/openid-configuration']);
       return JSON.parse(discovery.stdout).issuer === issuer;
     });
+    phase = 'identity';
+    started = true;
+    await docker(['up', '--detach', '--no-build', 'keycloak'], 180_000);
+    await waitForIdentity();
     phase = 'proxies';
     await docker(['up', '--detach', '--no-build'], 180_000);
     await untilReady(async () => {
@@ -188,6 +189,10 @@ export async function openProtectedIngress(
       otherIdentity: { ...check.probeIdentity, clientId: identity.other.clientId, subject: identity.other.subject },
       otherSecret: identity.other.secret, close,
       async stopIdentity() { await docker(['stop', '--timeout', '3', 'keycloak'], 20_000); },
+      async startIdentity() {
+        await docker(['start', 'keycloak'], 20_000);
+        await waitForIdentity();
+      },
       async anonymousHealthStatus() {
         const { stdout } = await execute('curl', ['--noproxy', '*', '--silent', '--max-time', '4', '--output', '/dev/null',
           '--cacert', tls.cert, '--write-out', '%{http_code}', check.origin + check.healthPath], { timeout: 5_000 });
