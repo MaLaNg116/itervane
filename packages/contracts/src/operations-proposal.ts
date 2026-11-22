@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { localeSchema } from './i18n.js';
 import { sha256Schema } from './inspection.js';
-import { operationsRequestBindingSchema } from './operations.js';
+import { operationsEnqueueActionSchema, operationsExecutionReceiptSchema, operationsExecutionViewScopeSchema, operationsRequestBindingSchema } from './operations.js';
 import { idSchema } from './primitives.js';
 import { ociDigestSchema } from './qualified-standard-image.js';
 import { komodoReleaseTargetSchema, releaseDecisionDtoSchema, releaseDecisionSchema, releaseKomodoCompletionSchema, releaseRuntimeObservationSchema } from './release.js';
@@ -71,3 +71,19 @@ export const operationsProposalViewSchema = z.strictObject({
 }).refine(view => !(view.draft && view.proposal));
 
 export type OperationsProposalView = z.infer<typeof operationsProposalViewSchema>;
+
+const verifiedRestore = z.strictObject({
+  proofSha256: sha256Schema, version: releaseRuntimeObservationSchema.shape.version, verifiedAt: z.iso.datetime({ precision: 3 }),
+});
+
+export const operationsRestoreExecutionViewSchema = operationsExecutionViewScopeSchema.extend({
+  execution: operationsExecutionReceiptSchema.extend({
+    restore: releaseSummary, nativeUpdateId: releaseKomodoCompletionSchema.shape.updateId.nullable(),
+    recovery: z.strictObject({
+      state: z.enum(['observing', 'retry', 'manual_review', 'verified']),
+      failure: operationsRestoreRecoveryFailureSchema.nullable(), proof: verifiedRestore.nullable(),
+    }).refine(recovery => recovery.state === 'verified' ? recovery.proof !== null && recovery.failure === null : recovery.proof === null).nullable(),
+  }).nullable(),
+  action: operationsEnqueueActionSchema.nullable(),
+});
+export type OperationsRestoreExecutionView = z.infer<typeof operationsRestoreExecutionViewSchema>;

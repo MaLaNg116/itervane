@@ -29,6 +29,7 @@ import { OperationsProposalViewService } from './service/operations-proposal-vie
 import { OperationsProposalService } from './service/operations-proposals.js';
 import { OperationsExecutionAdmission } from './service/operations-execution-admission.js';
 import { OperationsRestartViewService } from './service/operations-restart-view.js';
+import { OperationsRestoreViewService } from './service/operations-restore-view.js';
 import { ExecutionCoordinator } from './runtime/coordinator.js';
 import { OperationsExecutionCoordinator } from './runtime/operations-execution-lease.js';
 
@@ -198,6 +199,7 @@ export function createApi(database: Database, config: ApiConfig,
       ? { clientId: config.portalClientId, writer: operationsRestartWriterProofSchema.parse(options.operationsRestartWriter) }
       : undefined;
     const restarts = new OperationsRestartViewService(database, operationsApi, restartOperator);
+    const restores = new OperationsRestoreViewService(database);
     app.get('/v1/tasks/:taskId/operations-proposal', async request => {
       const { taskId } = parseInput(taskParam, request.params);
       return views.get(identity(request), taskId, request.locale);
@@ -215,6 +217,10 @@ export function createApi(database: Database, config: ApiConfig,
     app.get('/v1/tasks/:taskId/operations-execution', async request => {
       const { taskId } = parseInput(taskParam, request.params);
       return restarts.get(identity(request), taskId, request.locale);
+    });
+    app.get('/v1/tasks/:taskId/operations-restore', async request => {
+      const { taskId } = parseInput(taskParam, request.params);
+      return restores.get(identity(request), taskId, request.locale);
     });
     if (restartOperator) {
       const admission = new OperationsExecutionAdmission(database, operationsApi);

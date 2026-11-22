@@ -8,11 +8,10 @@ import { operationsExecutions, operationsExecutionSchedules, operationsProposals
   operationsRestartRequests, runRuntime, taskEvents, tasks } from '../persistence/schema.js';
 import { readOperationsRestartRequest } from '../runtime/operations-restart-request.js';
 import { latestRestartResume } from '../runtime/operations-restart-resume.js';
-import { isHumanWorkspaceOwner, requireActor, requireProjectAccess, type Actor, type Transaction } from './access.js';
+import { isHumanWorkspaceOwner, type Actor, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 import { requireOperationsExecutionApproval, type RestartOperatorScope } from './operations-execution-admission.js';
-import { readOperationsProposal } from './operations-proposals.js';
-import { readOperationsTaskRecord } from './operations-records.js';
+import { readOperationsExecutionContext } from './operations-execution-view.js';
 import { requireOperationsRestartWriter } from './operations-restart-installations.js';
 import { databaseNow } from './releases.js';
 
@@ -42,34 +41,25 @@ export class OperationsRestartViewService {
   async get(identity: VerifiedIdentity, rawTaskId: unknown, locale: Locale) {
     const taskId = parseInput(idSchema, rawTaskId);
     return this.database.db.transaction(async tx => {
-      const actor = await requireActor(tx, identity);
-      const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId)).for('share');
-      if (!task) throw new DomainError('not_found');
-      const { project } = await requireProjectAccess(tx, actor, task.projectId);
-      const { run, diagnosis } = await readOperationsTaskRecord(tx, task);
+      const { actor, project, task, run, proposed } = await readOperationsExecutionContext(tx, identity, taskId);
       const view: OperationsRestartExecutionView = { taskId, runId: run.id, locale, execution: null, action: null };
-      const [proposal] = diagnosis ? await tx.select().from(operationsProposals)
-        .where(eq(operationsProposals.diagnosisRunId, run.id)) : [];
-      if (proposal && diagnosis) {
-        const frozen = readOperationsProposal(proposal);
-        if (frozen.diagnosis.taskId !== taskId || frozen.diagnosis.sha256 !== diagnosis.sha256) throw new Error('operations_restart_view_binding');
-        if (frozen.action.kind === 'restart') {
-          const current = await readExecution(tx, proposal.id, task.projectId);
-          if (current) {
-            const { execution, schedule, task: actionTask, nativeApprovalId, recovery } = current;
-            const reason = taskEventReasonSchema.parse(current.detail.reason ?? current.reason);
-            if (execution.proposalFingerprint !== proposal.fingerprint) throw new Error('operations_restart_view_receipt');
-            view.execution = { id: execution.id, taskId: actionTask.id, runId: schedule.runId, taskVersion: actionTask.version,
-              proposalId: proposal.id, releaseOperationId: frozen.target.releaseOperationId, state: actionTask.state,
-              reason, message: translate(locale, eventReasonMessages[reason]), environmentHeld: execution.state === 'reserved',
-              nativeApprovalId, recovery };
-          }
-          if (this.operator && isHumanWorkspaceOwner(identity, actor, project.workspaceId, this.operator.clientId)) {
-            view.action = await this.actionFor(tx, task, proposal, current, actor, this.operator).catch(error => {
-              if (!(error instanceof DomainError)) throw error;
-              return null;
-            });
-          }
+      if (proposed?.frozen.action.kind === 'restart') {
+        const { frozen, proposal } = proposed;
+        const current = await readExecution(tx, proposal.id, task.projectId);
+        if (current) {
+          const { execution, schedule, task: actionTask, nativeApprovalId, recovery } = current;
+          const reason = taskEventReasonSchema.parse(current.detail.reason ?? current.reason);
+          if (execution.proposalFingerprint !== proposal.fingerprint) throw new Error('operations_restart_view_receipt');
+          view.execution = { id: execution.id, taskId: actionTask.id, runId: schedule.runId, taskVersion: actionTask.version,
+            proposalId: proposal.id, releaseOperationId: frozen.target.releaseOperationId, state: actionTask.state,
+            reason, message: translate(locale, eventReasonMessages[reason]), environmentHeld: execution.state === 'reserved',
+            nativeApprovalId, recovery };
+        }
+        if (this.operator && isHumanWorkspaceOwner(identity, actor, project.workspaceId, this.operator.clientId)) {
+          view.action = await this.actionFor(tx, task, proposal, current, actor, this.operator).catch(error => {
+            if (!(error instanceof DomainError)) throw error;
+            return null;
+          });
         }
       }
       if (identity.expiresAt * 1_000 <= (await databaseNow(tx)).getTime()) throw new DomainError('unauthenticated');

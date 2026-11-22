@@ -86,21 +86,27 @@ export const operationsRestartRecoveryProofSchema = z.strictObject({
 });
 export type OperationsRestartRecoveryProof = z.infer<typeof operationsRestartRecoveryProofSchema>;
 
-export const operationsRestartEnqueueInputSchema = z.strictObject({ fingerprint: sha256Schema, decisionVersion: z.literal(1) });
-export const operationsRestartSubmissionSchema = z.strictObject({ executionId: idSchema, replayed: z.boolean() });
-export const operationsRestartExecutionViewSchema = z.strictObject({
-  taskId: idSchema, runId: idSchema, locale: localeSchema,
-  execution: z.strictObject({
-    id: idSchema, taskId: idSchema, runId: idSchema, taskVersion: revision,
-    proposalId: idSchema, releaseOperationId: idSchema, state: taskStateSchema, reason: taskEventReasonSchema,
-    message: z.string().min(1).max(320), environmentHeld: z.boolean(), nativeApprovalId: whiskersNativeApprovalIdSchema.nullable(),
+export const operationsEnqueueInputSchema = z.strictObject({ fingerprint: sha256Schema, decisionVersion: z.literal(1) });
+export const operationsEnqueueActionSchema = operationsEnqueueInputSchema.extend({ kind: z.literal('enqueue'), proposalId: idSchema });
+export const operationsSubmissionSchema = z.strictObject({ executionId: idSchema, replayed: z.boolean() });
+export const operationsRestartEnqueueInputSchema = operationsEnqueueInputSchema;
+export const operationsRestartSubmissionSchema = operationsSubmissionSchema;
+export const operationsExecutionViewScopeSchema = z.strictObject({ taskId: idSchema, runId: idSchema, locale: localeSchema });
+export const operationsExecutionReceiptSchema = z.strictObject({
+  id: idSchema, taskId: idSchema, runId: idSchema, taskVersion: revision,
+  proposalId: idSchema, releaseOperationId: idSchema, state: taskStateSchema, reason: taskEventReasonSchema,
+  message: z.string().min(1).max(320), environmentHeld: z.boolean(),
+});
+export const operationsRestartExecutionViewSchema = operationsExecutionViewScopeSchema.extend({
+  execution: operationsExecutionReceiptSchema.extend({
+    nativeApprovalId: whiskersNativeApprovalIdSchema.nullable(),
     recovery: z.strictObject({
       state: z.enum(['observing', 'retry', 'manual_review', 'verified']),
       failure: operationsRestartRecoveryFailureSchema.nullable(), proofSha256: sha256Schema.nullable(),
     }).nullable(),
   }).nullable(),
   action: z.discriminatedUnion('kind', [
-    operationsRestartEnqueueInputSchema.extend({ kind: z.literal('enqueue'), proposalId: idSchema }),
+    operationsEnqueueActionSchema,
     operationsRestartContinueInputSchema.omit({ idempotencyKey: true }).extend({ kind: z.literal('continue'), executionId: idSchema }),
   ]).nullable(),
 });
