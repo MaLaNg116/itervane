@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { taskDtoSchema } from './control-plane.js';
-import { localeSchema } from './i18n.js';
+import { localeSchema, taskEventReasonSchema } from './i18n.js';
 import { sha256Schema } from './inspection.js';
-import { idSchema, serviceOriginSchema, sourceRefSchema } from './primitives.js';
+import { idSchema, serviceOriginSchema, sourceRefSchema, taskStateSchema } from './primitives.js';
 import { ociDigestSchema } from './qualified-standard-image.js';
 import { releaseRuntimeObservationSchema } from './release.js';
 
@@ -85,6 +85,26 @@ export const operationsRestartRecoveryProofSchema = z.strictObject({
   observation: operationsRestartRecoveryObservationSchema,
 });
 export type OperationsRestartRecoveryProof = z.infer<typeof operationsRestartRecoveryProofSchema>;
+
+export const operationsRestartEnqueueInputSchema = z.strictObject({ fingerprint: sha256Schema, decisionVersion: z.literal(1) });
+export const operationsRestartSubmissionSchema = z.strictObject({ executionId: idSchema, replayed: z.boolean() });
+export const operationsRestartExecutionViewSchema = z.strictObject({
+  taskId: idSchema, runId: idSchema, locale: localeSchema,
+  execution: z.strictObject({
+    id: idSchema, taskId: idSchema, runId: idSchema, taskVersion: revision,
+    proposalId: idSchema, releaseOperationId: idSchema, state: taskStateSchema, reason: taskEventReasonSchema,
+    message: z.string().min(1).max(320), environmentHeld: z.boolean(), nativeApprovalId: whiskersNativeApprovalIdSchema.nullable(),
+    recovery: z.strictObject({
+      state: z.enum(['observing', 'retry', 'manual_review', 'verified']),
+      failure: operationsRestartRecoveryFailureSchema.nullable(), proofSha256: sha256Schema.nullable(),
+    }).nullable(),
+  }).nullable(),
+  action: z.discriminatedUnion('kind', [
+    operationsRestartEnqueueInputSchema.extend({ kind: z.literal('enqueue'), proposalId: idSchema }),
+    operationsRestartContinueInputSchema.omit({ idempotencyKey: true }).extend({ kind: z.literal('continue'), executionId: idSchema }),
+  ]).nullable(),
+});
+export type OperationsRestartExecutionView = z.infer<typeof operationsRestartExecutionViewSchema>;
 
 export const operationsTargetInputSchema = z.strictObject({
   environmentId: idSchema,

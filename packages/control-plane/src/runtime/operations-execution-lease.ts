@@ -62,9 +62,12 @@ async function requireRestartRecoveryAttempt(tx: Transaction, scope: OperationsE
 }
 
 async function requireSavedRestartWriter(tx: Transaction, target: OperationsEnrollmentScope, whiskers: OperationsRestartInstallation['whiskers'],
-  request: Awaited<ReturnType<typeof readOperationsRestartRequest>>) {
+  request: Awaited<ReturnType<typeof readOperationsRestartRequest>>, expected?: OperationsRestartWriterProof) {
   if (!request.writerInstallationId) throw new DomainError('unsupported_state');
-  await requireOperationsRestartWriter(tx, target, whiskers, {
+  if (expected && (expected.installationId !== request.writerInstallationId || expected.credentialSha256 !== request.document.credentialSha256)) {
+    throw new DomainError('version_conflict');
+  }
+  await requireOperationsRestartWriter(tx, target, whiskers, expected ?? {
     installationId: request.writerInstallationId, credentialSha256: request.document.credentialSha256,
   });
 }
@@ -286,7 +289,7 @@ export class OperationsExecutionCoordinator {
     });
   }
 
-  async requestRestartResume(identity: VerifiedIdentity, rawExecutionId: unknown, raw: unknown) {
+  async requestRestartResume(identity: VerifiedIdentity, rawExecutionId: unknown, raw: unknown, writer?: OperationsRestartWriterProof) {
     const executionId = parseInput(idSchema, rawExecutionId);
     const input = parseInput(operationsRestartContinueInputSchema, raw);
     const database = this.coordinator.database;
@@ -304,7 +307,7 @@ export class OperationsExecutionCoordinator {
       if (actor.principalId !== decision.actorId || actor.workspaceGrantId !== decision.grantId) throw new DomainError('forbidden');
       const request = await readOperationsRestartRequest(tx, executionId);
       if (request.approvalId !== input.approvalId || request.callSha256 !== input.callSha256) throw new DomainError('version_conflict');
-      await requireSavedRestartWriter(tx, frozen.target, whiskers, request);
+      await requireSavedRestartWriter(tx, frozen.target, whiskers, request, writer);
 
       const [duplicate] = await tx.select().from(operationsRestartResumes)
         .where(and(eq(operationsRestartResumes.executionId, executionId), eq(operationsRestartResumes.idempotencyKey, input.idempotencyKey)));
