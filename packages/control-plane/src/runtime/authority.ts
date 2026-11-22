@@ -35,7 +35,7 @@ export async function lockExecution(tx: Transaction, scope: ExecutionScope, allo
     || slot.workerId !== scope.workerId || slot.fence !== scope.fence || task.generation !== scope.generation
     || run.taskId !== task.id || runtime.taskId !== task.id || run.generation !== scope.generation
     || (task.state !== 'running' && !(allowCancel && task.state === 'cancel_requested'))) throw new ExecutionLost();
-  return { slot, task, runtime };
+  return { slot, task, run, runtime };
 }
 
 export async function assertLeaseLive(tx: Transaction, previousLeaseUntil: Date) {

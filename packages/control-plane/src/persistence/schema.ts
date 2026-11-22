@@ -4,7 +4,8 @@ import {
   agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairInput, type FormalRepairResult, type FormalRepairRetry,
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
-  type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt, type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
+  type OperationsRequestBinding, type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt,
+  type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
   type ReleaseKomodoCompletion, type ReleaseKomodoConfiguration, type ReleaseKomodoIntent, type ReleaseRolloutFailure, type ReleaseRolloutProof,
 } from '@itervane/contracts';
@@ -483,6 +484,22 @@ export const releaseOperations = domain.table('release_operations', {
       AND ${t.observation}->'healthy' = 'true'::jsonb AND ${t.observation}->'accessProtected' = 'true'::jsonb
       AND octet_length(${t.observation}::text) <= 4096)
   ) IS TRUE`),
+]);
+
+export const operationsRequests = domain.table('operations_requests', {
+  runId: uuid('run_id').primaryKey(), taskId: uuid('task_id').notNull(), projectId: uuid('project_id').notNull(),
+  applicationId: uuid('application_id').notNull(), environmentId: uuid('environment_id').notNull(),
+  releaseOperationId: uuid('release_operation_id').notNull().references(() => releaseOperations.id),
+  sha256: text('sha256').notNull(), document: jsonb('document').$type<OperationsRequestBinding>().notNull(), createdAt: createdAt(),
+}, t => [
+  foreignKey({ name: 'operations_request_run_task', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
+  foreignKey({ name: 'operations_request_task_project', columns: [t.taskId, t.projectId], foreignColumns: [tasks.id, tasks.projectId] }),
+  foreignKey({ name: 'operations_request_environment', columns: [t.environmentId, t.projectId, t.applicationId],
+    foreignColumns: [environments.id, environments.projectId, environments.applicationId] }),
+  check('operations_request_binding', sql`(${t.sha256} ~ '^[a-f0-9]{64}$' AND ${t.document}->>'version' = '1'
+    AND ${t.document}->>'projectId' = ${t.projectId}::text AND ${t.document}->>'applicationId' = ${t.applicationId}::text
+    AND ${t.document}->>'environmentId' = ${t.environmentId}::text AND ${t.document}->>'releaseOperationId' = ${t.releaseOperationId}::text
+    AND octet_length(${t.document}::text) <= 4096) IS TRUE`),
 ]);
 
 export const formalReleaseSteps = domain.table('formal_release_steps', {

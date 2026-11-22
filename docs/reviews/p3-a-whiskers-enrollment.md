@@ -7,3 +7,5 @@
 3. 连接资料与同一项目的当前正式发布合并后才供诊断使用。集成测试覆盖没有登记、拒绝额外凭证输入、并发登记幂等、切换服务器、另一项目不可见和发布登记换代。 [集成用例](https://github.com/MaLaNg116/itervane/blob/76da34c5a3dc4fc45937cb2c3df3661c631ad977/packages/control-plane/test/integration/inspections.test.ts)
 
 本机 TypeScript、210 项单元及 Drizzle 迁移一致性通过。托管 PostgreSQL 17 的领域集成及原生 Whiskers 检查通过。KVM 回归正在同一测试版本运行。后续诊断任务固定登记指纹、走可恢复队列并复核授权。 [真实数据库](https://github.com/MaLaNg116/itervane/actions/runs/44965004280/job/137031916008) · [原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/44965004295/job/137031915727) · [KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44965004313)
+
+审查核对了环境行锁、发布登记外键、独立代次、配置文件上限、接收字段及运行角色。最终审查版本 `c898e8cedb3212d8c8a27772acc88161c09cebe4` 与托管验证的非文档内容一致。常规六项检查及八组 KVM 均通过，已合入 `a04d6f92c5700dbdc3f9d65abe27789ee1d86d4a`。 [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44966721536) · [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44966717935)

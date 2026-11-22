@@ -5,17 +5,22 @@ import { queueName, type Database } from '../persistence/database.js';
 import { formalRepairRetries, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { requireProjectAccess, requireStoredActor, type Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
+import { readOperationsRequest } from '../service/operations-requests.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, enqueue, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope, type TaskRow } from './authority.js';
 import { recoverClaimedRelease, recoverKomodoLease, recoverRegistryLease } from './release-queue.js';
 
-type Current = { task: TaskRow; runtime: typeof runRuntime.$inferSelect };
+type Current = { task: TaskRow; run: typeof taskRuns.$inferSelect; runtime: typeof runRuntime.$inferSelect };
 
-export async function authorizeRun(tx: Transaction, task: TaskRow, runId: string) {
+export async function authorizeRun(tx: Transaction, task: TaskRow, runId: string, role?: Current['run']['role']) {
   const access = await requireProjectAccess(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
-  if (task.generation === 1) return access;
-  const [retry] = await tx.select({ grantId: formalRepairRetries.grantId }).from(formalRepairRetries).where(eq(formalRepairRetries.runId, runId));
-  if (retry && retry.grantId !== access.grantId) throw new DomainError('forbidden');
+  if (role === 'operations') {
+    const { document } = await readOperationsRequest(tx, task, runId);
+    if (document.grantId !== access.grantId) throw new DomainError('forbidden');
+  } else if (task.generation !== 1) {
+    const [retry] = await tx.select({ grantId: formalRepairRetries.grantId }).from(formalRepairRetries).where(eq(formalRepairRetries.runId, runId));
+    if (retry && retry.grantId !== access.grantId) throw new DomainError('forbidden');
+  }
   return access;
 }
 
@@ -28,10 +33,10 @@ export class ExecutionCoordinator {
 
   async withLease<T>(scope: ExecutionScope, action: (tx: Transaction, current: Current) => Promise<T>, options: { allowCancel?: boolean; authorize?: boolean } = {}) {
     return this.database.db.transaction(async tx => {
-      const { slot, task, runtime } = await lockExecution(tx, scope, options.allowCancel);
+      const { slot, task, run, runtime } = await lockExecution(tx, scope, options.allowCancel);
       if (runtime.reason?.startsWith('release_')) throw new ExecutionLost();
-      if (options.authorize !== false) await authorizeRun(tx, task, scope.runId);
-      const result = await action(tx, { task, runtime });
+      if (options.authorize !== false) await authorizeRun(tx, task, scope.runId, run.role);
+      const result = await action(tx, { task, run, runtime });
       await assertLeaseLive(tx, slot.leaseUntil);
       return result;
     });
@@ -77,10 +82,11 @@ export class ExecutionCoordinator {
       if (slot.taskId) {
         await settle(); await enqueue(tx, this.database, task, run.id, true); return null;
       }
-      try { await authorizeRun(tx, task, run.id); }
+      try { await authorizeRun(tx, task, run.id, run.role); }
       catch (error) {
         if (!(error instanceof DomainError)) throw error;
-        await appendEvent(tx, task, 'task.needs_human', 'needs_human', { workerId, reason: 'permission_revoked' });
+        await appendEvent(tx, task, 'task.needs_human', 'needs_human', { workerId,
+          reason: error.code === 'unsupported_state' && run.role === 'operations' ? 'operations_unavailable' : 'permission_revoked' });
         await settle(); return null;
       }
       const completed = await settle();

@@ -1,14 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
-import { cancelTaskSchema, resumeTaskSchema, idSchema, listQuerySchema, startTaskSchema, taskDtoSchema, taskEventDtoSchema, wakeupSchema, translate,
+import { cancelTaskSchema, resumeTaskSchema, idSchema, listQuerySchema, startOperationsTaskSchema, startTaskSchema, taskDtoSchema, taskEventDtoSchema, translate,
   eventReasonMessages, retrySourceInspectionReasonSchema, taskEventReasonSchema, type Locale, type MessageKey } from '@itervane/contracts';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import { queueName, type Database } from '../persistence/database.js';
-import { formalAuditInputs, formalAuditResults, releaseCandidates, releaseOperations, repositories, runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
+import { formalAuditInputs, formalAuditResults, operationsRequests, releaseCandidates, releaseOperations, repositories,
+  runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
 import { requireActor, requireProject, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 import { isRepairableAudit } from './formal-repair.js';
+import { freezeOperationsRequest } from './operations-requests.js';
+import { readOperationsObservationTarget } from './operations-targets.js';
 import { appendEvent, enqueue, lockSlot } from '../runtime/authority.js';
 import { blockQueuedRelease } from '../runtime/release-queue.js';
 import { databaseNow } from './releases.js';
@@ -26,8 +29,39 @@ async function taskView(tx: Transaction, taskId: string) {
   return presentTask(row.task, row.runId);
 }
 
+type TaskAdmission = Pick<typeof tasks.$inferInsert,
+  'projectId' | 'requestedBy' | 'repositoryId' | 'commit' | 'purpose' | 'dataClass' | 'locale' | 'requestKey' | 'requestHash'>;
+
+async function replayAdmission(tx: Transaction, scope: Pick<TaskAdmission, 'projectId' | 'requestedBy' | 'requestKey' | 'requestHash'>) {
+  const [existing] = await tx.select({ id: tasks.id, requestHash: tasks.requestHash }).from(tasks)
+    .where(and(eq(tasks.projectId, scope.projectId), eq(tasks.requestedBy, scope.requestedBy), eq(tasks.requestKey, scope.requestKey)));
+  if (!existing) return undefined;
+  if (existing.requestHash !== scope.requestHash) throw new DomainError('idempotency_conflict');
+  return { task: await taskView(tx, existing.id), replayed: true };
+}
+
 export class TaskService {
   constructor(private readonly database: Database) {}
+
+  private async insertTask(tx: Transaction, values: TaskAdmission, operations?: ReturnType<typeof freezeOperationsRequest>) {
+    const taskId = randomUUID(); const runId = randomUUID();
+    const [task] = await tx.insert(tasks).values({ ...values, id: taskId })
+      .onConflictDoNothing({ target: [tasks.projectId, tasks.requestedBy, tasks.requestKey] }).returning();
+    if (!task) {
+      const replay = await replayAdmission(tx, values);
+      if (!replay) throw new DomainError('idempotency_conflict');
+      return replay;
+    }
+    await tx.insert(taskRuns).values({ id: runId, taskId, generation: 1, role: operations ? 'operations' : 'audit' });
+    await tx.insert(runRuntime).values({ runId, taskId, ...(operations ? { maxTools: 2 } : {}) });
+    if (operations) {
+      const { projectId, applicationId, environmentId, releaseOperationId } = operations.document;
+      await tx.insert(operationsRequests).values({ runId, taskId, projectId, applicationId, environmentId, releaseOperationId, ...operations });
+    }
+    await enqueue(tx, this.database, task, runId);
+    await tx.insert(taskEvents).values({ taskId, sequence: 1, type: 'task.accepted', state: 'queued', actorId: task.requestedBy });
+    return { task: presentTask(task, runId), replayed: false };
+  }
 
   async admit(identity: VerifiedIdentity, raw: unknown) {
     const input = parseInput(startTaskSchema, raw);
@@ -42,23 +76,25 @@ export class TaskService {
       const [repository] = await tx.select().from(repositories)
         .where(and(eq(repositories.id, input.source.repositoryId), eq(repositories.projectId, input.projectId))).for('share');
       if (!repository) throw new DomainError('not_found');
-      const taskId = randomUUID(); const runId = randomUUID();
-      const [inserted] = await tx.insert(tasks).values({ id: taskId, projectId: input.projectId,
+      return this.insertTask(tx, { projectId: input.projectId,
         repositoryId: repository.id, requestedBy: actor.principalId, commit: input.source.commit, purpose: input.purpose,
-        dataClass: input.dataClass, locale: input.locale, requestKey: input.idempotencyKey, requestHash: hash })
-        .onConflictDoNothing({ target: [tasks.projectId, tasks.requestedBy, tasks.requestKey] }).returning();
-      if (!inserted) {
-        const [existing] = await tx.select().from(tasks).where(and(eq(tasks.projectId, input.projectId), eq(tasks.requestedBy, actor.principalId), eq(tasks.requestKey, input.idempotencyKey)));
-        if (!existing || existing.requestHash !== hash) throw new DomainError('idempotency_conflict');
-        return { task: await taskView(tx, existing.id), replayed: true };
-      }
-      await tx.insert(taskRuns).values({ id: runId, taskId, generation: 1, role: 'audit' });
-      await tx.insert(runRuntime).values({ runId, taskId });
-      const jobId = await this.database.boss.send(queueName, wakeupSchema.parse({ taskId, runId, generation: 1 }), { db: fromDrizzle(tx, sql) });
-      if (!jobId) throw new DomainError('unavailable');
-      await tx.update(taskRuns).set({ wakeupJobId: jobId }).where(eq(taskRuns.id, runId));
-      await tx.insert(taskEvents).values({ taskId, sequence: 1, type: 'task.accepted', state: 'queued', actorId: actor.principalId });
-      return { task: await taskView(tx, taskId), replayed: false };
+        dataClass: input.dataClass, locale: input.locale, requestKey: input.idempotencyKey, requestHash: hash });
+    });
+  }
+
+  async admitOperations(identity: VerifiedIdentity, raw: unknown) {
+    const input = parseInput(startOperationsTaskSchema, raw);
+    const { projectId, environmentId, idempotencyKey, locale } = input;
+    const requestHash = createHash('sha256').update(JSON.stringify({ workflow: 'operations', projectId, environmentId, locale })).digest('hex');
+    return this.database.db.transaction(async tx => {
+      const actor = await requireActor(tx, identity);
+      await requireProject(tx, actor, projectId, true);
+      const scope = { projectId, requestedBy: actor.principalId, requestKey: idempotencyKey, requestHash };
+      const replay = await replayAdmission(tx, scope);
+      if (replay) return replay;
+      const target = await readOperationsObservationTarget(tx, actor, { projectId, environmentId });
+      return this.insertTask(tx, { ...scope, repositoryId: target.source.repositoryId, commit: target.source.commit,
+        purpose: translate(locale, 'operations.task.purpose'), dataClass: target.dataClass, locale }, freezeOperationsRequest(target));
     });
   }
 

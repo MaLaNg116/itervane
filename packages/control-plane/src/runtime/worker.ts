@@ -97,9 +97,10 @@ export class DurableWorker {
     timer.unref();
     let phase: 'preflight' | 'audit' | 'repair' | 'verification' = 'preflight';
     try {
-      const { runtime, retry } = await this.coordinator.withLease(scope, async (tx, current) => ({
-        runtime: current.runtime, retry: await readRepairRetry(tx, current.task, scope),
+      const { runtime, retry, role } = await this.coordinator.withLease(scope, async (tx, current) => ({
+        runtime: current.runtime, retry: await readRepairRetry(tx, current.task, scope), role: current.run.role,
       }));
+      if (role === 'operations') return await this.coordinator.stop(scope, 'operations_unavailable');
       if (retry && (!this.repair || !this.verification || retry.repairPolicySha256 !== repairPolicyFingerprint(this.repair)
           || retry.verificationProfileSha256 !== verificationProfileFingerprint(this.verification.profile))) {
         return await this.coordinator.stop(scope, 'repair_retry_configuration_changed');
