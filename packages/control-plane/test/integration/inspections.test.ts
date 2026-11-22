@@ -14,7 +14,8 @@ import { createFormalOperations, createFormalVerification } from '@itervane/agen
 import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseTargetSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
-  operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartRecoveryProofSchema, operationsRestartRequestSchema, taskDtoSchema, translate, verificationViewSchema, whiskersRestartImageDigest,
+  operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartExecutionViewSchema, operationsRestartRecoveryProofSchema,
+  operationsRestartRequestSchema, operationsRestartSubmissionSchema, taskDtoSchema, translate, verificationViewSchema, whiskersRestartImageDigest,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type OperationsDiagnosisObservation, type OperationsDiagnosisSection,
   type OperationsRestartInstallation,
@@ -4097,6 +4098,151 @@ it('shares authorized operations proposals across HTTP and MCP and records decis
     } })).json()).toMatchObject({ proposal: { status: 'revoked', actions: [] } });
   } finally {
     await client.close();
+    await app.close();
+  }
+});
+
+it('queues and resumes a restart through the bound human portal, once per request', async () => {
+  const action = await restartExecutionCandidate();
+  const writer = await registerRestartInstallation(restartInstallation(action.fixture));
+  const config = { ...issuer.config, portalClientId: operationsPortal, operationsApi: action.installed };
+  const app = createApi(database.storage, config, { logger: false, operationsRestartWriter: writer });
+  const disabled = createApi(database.storage, config, { logger: false });
+  const wrongWriter = createApi(database.storage, config, { logger: false, operationsRestartWriter: { ...writer, installationSha256: sha256('another installation') } });
+  try {
+    const url = `/v1/tasks/${action.diagnosed.id}/operations-execution`;
+    const submitUrl = `/v1/operations/proposals/${action.proposal.id}/execution`;
+    const portal = { authorization: `Bearer ${await issuer.token('owner', { azp: operationsPortal })}`, 'accept-language': 'zh-CN' };
+    const assistant = { authorization: `Bearer ${await issuer.token('owner')}` };
+    const view = async () => operationsRestartExecutionViewSchema.parse((await app.inject({ url, headers: portal })).json());
+    const payload = { fingerprint: action.proposal.fingerprint, decisionVersion: 1 };
+    const submit = (headers = portal, body = payload) => app.inject({ method: 'POST', url: submitUrl, headers, payload: body });
+    expect(await view()).toMatchObject({ execution: null, action: null });
+    expect((await submit()).statusCode).toBe(409);
+    await action.decide('confirm');
+    expect((await view()).action).toEqual({ kind: 'enqueue', proposalId: action.proposal.id, ...payload });
+    expect((await disabled.inject({ url, headers: portal })).json()).toMatchObject({ action: null, execution: null });
+    expect((await disabled.inject({ method: 'POST', url: submitUrl, headers: portal, payload })).statusCode).toBe(404);
+    expect((await wrongWriter.inject({ url, headers: portal })).json()).toMatchObject({ action: null, execution: null });
+    expect((await wrongWriter.inject({ method: 'POST', url: submitUrl, headers: portal, payload })).statusCode).toBe(409);
+    expect((await submit({ ...portal, ...assistant })).statusCode).toBe(403);
+    expect((await submit(portal, { ...payload, fingerprint: sha256('different proposal') })).statusCode).toBe(409);
+    const results = await Promise.all([submit(), submit()]);
+    expect(results.map(result => result.statusCode).sort()).toEqual([200, 202]);
+    const receipts = results.map(result => operationsRestartSubmissionSchema.parse(result.json()));
+    const executionId = receipts[0]!.executionId;
+    expect(receipts.every(receipt => receipt.executionId === executionId)).toBe(true);
+    expect(await database.storage.db.select().from(operationsExecutionSchedules)).toHaveLength(1);
+    expect(await view()).toMatchObject({ execution: { id: executionId, state: 'queued', environmentHeld: true, recovery: null }, action: null });
+
+    const runtime = new OperationsExecutionCoordinator(coordinator, action.installed);
+    const scope = await runtime.claim(await fetchOperationsWakeup(), randomUUID());
+    if (!scope) throw new Error('Expected an initial restart lease');
+    const { restartRequest } = await runtime.prepareDispatch(scope, writer, stoppedBaseline(action.fixture));
+    if (!restartRequest) throw new Error('Expected the original restart request');
+    const approval = { callSha256: restartRequest.callSha256, approvalId: randomUUID().replaceAll('-', '') };
+    await runtime.pauseForRestartApproval(scope, approval);
+    const waiting = await view();
+    const continuation = waiting.action;
+    if (continuation?.kind !== 'continue') throw new Error('Expected the bound human continuation');
+    expect(waiting.execution).toMatchObject({ nativeApprovalId: approval.approvalId, state: 'waiting_approval',
+      message: translate('zh-CN', 'reason.operations_execution_native_approval'), environmentHeld: true });
+    const { kind, executionId: boundId, ...binding } = continuation;
+    expect({ kind, boundId, callSha256: binding.callSha256, approvalId: binding.approvalId }).toEqual({ kind: 'continue', boundId: executionId, ...approval });
+    const urlContinue = `/v1/operations/executions/${executionId}/continue`;
+    const request = { ...binding, idempotencyKey: randomUUID() };
+    const resume = (body = request, headers = portal) => app.inject({ method: 'POST', url: urlContinue, headers, payload: body });
+    expect((await resume(request, { ...portal, ...assistant })).statusCode).toBe(403);
+    expect((await resume({ ...request, approvalId: randomUUID().replaceAll('-', '') })).statusCode).toBe(409);
+    expect((await resume({ ...request, expectedVersion: request.expectedVersion + 1 })).statusCode).toBe(409);
+    expect((await wrongWriter.inject({ method: 'POST', url: urlContinue, headers: portal, payload: request })).statusCode).toBe(409);
+    expect((await app.inject({ url, headers: assistant })).json()).toMatchObject({ action: null, execution: {
+      nativeApprovalId: approval.approvalId, message: translate('en', 'reason.operations_execution_native_approval'),
+    } });
+    expect((await Promise.all([resume(), resume()])).map(result => result.statusCode).sort()).toEqual([200, 202]);
+    expect(await database.storage.db.select().from(operationsRestartResumes)).toHaveLength(1);
+    expect((await view()).action).toBeNull();
+    await action.decide('revoke');
+    expect((await resume()).statusCode).toBe(409);
+    expect(await view()).toMatchObject({ execution: { state: 'reconciling', environmentHeld: true }, action: null });
+  } finally {
+    await Promise.all([app.close(), disabled.close(), wrongWriter.close()]);
+  }
+});
+
+it('projects a redacted verified restart receipt under current HTTP and read-only MCP project access', async () => {
+  const { action, runtime, approval, binding, claimRecovery, outcomeEvidence } = await restartAwaitingRecovery();
+  const { scope } = await claimRecovery();
+  await expect(runtime.settleRestartRecovery(scope, outcomeEvidence)).resolves.toBe('verified');
+  const publicUrl = 'http://127.0.0.1:4330';
+  const config = { ...issuer.config, publicUrl, portalClientId: operationsPortal, operationsApi: action.installed };
+  const { installationId, installationSha256, credentialSha256 } = binding;
+  const app = createApi(database.storage, config, { logger: false, operationsRestartWriter: { installationId, installationSha256, credentialSha256 } });
+  const reader = new Client({ name: 'restart-receipt-test', version: '0.0.0' });
+  const writer = new Client({ name: 'restart-mcp-write-scope-test', version: '0.0.0' });
+  try {
+    const projectId = action.diagnosed.projectId;
+    const subject = 'restart-receipt-viewer';
+    const principalId = randomUUID();
+    await database.storage.db.insert(principals).values({ id: principalId, issuer: config.issuer, subject });
+    const http = { authorization: `Bearer ${await issuer.token(subject)}`, 'accept-language': 'zh-CN' };
+    const url = `/v1/tasks/${action.diagnosed.id}/operations-execution`;
+    expect((await app.inject({ url, headers: http })).statusCode).toBe(404);
+    await database.storage.db.insert(projectMembers).values({ principalId, projectId, role: 'viewer' });
+    const response = await app.inject({ url, headers: http });
+    expect(response.statusCode).toBe(200);
+    const view = operationsRestartExecutionViewSchema.parse(response.json());
+    const [proof] = await database.storage.db.select().from(operationsRestartRecoveries);
+    expect(view).toMatchObject({ taskId: action.diagnosed.id, locale: 'zh-CN', action: null, execution: {
+      id: action.execution.id, taskId: scope.taskId, runId: scope.runId, proposalId: action.proposal.id,
+      releaseOperationId: action.fixture.operationId, nativeApprovalId: approval.approvalId, state: 'succeeded', environmentHeld: false,
+      message: translate('zh-CN', 'reason.operations_restart_recovery_verified'),
+      recovery: { state: 'verified', failure: null, proofSha256: proof?.proofSha256 },
+    } });
+    for (const value of [action.fixture.registration.whiskers.origin, action.fixture.runtime.containerId, approval.callSha256, operationsFixtureKey]) {
+      expect(JSON.stringify(view)).not.toContain(value);
+    }
+    const endpoint = await app.listen({ host: '127.0.0.1', port: 0 });
+    const token = await issuer.token(subject, { aud: `${publicUrl}/mcp`, scope: 'itervane:read' });
+    await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp', endpoint), {
+      requestInit: { headers: { authorization: `Bearer ${token}`, 'accept-language': 'zh-CN' } },
+    }));
+    const ownerToken = await issuer.token('owner', { aud: `${publicUrl}/mcp`, azp: operationsPortal, scope: 'itervane:read itervane:write' });
+    await writer.connect(new StreamableHTTPClientTransport(new URL('/mcp', endpoint), {
+      requestInit: { headers: { authorization: `Bearer ${ownerToken}`, 'accept-language': 'zh-CN' } },
+    }));
+    const tools = (await writer.listTools()).tools;
+    expect(tools.filter(tool => /operations.*(execution|continue|restart)/.test(tool.name)).map(tool => tool.name)).toEqual(['get_operations_execution']);
+    const call = { name: 'get_operations_execution', arguments: { taskId: action.diagnosed.id } };
+    expect((await reader.callTool(call)).structuredContent).toEqual(view);
+    await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
+    expect((await app.inject({ url, headers: http })).statusCode).toBe(404);
+    expect(await reader.callTool(call)).toMatchObject({ isError: true, structuredContent: { error: { code: 'not_found' } } });
+  } finally {
+    await Promise.all([reader.close(), writer.close()]);
+    await app.close();
+  }
+});
+
+it('rejects portal restart submission after the original approval grant is replaced', async () => {
+  const action = await restartExecutionCandidate();
+  const writer = await registerRestartInstallation(restartInstallation(action.fixture));
+  await action.decide('confirm');
+  const app = createApi(database.storage, { ...issuer.config, portalClientId: operationsPortal, operationsApi: action.installed },
+    { logger: false, operationsRestartWriter: writer });
+  try {
+    const [grant] = await database.storage.db.delete(workspaceMembers).returning();
+    if (!grant) throw new Error('Expected the original workspace grant');
+    await database.storage.db.insert(workspaceMembers).values({ principalId: grant.principalId, workspaceId: grant.workspaceId });
+    const headers = { authorization: `Bearer ${await issuer.token('owner', { azp: operationsPortal })}` };
+    const view = await app.inject({ url: `/v1/tasks/${action.diagnosed.id}/operations-execution`, headers });
+    expect(view.json()).toMatchObject({ action: null, execution: null });
+    const response = await app.inject({ method: 'POST', url: `/v1/operations/proposals/${action.proposal.id}/execution`,
+      headers, payload: { fingerprint: action.proposal.fingerprint, decisionVersion: 1 } });
+    expect(response.statusCode).toBe(403);
+    expect(await database.storage.db.select().from(operationsExecutionSchedules)).toEqual([]);
+    expect(await database.storage.db.select().from(operationsExecutions)).toEqual([]);
+  } finally {
     await app.close();
   }
 });
