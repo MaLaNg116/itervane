@@ -1,0 +1,52 @@
+import { z } from 'zod';
+import { localeSchema } from './i18n.js';
+import { sha256Schema } from './inspection.js';
+import {
+  operationsLogObservationSchema, operationsMetricObservationSchema, operationsRequestBindingSchema, whiskersObservationSchema,
+} from './operations.js';
+import { idSchema } from './primitives.js';
+import { ociDigestSchema } from './qualified-standard-image.js';
+
+export const operationsDiagnosisInputSchema = z.strictObject({
+  version: z.literal(1), taskId: idSchema, runId: idSchema, generation: z.int().positive(),
+  locale: localeSchema, requestSha256: sha256Schema, request: operationsRequestBindingSchema,
+});
+export type OperationsDiagnosisInput = z.infer<typeof operationsDiagnosisInputSchema>;
+
+export const operationsDiagnosisSections = ['container', 'release', 'logs', 'metrics'] as const;
+export const operationsDiagnosisSectionSchema = z.enum(operationsDiagnosisSections);
+export type OperationsDiagnosisSection = z.infer<typeof operationsDiagnosisSectionSchema>;
+
+const verifiedRelease = z.strictObject({
+  operationId: idSchema, manifestDigest: ociDigestSchema, verifiedAt: z.iso.datetime({ precision: 3 }),
+});
+const releaseEvidence = z.strictObject({ current: verifiedRelease, previous: verifiedRelease.nullable() })
+  .refine(evidence => !evidence.previous || evidence.previous.operationId !== evidence.current.operationId
+    && evidence.previous.verifiedAt <= evidence.current.verifiedAt, 'Previous release must precede the current release');
+const observation = { kind: z.literal('operations_section'), proofSha256: sha256Schema };
+export const operationsDiagnosisObservationSchema = z.discriminatedUnion('section', [
+  z.strictObject({ ...observation, section: z.literal('container'), result: whiskersObservationSchema }),
+  z.strictObject({ ...observation, section: z.literal('release'), result: releaseEvidence }),
+  z.strictObject({ ...observation, section: z.literal('logs'), result: operationsLogObservationSchema }),
+  z.strictObject({ ...observation, section: z.literal('metrics'), result: operationsMetricObservationSchema }),
+]);
+export type OperationsDiagnosisObservation = z.infer<typeof operationsDiagnosisObservationSchema>;
+
+export const operationsHypothesisCodes = ['application_error', 'release_regression', 'memory_pressure'] as const;
+export const operationsRecommendationCodes = ['continue_observation', 'review_restart', 'review_rollback', 'investigate_code', 'human_review'] as const;
+const evidenceIds = z.array(sha256Schema).min(1).max(operationsDiagnosisSections.length)
+  .refine(ids => ids.length === new Set(ids).size, 'Evidence references must be unique');
+export const finishOperationsInputSchema = z.strictObject({
+  hypotheses: z.array(z.strictObject({ code: z.enum(operationsHypothesisCodes), evidenceIds })).max(operationsHypothesisCodes.length),
+  recommendation: z.strictObject({ code: z.enum(operationsRecommendationCodes), evidenceIds }),
+});
+export const operationsDiagnosisResultSchema = finishOperationsInputSchema.extend({
+  facts: z.array(z.strictObject({ section: operationsDiagnosisSectionSchema, evidenceId: sha256Schema, proofSha256: sha256Schema }))
+    .min(2).max(operationsDiagnosisSections.length),
+  previousReleaseOperationId: idSchema.nullable(),
+}).refine(result => {
+  const sections = new Set(result.facts.map(fact => fact.section));
+  return sections.size === result.facts.length && sections.has('container') && sections.has('release')
+    && (result.previousReleaseOperationId !== null) === (result.recommendation.code === 'review_rollback');
+}, 'Diagnosis requires the current container and release and a rollback reference when applicable');
+export type OperationsDiagnosisResult = z.infer<typeof operationsDiagnosisResultSchema>;
