@@ -4,7 +4,8 @@ import {
   agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairInput, type FormalRepairResult, type FormalRepairRetry,
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
-  type OperationsDiagnosisObservation, type OperationsDiagnosisSection, type OperationsObservationReceipt, type OperationsRequestBinding,
+  type OperationsDiagnosisObservation, type OperationsDiagnosisReceipt, type OperationsDiagnosisSection,
+  type OperationsObservationReceipt, type OperationsRequestBinding,
   type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt,
   type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
@@ -541,6 +542,15 @@ export const operationsDiagnosisReads = domain.table('operations_diagnosis_reads
         AND ${t.document}->>'proofSha256' ~ '^[a-f0-9]{64}$' AND ${t.sha256} ~ '^[a-f0-9]{64}$' AND ${t.recordedAt} >= ${t.createdAt}
         AND octet_length(${t.document}::text) <= 4096))) IS TRUE`),
 ]);
+
+export const operationsDiagnosisResults = domain.table('operations_diagnosis_results', {
+  runId: uuid('run_id').primaryKey().references(() => operationsDiagnosisRuntime.runId),
+  workerId: uuid('worker_id').notNull(), fence: integer('fence').notNull(), checkpointId: text('checkpoint_id').notNull(),
+  sha256: text('sha256').notNull(), document: jsonb('document').$type<OperationsDiagnosisReceipt>().notNull(), createdAt: createdAt(),
+}, t => [check('operations_diagnosis_result_binding', sql`(${t.fence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+  AND ${t.document}->>'version' = '1' AND ${t.document}->>'runId' = ${t.runId}::text AND ${t.document}->>'fence' = ${t.fence}::text
+  AND ${t.document}->>'checkpointId' = ${t.checkpointId} AND ${t.document}->>'observationSha256' ~ '^[a-f0-9]{64}$'
+  AND octet_length(${t.document}::text) <= 8192) IS TRUE`)]);
 
 export const formalReleaseSteps = domain.table('formal_release_steps', {
   operationId: uuid('operation_id').notNull().references(() => releaseOperations.id),
