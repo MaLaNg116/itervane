@@ -11,4 +11,6 @@
 
 首轮长时间真库回归发现整套用例共用的测试身份在五分钟后过期，`145fa19` 调整为每项用例独立签发。托管回归又定位到两处夹具断言，`42641b8` 让数据库互斥用例先登记有效发布审批，并校验并发决定所返回的任务 ID。修订后五项 PostgreSQL 专项通过，覆盖原生触发器拒绝、两种顺序、并发争用及指定回滚版本。 [托管失败证据](https://github.com/MaLaNg116/itervane/actions/runs/44987168219/job/137100217818) · [修订后的用例](https://github.com/MaLaNg116/itervane/blob/42641b8eb2af2f0382eebd1da7308d16dd53dc51/packages/control-plane/test/integration/inspections.test.ts)
 
+修订后的版本 `1b940650e36cd4f7ba7257a3e91659880fc730ab` 完成托管回归，235 项单元和 219 项 PostgreSQL 17 集成测试通过，门户和扫描器检查也通过。 [完整托管验证](https://github.com/MaLaNg116/itervane/actions/runs/44988025701) · [真库验收](https://github.com/MaLaNg116/itervane/actions/runs/44988025701/job/137102769641)
+
 C2b2 将预留对应到持久化任务和全局执行槽，审查租约、重新领取及撤销竞态。原生派发及恢复健康在后续批次实测，现阶段的 `reserved` 只代表通过准入。
