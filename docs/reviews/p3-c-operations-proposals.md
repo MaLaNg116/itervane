@@ -8,3 +8,7 @@
 4. 看真库验收。使用已走正式领域结算的合成目标覆盖重启、两个不同版本、并发去重、指纹或动作参数变化、超期、撤权、换绑和待发布冲突。 [集成用例](https://github.com/MaLaNg116/itervane/blob/8710b024e233a2888ddf3a4e7dc11e855f0d054c/packages/control-plane/test/integration/inspections.test.ts#L2731)
 
 本机 TypeScript、224 项单元、十项 PostgreSQL 17.12 专项及迁移一致性检查通过。审批记录和双语入口由 C1b 接续，执行与恢复验证由 C2 接续。 [托管检查](https://github.com/MaLaNg116/itervane/actions/runs/44981434652) · [KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44981434576)
+
+同步 #82 安装态诊断及其原生夹具后，`727466400d9287e93c83be429ec3bb5dfe48b5a1` 完成常规托管检查和 206 项真实 PostgreSQL 集成检查。本机九项抽查覆盖诊断回执、提案冻结、并发和发布冲突。发布冲突场景首次在已有上线核验的租约步骤遇到拒绝，单项复跑通过，时间来源修复另见 #91。 [PR 常规检查](https://github.com/MaLaNg116/itervane/actions/runs/44992261344) · [分支常规检查](https://github.com/MaLaNg116/itervane/actions/runs/44992257950) · [租约修复](https://github.com/MaLaNg116/itervane/pull/91)
+
+同版原生 Whiskers 与受保护发布诊断作业通过。报告的源码指纹为 `be6c8c3ad0468737a453583e65d9f8df523ee2b4390bdb1ca0cb1e4365044925`，核对了登记容器、四类证据、双语 HTTP/MCP 一致及夹具清理。合入复核逐一检查提案有效期、已有授权、当前部署证据和指定回滚目标。 [KVM 诊断证据](https://github.com/MaLaNg116/itervane/actions/runs/44992257894/job/137115664544) · [原生 Whiskers 回归](https://github.com/MaLaNg116/itervane/actions/runs/44992257898)

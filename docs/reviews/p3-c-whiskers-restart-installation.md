@@ -1,6 +1,6 @@
 # P3-C2c2b1 · Whiskers 写安装登记与轮换导读
 
-本批接续 #94 的原生权限和 Operator 验收，固定代码为 `b5219b6f175b312df31aa012cd320691f547d993`。 [草稿 #95](https://github.com/MaLaNg116/itervane/pull/95) · [分阶段计划](../plans/p3-c-whiskers-restart-execution.md)
+本批接续 #94 的原生权限和 Operator 验收，固定代码为 `b5219b6f175b312df31aa012cd320691f547d993`。 [PR #95](https://github.com/MaLaNg116/itervane/pull/95) · [分阶段计划](../plans/p3-c-whiskers-restart-execution.md)
 
 1. `fe82f5e` 的迁移 0053 添加独立的写安装记录。一个受保护环境至多有一个活动代次，凭证指纹在所有代次唯一。退用后仍保留配置摘要和历史绑定。已有重启记录仍可读取，历史缺少写安装关联时只具备归档与核对用途。数据库同时检查新原生请求与续发关联当前安装。 [迁移与触发器](https://github.com/MaLaNg116/itervane/blob/b5219b6f175b312df31aa012cd320691f547d993/packages/control-plane/migrations/0053_operations_restart_installations.sql#L26)
 2. `2777dad` 的受信安装入口从本机 JSON 文件接受 `register` 或 `retire`。运行 `pnpm register:operations-restart-installation <文件>`。登记包含原生安装版本、入口、现有只读登记摘要和策略、角色、凭证指纹。登记与轮换使用 `expectedActiveId`，相同请求回放，过时代次以及旧凭证复用被拒绝。返回代次与摘要，凭证原文由安装者另行保管。 [安装命令](https://github.com/MaLaNg116/itervane/blob/b5219b6f175b312df31aa012cd320691f547d993/packages/control-plane/src/entries/register-operations-restart-installation.ts) · [登记事务](https://github.com/MaLaNg116/itervane/blob/b5219b6f175b312df31aa012cd320691f547d993/packages/control-plane/src/service/operations-restart-installations.ts#L47)
@@ -8,3 +8,5 @@
 4. `b5219b6` 验证同一代次的并发登记、轮换冲突、退用凭证复用阻断、事件与队列回滚、错误指纹、原生审批与只读接管。原生夹具以同一入口启动新代次，实际检查旧凭证拒绝、新凭证的单工具范围及目标容器的启动时间与健康。 [真库专项](https://github.com/MaLaNg116/itervane/blob/b5219b6f175b312df31aa012cd320691f547d993/packages/control-plane/test/integration/inspections.test.ts#L2894) · [原生轮换用例](https://github.com/MaLaNg116/itervane/blob/b5219b6f175b312df31aa012cd320691f547d993/packages/portal/test/native/whiskers.ts#L214)
 
 本机通过 TypeScript、232 项单元、18 项 PostgreSQL 17.12 专项和迁移一致性。托管 Whiskers 通过 18 项原生验证。写安装的本地证明装载、真实 Worker 发送、旧原生许可核对及独立健康结算继续按 C2c2b 与 C2c3 推进。 [原生 Whiskers 证据](https://github.com/MaLaNg116/itervane/actions/runs/45000369654) · [托管检查](https://github.com/MaLaNg116/itervane/pull/95/checks)
+
+合入前复核了安装代次绑定、旧凭证拒绝、同一环境的并发轮换，以及撤销或轮换后进入只读核对的路径。固定复核版本 `519fd9cebf7088218f0ed6eba82fd214146d45ed` 通过全部 17 项检查，已合入 `a38908d85c45e02eb59f4422256992435ef6987e`。 [PR 检查](https://github.com/MaLaNg116/itervane/actions/runs/45026637023) · [推送检查](https://github.com/MaLaNg116/itervane/actions/runs/45026634105) · [九项托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45026634022) · [原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/45026634063) · [OCI 输入](https://github.com/MaLaNg116/itervane/actions/runs/45026634029)
