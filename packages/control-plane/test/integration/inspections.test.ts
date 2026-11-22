@@ -14,7 +14,7 @@ import { createFormalOperations, createFormalVerification } from '@itervane/agen
 import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseTargetSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
-  operationsProposalViewSchema, operationsRestartRequestSchema, taskDtoSchema, translate, verificationViewSchema, whiskersRestartImageDigest,
+  operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartRequestSchema, taskDtoSchema, translate, verificationViewSchema, whiskersRestartImageDigest,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type OperationsDiagnosisObservation, type OperationsDiagnosisSection,
   type OperationsRestartInstallation,
@@ -2890,6 +2890,12 @@ function restartInstallation(fixture: Awaited<ReturnType<typeof installedOperati
     policySha256: sha256('sealed Confirm policy'), rolesSha256: sha256('read-only Operator role map'), credentialSha256: sha256(randomUUID()) };
 }
 
+function stoppedBaseline({ runtime }: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  const { containerId, configDigest, imageReference, runtimeConfigSha256, network } = runtime;
+  return operationsRestartBaselineSchema.parse({ containerId, configDigest, imageReference, runtimeConfigSha256, network,
+    state: 'exited', startedAt: '2026-01-01T00:00:00.000000001Z' });
+}
+
 async function registerRestartInstallation(installation: OperationsRestartInstallation, expectedActiveId: string | null = null) {
   const receipt = await changeOperationsRestartInstallation(database.storage, { action: 'register', expectedActiveId, installation });
   return { installationId: receipt.installationId, installationSha256: receipt.installationSha256, credentialSha256: installation.credentialSha256 };
@@ -2897,10 +2903,11 @@ async function registerRestartInstallation(installation: OperationsRestartInstal
 
 async function withRestartWorker(action: Awaited<ReturnType<typeof queuedOperationsLease>>, run: (fixture: {
   worker: OperationsRestartWorker; approvalId: string;
-  calls: Array<{ params: unknown; intentFence: number | undefined; resumeState: string | undefined }>;
+  calls: Array<{ params: unknown; intentFence: number | undefined; resumeState: string | undefined; baseline: string | null | undefined }>;
   onPermissions: (callback: () => Promise<void>) => void;
   onRestart: (callback: () => { text: string; isError?: boolean }) => void;
   invalidatePolicy: () => Promise<void>; rotateWriter: () => Promise<void>;
+  changeContainerStart: () => void;
 }) => Promise<void>) {
   const document = restartInstallation(action.fixture);
   const key = randomBytes(32).toString('hex');
@@ -2912,6 +2919,7 @@ async function withRestartWorker(action: Awaited<ReturnType<typeof queuedOperati
   const paths = { installation: join(dir, 'installation.json'), guardrails: join(dir, 'guardrails.json'), roles: join(dir, 'roles.json') };
   const approvalId = randomUUID().replaceAll('-', '');
   const calls: Parameters<typeof run>[0]['calls'] = [];
+  let baseline = stoppedBaseline(action.fixture);
   const permissionUri = 'whiskers://me/permissions';
   const permission = '# My Whiskers permissions\n- Caller: API key "restart worker"\n- Scope: explicit tool list\n'
     + '- Native guardrails also apply.\n\n## Tools I may call (1)\n- `restart_container`\n';
@@ -2937,13 +2945,21 @@ async function withRestartWorker(action: Awaited<ReturnType<typeof queuedOperati
       }
       if (message.method !== 'tools/call') return new Response(null, { status: 400 });
       const [intent] = await database.storage.db.select().from(operationsExecutionIntents);
+      const [bound] = await database.storage.db.select().from(operationsRestartRequests);
       const [resume] = await database.storage.db.select().from(operationsRestartResumes).orderBy(sql`attempt desc`);
-      calls.push({ params: message.params, intentFence: intent?.fence, resumeState: resume?.state });
+      calls.push({ params: message.params, intentFence: intent?.fence, resumeState: resume?.state, baseline: bound?.runtimeBaselineSha256 });
       const { text, isError } = reply();
       return respond({ isError, content: [{ type: 'text', text }] });
     }) satisfies typeof fetch);
-    await run({ worker: new OperationsRestartWorker(action.runtime, paths, key), calls, approvalId,
+    await run({ worker: new OperationsRestartWorker(action.runtime, {
+      async captureRestartBaseline(subject, authorize) {
+        await authorize();
+        expect(subject).toMatchObject({ containerId: baseline.containerId, image: { configDigest: baseline.configDigest } });
+        return baseline;
+      },
+    }, paths, key), calls, approvalId,
       onPermissions: callback => { beforeSend = callback; }, onRestart: callback => { reply = callback; },
+      changeContainerStart: () => { baseline = { ...baseline, startedAt: '2026-01-01T00:00:00.000000002Z' }; },
       invalidatePolicy: () => writeFile(paths.guardrails, '{}'),
       rotateWriter: async () => { await registerRestartInstallation(restartInstallation(action.fixture), installation.installationId); } });
   } finally {
@@ -2960,7 +2976,9 @@ it('dispatches the bound Whiskers request and continuation only after durable in
     if (!initial) throw new Error('Expected an initial restart lease');
     await expect(worker.dispatch(initial)).resolves.toBe('awaiting_approval');
     const [request] = await database.storage.db.select().from(operationsRestartRequests);
-    expect(request).toMatchObject({ approvalId, executionId: action.execution.id });
+    const baseline = stoppedBaseline(action.fixture);
+    const runtimeBaselineSha256 = sha256(JSON.stringify(baseline));
+    expect(request).toMatchObject({ approvalId, executionId: action.execution.id, runtimeBaseline: baseline, runtimeBaselineSha256 });
     expect((await action.fixture.taskService.get(identity, initial.taskId)).state).toBe('waiting_approval');
     await expect(worker.dispatch(initial)).resolves.toBe('lease_lost');
 
@@ -2975,8 +2993,8 @@ it('dispatches the bound Whiskers request and continuation only after durable in
     expect(continuation.mode).toBe('restart_resume');
     await expect(worker.dispatch(continuation)).resolves.toBe('reconciling');
     const params = { name: 'restart_container', arguments: { containerId: action.fixture.runtime.containerId, serverId: 'local' } };
-    expect(calls).toEqual([{ params, intentFence: initial.fence, resumeState: undefined },
-      { params, intentFence: initial.fence, resumeState: 'prepared' }]);
+    expect(calls).toEqual([{ params, intentFence: initial.fence, resumeState: undefined, baseline: runtimeBaselineSha256 },
+      { params, intentFence: initial.fence, resumeState: 'prepared', baseline: runtimeBaselineSha256 }]);
     expect(await database.storage.db.select().from(operationsRestartResumes)).toMatchObject([{ state: 'acknowledged', approvalId }]);
     expect((await database.storage.db.select().from(operationsExecutions))[0]?.state).toBe('reserved');
     expect((await action.fixture.taskService.get(identity, initial.taskId)).state).toBe('reconciling');
@@ -2985,6 +3003,29 @@ it('dispatches the bound Whiskers request and continuation only after durable in
     if (!observer) throw new Error('Expected a read-only continuation');
     await expect(worker.dispatch(observer)).resolves.toBe('reconciling');
     expect(calls).toHaveLength(2);
+  });
+});
+
+it('retains Whiskers approval for read-only reconciliation when the stopped runtime changes before continuation', async () => {
+  const action = await queuedOperationsLease();
+  await withRestartWorker(action, async ({ worker, calls, approvalId, changeContainerStart }) => {
+    const initial = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+    if (!initial) throw new Error('Expected an initial restart lease');
+    await expect(worker.dispatch(initial)).resolves.toBe('awaiting_approval');
+    const [request] = await database.storage.db.select().from(operationsRestartRequests);
+    const humanRuntime = new OperationsExecutionCoordinator(coordinator, action.installed, operationsPortal);
+    const waiting = await action.fixture.taskService.get(identity, initial.taskId);
+    await humanRuntime.requestRestartResume(await decisionIdentity(), action.execution.id, {
+      expectedVersion: waiting.version, idempotencyKey: randomUUID(), approvalId, callSha256: request!.callSha256,
+    });
+    changeContainerStart();
+    const continuation = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+    if (!continuation) throw new Error('Expected a restart continuation lease');
+    await expect(worker.dispatch(continuation)).resolves.toBe('reconciling');
+    expect(calls).toHaveLength(1);
+    expect(await database.storage.db.select().from(operationsRestartResumes)).toMatchObject([{ state: 'blocked', fence: null }]);
+    expect((await database.storage.db.select().from(operationsExecutions))[0]?.state).toBe('reserved');
+    expect((await database.storage.db.select().from(operationsRestartRequests))[0]).toMatchObject({ runtimeBaseline: stoppedBaseline(action.fixture) });
   });
 });
 
@@ -3071,7 +3112,7 @@ async function prepareNativeRestart(action: Awaited<ReturnType<typeof queuedOper
   const scope = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
   if (!scope) throw new Error('Expected an initial restart lease');
   const writer = await registerRestartInstallation(restartInstallation(action.fixture));
-  const { restartRequest, intent } = await action.runtime.prepareDispatch(scope, writer);
+  const { restartRequest, intent } = await action.runtime.prepareDispatch(scope, writer, stoppedBaseline(action.fixture));
   if (!restartRequest) throw new Error('Expected a frozen native restart request');
   return { scope, restartRequest, intent, writer, credentialSha256: writer.credentialSha256,
     approval: { callSha256: restartRequest.callSha256, approvalId: randomUUID().replaceAll('-', '') } };
@@ -3088,6 +3129,9 @@ it('atomically pauses a bound Whiskers approval and frees the shared execution s
   });
   expect(restartRequest.callSha256).toBe(sha256(JSON.stringify(operationsRestartRequestSchema.parse(restartRequest.document))));
   expect(restartRequest.createdAt.getTime()).toBeGreaterThanOrEqual(intent.createdAt.getTime());
+  await expect(database.storage.db.update(operationsRestartRequests).set({ approvalId: approval.approvalId, runtimeBaseline: null, runtimeBaselineSha256: null })
+    .where(eq(operationsRestartRequests.executionId, action.execution.id)))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restart_baseline_is_immutable' } });
   const recorded = await action.runtime.pauseForRestartApproval(scope, approval);
   expect(recorded).toMatchObject({ executionId: action.execution.id, ...approval, receivedAt: expect.any(Date) });
   expect(recorded.receivedAt!.getTime()).toBeGreaterThanOrEqual(restartRequest.createdAt.getTime());
@@ -3196,7 +3240,8 @@ async function pausedWhiskersRestart() {
     if (claimed?.mode !== 'restart_resume') throw new Error('Expected a restart continuation lease');
     return claimed;
   };
-  return { action, runtime, human, next, request, lease, approval, writer, binding: { ...approval, ...writer } };
+  return { action, runtime, human, next, request, lease, approval, writer,
+    binding: { ...approval, ...writer, runtimeBaselineSha256: sha256(JSON.stringify(stoppedBaseline(action.fixture))) } };
 }
 
 it('requires the matching active Whiskers write installation before a native intent is recorded', async () => {
@@ -3210,9 +3255,27 @@ it('requires the matching active Whiskers write installation before a native int
   await expect(action.runtime.prepareDispatch(scope, guessed)).rejects.toMatchObject({ code: 'version_conflict' });
   expect(await database.storage.db.select().from(operationsExecutionIntents)).toEqual([]);
   const target = { ...action.fixture.registration.whiskers, containerId: action.fixture.runtime.containerId };
-  await expect(action.runtime.prepareDispatch(scope, writer)).resolves.toMatchObject({
+  await expect(action.runtime.prepareDispatch(scope, writer, stoppedBaseline(action.fixture))).resolves.toMatchObject({
     restartRequest: { writerInstallationId: writer.installationId, document: { target, credentialSha256: writer.credentialSha256 } },
   });
+});
+
+it('rolls back Whiskers intent when the stopped baseline cannot be persisted', async () => {
+  const action = await queuedOperationsLease();
+  const scope = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!scope) throw new Error('Expected an initial restart lease');
+  const writer = await registerRestartInstallation(restartInstallation(action.fixture));
+  const baseline = stoppedBaseline(action.fixture);
+  await expect(action.runtime.prepareDispatch(scope, writer, { ...baseline, configDigest: 'sha256:' + '0'.repeat(64) }))
+    .rejects.toMatchObject({ reason: 'runtime_changed' });
+  await database.admin.query('ALTER TABLE itervane.operations_restart_requests ADD CONSTRAINT test_restart_baseline_failure CHECK (runtime_baseline IS NULL) NOT VALID');
+  try {
+    await expect(action.runtime.prepareDispatch(scope, writer, baseline))
+      .rejects.toMatchObject({ cause: { code: '23514', constraint: 'test_restart_baseline_failure' } });
+    expect(await database.storage.db.select().from(operationsExecutionIntents)).toEqual([]);
+    expect(await database.storage.db.select().from(operationsRestartRequests)).toEqual([]);
+  } finally { await database.admin.query('ALTER TABLE itervane.operations_restart_requests DROP CONSTRAINT test_restart_baseline_failure'); }
+  await expect(action.runtime.prepareDispatch(scope, writer, baseline)).resolves.toMatchObject({ restartRequest: { runtimeBaseline: baseline } });
 });
 
 it.each([false, true])('reconciles Whiskers writer rotation without changing read scope (queued=%s)', async queued => {

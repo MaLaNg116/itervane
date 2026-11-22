@@ -1,19 +1,36 @@
-import { operationsRestartRequestSchema } from '@itervane/contracts';
+import { operationsRestartBaselineSchema, operationsRestartRequestSchema, type OperationsRequestBinding, type OperationsRestartBaseline } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { and, eq, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
 import { operationsExecutionQueue, type Database } from '../persistence/database.js';
-import { operationsExecutions, operationsExecutionSchedules, operationsRestartRequests, runRuntime, tasks } from '../persistence/schema.js';
+import { formalReleaseTargets, operationsExecutions, operationsExecutionSchedules, operationsRestartRequests, runRuntime, tasks } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
+import { readReleaseTarget } from '../service/release-targets.js';
 import { appendEvent } from './authority.js';
+import { targetForKomodo } from './formal-komodo-steps.js';
 import { replaceOperationsExecutionWakeup } from './operations-execution-queue.js';
 import { blockQueuedRestartResume } from './operations-restart-resume.js';
+import type { RestartSubject } from './release-rollout.js';
 
-export async function prepareOperationsRestartRequest(tx: Transaction, executionId: string, writerInstallationId: string, raw: unknown) {
+export async function readOperationsRestartSubject(tx: Transaction, frozen: OperationsRequestBinding, version: string): Promise<RestartSubject> {
+  const [mapping] = await tx.select().from(formalReleaseTargets).where(and(eq(formalReleaseTargets.environmentId, frozen.environmentId),
+    eq(formalReleaseTargets.projectId, frozen.projectId), eq(formalReleaseTargets.applicationId, frozen.applicationId),
+    eq(formalReleaseTargets.revision, frozen.targetRevision), eq(formalReleaseTargets.sha256, frozen.mappingSha256))).for('share');
+  if (!mapping) throw new DomainError('version_conflict');
+  const installed = readReleaseTarget(mapping);
+  if (!installed.komodo || !installed.registryOrigin || !installed.rolloutCheck) throw new DomainError('unsupported_state');
+  return { target: targetForKomodo({ ...installed, registryOrigin: installed.registryOrigin }), containerId: frozen.containerId, version,
+    check: installed.rolloutCheck, rolloutCheckSha256: installed.rolloutCheckSha256,
+    image: { manifestDigest: frozen.manifestDigest, configDigest: frozen.configDigest } };
+}
+
+export async function prepareOperationsRestartRequest(tx: Transaction, executionId: string, writerInstallationId: string,
+  raw: unknown, runtimeBaseline: OperationsRestartBaseline) {
   const document = operationsRestartRequestSchema.parse(raw);
   const callSha256 = sha256(JSON.stringify(document));
-  const [request] = await tx.insert(operationsRestartRequests).values({ executionId, writerInstallationId, callSha256, document }).returning();
+  const [request] = await tx.insert(operationsRestartRequests).values({ executionId, writerInstallationId, callSha256, document,
+    runtimeBaseline, runtimeBaselineSha256: sha256(JSON.stringify(runtimeBaseline)) }).returning();
   if (!request) throw new DomainError('unavailable');
   return request;
 }
@@ -23,7 +40,9 @@ export async function readOperationsRestartRequest(tx: Transaction, executionId:
   if (!request) throw new DomainError('unsupported_state');
   const document = operationsRestartRequestSchema.parse(request.document);
   if (sha256(JSON.stringify(document)) !== request.callSha256) throw new Error('operations_restart_request_integrity');
-  return { ...request, document };
+  const runtimeBaseline = request.runtimeBaseline === null ? null : operationsRestartBaselineSchema.parse(request.runtimeBaseline);
+  if ((runtimeBaseline && sha256(JSON.stringify(runtimeBaseline))) !== request.runtimeBaselineSha256) throw new Error('operations_restart_baseline_integrity');
+  return { ...request, document, runtimeBaseline };
 }
 
 export async function attachOperationsRestartApproval(tx: Transaction, executionId: string, approval: { callSha256: string; approvalId: string }) {
