@@ -70,7 +70,7 @@ export async function createMcpKey(page: Page, name: string, access: KeyLevel) {
   return key;
 }
 
-export async function approveRestart(page: Page, containerId: string, email = adminEmail) {
+export async function approveRestart(page: Page, containerId: string, email = adminEmail, approvedCount = 1) {
   await page.goto(whiskersOrigin + '/approvals', { waitUntil: 'domcontentloaded' });
   const card = page.locator('.mud-paper.pa-4').filter({ hasText: 'local / ' + containerId }).filter({
     has: page.getByRole('button', { name: 'Approve', exact: true }),
@@ -86,16 +86,20 @@ export async function approveRestart(page: Page, containerId: string, email = ad
     throw new Error('Native approval does not match the fixed request');
   }
   await card.getByRole('button', { name: 'Approve', exact: true }).click();
+  await expect(card).toHaveCount(0);
   const decided = page.getByRole('row').filter({ hasText: restartTool }).filter({ hasText: email });
-  await expect(decided.getByText('Approved', { exact: true })).toBeVisible();
+  await expect(decided.getByText('Approved', { exact: true })).toHaveCount(approvedCount);
 }
 
-export async function observeRestartAudit(page: Page, target: string, actor: string) {
+export async function observeRestartAudit(page: Page, target: string, actor: string, count = 1) {
   await page.goto(whiskersOrigin + '/audit-log', { waitUntil: 'domcontentloaded' });
   const restarts = page.getByRole('row').filter({
     has: page.getByText('Container restarted', { exact: true }),
   });
-  await expect(restarts).toHaveCount(1);
-  await expect(restarts).toContainText(target);
-  await expect(restarts.getByText(actor, { exact: true })).toBeVisible();
+  await expect(restarts).toHaveCount(count);
+  for (let index = 0; index < count; index++) {
+    const row = restarts.nth(index);
+    await expect(row).toContainText(target);
+    await expect(row.getByText(actor, { exact: true })).toBeVisible();
+  }
 }
