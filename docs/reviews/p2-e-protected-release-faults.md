@@ -11,3 +11,5 @@
 首轮回归报 MCP 会话已断开，抽取后的单场景调用未等待结束即可进入外层关闭流程。`3ad30d3` 补上等待。运行故障组在目标登记阶段停下，两个用例共用了项目内必须唯一的应用名。`bb78dd9` 为两项用例分别登记应用，并按场景记录阶段和脱敏 HTTP 状态。 [首轮回归](https://github.com/MaLaNg116/itervane/actions/runs/44960177289/job/137017031081) · [故障组首轮](https://github.com/MaLaNg116/itervane/actions/runs/44960177289/job/137017030874)
 
 更正后的故障组通过。应用异常场景实际从 200 变为 503，身份中断场景应用仍返回 200。两者均保持匿名 401，并分别记录 `release_rollout_health_failed` 和 `release_rollout_unavailable`。PostgreSQL 17.12 证实两项各只有一次派发，后继执行者持新的执行代次核对原更新，操作保留环境占用，业务执行槽已释放。两种语言的 HTTP 与 MCP 结果一致。报告源码指纹 `5a2f9fec1d0c984d91637645c9ca8b37c3f7780b7548fba2fbf7f04cf9f7c6f7`。 [托管实测](https://github.com/MaLaNg116/itervane/actions/runs/44961186575/job/137020213381)
+
+合入前复核两项独立目标、隔离夹具归属、原生派发记录和 HTTP/MCP 查询结果。最终审查版本 `1f86f07af436745870fa0324d6758948f02e1d28` 与托管复跑的非文档内容一致。八组 KVM 和六项常规检查通过，已合入 `fa64dee92b6ef4fb1af9c0278dd2b4ca473027ac`。 [完整 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44961186575) · [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44963360437) · [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44963355942)

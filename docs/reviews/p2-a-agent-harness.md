@@ -30,6 +30,8 @@
 | 样例完整闭环 | `pnpm probe:agent` 完成中文显示与英文分页两条路径，各 13 轮、10 次工具调用，每个候选的 3 项检查均通过。记录见本机 `.reports/p2-a/deterministic.json`。 |
 | 门户 | 本地 `pnpm test:portal` 完成 21 项浏览器用例，覆盖 OIDC、项目角色、两种语言、任务与预审。 |
 | 真实模型 | 本机 Anthropic 兼容端点已返回真实工具调用及计量。最终两组试跑在审计阶段因 `provider_error` 进入人工；诊断复跑观测到 HTTP 503。两条完整路径的真实模型验收仍待通过。 |
+
+2026-11-22 在 P2 发布故障验收的同源码指纹 `5a2f9fec1d0c984d91637645c9ca8b37c3f7780b7548fba2fbf7f04cf9f7c6f7` 复跑 `pnpm probe:agent --live`，两种语言都在审计阶段读取一次工具后以 `provider_error` 转人工。单独诊断确认本机 Anthropic 兼容端点接受首个请求，收到首个工具结果后返回 HTTP 503。该报告仅覆盖本机可信样例。托管 KVM 的发布流程继续使用脚本模型，真实模型对实际复验回执的证据另有记录。 [发布故障验收](p2-e-protected-release-faults.md) · [复验模型证据](p2-d3-d-verification-agent.md)
 | 正式执行 | D2/D3、正式调度接入、一次性 VM 中复验和完整 P2 发布闭环待验。未来的多进程恢复与并发由领域租约和正式检查点所有权约束。 |
 
 最终代码的确定性复跑源码指纹为 `49876ec9aafa43fa882902d0e153ce81ac27f16eaa998c2e0eed6d62a20f8765`。本机 Anthropic 试跑在超时判定修复前完成，记录的源码指纹为 `f44f8a4e289c1e9304e2bc2ca1780f2be5e98bec1812891a1abdbc9227a36601`。

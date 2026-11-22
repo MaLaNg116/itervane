@@ -1,9 +1,11 @@
+import { randomBytes } from 'node:crypto';
 import { chromium, type Browser } from '@playwright/test';
 import { localeSchema, type Check } from '@itervane/contracts';
+import { WhiskersObservationClient, WhiskersObservationError } from '../../../control-plane/src/runtime/whiskers-observation.js';
 import { confirmationId, toolText, WhiskersProbeClient, whiskersOrigin, whiskersVersion } from '../../../verification/src/native/whiskers.js';
 import { executeProbe, report } from '../../../verification/src/report.js';
 import { eligibleHost, WhiskersFixture } from './whiskers-fixture.js';
-import { approveRestart, createWriteKey, NativeBrowserFailure, observeRestartAudit, openPermissions, selectWriteLevel, signIn } from './whiskers-ui.js';
+import { approveRestart, createMcpKey, NativeBrowserFailure, observeRestartAudit, openPermissions, selectKeyLevel, signIn } from './whiskers-ui.js';
 
 const messages = {
   host: ['Use an isolated GitHub-hosted Linux test machine.', '需要独立的 GitHub 托管 Linux 测试机。'],
@@ -14,12 +16,25 @@ const messages = {
   applied: ['The identical request after reconnect restarted only the approved container, and its HTTP health responded.', '重连后同参请求只重启了已批准容器，其 HTTP 健康检查通过。'],
   consumed: ['A further call required a fresh approval. The previous grant was used once.', '再次调用需要新审批，之前的授权仅执行了一次。'],
   audit: ['The native audit view recorded a single restart for the expected actor and target.', '原生审计视图仅记录一次重启，调用身份与目标匹配。'],
+  'bound-observe-running': ['The production adapter used a native Read key and returned only the bound runtime facts.', '正式适配器使用原生只读密钥，只返回已绑定目标的运行事实。'],
+  'bound-observe-stopped': ['The bound container was observed as exited after the fixture stopped it.', '停止测试容器后，正式适配器观察到同一绑定容器已退出。'],
+  'bound-observe-unknown': ['A missing full container ID could not produce an observation.', '完整容器 ID 不存在时，未形成有效观察。'],
+  'bound-observe-timeout': ['The paused service hit its deadline. A fresh observation succeeded after resuming the fixture.', '服务暂停时观察按时限中止。恢复服务后重新观察成功。'],
   stopped: ['Verification stopped at', '验证中止于'],
   clean: ['Temporary containers and password file were removed.', '已清理临时容器和口令文件。'],
 } as const;
 
 function requireProof(condition: unknown): asserts condition {
   if (!condition) throw new Error('Missing native evidence');
+}
+
+async function requireObservationError(call: Promise<unknown>, reason: WhiskersObservationError['reason']) {
+  try { await call; }
+  catch (error) {
+    if (error instanceof WhiskersObservationError && error.reason === reason) return;
+    throw error;
+  }
+  throw new Error('Unexpected observation');
 }
 
 async function run() {
@@ -70,13 +85,16 @@ async function run() {
     step = 'native-key-settings';
     await openPermissions(page);
     step = 'native-key-level';
-    await selectWriteLevel(page);
+    await selectKeyLevel(page, 'Write');
     step = 'primary-key';
     const primaryKey = 'itervane-probe-primary';
-    const key = await createWriteKey(page, primaryKey);
+    const key = await createMcpKey(page, primaryKey, 'Write');
     step = 'alternate-key';
-    const alternateKey = await createWriteKey(page, 'itervane-probe-alternate');
-    requireProof(key !== alternateKey);
+    const alternateKey = await createMcpKey(page, 'itervane-probe-alternate', 'Write');
+    step = 'observer-key';
+    await selectKeyLevel(page, 'Read');
+    const readKey = await createMcpKey(page, 'itervane-probe-observe', 'Read');
+    requireProof(new Set([key, alternateKey, readKey]).size === 3);
 
     step = 'native-mcp-connect';
     const client = await connect(key);
@@ -127,6 +145,31 @@ async function run() {
     step = 'native-restart-audit';
     await observeRestartAudit(page, fixture.primary, primaryKey);
     record('audit');
+
+    const nativeObserver = (containerId: string) => new WhiskersObservationClient({ origin: whiskersOrigin, serverId: 'local', containerId }, readKey);
+    const authorized = async () => {};
+    step = 'bound-observe-running';
+    const observer = nativeObserver(a.id);
+    const running = await observer.observe(authorized);
+    requireProof(Object.keys(running).length === 4 && running.containerId === a.id && running.serverId === 'local'
+      && running.state === 'running' && Number.isFinite(Date.parse(running.observedAt)) && await unchanged(restarted.started));
+    record('bound-observe-running');
+
+    step = 'bound-observe-stopped';
+    await fixture.stopOther();
+    const stopped = await nativeObserver(b.id).observe(authorized);
+    requireProof(stopped.containerId === b.id && stopped.serverId === 'local' && stopped.state === 'exited');
+    record('bound-observe-stopped');
+
+    step = 'bound-observe-unknown';
+    await requireObservationError(nativeObserver(randomBytes(32).toString('hex')).observe(authorized), 'response');
+    record('bound-observe-unknown');
+
+    step = 'bound-observe-timeout';
+    await fixture.withPausedWhiskers(() => requireObservationError(observer.observe(authorized), 'timeout'));
+    const recovered = await observer.observe(authorized);
+    requireProof(recovered.containerId === a.id && recovered.state === 'running' && await fixture.healthy(fixture.primary));
+    record('bound-observe-timeout');
   } catch (error) {
     if (step === 'approved-dispatch') {
       const actual = await fixture.snapshot(fixture.primary).catch(() => undefined);
@@ -134,7 +177,7 @@ async function run() {
     }
     const location = error instanceof NativeBrowserFailure
       ? step + ' (' + error.reason + (error.outcome ? ', ' + error.outcome : '') + ')'
-      : step;
+      : error instanceof WhiskersObservationError ? step + ' (' + error.reason + ')' : step;
     checks.push({ id: 'native-verification', status: 'failed', detail: messages.stopped[language] + ' ' + location + '.' });
   } finally {
     await Promise.allSettled([...clients].map(client => client.close()));

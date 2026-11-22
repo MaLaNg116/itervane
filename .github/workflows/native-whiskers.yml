@@ -8,6 +8,8 @@ on:
       - 'fixtures/whiskers/**'
       - 'fixtures/komodo/Dockerfile'
       - 'packages/portal/test/native/whiskers*.ts'
+      - 'packages/control-plane/src/runtime/whiskers-observation.ts'
+      - 'packages/contracts/src/primitives.ts'
       - 'packages/verification/src/native/whiskers.ts'
       - 'packages/verification/src/report.ts'
       - 'pnpm-lock.yaml'
@@ -38,8 +40,14 @@ jobs:
         run: npm install --global pnpm@11.9.0 --ignore-scripts
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Approve and reconcile a specific MCP restart
+      - name: Verify bound observations and an approved native restart
         run: pnpm probe:whiskers
+      - name: Require real read-only observation evidence
+        run: |
+          jq -e '.status == "passed" and
+            ([.checks[] | select(.status == "passed") | .id] |
+              contains(["bound-observe-running", "bound-observe-stopped", "bound-observe-unknown", "bound-observe-timeout", "clean"]))' \
+              .reports/p0/whiskers-native.json >/dev/null
       - name: Retain sanitized Whiskers evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

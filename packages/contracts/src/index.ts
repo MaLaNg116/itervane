@@ -21,7 +21,7 @@ export * from './qualified-standard-build.js';
 export * from './qualified-verification.js';
 export * from './preaudit.js';
 export * from './release.js';
-export { idSchema, sourceRefSchema, taskStateSchema, agentRoleSchema, taskStates, agentRoles } from './primitives.js';
+export { idSchema, sourceRefSchema, taskStateSchema, agentRoleSchema, taskStates, agentRoles, serviceOriginSchema } from './primitives.js';
 export type TaskState = z.infer<typeof taskStateSchema>;
 
 export const startTaskSchema = z.object({
