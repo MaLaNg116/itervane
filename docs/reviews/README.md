@@ -113,7 +113,8 @@
 | 108 | P3-C2d2a 批准绑定的恢复意图与接管 | [#108](https://github.com/MaLaNg116/itervane/pull/108)，依赖 #107 | [恢复意图导读](p3-c-restore-intent.md) | TypeScript、246 项单元、七项 PostgreSQL 17.12 专项及迁移一致性通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/108/checks) |
 | 109 | P3-C2d2b1 独立 Komodo 读身份核对部署更新 | [#109](https://github.com/MaLaNg116/itervane/pull/109)，依赖 #108 | [独立回读导读](p3-c-restore-komodo-reader.md) | TypeScript、247 项单元及[十项原生 Komodo 验收](https://github.com/MaLaNg116/itervane/actions/runs/45018810794/job/137196935607)通过 |
 | 110 | P3-C2d2b2 指定版本恢复派发与只读交接 | [#110](https://github.com/MaLaNg116/itervane/pull/110)，依赖 #109 | [恢复派发导读](p3-c-restore-dispatch.md) | TypeScript、247 项单元、十项 PostgreSQL 17.12 专项及迁移一致性通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/110/checks) |
-| 111 | P3-C2d3a 独立恢复核验与限次接管 | [#111](https://github.com/MaLaNg116/itervane/pull/111)，依赖 #110 | [恢复核验导读](p3-c-restore-recovery.md) | TypeScript、247 项单元、12 项 PostgreSQL 17.12 专项及迁移一致性通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/111/checks) |
+| 111 | P3-C2d3a 独立恢复核验与限次接管 | [#111](https://github.com/MaLaNg116/itervane/pull/111)，依赖 #110 | [恢复核验导读](p3-c-restore-recovery.md) | TypeScript、247 项单元、12 项 PostgreSQL 17.12 专项及迁移一致性通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/111/checks)，另有[九项托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45025534882)通过 |
+| 112 | P3-C2d3b 恢复结算和当前运行实例 | [#112](https://github.com/MaLaNg116/itervane/pull/112)，依赖 #111 | [恢复结算导读](p3-c-restore-publication.md) | TypeScript、247 项单元、22 项 PostgreSQL 17.12 专项及迁移一致性通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/112/checks) |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
