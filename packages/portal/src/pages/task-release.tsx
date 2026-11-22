@@ -8,6 +8,7 @@ import { usePortal, useRemote, useText } from '../context.js';
 import { Disclosure } from '../motion.js';
 import { Button } from '../ui/button.js';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '../ui/dialog.js';
+import { StartOperationsObservation } from './task-operations.js';
 
 const decisions = {
   confirm: { action: 'releaseApprove', title: 'releaseApproveTitle', help: 'releaseApproveHelp', result: 'releaseApproved' },
@@ -86,7 +87,7 @@ function CandidateDetails({ candidate, target, result }: {
   </div>;
 }
 
-export function TaskRelease({ task }: { task: Pick<TaskDto, 'id' | 'runId' | 'version'> }) {
+export function TaskRelease({ task, canWrite }: { task: Pick<TaskDto, 'id' | 'projectId' | 'runId' | 'version'>; canWrite: boolean }) {
   const { api, locale } = usePortal();
   const t = useText();
   const cache = useQueryClient();
@@ -178,5 +179,7 @@ export function TaskRelease({ task }: { task: Pick<TaskDto, 'id' | 'runId' | 've
           </DialogContent>}
         </Dialog>
       </div>}
+    {canWrite && <StartOperationsObservation taskId={task.id} projectId={task.projectId}
+      releaseOperationId={view?.result?.status === 'verified' ? view.result.operationId : undefined} />}
   </Panel>;
 }

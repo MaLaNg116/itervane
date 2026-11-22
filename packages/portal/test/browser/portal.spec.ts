@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { test as base, expect, type Page } from '@playwright/test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { admissionDtoSchema, catalogDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema, formalReleaseDecisionResultSchema,
-  formalReleaseViewSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema, preauditDtoSchema, releaseDecisionInputSchema,
+  formalReleaseViewSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema, operationsObservationViewSchema, preauditDtoSchema, releaseDecisionInputSchema,
   sourceInspectionDtoSchema, taskDtoSchema, translate, verificationViewSchema, type FormalReleaseCandidateDto, type TaskDto } from '@itervane/contracts';
 import { browserStack } from './stack.js';
 
@@ -498,6 +498,135 @@ async function captureWorkspace(page: Page, path: string) {
 async function expectMotionCsp(page: Page) {
   expect((await motionProbe(page)).csp).toEqual([]);
 }
+
+test('observes the visible release with bilingual evidence, scoped retry and live project permissions', async ({ page, stack }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await observeMotion(page, stack.origin);
+  const project = await seedProject(stack, true);
+  const other = await seedProject(stack, true);
+  const authorization = authorizationFrom(page);
+  await stack.database.admin.query("UPDATE itervane.project_members SET role='maintainer' WHERE project_id=$1", [project.id]);
+  await login(page, stack, 'viewer');
+  await expect(page.getByRole('link', { name: project.title, exact: true })).toBeVisible();
+  const source = await admit(stack, authorization(), project);
+  const diagnostic = await admit(stack, authorization(), project);
+  await Promise.all([paused(stack, source.id), paused(stack, diagnostic.id)]);
+  const deliveryPath = `${stack.origin}/v1/tasks/${source.id}`;
+  const diagnosticPath = `${stack.origin}/v1/tasks/${diagnostic.id}`;
+  const readTask = async (url: string) => taskDtoSchema.parse(await (await fetch(url, { headers: { Authorization: authorization() } })).json());
+  const delivery = await readTask(deliveryPath);
+  const persisted = await readTask(diagnosticPath);
+  const queued = taskDtoSchema.parse({ ...persisted, workflow: 'operations', state: 'queued', purpose: 'Diagnose the published application' });
+  const { candidate, target } = frozenReleaseFixture(delivery);
+  const releaseOperationId = randomUUID();
+  const receiptSha256 = createHash('sha256').update('recorded container state').digest('hex');
+  const observedAt = new Date().toISOString();
+  let observed = false;
+  let availableOperation = randomUUID();
+  const activeTask = () => observed ? { ...queued, version: queued.version + 1, state: 'succeeded' } : queued;
+  const replyLocale = (headers: Record<string, string>) => headers['accept-language'] === 'zh-CN' ? 'zh-CN' : 'en';
+  // Preserve current task authorization while substituting the already-verified downstream evidence.
+  await page.route(deliveryPath, async route => {
+    const response = await route.fetch();
+    return response.ok() ? route.fulfill({ json: { ...delivery, state: 'succeeded' } }) : route.fulfill({ response });
+  });
+  await page.route(diagnosticPath, async route => {
+    const response = await route.fetch();
+    return response.ok() ? route.fulfill({ json: activeTask() }) : route.fulfill({ response });
+  });
+  await page.route(`${deliveryPath}/release`, route => {
+    const locale = replyLocale(route.request().headers());
+    return route.fulfill({ json: formalReleaseViewSchema.parse({
+      taskId: delivery.id, taskVersion: delivery.version, runId: delivery.runId,
+      candidate: { ...candidate, status: 'confirmed', operationId: releaseOperationId }, candidateTarget: target,
+      availableTargets: [], actions: [], result: {
+        operationId: releaseOperationId, candidateId: candidate.id, updateId: 'c'.repeat(24), status: 'verified', locale,
+        message: translate(locale, 'release.operation.verified_formal'), evidence: {
+          checkedAt: observedAt, manifestDigest: candidate.manifest.image.manifestDigest, configDigest: candidate.manifest.image.configDigest,
+          version: 'standard-v2', healthy: true, accessProtected: true,
+        },
+      },
+    }) });
+  });
+  await page.route(`${deliveryPath}/operations-option`, route => route.fulfill({ json: {
+    option: { projectId: project.id, environmentId: target.environmentId, releaseOperationId: availableOperation },
+  } }));
+  await page.route(`${diagnosticPath}/operations`, route => {
+    const locale = replyLocale(route.request().headers());
+    const current = activeTask();
+    return route.fulfill({ json: operationsObservationViewSchema.parse({
+      version: 1, taskId: current.id, runId: current.runId, taskVersion: current.version, state: current.state,
+      applicationId: target.applicationId, environmentId: target.environmentId, releaseOperationId,
+      observation: observed ? { state: 'exited', stateLabel: translate(locale, 'operations.container.exited'), observedAt, receiptSha256 } : null,
+      locale, message: translate(locale, observed ? 'task.operations_observed' : 'state.queued'), reason: null, reasonMessage: null,
+    }) });
+  });
+  const submissions: unknown[] = [];
+  const late = Promise.withResolvers<void>();
+  const startUrl = `${stack.origin}/v1/operations/diagnoses`;
+  await page.route(startUrl, async route => {
+    submissions.push(route.request().postDataJSON());
+    if (submissions.length === 1) return route.abort('failed');
+    if (submissions.length === 2) return route.fulfill({ status: 200, json: { task: queued, replayed: true } });
+    if (submissions.length === 3) await late.promise;
+    return route.fulfill({ status: 202, json: { task: queued, replayed: false } });
+  });
+
+  const sourcePage = `${stack.origin}/#/tasks/${delivery.id}`;
+  await page.goto(sourcePage);
+  await expect(page.getByTestId('release-result')).toBeVisible();
+  const launch = page.getByRole('button', { name: 'Observe published container', exact: true });
+  await expect(launch).toHaveCount(0);
+  availableOperation = releaseOperationId;
+  await launch.click();
+  await expect(page.getByText('The request could not be completed. Check the connection and try again.')).toBeVisible();
+  await language(page, 'zh-CN');
+  await page.getByRole('button', { name: '重试同一请求', exact: true }).click();
+  const panel = page.getByTestId('operations-observation');
+  await expect(panel.getByRole('status')).toHaveText(translate('zh-CN', 'state.queued'));
+  expect(submissions).toHaveLength(2);
+  expect(submissions[0]).toMatchObject({ projectId: project.id, environmentId: target.environmentId, expectedReleaseOperationId: releaseOperationId,
+    idempotencyKey: expect.any(String), locale: 'en' });
+  expect(submissions[1]).toEqual(submissions[0]);
+  await expect(page.getByTestId('source-inspection')).toHaveCount(0);
+  await expect(page.getByTestId('formal-release')).toHaveCount(0);
+  const inProgressMotion = await motionProbe(page);
+  observed = true;
+  await expect(panel.getByText('已退出', { exact: true })).toBeVisible();
+  await expect.poll(async () => (await motionProbe(page)).state).toBeGreaterThan(inProgressMotion.state);
+  await expect(panel.locator('time')).toHaveAttribute('datetime', observedAt);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const beforeDisclosure = await motionProbe(page);
+  await panel.locator('summary').filter({ hasText: '观察证据' }).press('Enter');
+  await expect(panel.getByText(receiptSha256, { exact: true })).toBeVisible();
+  expect((await motionProbe(page)).disclosures).toBe(beforeDisclosure.disclosures);
+  await language(page, 'en');
+  await expect(panel.getByText('Exited', { exact: true })).toBeVisible();
+
+  await page.goto(sourcePage);
+  try {
+    await launch.click();
+    await expect.poll(() => submissions.length).toBe(3);
+    const response = page.waitForResponse(startUrl);
+    await page.goto(`${stack.origin}/#/projects/${other.id}`);
+    late.resolve();
+    await response;
+    await expect(page.getByRole('heading', { name: other.title, exact: true })).toBeVisible();
+    await expect(panel).toHaveCount(0);
+  } finally { late.resolve(); }
+  await stack.database.admin.query("UPDATE itervane.project_members SET role='viewer' WHERE project_id=$1", [project.id]);
+  const access = page.waitForResponse(`${stack.origin}/v1/projects/${project.id}/access`);
+  await page.goto(sourcePage);
+  expect(await (await access).json()).toMatchObject({ canWrite: false });
+  await expect(page.getByTestId('release-result')).toBeVisible();
+  await expect(launch).toHaveCount(0);
+  await page.goto(`${stack.origin}/#/tasks/${diagnostic.id}`);
+  await expect(panel.getByText('Exited', { exact: true })).toBeVisible();
+  await stack.database.admin.query('DELETE FROM itervane.project_members WHERE project_id=$1', [project.id]);
+  await expect(panel).toHaveCount(0);
+  await expect(page.getByText(receiptSha256, { exact: true })).toHaveCount(0);
+  await expectMotionCsp(page);
+});
 
 for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycle in ${locale}`, async ({ page, stack }) => {
   const zh = locale === 'zh-CN';
