@@ -55,6 +55,7 @@ import type { KomodoInterruption, runKomodoReleaseFixture } from './komodo-relea
 import type { RegistryImportMarker } from './release-recovery.js';
 import { temporaryRegistry } from './registry-fixture.js';
 import { openProtectedIngress } from './protected-ingress.js';
+import { proveNativeRestore } from './restore-proof.js';
 import { proveNativeRestart, type DiagnosisHttp, type DiagnosisReaders } from './restart-proof.js';
 
 type NativeDiagnosisPublication = {
@@ -934,42 +935,6 @@ async function probe() {
         const first = await publish(current, decision);
         const { proof } = first;
         const firstPublication = { taskId: current.id, operationId, containerId: proof.runtime.containerId };
-        if (restoreRun) {
-          const scope = { projectId: project.id, environmentId: environment.id };
-          const history = () => db.storage.db.transaction(tx => readPublishedOperationsDeployment(tx, scope, { includePrevious: true }));
-          const initial = await history();
-          equal(initial.releaseOperationId, first.report.operationId);
-          equal(initial.containerId, first.proof.runtime.containerId);
-          equal(initial.previous, null);
-
-          const next = await cleanReleaseFixture(runtimeFaultCommit);
-          notEqual(next.current.id, current.id);
-          const nextDecision = await approve(next.current, next.after, next.generation, mapping.fingerprint);
-          notEqual(nextDecision.candidate.manifest.source.commit, candidate.manifest.source.commit);
-          notEqual(nextDecision.image.manifestDigest, image.manifestDigest);
-          notEqual(nextDecision.image.configDigest, image.configDigest);
-          const second = await publish(next.current, nextDecision);
-          notEqual(second.proof.update.updateId, first.proof.update.updateId);
-          notEqual(second.proof.runtime.containerId, first.proof.runtime.containerId);
-          notEqual(second.proof.runtime.version, first.proof.runtime.version);
-
-          const latest = await history();
-          equal(latest.applicationId, application.id);
-          equal(latest.deploymentId, target.binding.deploymentId);
-          equal(latest.mappingSha256, mapping.fingerprint);
-          equal(latest.releaseOperationId, second.report.operationId);
-          equal(latest.containerId, second.proof.runtime.containerId);
-          equal(latest.manifestDigest, second.report.manifestDigest);
-          ok(latest.previous);
-          equal(latest.previous.releaseOperationId, first.report.operationId);
-          equal(latest.previous.manifestDigest, first.report.manifestDigest);
-
-          return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, release: first.report,
-            dualVersion: { first: { release: first.report, build: after }, second: { release: second.report, build: next.after },
-              currentOperationId: latest.releaseOperationId, previousOperationId: latest.previous.releaseOperationId,
-              applicationId: application.id, environmentId: environment.id, mappingSha256: mapping.fingerprint,
-              sameTarget: true, sameProtectedIngress: true } };
-        }
 
         const verifyInstalledDiagnosis = async <T>(enrollmentSha256: string, readKey: string, publication: NativeDiagnosisPublication,
           acceptance?: NativeDiagnosisAcceptance<T>) => {
@@ -1091,6 +1056,115 @@ async function probe() {
             try { await reader.close(); } finally { await diagnosisApi.close(); }
           }
         };
+
+        const verifyNativeRestore = async (second: Awaited<ReturnType<typeof publish>>) => {
+          phase = 'operations_native_restore_enrollment';
+          const native = await openNativeWhiskersReadScope();
+          try {
+            const enrollment = await registerOperationsTarget(db.storage, { environmentId: environment.id,
+              releaseTargetRevision: mapping.revision, releaseTargetSha256: mapping.fingerprint,
+              whiskers: { origin: native.origin, serverId: native.serverId } });
+            const readerCredentials = await target.provisionRestartReader();
+            notEqual(readerCredentials.actorId, target.credentials.actorId);
+            const boundTarget = { ...target.binding, imageRepository: targetSettings.imageRepository, registryOrigin: targetSettings.registryOrigin };
+            const reader = KomodoReleaseClient.readOnly(boundTarget, readerCredentials);
+            await reader.verifyInstallation();
+            const stopped = second.proof.runtime;
+            phase = 'operations_native_restore_stop_bound_fixture';
+            await target.setOwnedContainerRunning(false, { containerId: stopped.containerId, reference: stopped.imageReference,
+              configDigest: stopped.configDigest });
+            const authorizeRead = async () => {};
+            const baseline = await reader.inspectStoppedRuntime(boundTarget, second.report, target.endpoint.network, authorizeRead);
+            equal(baseline.state, 'exited');
+            equal(baseline.containerId, stopped.containerId);
+
+            const { accepted, ...stoppedDiagnosis } = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, {
+              taskId: second.report.taskId, operationId: second.report.operationId, containerId: stopped.containerId,
+            }, {
+              kind: 'rollback', previousOperationId: first.report.operationId,
+              verify(diagnosis, diagnosisSha256, readers) {
+                phase = 'operations_native_restore_submission';
+                return proveNativeRestore({ db, diagnosis, diagnosisSha256, current: second.proof, previous: first.proof,
+                  ...readers, async startWorker() {
+                    phase = 'operations_native_restore_worker';
+                    worker = await startScopedWorker(join(shared, 'restore-worker.mjs'), [
+                      'PATH=/usr/bin:/bin', 'LANG=C.UTF-8', 'ITERVANE_WORKER_POLL_MS=250', 'ITERVANE_WORKER_LEASE_SECONDS=30',
+                      `NODE_EXTRA_CA_CERTS=${ca}`, `ITERVANE_OPERATIONS_ENVIRONMENT_ID=${environment.id}`,
+                      `ITERVANE_OPERATIONS_ENROLLMENT_SHA256=${enrollment.fingerprint}`,
+                      `ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256=${mapping.fingerprint}`,
+                      `ITERVANE_RESTORE_KOMODO_READER_ID=${readerCredentials.actorId}`,
+                    ], { DATABASE_URL: db.runtimeUrl, ITERVANE_RESTORE_KOMODO_WRITER_KEY: target.credentials.key,
+                      ITERVANE_RESTORE_KOMODO_WRITER_SECRET: target.credentials.secret, ITERVANE_RESTORE_KOMODO_READER_KEY: readerCredentials.key,
+                      ITERVANE_RESTORE_KOMODO_READER_SECRET: readerCredentials.secret, ITERVANE_RESTORE_PROBE_SECRET: ingress.probeSecret });
+                  },
+                });
+              },
+            });
+            ok(accepted && worker);
+            await worker.stop('TERM'); worker = undefined;
+
+            phase = 'operations_native_restore_readback';
+            const { runtime, update } = accepted.proof;
+            deepStrictEqual(await reader.observeUpdate(boundTarget, update.updateId, authorizeRead), update);
+            equal((await target.observeContainer(runtime.imageReference, runtime.configDigest)).containerId, runtime.containerId);
+            const anonymous = await ingress.anonymousHealthStatus();
+            ok(anonymous === 401 || anonymous === 403);
+            const postRestoreDiagnosis = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, {
+              ...firstPublication, containerId: runtime.containerId, restoreExecutionId: accepted.proof.executionId,
+            });
+            notEqual(postRestoreDiagnosis.runId, stoppedDiagnosis.runId);
+            return { ...accepted.report, distinctKomodoReader: true, stoppedState: baseline.state, stoppedDiagnosis, postRestoreDiagnosis };
+          } finally {
+            try { await worker?.stop('TERM'); worker = undefined; }
+            finally { await native.close(); }
+          }
+        };
+
+        if (restoreRun) {
+          const scope = { projectId: project.id, environmentId: environment.id };
+          const history = () => db.storage.db.transaction(tx => readPublishedOperationsDeployment(tx, scope, { includePrevious: true }));
+          const initial = await history();
+          equal(initial.releaseOperationId, first.report.operationId);
+          equal(initial.containerId, first.proof.runtime.containerId);
+          equal(initial.previous, null);
+
+          const next = await cleanReleaseFixture(runtimeFaultCommit);
+          notEqual(next.current.id, current.id);
+          const nextDecision = await approve(next.current, next.after, next.generation, mapping.fingerprint);
+          notEqual(nextDecision.candidate.manifest.source.commit, candidate.manifest.source.commit);
+          notEqual(nextDecision.image.manifestDigest, image.manifestDigest);
+          notEqual(nextDecision.image.configDigest, image.configDigest);
+          const second = await publish(next.current, nextDecision);
+          notEqual(second.proof.update.updateId, first.proof.update.updateId);
+          notEqual(second.proof.runtime.containerId, first.proof.runtime.containerId);
+          notEqual(second.proof.runtime.version, first.proof.runtime.version);
+
+          const latest = await history();
+          equal(latest.applicationId, application.id);
+          equal(latest.deploymentId, target.binding.deploymentId);
+          equal(latest.mappingSha256, mapping.fingerprint);
+          equal(latest.releaseOperationId, second.report.operationId);
+          equal(latest.containerId, second.proof.runtime.containerId);
+          equal(latest.manifestDigest, second.report.manifestDigest);
+          ok(latest.previous);
+          equal(latest.previous.releaseOperationId, first.report.operationId);
+          equal(latest.previous.manifestDigest, first.report.manifestDigest);
+
+          const restoration = await verifyNativeRestore(second);
+          const restored = await history();
+          equal(restored.releaseOperationId, first.report.operationId);
+          ok('restoreExecutionId' in restored);
+          equal(restored.restoreExecutionId, restoration.executionId);
+          equal(restored.containerId, restoration.restoredContainerId);
+          equal(restored.updateId, restoration.updateId);
+          equal(restored.previous?.releaseOperationId, second.report.operationId);
+          await assertDrained(controllerUid, staging);
+          return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, release: first.report,
+            dualVersion: { first: { release: first.report, build: after }, second: { release: second.report, build: next.after },
+              currentOperationId: latest.releaseOperationId, previousOperationId: latest.previous.releaseOperationId,
+              applicationId: application.id, environmentId: environment.id, mappingSha256: mapping.fingerprint,
+              sameTarget: true, sameProtectedIngress: true }, restoration: { ...restoration, whiskersCleanup: true } };
+        }
 
         const verifyNativeObservation = async () => {
           phase = 'operations_whiskers_installation';
