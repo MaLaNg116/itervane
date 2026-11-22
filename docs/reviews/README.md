@@ -85,7 +85,8 @@
 | 079 | P3-B3c2 正式诊断 Worker 与证据化结算 | [#79](https://github.com/MaLaNg116/itervane/pull/79)，依赖 #78 | [调查与结算导读](p3-b-operations-diagnosis-worker.md) | TypeScript、223 项单元、十项 PostgreSQL 17.12 专项及迁移一致性验证通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44978105152)已启动 |
 | 080 | P3-B3d1 HTTP 与 MCP 双语诊断 | [#80](https://github.com/MaLaNg116/itervane/pull/80)，依赖 #79 | [查询导读](p3-b-operations-diagnosis-view.md) | TypeScript、223 项单元及五项 PostgreSQL 17.12 专项通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44978641748)已启动 |
 | 081 | P3-B3d2 双语运维诊断门户 | [#81](https://github.com/MaLaNg116/itervane/pull/81)，依赖 #80 | [门户导读](p3-b-operations-diagnosis-portal.md) | TypeScript、223 项单元、Vite 构建及真实 Chrome 专项通过，[托管验收](https://github.com/MaLaNg116/itervane/actions/runs/44979250267)已启动 |
-| 082 | P3-B3d3 安装态正式诊断与原生验收 | [#82](https://github.com/MaLaNg116/itervane/pull/82)，依赖 #81 | [安装与原生验收导读](p3-b-operations-diagnosis-installation.md) | TypeScript、224 项单元、五项 PostgreSQL 17.12 专项及真实 Chrome 场景通过，[托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44979952380)已启动 |
+| 082 | P3-B3d3 安装态正式诊断与原生验收 | [#82](https://github.com/MaLaNg116/itervane/pull/82)，依赖 #81 | [安装与原生验收导读](p3-b-operations-diagnosis-installation.md) | TypeScript、224 项单元、五项 PostgreSQL 17.12 专项及真实 Chrome 场景通过，原生诊断[首轮失败](https://github.com/MaLaNg116/itervane/actions/runs/44979952380/job/137078061605)并[补充脱敏诊断复跑](https://github.com/MaLaNg116/itervane/actions/runs/44981348666) |
+| 083 | P3-C1a 证据绑定的运维处置提案 | [#83](https://github.com/MaLaNg116/itervane/pull/83)，依赖 #82 | [处置提案导读](p3-c-operations-proposals.md) | TypeScript、224 项单元、十项 PostgreSQL 17.12 专项及迁移一致性通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44981434576)已启动 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
