@@ -121,8 +121,9 @@
 | 116 | P3-C2d4c2 同一应用原生版本恢复 | [#116](https://github.com/MaLaNg116/itervane/pull/116)，依赖 #115 | [指定版本原生恢复导读](p3-c-native-version-restore.md) | TypeScript、248 项单元、21 项 PostgreSQL 专项及[托管原生版本恢复](https://github.com/MaLaNg116/itervane/actions/runs/45042222516/job/137268978495)通过 |
 | 117 | P3-C2d4c3a 恢复应答中断与只读接管 | [#117](https://github.com/MaLaNg116/itervane/pull/117)，依赖 #116 | [中断与接管导读](p3-c-native-restore-takeover.md) | TypeScript、248 项单元、PostgreSQL 夹具及[托管原生接管](https://github.com/MaLaNg116/itervane/actions/runs/45044469706/job/137275925472)通过 |
 | 118 | P3-C2d4c3b 原生更新编号已落库的恢复接管 | [#118](https://github.com/MaLaNg116/itervane/pull/118)，依赖 #117 | [接管结算导读](p3-c-recorded-restore-takeover.md) | TypeScript、248 项单元、11 项 PostgreSQL 专项及[托管原生接管结算](https://github.com/MaLaNg116/itervane/actions/runs/45045442665/job/137278925376)通过 |
-| 119 | P3-C2d4c3c 恢复批准失效与原生目标变化 | [#119](https://github.com/MaLaNg116/itervane/pull/119)，依赖 #118 | [恢复闸门导读](p3-c-native-restore-authority.md) | TypeScript、248 项单元和两个 Bash 脚本语法检查通过，原生负例由[托管检查](https://github.com/MaLaNg116/itervane/pull/119/checks)验收 |
+| 119 | P3-C2d4c3c 恢复批准失效与原生目标变化 | [#119](https://github.com/MaLaNg116/itervane/pull/119)，依赖 #118 | [恢复闸门导读](p3-c-native-restore-authority.md) | TypeScript、248 项单元、Bash 与[三项托管原生负例](https://github.com/MaLaNg116/itervane/actions/runs/45046420679/job/137281922347)通过 |
 | 120 | P3-C2d4c3d 自托管指定版本恢复 | [#120](https://github.com/MaLaNg116/itervane/pull/120)，依赖 #119 | [参考安装导读](p3-c-restore-reference-installation.md) | TypeScript、249 项单元及六项 PostgreSQL 专项通过，[装机原生回归](https://github.com/MaLaNg116/itervane/pull/120/checks)验收中 |
+| 121 | P3-C3-A1 健康事件账本 | [#121](https://github.com/MaLaNg116/itervane/pull/121)，依赖 #120 | [健康事件导读](p3-c-operations-health-journal.md) | TypeScript、249 项单元、三个 PostgreSQL 专项和迁移一致性通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/121/checks) |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
