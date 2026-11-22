@@ -21,10 +21,11 @@ import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../v
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
+import type { OperationsWorkflowScope } from '../../src/config.js';
 import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
-  operationsObservations, operationsRequests, principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
+  operationsDiagnosisInputs, operationsDiagnosisReads, operationsObservations, operationsRequests, principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
@@ -37,7 +38,7 @@ import { FormalRolloutCoordinator } from '../../src/runtime/formal-rollout-claim
 import { FormalRolloutWorker } from '../../src/runtime/formal-rollout-worker.js';
 import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-rescan.js';
 import { runFormalVerification, type FormalVerificationOptions } from '../../src/runtime/formal-verification.js';
-import { ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
+import { BudgetExhausted, ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
 import { GuardedCheckpointer } from '../../src/runtime/checkpointer.js';
 import { FormalRepairExecution, type RepairRunner } from '../../src/runtime/repair-execution.js';
 import { observeFormalRepairTargets, type RepairObservationRunner } from '../../src/runtime/repair-observation.js';
@@ -48,6 +49,7 @@ import { ToolGateway } from '../../src/runtime/tools.js';
 import { prepareFormalVerificationInput } from '../../src/runtime/verification-input.js';
 import { projectVerificationEvidence } from '../../src/runtime/verification-evidence.js';
 import { DurableWorker } from '../../src/runtime/worker.js';
+import { OperationsEvidenceStore } from '../../src/runtime/operations-evidence-store.js';
 import { runOperationsObservation } from '../../src/runtime/operations-execution.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
 import { requireActor } from '../../src/service/access.js';
@@ -58,7 +60,7 @@ import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { FormalReleaseService } from '../../src/service/formal-release.js';
 import { readOperationsDeployment } from '../../src/service/operations-deployment.js';
 import { OperationsObservationViewService } from '../../src/service/operations-observation-view.js';
-import { freezeOperationsRequest } from '../../src/service/operations-requests.js';
+import { freezeOperationsRequest, readOperationsDiagnosis, readOperationsRequest } from '../../src/service/operations-requests.js';
 import { readOperationsObservationTarget, readOperationsReleaseEvidence, registerOperationsTarget } from '../../src/service/operations-targets.js';
 import { publishFormalRepair } from '../../src/service/repair-result.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
@@ -2317,7 +2319,9 @@ it('atomically admits one localized operations task with an immutable published 
 });
 
 it('rolls back an operations task and a real queue insert together, and rejects a replaced project grant', async () => {
-  const { taskService, scope } = await installedOperationsFixture();
+  const fixture = await installedOperationsFixture();
+  const { taskService, scope } = fixture;
+  const installed = diagnosisInstallation(fixture);
   const subject = 'operations-admission-actor';
   const principalId = randomUUID();
   const grant = { principalId, projectId: task.projectId, role: 'maintainer' as const };
@@ -2334,19 +2338,20 @@ it('rolls back an operations task and a real queue insert together, and rejects 
     rolledBackJob = await send(...args);
     throw new Error('operations queue rollback');
   });
-  try { await expect(taskService.admitOperations(maintainer, input)).rejects.toThrow('operations queue rollback'); }
+  try { await expect(taskService.admitOperations(maintainer, input, installed)).rejects.toThrow('operations queue rollback'); }
   finally { injected.mockRestore(); }
   expect(rolledBackJob).toBeTruthy();
   expect(await database.storage.boss.findJobs(queueName, { id: rolledBackJob! })).toEqual([]);
   expect(await database.storage.db.select().from(operationsRequests)).toEqual([]);
+  expect(await database.storage.db.select().from(operationsDiagnosisInputs)).toEqual([]);
   expect(await database.storage.db.select().from(taskRecords).where(eq(taskRecords.requestKey, input.idempotencyKey))).toEqual([]);
 
-  const { task: requested } = await taskService.admitOperations(maintainer, input);
+  const { task: requested } = await taskService.admitOperations(maintainer, input, installed);
   await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
   await database.storage.db.insert(projectMembers).values(grant);
   const [job] = await database.storage.boss.fetch(queueName);
   expect(job?.data).toMatchObject({ taskId: requested.id, runId: requested.runId });
-  expect(await coordinator.claim(job!, randomUUID())).toBeNull();
+  expect(await coordinator.claim(job!, randomUUID(), installed)).toBeNull();
   expect((await taskService.events(maintainer, requested.id, 10, 'zh-CN')).at(-1)).toMatchObject({ reason: 'permission_revoked', state: 'needs_human' });
 });
 
@@ -2379,6 +2384,147 @@ function scopedWhiskers(fixture: Awaited<ReturnType<typeof installedOperationsFi
 function installedOperations(fixture: Awaited<ReturnType<typeof installedOperationsFixture>>) {
   return { environmentId: fixture.scope.environmentId, enrollmentSha256: fixture.enrollment.fingerprint, readKey: operationsFixtureKey };
 }
+
+function diagnosisInstallation(fixture: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  return { ...installedOperations(fixture), diagnosisProviderSha256: sha256('configured operations model') };
+}
+
+async function claimOperations(installed: OperationsWorkflowScope) {
+  const job = await vi.waitFor(async () => {
+    const [available] = await database.storage.boss.fetch(queueName);
+    if (!available) throw new Error('Waiting for operations wakeup');
+    return available;
+  }, { timeout: 5_000, interval: 60 });
+  return coordinator.claim(job, randomUUID(), installed);
+}
+
+it('freezes diagnostic mode once and admits only a matching operations Worker', async () => {
+  const fixture = await installedOperationsFixture();
+  const installed = diagnosisInstallation(fixture);
+  const input = { ...fixture.scope, locale: 'zh-CN', idempotencyKey: randomUUID() };
+  await expect(fixture.taskService.admitOperations(identity, { ...input, diagnosisProviderSha256: installed.diagnosisProviderSha256 }))
+    .rejects.toMatchObject({ code: 'invalid_input' });
+  const [first, other] = await Promise.all([
+    fixture.taskService.admitOperations(identity, input, installed), fixture.taskService.admitOperations(identity, input, installed),
+  ]);
+  expect([first.replayed, other.replayed].sort()).toEqual([false, true]);
+  expect(first.task.id).toBe(other.task.id);
+  expect(await fixture.taskService.admitOperations(identity, input, installedOperations(fixture)))
+    .toEqual({ task: first.task, replayed: true });
+  const [budget] = await database.storage.db.select().from(runRuntime).where(eq(runRuntime.runId, first.task.runId));
+  expect(budget).toMatchObject({ maxTools: 4, toolsUsed: 0 });
+  const [inputRow] = await database.storage.db.select().from(operationsDiagnosisInputs);
+  const [taskRow] = await database.storage.db.select().from(taskRecords).where(eq(taskRecords.id, first.task.id));
+  const snapshot = await database.storage.db.transaction(async tx => readOperationsDiagnosis(tx, taskRow!, first.task.runId,
+    await readOperationsRequest(tx, taskRow!, first.task.runId)));
+  expect(inputRow).toMatchObject({ runId: first.task.runId, inputSha256: snapshot?.sha256, providerSha256: installed.diagnosisProviderSha256 });
+  expect(snapshot?.document).toMatchObject({ taskId: first.task.id, runId: first.task.runId, locale: 'zh-CN',
+    request: { releaseOperationId: fixture.operationId, containerId: fixture.runtime.containerId,
+      enrollmentSha256: fixture.enrollment.fingerprint } });
+  expect(JSON.stringify(snapshot)).not.toContain(operationsFixtureKey);
+  await expect(database.storage.pool.query('UPDATE itervane.operations_diagnosis_inputs SET provider_sha256=$1 WHERE run_id=$2',
+    [sha256('other profile'), first.task.runId])).rejects.toMatchObject({ code: '23514', message: 'operations_diagnosis_input_is_immutable' });
+
+  for (const incompatible of [installedOperations(fixture), { ...installed, diagnosisProviderSha256: sha256('wrong provider') },
+    { ...installed, enrollmentSha256: sha256('wrong enrollment') }]) {
+    await expect(claimOperations(incompatible)).resolves.toBeNull();
+    expect(await fixture.taskService.get(identity, first.task.id)).toMatchObject({ state: 'queued' });
+  }
+  await expect(claimOperations(installed)).resolves.toMatchObject({ runId: first.task.runId, taskId: first.task.id });
+});
+
+it('reserves one budget per evidence section, replays its record and limits successor attempts', async () => {
+  const fixture = await installedOperationsFixture();
+  const installed = diagnosisInstallation(fixture);
+  const admitted = await fixture.taskService.admitOperations(identity, { ...fixture.scope, idempotencyKey: randomUUID() }, installed);
+  const original = await claimOperations(installed);
+  if (!original) throw new Error('Expected diagnosis lease');
+  const store = new OperationsEvidenceStore(coordinator, installed);
+  const logsId = sha256('planned logs observation');
+  const logs = { kind: 'operations_section', section: 'logs', proofSha256: sha256('fixed log signals'), result: {
+    containerId: fixture.runtime.containerId, serverId: fixture.registration.whiskers.serverId,
+    observedAt: new Date().toISOString(), tailLines: 40, lines: 4, warningLines: 1, errorLines: 1,
+  } } as const;
+  const concurrent = await Promise.allSettled([store.reserve(original, 'logs', logsId), store.reserve(original, 'logs', logsId)]);
+  expect(concurrent).toEqual(expect.arrayContaining([
+    expect.objectContaining({ status: 'fulfilled', value: { state: 'reserved', target: {
+      ...fixture.registration.whiskers, containerId: fixture.runtime.containerId,
+    } } }),
+    expect.objectContaining({ status: 'rejected', reason: expect.objectContaining({ code: 'conflict' }) }),
+  ]));
+  await expect(store.reserve(original, 'metrics', logsId)).rejects.toMatchObject({ code: 'version_conflict' });
+  await expect(store.record(original, logsId, { ...logs, result: { ...logs.result, containerId: sha256('another container') } }))
+    .rejects.toMatchObject({ reason: 'operations_invalid_observation' });
+
+  const [request] = await database.storage.db.select().from(operationsRequests).where(eq(operationsRequests.runId, admitted.task.runId));
+  const legacy = { version: 1, taskId: original.taskId, runId: original.runId, fence: original.fence,
+    releaseOperationId: fixture.operationId, bindingSha256: request!.sha256, observation: {
+      containerId: logs.result.containerId, serverId: logs.result.serverId, observedAt: logs.result.observedAt, state: 'exited',
+    } };
+  await expect(database.storage.pool.query(`INSERT INTO itervane.operations_observations
+    (run_id,worker_id,fence,binding_sha256,sha256,document) VALUES ($1,$2,$3,$4,$5,$6)`,
+  [original.runId, original.workerId, original.fence, request!.sha256, sha256(JSON.stringify(legacy)), JSON.stringify(legacy)]))
+    .rejects.toMatchObject({ code: '23514', message: 'operations_diagnosis_settlement_required' });
+
+  const reclaim = async (scope: ExecutionScope) => {
+    await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp() - interval '1 second' WHERE run_id=$1 AND fence=$2",
+      [scope.runId, scope.fence]);
+    await database.storage.db.transaction(tx => coordinator.recoverExpired(tx, randomUUID()));
+    const current = await claimOperations(installed);
+    if (!current) throw new Error('Expected recovered diagnosis lease');
+    expect(current).toMatchObject({ runId: scope.runId, fence: scope.fence + 1 });
+    return current;
+  };
+  const successor = await reclaim(original);
+  await expect(store.record(successor, logsId, logs)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(store.reserve(successor, 'logs', logsId)).resolves.toMatchObject({ state: 'reserved' });
+  await expect(store.record(original, logsId, logs)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(store.record(successor, logsId, logs)).resolves.toEqual(logs);
+  await expect(store.record(successor, logsId, logs)).resolves.toEqual(logs);
+  await expect(store.record(successor, logsId, { ...logs, proofSha256: sha256('wrong digest') })).rejects.toMatchObject({ code: 'version_conflict' });
+  await expect(database.storage.pool.query("DELETE FROM itervane.operations_diagnosis_reads WHERE run_id=$1 AND section='logs'", [successor.runId]))
+    .rejects.toMatchObject({ code: '23514', message: 'operations_diagnosis_read_is_immutable' });
+
+  const metricsId = sha256('planned metrics observation');
+  await store.reserve(successor, 'metrics', metricsId);
+  const third = await reclaim(successor);
+  await expect(store.reserve(third, 'logs', logsId)).resolves.toEqual({ state: 'recorded', evidence: logs });
+  await expect(store.reserve(third, 'logs', sha256('different operation'))).rejects.toMatchObject({ code: 'version_conflict' });
+  await store.reserve(third, 'metrics', metricsId);
+  const fourth = await reclaim(third);
+  await expect(store.reserve(fourth, 'metrics', metricsId)).rejects.toBeInstanceOf(BudgetExhausted);
+  expect(await database.storage.db.select().from(operationsDiagnosisReads)).toEqual(expect.arrayContaining([
+    expect.objectContaining({ section: 'logs', state: 'recorded', attempts: 2, fence: successor.fence }),
+    expect.objectContaining({ section: 'metrics', state: 'reserved', attempts: 2, fence: third.fence }),
+  ]));
+  const [budget] = await database.storage.db.select().from(runRuntime).where(eq(runRuntime.runId, fourth.runId));
+  expect(budget).toMatchObject({ maxTools: 4, toolsUsed: 2 });
+});
+
+it.each(['cancel', 'remap'] as const)('rejects a diagnosis result after %s during its reservation', async mode => {
+  const fixture = await installedOperationsFixture();
+  const installed = diagnosisInstallation(fixture);
+  const { task } = await fixture.taskService.admitOperations(identity, { ...fixture.scope, idempotencyKey: randomUUID() }, installed);
+  const scope = await claimOperations(installed);
+  if (!scope) throw new Error('Expected diagnosis lease');
+  const store = new OperationsEvidenceStore(coordinator, installed);
+  const id = sha256('planned container observation');
+  await store.reserve(scope, 'container', id);
+  const observed = { kind: 'operations_section', section: 'container', proofSha256: sha256('container proof'), result: {
+    containerId: fixture.runtime.containerId, serverId: fixture.registration.whiskers.serverId,
+    observedAt: new Date().toISOString(), state: 'exited',
+  } };
+  if (mode === 'cancel') {
+    const current = await fixture.taskService.get(identity, task.id);
+    await fixture.taskService.cancel(identity, task.id, { expectedVersion: current.version });
+    await expect(store.record(scope, id, observed)).rejects.toBeInstanceOf(ExecutionLost);
+  } else {
+    await registerOperationsTarget(database.storage, { ...fixture.registration,
+      whiskers: { ...fixture.registration.whiskers, serverId: 'changed-server' } });
+    await expect(store.record(scope, id, observed)).rejects.toMatchObject({ reason: 'operations_target_changed' });
+  }
+  expect(await database.storage.db.select().from(operationsDiagnosisReads)).toMatchObject([{ state: 'reserved', document: null }]);
+});
 
 it('observes a bound deployment using a compatible Worker and atomically records its receipt', async () => {
   const fixture = await installedOperationsFixture();
@@ -2445,7 +2591,7 @@ it('lets a successor re-observe within the persisted budget and rejects the old 
   const request = (await fixture.taskService.admitOperations(identity, { ...fixture.scope, idempotencyKey: randomUUID() })).task;
   const installed = installedOperations(fixture);
   const [job] = await database.storage.boss.fetch(queueName);
-  const initial = await coordinator.claim(job!, randomUUID(), installed.environmentId);
+  const initial = await coordinator.claim(job!, randomUUID(), installed);
   if (!initial) throw new Error('Expected operations lease');
   const abandoned = Promise.withResolvers<void>();
   let callCount = 0;
