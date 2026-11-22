@@ -231,6 +231,8 @@ jobs:
               .operations.restart.healthStatus == 200 and .operations.restart.nativeAuditCount == 1 and
               .operations.restart.resumeCount == 1 and .operations.restart.acknowledgedCount == 1 and
               .operations.restart.blockedBeforeApproval and .operations.restart.distinctKomodoReader and
+              .operations.restart.restoreWorker.separateReadIdentity and .operations.restart.restoreWorker.mismatchedMappingDenied and
+              .operations.restart.restoreWorker.idleWithoutWork and
               .operations.restart.environmentReleased and .operations.restart.slotReleased and .operations.restart.httpMcpAgreement' "$report" >/dev/null
             jq -e '.operations.restart as $verified | $verified.interrupted as $interrupted |
               $interrupted.releaseOperationId == .release.operationId and

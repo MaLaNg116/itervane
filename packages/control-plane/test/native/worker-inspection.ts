@@ -23,12 +23,13 @@ import {
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier } from '../../src/auth/identity.js';
-import { runtimeConfig, workerConfig } from '../../src/config.js';
+import { restoreWorkerConfig, runtimeConfig, workerConfig } from '../../src/config.js';
 import { formalReleaseQueue } from '../../src/persistence/database.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
 import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
 import { createInstalledApi } from '../../src/runtime/installed-api.js';
+import { createInstalledRestoreWorker } from '../../src/runtime/installed-restore-worker.js';
 import { KomodoReleaseClient } from '../../src/runtime/release-komodo.js';
 import { createKeycloakRolloutTokenSource, ReleaseRolloutVerifier } from '../../src/runtime/release-rollout.js';
 import { ReleaseIngressError } from '../../src/runtime/release-traefik.js';
@@ -1153,6 +1154,19 @@ async function probe() {
             }
             const readerCredentials = await target.provisionRestartReader();
             notEqual(readerCredentials.actorId, target.credentials.actorId);
+            phase = 'operations_native_restore_installation';
+            const restoreConfig = restoreWorkerConfig({ DATABASE_URL: db.runtimeUrl,
+              ITERVANE_OPERATIONS_ENVIRONMENT_ID: environment.id, ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollment.fingerprint,
+              ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: mapping.fingerprint, ITERVANE_RESTORE_KOMODO_WRITER_KEY: target.credentials.key,
+              ITERVANE_RESTORE_KOMODO_WRITER_SECRET: target.credentials.secret, ITERVANE_RESTORE_KOMODO_READER_ID: readerCredentials.actorId,
+              ITERVANE_RESTORE_KOMODO_READER_KEY: readerCredentials.key, ITERVANE_RESTORE_KOMODO_READER_SECRET: readerCredentials.secret,
+              ITERVANE_RESTORE_PROBE_SECRET: ingress.probeSecret });
+            await rejects(createInstalledRestoreWorker(db.storage, { ...restoreConfig,
+              installed: { ...restoreConfig.installed, mappingSha256: sha256('unregistered restore configuration') } }), /release_installation_target/);
+            await rejects(createInstalledRestoreWorker(db.storage, { ...restoreConfig,
+              reader: { ...readerCredentials, actorId: target.credentials.actorId } }), { reason: 'binding' });
+            const restoreWorker = await createInstalledRestoreWorker(db.storage, restoreConfig);
+            equal(await restoreWorker.tick(), 'idle');
             const boundTarget = { ...target.binding, imageRepository: targetSettings.imageRepository, registryOrigin: targetSettings.registryOrigin };
             const reader = KomodoReleaseClient.readOnly(boundTarget, readerCredentials);
             await reader.verifyInstallation();
@@ -1209,7 +1223,7 @@ async function probe() {
             equal(interrupted.stoppedStart, verified.recoveredStart);
             notEqual(interrupted.approvalId, verified.approvalId);
             notEqual(interrupted.diagnosisRunId, verified.diagnosisRunId);
-            return { ...verified, interrupted };
+            return { ...verified, interrupted, restoreWorker: { separateReadIdentity: true, mismatchedMappingDenied: true, idleWithoutWork: true } };
           } finally {
             try { await worker?.stop('TERM'); worker = undefined; }
             finally { await native.close(); }
