@@ -2860,7 +2860,8 @@ it('serializes competing owner decisions for a proposal submitted by a project m
     decisions.decide(owner, proposal.id, { ...input, action: 'reject', idempotencyKey: randomUUID() }),
   ]);
   expect(attempts).toEqual(expect.arrayContaining([
-    expect.objectContaining({ status: 'fulfilled', value: { replayed: false, decision: expect.objectContaining({ version: 1, selfConfirmed: false }) } }),
+    expect.objectContaining({ status: 'fulfilled', value: { taskId: task.id, replayed: false,
+      decision: expect.objectContaining({ version: 1, selfConfirmed: false }) } }),
     expect.objectContaining({ status: 'rejected', reason: expect.objectContaining({ code: 'version_conflict' }) }),
   ]));
   const before = (await database.storage.db.select().from(operationsDecisions)).at(0);
