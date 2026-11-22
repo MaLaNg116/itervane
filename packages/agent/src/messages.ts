@@ -1,5 +1,5 @@
-import type { Locale } from '@itervane/contracts';
-import type { AgentOrigin, DeliveryRole } from './contracts.js';
+import { operationsMemoryPressureThreshold, type Locale } from '@itervane/contracts';
+import type { AgentOrigin, AgentRole } from './contracts.js';
 
 const en = {
   tool: {
@@ -14,6 +14,7 @@ const en = {
     read_candidate: 'Read the candidate artifact for this verification.',
     check_candidate: 'Run one protected check on the current candidate. The platform selects its baseline and expected conditions.',
     read_verification: 'Read one section of the validated Runner receipt for this verification.',
+    read_operations: 'Read one section of evidence for the bound deployment.',
     finish_role: 'Submit a draft conclusion backed by the IDs of actual observations from this role.',
     request_human: 'Stop and request human review if the evidence is insufficient.',
   },
@@ -39,10 +40,28 @@ const en = {
     instruction: 'Use read_verification to review source, build and baseline. The baseline result determines whether the image section is available. Explain actual failures, remaining and new findings, and evidence gaps. Use observed facts for follow-up suggestions. Approval is handled by the platform.',
     finish: 'Cite all observed IDs in evidenceIds. Keep summary to one or two sentences and at most 480 characters. Put individual suggestions in followUps, with one observed ID and at most 320 characters each. Use an empty list when no follow-up is needed.',
   },
+  formalOperations: {
+    goal: 'Investigate the bound deployment and recommend a supported next step for review.',
+    instruction: `Establish the container state and verified release. Use the results to decide whether log signals or one-hour metrics would help. Log counts are application-reported signals. Average memory at or above ${operationsMemoryPressureThreshold}% can support a memory-pressure hypothesis. Only review a restart for an exited or dead container. Review a rollback only when that state and a previous verified release with a different image are observed. Request a human when evidence is insufficient.`,
+    finish: 'Choose hypotheses and a recommendation from the allowed codes. Cite only observations that support each item. Use no hypotheses when the observations support none. The platform records facts and handles any later approval.',
+  },
+  operationsHypothesis: {
+    application_error: 'Application errors may contribute to the incident.',
+    release_regression: 'The incident may be related to a release change.',
+    memory_pressure: 'Memory pressure may contribute to the incident.',
+  },
+  operationsRecommendation: {
+    continue_observation: 'Continue observing the deployment.',
+    review_restart: 'Review a restart of the stopped container.',
+    review_rollback: 'Review recovery to the previous verified release.',
+    investigate_code: 'Investigate the source of the observed application errors.',
+    human_review: 'Request a human review of the recorded evidence.',
+  },
   role: {
     audit: 'Review the source, distinguish hypotheses from facts, and explain each protected finding.',
     repair: 'Use the audit handoff and available templates to prepare a change candidate.',
     verify: 'Independently obtain all three protected check results for the candidate and explain the evidence.',
+    operations: 'Investigate the bound deployment using authorized read-only evidence.',
   },
   feedback: {
     invalid_call: 'Choose exactly one available tool with valid arguments.',
@@ -75,6 +94,7 @@ const en = {
     repair_reconciling: 'The repair Runner requires reconciliation before another action.',
     repair_unavailable: 'The scoped repair Runner is unavailable.',
     verification_review_complete: 'The verification review cites the protected checks for this candidate.',
+    operations_review_complete: 'The diagnosis cites observed deployment evidence and records a recommendation.',
     checkpoint_unavailable: 'The run stopped because its checkpoint could not be published or read.',
     manual_review: 'The agent requested human review.',
     checkpoint_paused: 'The verification driver paused at a checkpoint.',
@@ -95,6 +115,7 @@ const zh: Translations = {
     read_candidate: '读取本次复验的候选差异。',
     check_candidate: '对当前候选运行一项受保护检查。基线和判据由平台选择。',
     read_verification: '读取本次复验已核验 Runner 回执的一项内容。',
+    read_operations: '读取绑定发布的一项运维证据。',
     finish_role: '提交本角色的结论草案，引用实际观察的编号。',
     request_human: '证据不足时停止并请求人工处理。',
   },
@@ -120,10 +141,28 @@ const zh: Translations = {
     instruction: '用 read_verification 查看源码复扫、构建和基线。基线结果决定是否可查看镜像。说明实际失败、未解决及新增的问题，以及缺证范围。建议只基于已取得的观察，审批由平台处理。',
     finish: '在 evidenceIds 中引用全部观察编号。摘要写一到两句，最多 480 个字符。各项建议放入 followUps，每条最多 320 个字符并引用一项已观察的证据。无需跟进时提交空列表。',
   },
+  formalOperations: {
+    goal: '调查绑定发布，提出有证据支持的后续建议，供人工查看。',
+    instruction: `先明确容器状态与已核验发布，再按观察判断是否需要日志信号或一小时指标。日志计数源自应用自报。平均内存使用率达到 ${operationsMemoryPressureThreshold}% 可作为资源压力假设的线索。只在容器已退出或失效时建议审查重启。建议审查恢复还需观察到不同镜像的前一已核验发布。证据不足时请求人工处理。`,
+    finish: '在允许的假设和建议类别中选择。每项引用实际支持它的观察编号。证据无法支持具体假设时提交空列表。平台记录事实并处理后续审批。',
+  },
+  operationsHypothesis: {
+    application_error: '应用错误可能与本次异常有关。',
+    release_regression: '异常可能与发布变更有关。',
+    memory_pressure: '内存压力可能与本次异常有关。',
+  },
+  operationsRecommendation: {
+    continue_observation: '继续观察该发布。',
+    review_restart: '审查是否重启已停止的容器。',
+    review_rollback: '审查是否恢复到上一已核验版本。',
+    investigate_code: '排查实际观察到的应用错误来源。',
+    human_review: '请人工复核已记录的观察。',
+  },
   role: {
     audit: '审阅源码，区分假设与事实，逐项说明受保护检查的发现。',
     repair: '结合审计交接与已登记模板，生成修改候选。',
     verify: '为当前候选独立取得三项受保护的检查结果，并说明证据。',
+    operations: '使用授权的只读证据调查绑定发布。',
   },
   feedback: {
     invalid_call: '请选择一个可用工具并填写有效参数。',
@@ -156,6 +195,7 @@ const zh: Translations = {
     repair_reconciling: '修复 Runner 需要核对后才能继续操作。',
     repair_unavailable: '当前作用范围内的修复 Runner 暂不可用。',
     verification_review_complete: '复验意见已引用该候选的受保护检查结果。',
+    operations_review_complete: '诊断已引用实际发布证据并记录建议。',
     checkpoint_unavailable: '无法读取或发布检查点，运行已停止。',
     manual_review: 'Agent 请求人工处理。',
     checkpoint_paused: '验收驱动已在检查点暂停。',
@@ -164,13 +204,14 @@ const zh: Translations = {
 export type AgentReason = keyof typeof en.reason;
 export type Feedback = keyof typeof en.feedback;
 export const agentText = (locale: Locale) => locale === 'zh-CN' ? zh : en;
-export function agentPrompt(locale: Locale, role: DeliveryRole, origin: AgentOrigin) {
+export function agentPrompt(locale: Locale, role: AgentRole, origin: AgentOrigin) {
   const text = agentText(locale);
   const instruction = {
     trusted_fixture: text.role[role],
     formal_audit: text.formal.instruction,
     formal_repair: text.formalRepair.instruction,
     formal_verification: text.formalVerification.instruction,
+    formal_operations: text.formalOperations.instruction,
   };
   return `${text.prompt} ${instruction[origin]}`;
 }

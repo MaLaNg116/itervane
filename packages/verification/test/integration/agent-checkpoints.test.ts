@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { createAgentHarness, type AgentSpec } from '@itervane/agent';
+import { createAgentHarness, createFormalOperations, sha256, type AgentSpec } from '@itervane/agent';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import pg from 'pg';
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { createDeliveryFixture } from '../../src/agent/fixture.js';
+import { operationsFixture, scriptedOperations } from '../../src/agent/operations-fixture.js';
 import { scriptedModel } from '../../src/agent/scripted-model.js';
 import { assertDisposableDatabase } from '../../src/database.js';
 
@@ -97,4 +98,36 @@ it('checks the current input binding and authorization before resuming work', as
   expect(authorize).not.toHaveBeenCalled();
   expect(await resume(spec)).toMatchObject({ reason: 'permission_denied', status: 'requires_human', usage: { turns: 1, toolCalls: 0 } });
   expect(observe).not.toHaveBeenCalled();
+});
+
+it('reconnects to a real PostgreSQL reservation for an operations read and reuses the published diagnosis', async () => {
+  const sample = operationsFixture('zh-CN', 'exited');
+  const script = scriptedOperations();
+  const complete = vi.fn(script.complete);
+  const config = { configurable: { thread_id: `operations:${sample.input.document.runId}` } };
+  const read = vi.fn<Parameters<typeof createFormalOperations>[0]['read']>(async input => {
+    const saved = await withSaver(saver => saver.getTuple(config));
+    expect(saved?.checkpoint.channel_values.state).toMatchObject({
+      pending: 'observation', nextTool: { name: 'read_operations', args: { section: input.section } },
+    });
+    return sample.read(input);
+  });
+  const agent = (checkpointer: PostgresSaver, providerSha256 = sample.providerSha256) =>
+    createFormalOperations({ ...sample, checkpointer, providerSha256, read, model: { ...script, complete } });
+  await withSaver(saver => agent(saver).run({ pauseAfter: 'decision' }));
+  const paused = await withSaver(saver => agent(saver).run({ pauseAfter: 'reservation' }));
+  expect(paused).toMatchObject({ status: 'paused', usage: { turns: 1, toolCalls: 1 } });
+  expect(await withSaver(saver => agent(saver, sha256('different model profile')).run()))
+    .toMatchObject({ status: 'requires_human', reason: 'incompatible_checkpoint', evidence: [] });
+  expect(read).not.toHaveBeenCalled();
+
+  const settled = await withSaver(saver => agent(saver).run());
+  expect(settled).toMatchObject({ status: 'completed', checkpointId: expect.any(String),
+    formalOperations: { previousReleaseOperationId: sample.previousReleaseOperationId },
+    usage: { turns: 4, toolCalls: 3 } });
+  expect(read.mock.calls.map(([input]) => input.section)).toEqual(['container', 'logs', 'release']);
+  expect(read.mock.calls[0]?.[0].operationId).toBe(sha256(settled.bindingSha256 + ':1'));
+  expect(await withSaver(saver => agent(saver).run())).toEqual(settled);
+  expect(complete).toHaveBeenCalledTimes(4);
+  expect(read).toHaveBeenCalledTimes(3);
 });

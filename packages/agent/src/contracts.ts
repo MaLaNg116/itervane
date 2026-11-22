@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { auditFindingsPerScan, auditScannerSchema, idSchema, localeSchema, sourceRefSchema } from '@itervane/contracts';
+import { auditFindingsPerScan, auditScannerSchema, idSchema, localeSchema, operationsDiagnosisObservationSchema, sourceRefSchema } from '@itervane/contracts';
 import { z } from 'zod';
 import { repairEvidenceDataSchema } from './repair-contracts.js';
 import { verificationObservationSchema } from './verification-contracts.js';
@@ -10,6 +10,8 @@ const note = z.string().trim().min(1).max(480);
 
 export const deliveryRoleSchema = z.enum(['audit', 'repair', 'verify']);
 export type DeliveryRole = z.infer<typeof deliveryRoleSchema>;
+export const agentRoleSchema = z.enum([...deliveryRoleSchema.options, 'operations']);
+export type AgentRole = z.infer<typeof agentRoleSchema>;
 
 export const agentSpecSchema = z.object({
   taskId: idSchema, runId: idSchema, projectId: idSchema, generation: z.number().int().positive(),
@@ -96,10 +98,13 @@ export const formalRepairReceiptSchema = z.strictObject({
 export const formalVerificationReceiptSchema = z.strictObject({
   origin: z.literal('formal_verification'), ...receiptBinding, data: verificationObservationSchema,
 });
+export const formalOperationsReceiptSchema = z.strictObject({
+  origin: z.literal('formal_operations'), ...receiptBinding, data: operationsDiagnosisObservationSchema,
+});
 
 export const evidenceSchema = z.discriminatedUnion('origin', [
   receiptSchema.extend({ id: shaSchema }), formalReceiptSchema.extend({ id: shaSchema }), formalRepairReceiptSchema.extend({ id: shaSchema }),
-  formalVerificationReceiptSchema.extend({ id: shaSchema }),
+  formalVerificationReceiptSchema.extend({ id: shaSchema }), formalOperationsReceiptSchema.extend({ id: shaSchema }),
 ]);
 export type AgentEvidence = z.infer<typeof evidenceSchema>;
 export type AgentOrigin = AgentEvidence['origin'];

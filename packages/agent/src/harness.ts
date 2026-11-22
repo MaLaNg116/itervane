@@ -1,11 +1,12 @@
 import { Annotation, END, START, StateGraph, type BaseCheckpointSaver } from '@langchain/langgraph';
-import type { FormalRepairRetryContext } from '@itervane/contracts';
+import type { FormalRepairRetryContext, OperationsDiagnosisInput } from '@itervane/contracts';
 import type { ConversationEntry, ModelAdapter } from '@itervane/model';
 import {
   agentSpecSchema, auditScannerSchema, checkKinds, sha256, type AgentSpec, type AgentEvidence, type AgentOrigin,
-  type Candidate, type AuditReport, type DeliveryRole,
+  type Candidate, type AuditReport, type AgentRole, type DeliveryRole,
 } from './contracts.js';
 import { agentPrompt, agentText, type AgentReason, type Feedback } from './messages.js';
+import { finishFormalOperations, missingOperationsSections } from './operations-results.js';
 import type { RepairFindingSummary } from './repair-contracts.js';
 import { finishAudit, finishFormalAudit, finishFormalRepair, finishFormalVerification, finishRepair, finishVerify } from './results.js';
 import { initialRole, initialState, restoreState, stopped, type AgentState, type Stop } from './state.js';
@@ -13,7 +14,7 @@ import { acceptReceipt, canCall, emptyArguments, hasObservation, plannedToolSche
 import { finishVerificationInputSchema, pendingVerificationSections, type VerificationSection } from './verification-contracts.js';
 
 export type AgentScope = Readonly<{
-  spec: Readonly<AgentSpec>; bindingSha256: string; snapshotSha256: string; role: DeliveryRole; origin: AgentOrigin;
+  spec: Readonly<AgentSpec>; bindingSha256: string; snapshotSha256: string; role: AgentRole; origin: AgentOrigin;
 }>;
 export interface AgentHost {
   authorize(scope: AgentScope, signal: AbortSignal): Promise<boolean>;
@@ -31,7 +32,9 @@ type FormalVerificationProfile = {
   origin: 'formal_verification'; inputSha256: string; providerSha256: string;
   sectionSha256: Readonly<Record<VerificationSection, string>>;
 };
-type HarnessProfile = { origin: 'trusted_fixture' } | FormalAuditProfile | FormalRepairProfile | FormalVerificationProfile;
+type OperationsTarget = Pick<OperationsDiagnosisInput['request'], 'containerId' | 'releaseOperationId' | 'manifestDigest'> & { serverId: string };
+type FormalOperationsProfile = { origin: 'formal_operations'; inputSha256: string; providerSha256: string; target: Readonly<OperationsTarget> };
+type HarnessProfile = { origin: 'trusted_fixture' } | FormalAuditProfile | FormalRepairProfile | FormalVerificationProfile | FormalOperationsProfile;
 export type AgentRunOptions = { signal?: AbortSignal; pauseAfter?: 'decision' | 'reservation' };
 type AgentStatus = Stop['status'] | 'paused';
 const graphState = Annotation.Root({ state: Annotation<AgentState>() });
@@ -39,8 +42,10 @@ const graphState = Annotation.Root({ state: Annotation<AgentState>() });
 function agentReport<Origin extends AgentOrigin>(origin: Origin, spec: AgentSpec, bindingSha256: string,
   status: AgentStatus, reason: AgentReason, state?: AgentState, checkpointId?: string) {
   const visible = reason === 'permission_denied' ? undefined : state;
+  const diagnosis = visible?.formalOperations;
+  const text = agentText(spec.locale);
   return {
-    runId: spec.runId, status, reason, message: agentText(spec.locale).reason[reason],
+    runId: spec.runId, status, reason, message: text.reason[reason],
     origin, releaseEligible: false as const, bindingSha256,
     ...(checkpointId ? { checkpointId } : {}),
     role: state?.role ?? initialRole(origin), usage: state?.usage ?? { turns: 0, toolCalls: 0, tokens: 0 },
@@ -48,12 +53,18 @@ function agentReport<Origin extends AgentOrigin>(origin: Origin, spec: AgentSpec
     audit: visible?.audit ?? null, repairs: visible?.repairs ?? [], verifications: visible?.verifications ?? [],
     ...(origin === 'formal_repair' ? { formalRepair: visible?.formalRepair ?? null } : {}),
     ...(origin === 'formal_verification' ? { formalVerification: visible?.formalVerification ?? null } : {}),
+    ...(origin === 'formal_operations' ? { formalOperations: diagnosis ?? null, operationsPresentation: diagnosis ? {
+      locale: spec.locale,
+      hypotheses: diagnosis.hypotheses.map(({ code }) => ({ code, message: text.operationsHypothesis[code] })),
+      recommendation: text.operationsRecommendation[diagnosis.recommendation.code],
+    } : null } : {}),
   };
 }
 export type AgentFixtureReport = ReturnType<typeof agentReport<'trusted_fixture'>>;
 export type FormalAuditReport = ReturnType<typeof agentReport<'formal_audit'>>;
 export type FormalRepairReport = ReturnType<typeof agentReport<'formal_repair'>>;
 export type FormalVerificationReport = ReturnType<typeof agentReport<'formal_verification'>>;
+export type FormalOperationsReport = ReturnType<typeof agentReport<'formal_operations'>>;
 
 function bounded<T>(signal: AbortSignal, start: () => Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -71,7 +82,7 @@ function currentEvidence(state: AgentState) {
   return state.evidence.filter(item => state.currentEvidence.includes(item.id));
 }
 
-function missingObservations(role: DeliveryRole, entries: AgentEvidence[], origin: AgentOrigin) {
+function missingObservations(role: AgentRole, entries: AgentEvidence[], origin: AgentOrigin) {
   if (origin === 'formal_audit') return auditScannerSchema.options.filter(scanner =>
     !hasObservation(entries, { name: 'read_scan', args: { scanner } }));
   if (origin === 'formal_repair') {
@@ -79,6 +90,7 @@ function missingObservations(role: DeliveryRole, entries: AgentEvidence[], origi
     return entries.some(item => item.data.kind === 'repair_targets') ? ['apply_repair_template', 'apply_repair_patch'] : ['read_repair_targets'];
   }
   if (origin === 'formal_verification') return pendingVerificationSections(entries);
+  if (origin === 'formal_operations') return missingOperationsSections(entries).filter(section => section === 'container' || section === 'release');
   if (role === 'audit') return entries.some(item => item.data.kind === 'findings') ? [] : ['read_findings'];
   if (role === 'repair') return entries.some(item => item.data.kind === 'candidate') ? [] : ['draft_repair'];
   return checkKinds.filter(check => !hasObservation(entries, { name: 'check_candidate', args: { check } }));
@@ -102,7 +114,7 @@ function conversation(spec: AgentSpec, state: AgentState, entries: AgentEvidence
     },
     evidenceIndex: entries.map(({ id, data }) => ({
       id, kind: data.kind, check: data.kind === 'check' ? data.result.check : undefined,
-      section: data.kind === 'context' || data.kind === 'verification_section' ? data.section : undefined,
+      section: data.kind === 'context' || data.kind === 'verification_section' || data.kind === 'operations_section' ? data.section : undefined,
       ruleId: data.kind === 'rule' ? data.ruleId : undefined,
       scanner: data.kind === 'scan' ? data.scanner : undefined,
     })),
@@ -138,6 +150,12 @@ function conversation(spec: AgentSpec, state: AgentState, entries: AgentEvidence
     } else if (data.kind === 'repair_candidate') {
       observations.push({ ...entry, data: { ...data, candidate: { ...data.candidate,
         changes: data.candidate.changes.map(({ path: _path, ...change }) => change) } } });
+    } else if (data.kind === 'operations_section') {
+      if (data.section === 'release') observations.push({ id: entry.id, data });
+      else {
+        const { containerId: _containerId, serverId: _serverId, ...result } = data.result;
+        observations.push({ id: entry.id, data: { ...data, result } });
+      }
     } else {
       observations.push(entry);
     }
@@ -171,6 +189,10 @@ function finish(state: AgentState, spec: AgentSpec, input: unknown, origin: Agen
   if (origin === 'formal_verification') {
     const verification = finishFormalVerification(evidence, input);
     return verification ? stopped({ ...state, formalVerification: verification }, 'verification_review_complete', 'completed') : undefined;
+  }
+  if (origin === 'formal_operations') {
+    const diagnosis = finishFormalOperations(evidence, input);
+    return diagnosis ? stopped({ ...state, formalOperations: diagnosis }, 'operations_review_complete', 'completed') : undefined;
   }
   if (state.role === 'audit') {
     const audit = finishAudit(evidence, input);
@@ -212,6 +234,10 @@ export function createFormalVerificationHarness(options: HarnessOptions, profile
   return createHarness(options, { ...profile, origin: 'formal_verification' });
 }
 
+export function createFormalOperationsHarness(options: HarnessOptions, profile: Omit<FormalOperationsProfile, 'origin'>) {
+  return createHarness(options, { ...profile, origin: 'formal_operations' });
+}
+
 function createHarness<Profile extends HarnessProfile>({ model, checkpointer, host }: HarnessOptions, profile: Profile) {
   const { origin } = profile;
   const active = new Set<string>();
@@ -234,6 +260,7 @@ function createHarness<Profile extends HarnessProfile>({ model, checkpointer, ho
     const formal = profile.origin !== 'trusted_fixture';
     const repairing = profile.origin === 'formal_repair';
     const verifying = profile.origin === 'formal_verification';
+    const investigating = profile.origin === 'formal_operations';
     const ruleIds = profile.origin === 'formal_audit' ? profile.ruleIds : [];
     const repairFindingIds = repairing ? profile.findings.map(item => item.id) : [];
     const threadPrefix = formal ? initialRole(origin) : 'fixture-agent';
@@ -243,9 +270,17 @@ function createHarness<Profile extends HarnessProfile>({ model, checkpointer, ho
       && (!formal || call.name !== 'read_rule' || ruleIds.includes(call.args.ruleId))
       && (!repairing || !currentEvidence(state).some(item => item.data.kind === 'repair_candidate'))
       && (call.name !== 'read_verification' || pendingVerificationSections(currentEvidence(state)).includes(call.args.section))
+      && (call.name !== 'read_operations' || missingOperationsSections(currentEvidence(state)).includes(call.args.section))
       && (call.name !== 'read_repair_targets' || call.args.findingIds.every(id => repairFindingIds.includes(id)));
-    const matchesVerificationInput = ({ data }: AgentEvidence) => !verifying ||
-      (data.kind === 'verification_section' && sha256(JSON.stringify(data)) === profile.sectionSha256[data.section]);
+    const matchesInput = ({ data }: AgentEvidence) => {
+      if (verifying) return data.kind === 'verification_section' && sha256(JSON.stringify(data)) === profile.sectionSha256[data.section];
+      if (!investigating) return true;
+      if (data.kind !== 'operations_section') return false;
+      const { target } = profile;
+      return data.section === 'release'
+        ? data.result.current.operationId === target.releaseOperationId && data.result.current.manifestDigest === target.manifestDigest
+        : data.result.containerId === target.containerId && data.result.serverId === target.serverId;
+    };
     const externalSignal = options.signal;
     // The timer can abort before the wall clock reaches the exact deadline millisecond.
     const lapse = (state: AgentState, signal?: AbortSignal) => externalSignal?.aborted ? stopped(state, 'cancelled', 'cancelled')
@@ -361,7 +396,7 @@ function createHarness<Profile extends HarnessProfile>({ model, checkpointer, ho
         const after = await gate(state, signal);
         if (after) return { state: after };
         const receipt = acceptReceipt(raw, { origin, bindingSha256, snapshotSha256: scope.snapshotSha256, call, audit: state.audit, candidate, evidence });
-        if (!receipt || !matchesVerificationInput(receipt)) return { state: stopped(state, 'invalid_receipt') };
+        if (!receipt || !matchesInput(receipt)) return { state: stopped(state, 'invalid_receipt') };
         const trace = [...state.trace, { role: state.role, operationId, call, evidenceId: receipt.id }];
         if (state.currentEvidence.includes(receipt.id)) return { state: stalled({ ...state, trace }, 'no_new_evidence') };
         const next: AgentState = {
@@ -392,10 +427,11 @@ function createHarness<Profile extends HarnessProfile>({ model, checkpointer, ho
       const checkpointId = formal && typeof publishedId === 'string' ? publishedId : undefined;
       const existing = publishedId !== undefined || checkpoint.values?.state !== undefined;
       const state = existing ? restoreState(checkpoint.values?.state, spec, bindingSha256, origin) : initialState(spec, bindingSha256, origin);
-      if (!state || !state.evidence.every(matchesVerificationInput)) return report('requires_human', 'incompatible_checkpoint', undefined, checkpointId);
+      if (!state || !state.evidence.every(matchesInput)) return report('requires_human', 'incompatible_checkpoint', undefined, checkpointId);
       const replay = state.pending === 'observation' && (
         (repairing && (state.nextTool?.name === 'apply_repair_template' || state.nextTool?.name === 'apply_repair_patch'))
         || (verifying && state.nextTool?.name === 'read_verification')
+        || (investigating && state.nextTool?.name === 'read_operations')
       );
       if (state.stop || (state.pending && !replay)) {
         if (!await authorized(state, signalFor(Date.now() + Math.min(1_000, limits.maxDurationMs)))) {
@@ -423,7 +459,7 @@ function createHarness<Profile extends HarnessProfile>({ model, checkpointer, ho
         const saved = await graph.getState(config);
         const savedId = saved.config?.configurable?.checkpoint_id;
         const settled = restoreState(saved.values?.state, spec, bindingSha256, origin);
-        return typeof savedId === 'string' && settled?.stop && settled.evidence.every(matchesVerificationInput)
+        return typeof savedId === 'string' && settled?.stop && settled.evidence.every(matchesInput)
           ? report(settled.stop.status, settled.stop.reason, settled, savedId)
           : report('requires_human', 'checkpoint_unavailable');
       }
