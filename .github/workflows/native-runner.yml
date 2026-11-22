@@ -51,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm, protected-release-drift, protected-release-faults, protected-release-operations]
+        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm, protected-release-drift, protected-release-faults, protected-release-operations, protected-release-restore]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -207,6 +207,16 @@ jobs:
           if [[ "$NATIVE_SCENARIO" == protected-release-npm ]]; then
             jq -e '.release.repairCategory == "npm_dependency" and .dependency.advisoryId != null' "$report" >/dev/null
           fi
+          if [[ "$NATIVE_SCENARIO" == protected-release-restore ]]; then
+            jq -e '.dualVersion as $versions | $versions.first.release as $first | $versions.second.release as $second |
+              $versions.sameTarget and $versions.sameProtectedIngress and
+              $versions.currentOperationId == $second.operationId and $versions.previousOperationId == $first.operationId and
+              $first.operationId != $second.operationId and $first.updateId != $second.updateId and
+              $first.version != $second.version and $first.manifestDigest != $second.manifestDigest and
+              $first.configDigest != $second.configDigest and
+              ([$first, $second] | all(.healthStatus == 200 and (.anonymousStatus == 401 or .anonymousStatus == 403) and
+                .httpMcpAgreement and .approvalDeniedWithoutPortal))' "$report" >/dev/null
+          fi
           if [[ "$NATIVE_SCENARIO" == protected-release-operations ]]; then
             jq -e '.operations.releaseOperationId == .release.operationId and .operations.state == "running" and
               .operations.receipts == 1 and .operations.reads == 1 and .operations.releaseDispatches == 1 and
@@ -265,6 +275,7 @@ jobs:
             .reports/p0/runner-worker-inspection.json
             .reports/p0/runner-worker-build.json
             .reports/p0/runner-protected-release.json
+            .reports/p0/runner-restore-oci-artifact.json
             .reports/p0/runner-drift-oci-artifact.json
             .reports/p0/runner-faults-oci-artifact.json
             .reports/p0/runner-oci-artifact.json

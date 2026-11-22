@@ -33,6 +33,7 @@ import { createInstalledRestoreWorker } from '../../src/runtime/installed-restor
 import { KomodoReleaseClient } from '../../src/runtime/release-komodo.js';
 import { createKeycloakRolloutTokenSource, ReleaseRolloutVerifier } from '../../src/runtime/release-rollout.js';
 import { ReleaseIngressError } from '../../src/runtime/release-traefik.js';
+import { readPublishedOperationsDeployment } from '../../src/service/operations-deployment.js';
 import { changeOperationsRestartInstallation } from '../../src/service/operations-restart-installations.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
 import { registerOperationsTarget } from '../../src/service/operations-targets.js';
@@ -304,7 +305,8 @@ async function probe() {
   const driftRun = buildMode === 'protected-release-drift';
   const faultRun = buildMode === 'protected-release-faults';
   const operationsRun = buildMode === 'protected-release-operations';
-  const protectedRun = buildMode === 'protected-release' || dependencyRun || driftRun || faultRun || operationsRun;
+  const restoreRun = buildMode === 'protected-release-restore';
+  const protectedRun = buildMode === 'protected-release' || dependencyRun || driftRun || faultRun || operationsRun || restoreRun;
   const ociRun = buildMode === 'standard-oci' || protectedRun;
   const buildRun = buildMode === 'standard-build' || buildMode === 'standard-build-missing-cache' || ociRun;
   if (process.platform !== 'linux' || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted' || process.env.DATABASE_URL
@@ -432,7 +434,7 @@ async function probe() {
 
     if (build) {
       const audit = auditProvider = await auditProtocolFixture({
-        repairRetry: ociRun && !dependencyRun && !driftRun && !faultRun, dependencyRepair: dependencyRun,
+        repairRetry: ociRun && !dependencyRun && !driftRun && !faultRun && !restoreRun, dependencyRepair: dependencyRun,
       });
       const automaticProfile = build.oci ? standardVerificationProfileSchema.parse({
         id: 'isolated-rescan-fixture', baselineSha256: build.baseline, policySha256: sha256(JSON.stringify(scannerProfiles)),
@@ -607,12 +609,12 @@ async function probe() {
         ok(automaticProfile);
         const proxyDir = process.env.ITERVANE_NATIVE_RELEASE_PROXIES;
         ok(proxyDir && proxyDir.startsWith('/') && proxyDir.endsWith('/itervane-release-proxies'));
-        const cleanReleaseFixture = async () => {
-          const after = await buildFixture(fault === 'health' ? runtimeFaultCommit : standardBuildCommit, 'built', 'passed');
+        const cleanReleaseFixture = async (revision = fault === 'health' ? runtimeFaultCommit : standardBuildCommit) => {
+          const after = await buildFixture(revision, 'built', 'passed');
           const current = taskDtoSchema.parse(await request(`/v1/tasks/${after.taskId}`));
           return { current, after, generation: 1 };
         };
-        const prepared = driftRun || fault ? await cleanReleaseFixture()
+        const prepared = driftRun || fault || restoreRun ? await cleanReleaseFixture()
           : dependencyRun ? await dependencyFixture(automaticProfile) : await repairRetryFixture(automaticProfile);
         const { current, after, generation } = prepared;
         phase = fault ? `protected_release_${fault}_target` : 'protected_release_target';
@@ -851,70 +853,120 @@ async function probe() {
             manifestDigest: image.manifestDigest, configDigest: image.configDigest, httpMcpAgreement: true, environmentHeld: true } };
         }
 
-        phase = 'protected_release_installed_worker';
-        worker = await startReleaseWorker(mapping.fingerprint);
-        const verified = await poll(async () => {
-          const view = await readResult('en');
-          if (view.result?.status === 'manual_review' || view.result?.status === 'blocked') {
-            throw new Error(view.result.reason ?? 'protected_release_manual_review');
-          }
-          return view.result?.status === 'verified' ? view : undefined;
-        }, 155_000, 'protected_release_result');
-        await worker.stop('TERM'); worker = undefined;
+        const publish = async (task: typeof current, approval: typeof decision) => {
+          const { candidate, approved, image, operationId } = approval;
+          phase = 'protected_release_installed_worker';
+          worker = await startReleaseWorker(mapping.fingerprint);
+          const verified = await poll(async () => {
+            const view = await readResult('en', task.id);
+            if (view.result?.status === 'manual_review' || view.result?.status === 'blocked') {
+              throw new Error(view.result.reason ?? 'protected_release_manual_review');
+            }
+            return view.result?.status === 'verified' ? view : undefined;
+          }, 155_000, 'protected_release_result');
+          await worker.stop('TERM'); worker = undefined;
 
-        phase = 'protected_release_evidence';
-        const [record] = (await db.admin.query<{ state: string; proof: unknown; completed_at: Date; wakeup_job_id: string | null }>(
-          `SELECT operation.state, attempt.proof, attempt.completed_at, operation.wakeup_job_id
-            FROM itervane.release_operations operation JOIN itervane.formal_release_rollout_attempts attempt
-              ON attempt.operation_id=operation.id AND attempt.state='verified'
-            WHERE operation.id=$1 AND operation.candidate_id=$2`, [operationId, candidate.id])).rows;
-        ok(record);
-        equal(record.state, 'verified_formal');
-        equal(record.wakeup_job_id, null);
-        const proof = releaseRolloutProofSchema.parse(record.proof);
-        equal(proof.operationId, operationId);
-        equal(proof.candidateId, candidate.id);
-        equal(proof.fingerprint, candidate.fingerprint);
-        equal(proof.decisionVersion, approved.decisionVersion);
-        equal(proof.mappingSha256, mapping.fingerprint);
-        equal(proof.runtime.rolloutCheckSha256, rolloutCheckSha256);
-        equal(proof.runtime.version, 'candidate-' + candidate.manifest.repairedSnapshotSha256.slice(0, 16));
-        equal(proof.manifestDigest, image.manifestDigest);
-        equal(proof.runtime.configDigest, image.configDigest);
-        equal(proof.update.deploymentId, target.binding.deploymentId);
-        equal(proof.update.actorId, target.binding.komodo.actorId);
-        equal(proof.runtime.network, target.endpoint.network);
-        const running = await target.observeContainer(proof.runtime.imageReference, image.configDigest);
-        equal(running.containerId, proof.runtime.containerId);
-        const [registryRecord] = (await db.admin.query(
-          "SELECT proof FROM itervane.formal_release_steps WHERE operation_id=$1 AND kind='registry' AND state='confirmed'", [operationId],
-        )).rows;
-        const published = releaseRegistryImageProofSchema.parse(registryRecord?.proof);
-        equal(published.manifestDigest, image.manifestDigest);
-        equal(published.configDigest, image.configDigest);
-        equal(published.reference, proof.runtime.imageReference);
-        equal(taskDtoSchema.parse(await request(`/v1/tasks/${current.id}`)).state, 'succeeded');
-        const [slot] = (await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows;
-        equal(slot?.task_id, null);
-        await assertDrained(controllerUid, staging);
+          phase = 'protected_release_evidence';
+          const [record] = (await db.admin.query<{ state: string; proof: unknown; completed_at: Date; wakeup_job_id: string | null }>(
+            `SELECT operation.state, attempt.proof, attempt.completed_at, operation.wakeup_job_id
+              FROM itervane.release_operations operation JOIN itervane.formal_release_rollout_attempts attempt
+                ON attempt.operation_id=operation.id AND attempt.state='verified'
+              WHERE operation.id=$1 AND operation.candidate_id=$2`, [operationId, candidate.id])).rows;
+          ok(record);
+          equal(record.state, 'verified_formal');
+          equal(record.wakeup_job_id, null);
+          const proof = releaseRolloutProofSchema.parse(record.proof);
+          equal(proof.operationId, operationId);
+          equal(proof.candidateId, candidate.id);
+          equal(proof.fingerprint, candidate.fingerprint);
+          equal(proof.decisionVersion, approved.decisionVersion);
+          equal(proof.mappingSha256, mapping.fingerprint);
+          equal(proof.runtime.rolloutCheckSha256, rolloutCheckSha256);
+          equal(proof.runtime.version, 'candidate-' + candidate.manifest.repairedSnapshotSha256.slice(0, 16));
+          equal(proof.manifestDigest, image.manifestDigest);
+          equal(proof.runtime.configDigest, image.configDigest);
+          equal(proof.update.deploymentId, target.binding.deploymentId);
+          equal(proof.update.actorId, target.binding.komodo.actorId);
+          equal(proof.runtime.network, target.endpoint.network);
+          const running = await target.observeContainer(proof.runtime.imageReference, image.configDigest);
+          equal(running.containerId, proof.runtime.containerId);
+          const [registryRecord] = (await db.admin.query(
+            "SELECT proof FROM itervane.formal_release_steps WHERE operation_id=$1 AND kind='registry' AND state='confirmed'", [operationId],
+          )).rows;
+          const published = releaseRegistryImageProofSchema.parse(registryRecord?.proof);
+          equal(published.manifestDigest, image.manifestDigest);
+          equal(published.configDigest, image.configDigest);
+          equal(published.reference, proof.runtime.imageReference);
+          equal(taskDtoSchema.parse(await request(`/v1/tasks/${task.id}`)).state, 'succeeded');
+          const [slot] = (await db.admin.query('SELECT task_id FROM itervane.execution_slot WHERE id=1')).rows;
+          equal(slot?.task_id, null);
+          await assertDrained(controllerUid, staging);
 
-        const assertReader = async (view: typeof verified, lookup: Client) => {
-          const seen = formalReleaseResultSchema.parse((await lookup.callTool({
-            name: 'get_release_result', arguments: { taskId: current.id },
-          })).structuredContent);
-          deepStrictEqual(seen, { taskId: current.id, runId: current.runId, taskVersion: view.taskVersion, result: view.result });
-          ok(seen.result?.status === 'verified');
-          equal(seen.result.operationId, operationId);
-          equal(seen.result.updateId, proof.update.updateId);
-          deepStrictEqual(seen.result.evidence, { checkedAt: record.completed_at.toISOString(), version: proof.runtime.version,
-            manifestDigest: image.manifestDigest, configDigest: image.configDigest, healthy: true, accessProtected: true });
-          return seen.result;
+          const assertReader = async (view: typeof verified, lookup: Client) => {
+            const seen = formalReleaseResultSchema.parse((await lookup.callTool({
+              name: 'get_release_result', arguments: { taskId: task.id },
+            })).structuredContent);
+            deepStrictEqual(seen, { taskId: task.id, runId: task.runId, taskVersion: view.taskVersion, result: view.result });
+            ok(seen.result?.status === 'verified');
+            equal(seen.result.operationId, operationId);
+            equal(seen.result.updateId, proof.update.updateId);
+            deepStrictEqual(seen.result.evidence, { checkedAt: record.completed_at.toISOString(), version: proof.runtime.version,
+              manifestDigest: image.manifestDigest, configDigest: image.configDigest, healthy: true, accessProtected: true });
+            return seen.result;
+          };
+          const chinese = await assertReader(await readResult('zh-CN', task.id), client);
+          const english = await withEnglishReader(lookup => assertReader(verified, lookup));
+          equal(chinese.locale, 'zh-CN');
+          equal(english.locale, 'en');
+          notEqual(chinese.message, english.message);
+          return { proof,
+            report: { taskId: task.id, runId: task.runId, candidateId: candidate.id, operationId, fingerprint: candidate.fingerprint,
+              decisionVersion: proof.decisionVersion, manifestDigest: proof.manifestDigest, configDigest: proof.runtime.configDigest,
+              version: proof.runtime.version, updateId: proof.update.updateId, healthStatus: proof.runtime.healthStatus,
+              anonymousStatus: proof.runtime.anonymousStatus, approvalDeniedWithoutPortal: true, httpMcpAgreement: true,
+              model: 'scripted_anthropic_fixture', controlPlaneIdentity: 'signed_oidc_fixture', ingressIdentity: 'native_keycloak',
+              repairCategory: restoreRun ? null : dependencyRun ? 'npm_dependency' : 'synthetic_secret',
+              stagedFilesRemaining: false },
+          };
         };
-        const chinese = await assertReader(await readResult('zh-CN'), client);
-        const english = await withEnglishReader(lookup => assertReader(verified, lookup));
-        equal(chinese.locale, 'zh-CN');
-        equal(english.locale, 'en');
-        notEqual(chinese.message, english.message);
+        const first = await publish(current, decision);
+        const { proof } = first;
+        if (restoreRun) {
+          const scope = { projectId: project.id, environmentId: environment.id };
+          const history = () => db.storage.db.transaction(tx => readPublishedOperationsDeployment(tx, scope, { includePrevious: true }));
+          const initial = await history();
+          equal(initial.releaseOperationId, first.report.operationId);
+          equal(initial.containerId, first.proof.runtime.containerId);
+          equal(initial.previous, null);
+
+          const next = await cleanReleaseFixture(runtimeFaultCommit);
+          notEqual(next.current.id, current.id);
+          const nextDecision = await approve(next.current, next.after, next.generation, mapping.fingerprint);
+          notEqual(nextDecision.candidate.manifest.source.commit, candidate.manifest.source.commit);
+          notEqual(nextDecision.image.manifestDigest, image.manifestDigest);
+          notEqual(nextDecision.image.configDigest, image.configDigest);
+          const second = await publish(next.current, nextDecision);
+          notEqual(second.proof.update.updateId, first.proof.update.updateId);
+          notEqual(second.proof.runtime.containerId, first.proof.runtime.containerId);
+          notEqual(second.proof.runtime.version, first.proof.runtime.version);
+
+          const latest = await history();
+          equal(latest.applicationId, application.id);
+          equal(latest.deploymentId, target.binding.deploymentId);
+          equal(latest.mappingSha256, mapping.fingerprint);
+          equal(latest.releaseOperationId, second.report.operationId);
+          equal(latest.containerId, second.proof.runtime.containerId);
+          equal(latest.manifestDigest, second.report.manifestDigest);
+          ok(latest.previous);
+          equal(latest.previous.releaseOperationId, first.report.operationId);
+          equal(latest.previous.manifestDigest, first.report.manifestDigest);
+
+          return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, release: first.report,
+            dualVersion: { first: { release: first.report, build: after }, second: { release: second.report, build: next.after },
+              currentOperationId: latest.releaseOperationId, previousOperationId: latest.previous.releaseOperationId,
+              applicationId: application.id, environmentId: environment.id, mappingSha256: mapping.fingerprint,
+              sameTarget: true, sameProtectedIngress: true } };
+        }
 
         const verifyInstalledDiagnosis = async (enrollmentSha256: string, readKey: string, restart?: NativeRestartAcceptance) => {
           phase = 'operations_formal_installation';
@@ -1239,13 +1291,7 @@ async function probe() {
             ? { retry: { before: prepared.before, after, retrySha256: prepared.retrySha256, generation } }
             : ('dependencyPatchSha256' in prepared
               ? { dependency: { after, generation, advisoryId: npmReleaseApproval.advisoryId, patchSha256: prepared.dependencyPatchSha256 } } : {})),
-          release: { taskId: current.id, runId: current.runId, candidateId: candidate.id, operationId, fingerprint: candidate.fingerprint,
-            decisionVersion: proof.decisionVersion, manifestDigest: proof.manifestDigest, configDigest: proof.runtime.configDigest,
-            version: proof.runtime.version, updateId: proof.update.updateId, healthStatus: proof.runtime.healthStatus,
-            anonymousStatus: proof.runtime.anonymousStatus, approvalDeniedWithoutPortal: true, httpMcpAgreement: true,
-            model: 'scripted_anthropic_fixture', controlPlaneIdentity: 'signed_oidc_fixture', ingressIdentity: 'native_keycloak',
-            repairCategory: dependencyRun ? 'npm_dependency' : 'synthetic_secret',
-            stagedFilesRemaining: false },
+          release: first.report,
         };
       };
       if (protectedRun) {
