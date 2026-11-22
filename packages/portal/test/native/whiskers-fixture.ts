@@ -63,9 +63,10 @@ export class WhiskersFixture {
     await writeFile(passwordPath, this.adminPassword, { mode: 0o600, flag: 'wx' });
     if (mode === 'isolated-probe') {
       await docker(['build', '--quiet', '--network', 'none', '--build-arg', 'FIXTURE_VERSION=a', '--tag', this.image, resolve('fixtures/komodo')]);
-      for (const name of [this.primary, this.other]) {
-        await this.create(name, ['--network', 'none', '--cap-drop', 'ALL', this.image]);
-      }
+      const isolated = ['--network', 'none', '--cap-drop', 'ALL', this.image];
+      await this.create(this.primary, isolated);
+      await this.create(this.other, [...isolated, '/bin/busybox', 'sh', '-c',
+        "printf '%s\\n' 'WARNING diagnostic fixture' 'ERROR diagnostic fixture'; exec /bin/busybox httpd -f -p 8080 -h /www"]);
     }
     const guardrails = resolve('fixtures/whiskers', mode === 'published-read-only' ? 'read-only-guardrails.json' : 'guardrails.json');
     await this.create(this.base, [

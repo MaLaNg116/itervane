@@ -7,7 +7,7 @@
         "MaxAutonomousLevel": "read",
         "RequireConfirmationForWrites": true,
         "ToolMode": "allow",
-        "ToolAllowList": ["get_container_details", "restart_container"],
+        "ToolAllowList": ["get_container_details", "get_container_logs", "get_container_metrics", "restart_container"],
         "ProtectedResources": ["whiskers*", "serverwatch*"],
         "MaxActionsPerSession": 12
       }
