@@ -65,6 +65,7 @@ import { runOperationsObservation } from '../../src/runtime/operations-execution
 import { OperationsExecutionCoordinator } from '../../src/runtime/operations-execution-lease.js';
 import { OperationsRestartWorker } from '../../src/runtime/operations-restart-worker.js';
 import { OperationsRestartRecoveryWorker } from '../../src/runtime/operations-restart-recovery-worker.js';
+import { RestartQueueWorker } from '../../src/runtime/installed-restart-worker.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
 import { requireActor } from '../../src/service/access.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
@@ -3027,6 +3028,35 @@ it('retains Whiskers approval for read-only reconciliation when the stopped runt
     expect(await database.storage.db.select().from(operationsRestartResumes)).toMatchObject([{ state: 'blocked', fence: null }]);
     expect((await database.storage.db.select().from(operationsExecutions))[0]?.state).toBe('reserved');
     expect((await database.storage.db.select().from(operationsRestartRequests))[0]).toMatchObject({ runtimeBaseline: stoppedBaseline(action.fixture) });
+  });
+});
+
+it('routes an installed restart queue across native pause, continuation and independent readback', async () => {
+  const action = await queuedOperationsLease();
+  await withRestartWorker(action, async ({ worker, calls, approvalId, onRestart }) => {
+    const observeRestart = vi.fn(async (_subject, _baseline, authorize: () => Promise<void>) => {
+      await authorize();
+      return { startedAt: '2026-01-01T00:00:00.000000002Z', runtime: action.fixture.runtime };
+    });
+    const queue = new RestartQueueWorker(database.storage, action.runtime, worker,
+      new OperationsRestartRecoveryWorker(action.runtime, { observeRestart }));
+    await expect(queue.tick()).resolves.toBe('awaiting_approval');
+    await expect(queue.tick()).resolves.toBe('idle');
+    expect(calls).toHaveLength(1);
+    expect(observeRestart).not.toHaveBeenCalled();
+    const [native] = await database.storage.db.select().from(operationsRestartRequests);
+    const human = new OperationsExecutionCoordinator(coordinator, action.installed, operationsPortal);
+    const waiting = await action.fixture.taskService.get(identity, action.schedule.taskId);
+    await human.requestRestartResume(await decisionIdentity(), action.execution.id, {
+      expectedVersion: waiting.version, idempotencyKey: randomUUID(), approvalId, callSha256: native!.callSha256,
+    });
+    onRestart(() => ({ text: 'Container fixture restarted.' }));
+    await expect(queue.tick()).resolves.toBe('reconciling');
+    await expect(queue.tick()).resolves.toBe('verified');
+    await expect(queue.tick()).resolves.toBe('idle');
+    expect(calls).toHaveLength(2);
+    expect(observeRestart).toHaveBeenCalledOnce();
+    expect((await database.storage.db.select().from(operationsExecutions))[0]?.state).toBe('recovered');
   });
 });
 

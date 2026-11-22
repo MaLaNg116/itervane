@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { localeSchema, type Check } from '@itervane/contracts';
 import { z } from 'zod';
 import {
-  KomodoReleaseClient, KomodoReleaseError, komodoRuntimeConfigSha256, type KomodoReleaseTarget,
+  createKomodoRestartReader, KomodoReleaseClient, KomodoReleaseError, komodoRuntimeConfigSha256, type KomodoReleaseTarget,
 } from '../../../control-plane/src/runtime/release-komodo.js';
 import { report } from '../report.js';
 import { deployment, dockerDigest, fixtureAppNetwork, KomodoError, KomodoNativeClient, komodoVersion,
@@ -127,20 +127,25 @@ async function bootstrap(password: string, reference: string, name: string, netw
     },
   }, deployment);
   const foreign = await admin.call('write', 'CreateDeployment', { name: name + '-other' }, resource);
-  const user = await admin.call('write', 'CreateServiceUser', {
-    username: name + '-worker', description: 'This disposable Komodo test target',
-  }, z.object({ _id: resource.shape._id, admin: z.literal(false), enabled: z.literal(true) }));
-  const actor = user._id.$oid;
   const id = created._id.$oid;
-  const setDeploymentPermissions = (specific: 'Inspect'[]) => admin.call('write', 'UpdatePermissionOnTarget', {
-    user_target: { type: 'User', id: actor },
+  const setDeploymentPermissions = (actorId: string, level: 'Read' | 'Write', specific: 'Inspect'[]) => admin.call('write', 'UpdatePermissionOnTarget', {
+    user_target: { type: 'User', id: actorId },
     resource_target: { type: 'Deployment', id },
-    permission: { level: 'Write', specific },
+    permission: { level, specific },
   }, z.unknown());
-  await setDeploymentPermissions([]);
-  const credentials = await admin.call('write', 'CreateApiKeyForServiceUser', {
-    user_id: actor, name: 'release-probe', expires: Date.now() + 20 * 60_000,
-  }, z.object({ key: z.string().min(1).max(512), secret: z.string().min(1).max(512) }));
+  const createScopedCredential = async (suffix: string, level: 'Read' | 'Write', specific: 'Inspect'[]) => {
+    const user = await admin.call('write', 'CreateServiceUser', {
+      username: name + suffix, description: 'This disposable Komodo test target',
+    }, z.object({ _id: resource.shape._id, admin: z.literal(false), enabled: z.literal(true) }));
+    const actorId = user._id.$oid;
+    await setDeploymentPermissions(actorId, level, specific);
+    const key = await admin.call('write', 'CreateApiKeyForServiceUser', {
+      user_id: actorId, name: 'release-probe', expires: Date.now() + 20 * 60_000,
+    }, z.object({ key: z.string().min(1).max(512), secret: z.string().min(1).max(512) }));
+    return { ...key, actorId };
+  };
+  const credentials = await createScopedCredential('-worker', 'Write', []);
+  const actor = credentials.actorId;
   const client = new KomodoNativeClient(coreOrigin, credentials);
   const target = { id, server: serverId, name, actor, label: labelKey + '=' + network.mark, network: network.name };
   await readTarget(client, target, reference);
@@ -149,7 +154,8 @@ async function bootstrap(password: string, reference: string, name: string, netw
   } catch (error) {
     if (error instanceof KomodoError && error.reason === 'permission') {
       return { client, target, credentials, foreignId: foreign._id.$oid,
-        allowBoundContainerInspection: () => setDeploymentPermissions(['Inspect']) };
+        allowBoundContainerInspection: () => setDeploymentPermissions(actor, 'Write', ['Inspect']),
+        provisionReader: () => createScopedCredential('-observer', 'Read', ['Inspect']) };
     }
     if (error instanceof KomodoError) throw new KomodoError('UnrelatedTargetForbidden', error.reason, error.status);
     throw error;
@@ -284,15 +290,27 @@ async function verifyFormalAdapter(setup: Awaited<ReturnType<typeof bootstrap>>,
   if (runtime.containerId !== observed.Id || '/' + runtime.containerName !== observed.Name || runtime.configDigest !== observed.Image) {
     throw new KomodoError('FormalAdapterRunningImage', 'binding');
   }
+  const readerCredential = await setup.provisionReader();
+  const reader = createKomodoRestartReader(binding, readerCredential);
+  await reader.verifyInstallation();
+  const nativeReader = new KomodoNativeClient(coreOrigin, readerCredential);
+  for (const [label, exercise] of [
+    ['UnexpectedReaderTarget', () => nativeReader.call('read', 'GetDeployment', { deployment: foreignId }, z.unknown())],
+    ['UnexpectedReaderWrite', () => nativeReader.call('write', 'UpdateDeployment', { id: target.id, config: { image: configImage(approved.reference) } }, z.unknown())],
+  ] as const) {
+    try { await exercise(); }
+    catch (error) { if (error instanceof KomodoError && error.reason === 'permission') continue; throw error; }
+    throw new KomodoError(label, 'binding');
+  }
   // This checked ID belongs to the dedicated, label-verified fixture created by this run.
   await docker('StopOwnedFixture', ['container', 'stop', '--time', '2', observed.Id]);
-  const stopped = await adapter.inspectStoppedRuntime(binding, runningImage, target.network, authorize);
+  const stopped = await reader.inspectStoppedRuntime(binding, runningImage, target.network, authorize);
   if (stopped.containerId !== observed.Id || stopped.configDigest !== observed.Image || stopped.startedAt !== runtime.startedAt || stopped.state !== 'exited') {
     throw new KomodoError('FormalAdapterStoppedImage', 'binding');
   }
   await docker('StartOwnedFixture', ['container', 'start', stopped.containerId]);
   await waitFor('FormalAdapterRecoveredHealth', () => observeFixture(target, mark, approved), 12_000);
-  const recovered = await adapter.inspectRuntime(binding, runningImage, target.network, authorize);
+  const recovered = await reader.inspectRuntime(binding, runningImage, target.network, authorize);
   if (recovered.containerId !== stopped.containerId || recovered.configDigest !== stopped.configDigest ||
       !recovered.startedAt || recovered.startedAt <= stopped.startedAt) {
     throw new KomodoError('FormalAdapterNewStart', 'binding');
@@ -308,6 +326,8 @@ const text = {
     '正式发布适配器校验了目标与更新绑定，并核对了实际样例。'],
   restartReadback: ['Read-only Komodo checks saw the stopped fixture and a newer healthy start on the same container and image.',
     'Komodo 只读检查观测到同一容器的停止态和健康的新启动，镜像保持一致。'],
+  restartReader: ['The separate Komodo observer could inspect the bound target. Native permissions rejected writes and access to a different deployment.',
+    '独立 Komodo 读身份可查看绑定目标，原生权限拒绝写入和无关部署读取。'],
   cleaned: ['Removed the owned fixture and temporary Compose resources.', '本轮样例和临时 Compose 资源已清理。'],
   privateNetwork: ['The running target only joined its internal bridge and published no host ports.',
     '实际运行目标只加入自己的内部桥接网络，未发布宿主端口。'],
@@ -469,6 +489,7 @@ export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
     checks.push({ id: 'formal-komodo-adapter', status: 'passed', detail: text.formal[lang] + ' Update=' + release.updateId
       + ' OCI=' + b.digest + ' Image=' + release.observed.Image + ' Runtime=' + release.runtimeConfigSha256 + '.' });
     checks.push({ id: 'restart-runtime-readback', status: 'passed', detail: text.restartReadback[lang] });
+    checks.push({ id: 'restart-reader-permission', status: 'passed', detail: text.restartReader[lang] });
     await confirmAppNetwork(network);
     checks.push({ id: 'protected-container-network', status: 'passed', detail: text.privateNetwork[lang] });
   } catch (error) {

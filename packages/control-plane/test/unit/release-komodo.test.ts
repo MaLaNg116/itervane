@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { KomodoReleaseClient, komodoRuntimeConfigSha256, type KomodoReleaseTarget } from '../../src/runtime/release-komodo.js';
+import { createKomodoRestartReader, KomodoReleaseClient, komodoRuntimeConfigSha256, type KomodoReleaseTarget } from '../../src/runtime/release-komodo.js';
 
 const deploymentId = 'a'.repeat(24);
 const serverId = 'b'.repeat(24);
@@ -155,6 +155,27 @@ const container = {
   HostConfig: { NetworkMode: runtimeNetwork, Privileged: false, PublishAllPorts: false, PortBindings: null },
   NetworkSettings: { Networks: { [runtimeNetwork]: { EndpointID: 'private-fixture-value' } } },
 };
+
+it('verifies the read-only restart principal before using the exact enrolled deployment', async () => {
+  const readerCredentials = { ...credentials, actorId: otherId };
+  const reader = createKomodoRestartReader(target, readerCredentials);
+  expect(() => createKomodoRestartReader(target, credentials)).toThrow('komodo_release_binding');
+  fetchKomodo.mockResolvedValueOnce(Response.json({ _id: { $oid: otherId }, admin: true, enabled: true }));
+  await expect(reader.verifyInstallation()).rejects.toMatchObject({ step: 'GetUser', reason: 'response' });
+  fetchKomodo.mockResolvedValueOnce(Response.json({ _id: { $oid: otherId }, admin: false, enabled: true }))
+    .mockResolvedValueOnce(Response.json([{ key: readerCredentials.key, user_id: otherId }]))
+    .mockResolvedValueOnce(Response.json(configured))
+    .mockResolvedValueOnce(Response.json(configured)).mockResolvedValueOnce(Response.json(container));
+  await reader.verifyInstallation();
+  expect(() => reader.inspectRuntime({ ...target, deploymentId: otherId }, approvedRuntime, runtimeNetwork, authorization)).toThrow('komodo_release_binding');
+  await expect(reader.inspectRuntime(target, approvedRuntime, runtimeNetwork, authorization)).resolves.toMatchObject({ containerId: container.Id });
+  expect(fetchKomodo.mock.calls.map(([url, options]) => [url, options?.method, options?.body])).toEqual([
+    [origin + '/user', 'GET', undefined], [origin + '/user', 'GET', undefined], [origin + '/read/ListApiKeys', 'POST', '{}'],
+    [origin + '/read/GetDeployment', 'POST', JSON.stringify({ deployment: deploymentId })],
+    [origin + '/read/GetDeployment', 'POST', JSON.stringify({ deployment: deploymentId })],
+    [origin + '/read/InspectDeploymentContainer', 'POST', JSON.stringify({ deployment: deploymentId })],
+  ]);
+});
 
 it('independently reads the running image identity and keeps only the enrolled runtime facts', async () => {
   fetchKomodo.mockResolvedValueOnce(Response.json(configured)).mockResolvedValueOnce(Response.json(container));

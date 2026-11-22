@@ -1,5 +1,6 @@
+import { resolve } from 'node:path';
 import { expect, it } from 'vitest';
-import { canonicalPublicUrl, migrationConfig, releaseWorkerConfig, runtimeConfig, workerConfig } from '../../src/config.js';
+import { canonicalPublicUrl, migrationConfig, releaseWorkerConfig, restartWorkerConfig, runtimeConfig, workerConfig } from '../../src/config.js';
 
 const configured = {
   DATABASE_URL: 'postgresql://localhost/itervane', ITERVANE_OIDC_ISSUER: 'https://identity.example/realms/personal',
@@ -98,6 +99,26 @@ it('fixes the public MCP URL in configuration instead of deriving it from untrus
   expect(runtimeConfig(configured).publicUrl).toBe('http://127.0.0.1:4310');
   for (const value of ['http://remote.example', 'https://user:password@example.com', 'https://example.com/path', 'https://example.com?token=x']) {
     expect(() => canonicalPublicUrl(value)).toThrow();
+  }
+});
+
+it('requires a complete, process-local restart installation and separate read credentials', () => {
+  const environment = { ...configured,
+    ITERVANE_OPERATIONS_ENVIRONMENT_ID: '123e4567-e89b-42d3-a456-426614174000', ITERVANE_OPERATIONS_ENROLLMENT_SHA256: 'd'.repeat(64),
+    ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: 'c'.repeat(64),
+    ITERVANE_RESTART_INSTALLATION_FILE: resolve('fixtures/installation.json'),
+    ITERVANE_RESTART_GUARDRAILS_FILE: resolve('fixtures/guardrails.json'), ITERVANE_RESTART_ROLES_FILE: resolve('fixtures/roles.json'),
+    ITERVANE_RESTART_WHISKERS_WRITE_KEY: 'a'.repeat(64), ITERVANE_RESTART_KOMODO_READER_ID: 'b'.repeat(24),
+    ITERVANE_RESTART_KOMODO_READER_KEY: 'fixture-reader', ITERVANE_RESTART_KOMODO_READER_SECRET: 'fixture-secret',
+    ITERVANE_RESTART_PROBE_SECRET: 'fixture-health',
+  };
+  expect(restartWorkerConfig(environment)).toMatchObject({ installed: { environmentId: environment.ITERVANE_OPERATIONS_ENVIRONMENT_ID,
+    enrollmentSha256: 'd'.repeat(64), mappingSha256: 'c'.repeat(64) }, komodo: { actorId: 'b'.repeat(24) } });
+  expect(runtimeConfig(environment).operationsApi).toBeUndefined();
+  for (const invalid of [{ ITERVANE_RESTART_INSTALLATION_FILE: 'relative.json' }, { ITERVANE_RESTART_KOMODO_READER_SECRET: undefined },
+    { ITERVANE_RESTART_PROBE_SECRET: undefined }, { ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: 'invalid' },
+    { ITERVANE_RESTART_WHISKERS_WRITE_KEY: undefined, ITERVANE_OPERATIONS_WHISKERS_READ_KEY: 'a'.repeat(64) }]) {
+    expect(() => restartWorkerConfig({ ...environment, ...invalid })).toThrow();
   }
 });
 
