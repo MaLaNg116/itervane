@@ -2141,17 +2141,17 @@ it('reads the current and preceding verified releases only for the frozen operat
     freezeOperationsRequest(await readOperationsObservationTarget(tx, await requireActor(tx, identity), fixture.scope)));
   const read = (request: Awaited<ReturnType<typeof capture>>, actor = identity) => database.storage.db.transaction(async tx =>
     readOperationsReleaseEvidence(tx, await requireActor(tx, actor), request));
-  const queueNext = async (target: FormalReleaseTarget, purpose: string) => {
+  const queueNext = async (target: FormalReleaseTarget, purpose: string, imageVariant: string) => {
     task = (await fixture.taskService.admit(identity, { projectId: fixture.scope.projectId, source: task.source, purpose,
       dataClass: 'synthetic', locale: 'zh-CN', idempotencyKey: randomUUID() })).task;
-    return queuedFormalRelease({ existingTarget: target });
+    return queuedFormalRelease({ existingTarget: target, imageVariant });
   };
   const original = await capture();
   const first = await read(original);
   expect(first.result).toEqual({ current: { operationId: fixture.operationId,
     manifestDigest: fixture.image.manifestDigest, verifiedAt: expect.any(String) }, previous: null });
 
-  const next = await queueNext(fixture.target, 'Second verified release');
+  const next = await queueNext(fixture.target, 'Second verified release', 'diagnostic history v2');
   await expect(read(original)).rejects.toMatchObject({ code: 'conflict' });
   const second = await finishTestRollout(await parkForRollout(next, true, 'd'.repeat(24)));
   await expect(read(original)).rejects.toMatchObject({ code: 'version_conflict' });
@@ -2181,7 +2181,7 @@ it('reads the current and preceding verified releases only for the frozen operat
   await registerOperationsTarget(database.storage, { ...fixture.registration, whiskers: { ...fixture.registration.whiskers, serverId: 'rebound' } });
   await expect(read(current)).rejects.toMatchObject({ code: 'version_conflict' });
 
-  const remapped = await queueNext({ ...fixture.target, runtimeConfigSha256: sha256('new runtime baseline') }, 'Remapped release');
+  const remapped = await queueNext({ ...fixture.target, runtimeConfigSha256: sha256('new runtime baseline') }, 'Remapped release', 'remapped diagnostic history');
   const settled = await finishTestRollout(await parkForRollout(remapped, true, 'f'.repeat(24)));
   await registerOperationsTarget(database.storage, { ...fixture.registration,
     releaseTargetRevision: settled.binding.manifest.target.revision, releaseTargetSha256: settled.binding.manifest.target.mappingSha256 });
@@ -2798,12 +2798,17 @@ it('freezes one immutable restart proposal from the settled diagnosis under conc
     .toMatchObject({ cause: { code: '23514', message: 'operations_proposal_is_immutable' } });
 });
 
-it('freezes only the exact previously verified image cited by a rollback diagnosis', async () => {
+it('freezes the exact rollback image cited after a repeated publication of the current image', async () => {
   const first = await installedOperationsFixture();
   task = (await first.taskService.admit(identity, { projectId: first.scope.projectId, source: task.source, purpose: 'Different verified release',
     dataClass: 'synthetic', locale: 'zh-CN', idempotencyKey: randomUUID() })).task;
-  const next = await queuedFormalRelease({ existingTarget: first.target, imageVariant: 'second verified release' });
-  const { runtime, image } = await finishTestRollout(await parkForRollout(next, true, 'd'.repeat(24)));
+  const release = { existingTarget: first.target, imageVariant: 'second verified release' };
+  const second = await finishTestRollout(await parkForRollout(await queuedFormalRelease(release), true, 'd'.repeat(24)));
+  task = (await first.taskService.admit(identity, { projectId: first.scope.projectId, source: task.source, purpose: 'Same image published again',
+    dataClass: 'synthetic', locale: 'zh-CN', idempotencyKey: randomUUID() })).task;
+  const next = await queuedFormalRelease(release);
+  const { runtime, image } = await finishTestRollout(await parkForRollout(next, true, 'c'.repeat(24)));
+  expect(image.manifestDigest).toBe(second.image.manifestDigest);
   const { diagnosis, installed, task: diagnosed, service } = await settleProposalDiagnosis('rollback', { ...first, ...next, runtime, image });
   const input = { diagnosisSha256: diagnosis.sha256 };
   const { proposal } = await service.freeze(identity, diagnosed.id, input);
@@ -2823,7 +2828,7 @@ it('freezes only the exact previously verified image cited by a rollback diagnos
   await expect(first.taskService.get(identity, schedule.taskId)).resolves.toMatchObject({
     state: 'queued', runId: schedule.runId, purpose: translate('zh-CN', 'operations.execution.rollback'),
   });
-  expect(await database.storage.db.select().from(releaseOperations)).toHaveLength(2);
+  expect(await database.storage.db.select().from(releaseOperations)).toHaveLength(3);
 });
 
 it.each(['wait', 'expired', 'replaced', 'publishing', 'revoked'] as const)('limits proposal admission after %s', async mode => {
