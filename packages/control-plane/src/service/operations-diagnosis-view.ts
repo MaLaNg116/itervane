@@ -7,9 +7,9 @@ import { readRecordedOperationsEvidence } from '../runtime/operations-evidence-s
 import type { Transaction } from './access.js';
 import { readOperationsDiagnosis, type readOperationsRequest } from './operations-requests.js';
 
-export async function readOperationsDiagnosisView(tx: Transaction, task: typeof tasks.$inferSelect,
+export async function readPublishedOperationsDiagnosis(tx: Transaction, task: typeof tasks.$inferSelect,
   request: Awaited<ReturnType<typeof readOperationsRequest>>, observation: OperationsObservationReceipt,
-  event: typeof taskEvents.$inferSelect, locale: Locale) {
+  event: typeof taskEvents.$inferSelect) {
   const { runId } = observation;
   const input = await readOperationsDiagnosis(tx, task, runId, request);
   const [recorded] = await tx.select({ row: operationsDiagnosisResults, pointer: operationsDiagnosisRuntime })
@@ -40,14 +40,21 @@ export async function readOperationsDiagnosisView(tx: Transaction, task: typeof 
     const evidenceId = sha256(JSON.stringify({ origin: 'formal_operations',
       bindingSha256: receipt.bindingSha256, snapshotSha256: request.sha256, data }));
     if (fact.evidenceId !== evidenceId || fact.proofSha256 !== data.proofSha256) throw new Error('operations_diagnosis_view_evidence');
+    return { fact, data };
+  });
+  return { receipt, sha256: row.sha256, recordedAt: row.createdAt, facts };
+}
+
+export function presentOperationsDiagnosis(diagnosis: NonNullable<Awaited<ReturnType<typeof readPublishedOperationsDiagnosis>>>, locale: Locale) {
+  const text = agentText(locale);
+  const { hypotheses, recommendation, previousReleaseOperationId } = diagnosis.receipt.result;
+  const facts = diagnosis.facts.map(({ fact, data }) => {
     if (data.section === 'release') return { ...fact, section: data.section, result: data.result };
     const { containerId: _container, serverId: _server, ...result } = data.result;
     return { ...fact, section: data.section, result };
   });
-  const text = agentText(locale);
-  const { hypotheses, recommendation, previousReleaseOperationId } = receipt.result;
   return {
-    receiptSha256: row.sha256, facts, previousReleaseOperationId,
+    receiptSha256: diagnosis.sha256, facts, previousReleaseOperationId,
     hypotheses: hypotheses.map(item => ({ ...item, message: text.operationsHypothesis[item.code] })),
     recommendation: { ...recommendation, message: text.operationsRecommendation[recommendation.code] },
   };
