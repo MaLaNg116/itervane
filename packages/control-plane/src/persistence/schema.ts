@@ -5,7 +5,7 @@ import {
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairInput, type FormalRepairResult, type FormalRepairRetry,
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
   type OperationsDiagnosisObservation, type OperationsDiagnosisReceipt, type OperationsDiagnosisSection,
-  type OperationsObservationReceipt, type OperationsProposal, type OperationsRequestBinding, type OperationsRestartRequest,
+  type OperationsObservationReceipt, type OperationsProposal, type OperationsRequestBinding, type OperationsRestartInstallation, type OperationsRestartRequest,
   type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt,
   type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
@@ -409,6 +409,28 @@ export const operationsTargets = domain.table('operations_targets', {
     AND jsonb_typeof(${t.document}->'whiskers') = 'object' AND octet_length(${t.document}::text) <= 4096) IS TRUE`),
 ]);
 
+export const operationsRestartInstallations = domain.table('operations_restart_installations', {
+  id: uuid('id').primaryKey(),
+  environmentId: uuid('environment_id').notNull().references(() => operationsTargets.environmentId),
+  enrollmentSha256: text('enrollment_sha256').notNull(),
+  installationSha256: text('installation_sha256').notNull(),
+  credentialSha256: text('credential_sha256').notNull(),
+  document: jsonb('document').$type<OperationsRestartInstallation>().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
+  retiredAt: timestamp('retired_at', { withTimezone: true }),
+}, t => [
+  unique('operations_restart_writer_credential').on(t.credentialSha256),
+  uniqueIndex('operations_restart_writer_active').on(t.environmentId).where(sql`${t.retiredAt} IS NULL`),
+  check('operations_restart_writer_binding', sql`(${t.enrollmentSha256} ~ '^[a-f0-9]{64}$' AND ${t.installationSha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.credentialSha256} ~ '^[a-f0-9]{64}$' AND ${t.document}->>'version' = '1'
+    AND ${t.document}->>'installationId' = ${t.id}::text AND ${t.document}->>'environmentId' = ${t.environmentId}::text
+    AND ${t.document}->>'enrollmentSha256' = ${t.enrollmentSha256}
+    AND ${t.document}->>'credentialSha256' = ${t.credentialSha256}
+    AND ${t.document}->>'policySha256' ~ '^[a-f0-9]{64}$' AND ${t.document}->>'rolesSha256' ~ '^[a-f0-9]{64}$'
+    AND jsonb_typeof(${t.document}->'whiskers') = 'object' AND octet_length(${t.document}::text) <= 4096) IS TRUE`),
+  check('operations_restart_writer_retirement', sql`${t.retiredAt} IS NULL OR ${t.retiredAt} >= ${t.createdAt}`),
+]);
+
 export const releaseCandidates = domain.table('release_candidates', {
   id: uuid('id').primaryKey(),
   projectId: uuid('project_id').notNull(),
@@ -633,6 +655,7 @@ export const operationsRestartRequests = domain.table('operations_restart_reques
   executionId: uuid('execution_id').primaryKey(),
   callSha256: text('call_sha256').notNull(),
   document: jsonb('document').$type<OperationsRestartRequest>().notNull(),
+  writerInstallationId: uuid('writer_installation_id').references(() => operationsRestartInstallations.id),
   approvalId: text('approval_id'),
   receivedAt: timestamp('received_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`clock_timestamp()`),

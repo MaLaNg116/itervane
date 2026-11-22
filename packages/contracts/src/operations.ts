@@ -16,6 +16,27 @@ export const whiskersContainerBindingSchema = whiskersEndpointSchema.extend({ co
 export type WhiskersContainerBinding = z.output<typeof whiskersContainerBindingSchema>;
 export const whiskersNativeApprovalIdSchema = z.string().regex(/^[a-f0-9]{32}$/);
 
+export const whiskersRestartImageDigest = 'sha256:876510ea689a7cca7c6d36a8c1d60f5b5cf09549ece6d4ad2d54e29aa599148c';
+export const operationsRestartInstallationSchema = z.strictObject({
+  version: z.literal(1),
+  installationId: idSchema,
+  environmentId: idSchema,
+  enrollmentSha256: sha256Schema,
+  whiskers: whiskersEndpointSchema,
+  imageDigest: z.literal(whiskersRestartImageDigest),
+  policySha256: sha256Schema,
+  rolesSha256: sha256Schema,
+  credentialSha256: sha256Schema,
+});
+export type OperationsRestartInstallation = z.infer<typeof operationsRestartInstallationSchema>;
+
+export const operationsRestartWriterProofSchema = z.strictObject({
+  installationId: idSchema,
+  installationSha256: sha256Schema,
+  credentialSha256: sha256Schema,
+});
+export type OperationsRestartWriterProof = z.infer<typeof operationsRestartWriterProofSchema>;
+
 export const operationsRestartRequestSchema = z.strictObject({
   version: z.literal(1),
   tool: z.literal('restart_container'),
@@ -34,7 +55,7 @@ export const operationsRestartContinueInputSchema = operationsRestartApprovalInp
   expectedVersion: revision,
   idempotencyKey: idSchema,
 });
-export const operationsRestartResumeBindingSchema = operationsRestartApprovalInputSchema.extend({ credentialSha256: sha256Schema });
+export const operationsRestartResumeBindingSchema = operationsRestartApprovalInputSchema.extend(operationsRestartWriterProofSchema.shape);
 export const operationsRestartResumeOutcomeSchema = operationsRestartApprovalInputSchema.extend({
   outcome: z.enum(['pending', 'acknowledged', 'unknown']),
 });
