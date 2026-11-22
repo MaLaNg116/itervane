@@ -9,7 +9,7 @@ import { readOperationsDeployment } from './operations-deployment.js';
 import { freezeOperationsRequest } from './operations-requests.js';
 import { readReleaseTarget } from './release-targets.js';
 
-function readEnrollment(row: typeof operationsTargets.$inferSelect) {
+export function readOperationsEnrollment(row: typeof operationsTargets.$inferSelect) {
   const parsed = operationsTargetInputSchema.safeParse(row.document);
   if (!parsed.success || parsed.data.environmentId !== row.environmentId || sha256(JSON.stringify(parsed.data)) !== row.sha256) {
     throw new Error('operations_target_integrity');
@@ -35,7 +35,7 @@ export async function registerOperationsTarget(database: Database, raw: unknown)
 
     const [current] = await tx.select().from(operationsTargets).where(eq(operationsTargets.environmentId, environmentId));
     if (current) {
-      readEnrollment(current);
+      readOperationsEnrollment(current);
       if (current.sha256 === fingerprint) return { environmentId, revision: current.revision, fingerprint };
       const revision = current.revision + 1;
       await tx.update(operationsTargets).set({ revision, sha256: fingerprint, document }).where(eq(operationsTargets.environmentId, environmentId));
@@ -53,7 +53,7 @@ export async function readOperationsObservationTarget(tx: Transaction, actor: Ac
   const [binding] = await tx.select().from(operationsTargets).where(and(eq(operationsTargets.environmentId, scope.environmentId),
     eq(operationsTargets.projectId, scope.projectId), eq(operationsTargets.applicationId, deployment.applicationId))).for('share');
   if (!binding) throw new DomainError('unsupported_state');
-  const enrolled = readEnrollment(binding);
+  const enrolled = readOperationsEnrollment(binding);
   if (enrolled.releaseTargetRevision !== deployment.targetRevision || enrolled.releaseTargetSha256 !== deployment.mappingSha256) {
     throw new DomainError('version_conflict');
   }
