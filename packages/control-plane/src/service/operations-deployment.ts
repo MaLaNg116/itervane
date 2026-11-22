@@ -1,7 +1,7 @@
-import { releaseKomodoCompletionSchema, releaseRegistryHost, releaseRolloutProofSchema } from '@itervane/contracts';
+import { releaseKomodoCompletionSchema, releaseRegistryHost, releaseRolloutProofSchema, taskDtoSchema } from '@itervane/contracts';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { environments, formalReleaseRolloutAttempts, formalReleaseSteps, formalReleaseTargets,
-  releaseCandidates, releaseOperations } from '../persistence/schema.js';
+  releaseCandidates, releaseOperations, tasks } from '../persistence/schema.js';
 import { requireProjectAccess, type Actor, type Transaction } from './access.js';
 import { DomainError } from './errors.js';
 import { readReleaseManifest } from './formal-release.js';
@@ -26,11 +26,12 @@ export async function readOperationsDeployment(tx: Transaction, actor: Actor, sc
   if (pending) throw new DomainError('conflict');
 
   // Pick the latest settled formal release before validating its receipt. Broken evidence cannot fall back to an older version.
-  const [latest] = await tx.select({ operation: releaseOperations, candidate: releaseCandidates,
+  const [latest] = await tx.select({ operation: releaseOperations, candidate: releaseCandidates, sourceTask: tasks,
     receipt: formalReleaseRolloutAttempts, dispatch: formalReleaseSteps })
     .from(releaseOperations).innerJoin(releaseCandidates, and(eq(releaseCandidates.id, releaseOperations.candidateId),
       eq(releaseCandidates.environmentId, environment.id), eq(releaseCandidates.projectId, projectId),
       eq(releaseCandidates.applicationId, environment.applicationId)))
+    .innerJoin(tasks, and(eq(tasks.id, releaseCandidates.taskId), eq(tasks.projectId, projectId)))
     .leftJoin(formalReleaseRolloutAttempts, and(eq(formalReleaseRolloutAttempts.operationId, releaseOperations.id),
       eq(formalReleaseRolloutAttempts.state, 'verified')))
     .leftJoin(formalReleaseSteps, and(eq(formalReleaseSteps.operationId, releaseOperations.id),
@@ -39,7 +40,7 @@ export async function readOperationsDeployment(tx: Transaction, actor: Actor, sc
     .orderBy(desc(releaseOperations.updatedAt), desc(releaseOperations.id)).limit(1);
   if (!latest) throw new DomainError('unsupported_state');
 
-  const { operation, candidate, receipt, dispatch } = latest;
+  const { operation, candidate, sourceTask, receipt, dispatch } = latest;
   const manifest = readReleaseManifest(candidate);
   if (manifest.target.revision !== mapping.revision || manifest.target.mappingSha256 !== mapping.sha256) {
     throw new DomainError('unsupported_state');
@@ -47,6 +48,7 @@ export async function readOperationsDeployment(tx: Transaction, actor: Actor, sc
   const verified = releaseRolloutProofSchema.safeParse(receipt?.proof);
   const dispatched = releaseKomodoCompletionSchema.safeParse(dispatch?.proof);
   if (!verified.success || !receipt?.completedAt || !dispatched.success
+      || sourceTask.repositoryId !== manifest.source.repositoryId || sourceTask.commit !== manifest.source.commit
       || receipt.completedAt.getTime() !== operation.updatedAt.getTime()) {
     throw new Error('operations_deployment_evidence_integrity');
   }
@@ -66,6 +68,7 @@ export async function readOperationsDeployment(tx: Transaction, actor: Actor, sc
   }
   return { projectId, environmentId, applicationId: environment.applicationId, grantId,
     releaseOperationId: operation.id, releaseTaskId: candidate.taskId, source: manifest.source,
+    dataClass: taskDtoSchema.shape.dataClass.parse(sourceTask.dataClass),
     targetRevision: mapping.revision, mappingSha256: mapping.sha256, deploymentId: target.deploymentId,
     containerId: runtime.containerId, manifestDigest: proof.manifestDigest, configDigest: runtime.configDigest,
     version: runtime.version, updateId: update.updateId, verifiedAt: receipt.completedAt.toISOString() };

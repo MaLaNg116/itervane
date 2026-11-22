@@ -24,7 +24,8 @@ import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/id
 import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
-  principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
+  operationsRequests, principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
+  taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
 import { FormalKomodoSteps } from '../../src/runtime/formal-komodo-steps.js';
@@ -2057,6 +2058,28 @@ function observedRuntime(binding: Awaited<ReturnType<FormalRolloutCoordinator['a
     anonymousStatus: 401 as const, healthStatus: 200 as const, version: 'standard-v2' };
 }
 
+async function finishTestRollout({ image, update }: Awaited<ReturnType<typeof parkForRollout>>) {
+  const observe = new FormalRolloutCoordinator(database.storage, releaseOrigin);
+  const scope = await observe.claimNext(randomUUID());
+  if (!scope) throw new Error('Expected formal rollout attempt');
+  const binding = await observe.authorize(scope);
+  const runtime = observedRuntime(binding);
+  await observe.settle(scope, { version: 1, ...binding.decision, rolloutFence: scope.fence, generation: binding.manifest.generation,
+    targetRevision: binding.manifest.target.revision, mappingSha256: binding.manifest.target.mappingSha256,
+    manifestDigest: image.manifestDigest, update, runtime });
+  return { binding, runtime, image, update };
+}
+
+async function installedOperationsFixture() {
+  const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
+  const { binding, runtime, image } = await finishTestRollout(await parkForRollout(submitted));
+  const scope = { projectId: task.projectId, environmentId: submitted.target.environmentId };
+  const registration = { environmentId: scope.environmentId, releaseTargetRevision: binding.manifest.target.revision,
+    releaseTargetSha256: binding.manifest.target.mappingSha256, whiskers: { origin: 'https://ops.example.invalid', serverId: 'local' } };
+  const enrollment = await registerOperationsTarget(database.storage, registration);
+  return { ...submitted, scope, registration, enrollment, runtime, image };
+}
+
 it.each(['verified', 'manual_review'] as const)('shares the %s formal release result between HTTP and MCP under current grants', async status => {
   const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
   const { operationId, approval } = submitted;
@@ -2139,16 +2162,9 @@ it('binds operations to the latest verified deployment under current project aut
   const read = (caller = identity, projectId = task.projectId) => database.storage.db.transaction(async tx =>
     readOperationsDeployment(tx, await requireActor(tx, caller), { projectId, environmentId: target.environmentId }));
   await expect(read()).rejects.toMatchObject({ code: 'conflict' });
-  const { image, update } = await parkForRollout(submitted);
+  const parked = await parkForRollout(submitted);
   await expect(read()).rejects.toMatchObject({ code: 'conflict' });
-  const observe = new FormalRolloutCoordinator(database.storage, releaseOrigin);
-  const scope = await observe.claimNext(randomUUID());
-  if (!scope) throw new Error('Expected formal rollout attempt');
-  const binding = await observe.authorize(scope);
-  const runtime = observedRuntime(binding);
-  await observe.settle(scope, { version: 1, ...binding.decision, rolloutFence: scope.fence, generation: binding.manifest.generation,
-    targetRevision: binding.manifest.target.revision, mappingSha256: binding.manifest.target.mappingSha256,
-    manifestDigest: image.manifestDigest, update, runtime });
+  const { binding, runtime, image, update } = await finishTestRollout(parked);
 
   const selected = await read();
   expect(selected).toMatchObject({ projectId: task.projectId, environmentId: target.environmentId, releaseOperationId: operationId,
@@ -2195,6 +2211,81 @@ it('binds operations to the latest verified deployment under current project aut
   await expect(read()).rejects.toMatchObject({ code: 'unsupported_state' });
   await expect(register()).rejects.toMatchObject({ code: 'version_conflict' });
   await expect(readEnrolled()).rejects.toMatchObject({ code: 'unsupported_state' });
+});
+
+it('atomically admits one localized operations task with an immutable published target and job', async () => {
+  const fixture = await installedOperationsFixture();
+  const service = fixture.taskService;
+  const input = { ...fixture.scope, idempotencyKey: randomUUID(), locale: 'zh-CN' };
+  const outcomes = await Promise.all([service.admitOperations(identity, input), service.admitOperations(identity, input)]);
+  expect(outcomes.map(item => item.replayed).sort()).toEqual([false, true]);
+  const recorded = outcomes[0]!.task;
+  expect(outcomes[1]!.task.id).toBe(recorded.id);
+  expect(recorded).toMatchObject({ state: 'queued', source: task.source, dataClass: task.dataClass, locale: 'zh-CN', purpose: '诊断已发布应用' });
+  const [request] = await database.storage.db.select().from(operationsRequests);
+  expect(request).toMatchObject({ runId: recorded.runId, taskId: recorded.id, projectId: recorded.projectId,
+    releaseOperationId: fixture.operationId, document: { source: task.source, releaseTaskId: task.id,
+      enrollmentSha256: fixture.enrollment.fingerprint, containerId: fixture.runtime.containerId, manifestDigest: fixture.image.manifestDigest,
+      mappingSha256: fixture.registration.releaseTargetSha256, dataClass: recorded.dataClass }, sha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+  expect(request?.document).not.toHaveProperty('whiskers');
+  const [run] = await database.storage.db.select().from(taskRuns).where(eq(taskRuns.id, recorded.runId));
+  expect(run).toMatchObject({ role: 'operations', wakeupJobId: expect.any(String) });
+  expect(await database.storage.boss.findJobs(queueName, { id: run!.wakeupJobId! })).toMatchObject([
+    { data: { taskId: recorded.id, runId: recorded.runId, generation: 1 } },
+  ]);
+  expect(await service.events(identity, recorded.id, 10, 'zh-CN')).toMatchObject([{ type: 'task.accepted', locale: 'zh-CN' }]);
+  const [budget] = await database.storage.db.select().from(runRuntime).where(eq(runRuntime.runId, recorded.runId));
+  expect(budget).toMatchObject({ maxTools: 2, toolsUsed: 0 });
+  await expect(database.storage.pool.query('DELETE FROM itervane.operations_requests WHERE run_id=$1', [recorded.runId]))
+    .rejects.toMatchObject({ code: '23514', message: 'operations_request_is_immutable' });
+  await expect(service.admitOperations(identity, { ...input, locale: 'en' })).rejects.toMatchObject({ code: 'idempotency_conflict' });
+  await expect(service.admit(identity, { projectId: task.projectId, source: task.source, dataClass: 'synthetic', purpose: 'Development',
+    idempotencyKey: input.idempotencyKey })).rejects.toMatchObject({ code: 'idempotency_conflict' });
+
+  await registerOperationsTarget(database.storage, { ...fixture.registration, whiskers: { ...fixture.registration.whiskers, serverId: 'new-server' } });
+  await expect(service.admitOperations(identity, input)).resolves.toMatchObject({ replayed: true, task: { id: recorded.id } });
+  const runner = { inspect: vi.fn<InspectionRunner['inspect']>(), observe: vi.fn<InspectionRunner['observe']>() };
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner });
+  try {
+    await worker.tick();
+    expect(await service.get(identity, recorded.id)).toMatchObject({ state: 'needs_human' });
+    expect((await service.events(identity, recorded.id, 10)).at(-1)).toMatchObject({ reason: 'operations_unavailable' });
+    expect(runner.inspect).not.toHaveBeenCalled();
+  } finally { await worker.close(); }
+});
+
+it('rolls back an operations task and a real queue insert together, and rejects a replaced project grant', async () => {
+  const { taskService, scope } = await installedOperationsFixture();
+  const subject = 'operations-admission-actor';
+  const principalId = randomUUID();
+  const grant = { principalId, projectId: task.projectId, role: 'maintainer' as const };
+  await database.storage.db.insert(principals).values({ id: principalId, issuer: issuer.config.issuer, subject });
+  await database.storage.db.insert(projectMembers).values({ ...grant, role: 'viewer' });
+  const maintainer = await createIdentityVerifier(issuer.config)(await issuer.token(subject));
+  const input = { ...scope, idempotencyKey: randomUUID() };
+  await expect(taskService.admitOperations(maintainer, input)).rejects.toMatchObject({ code: 'forbidden' });
+  await database.storage.db.update(projectMembers).set({ role: 'maintainer' }).where(eq(projectMembers.principalId, principalId));
+
+  const send = database.storage.boss.send.bind(database.storage.boss);
+  let rolledBackJob: string | null = null;
+  const injected = vi.spyOn(database.storage.boss, 'send').mockImplementationOnce(async (...args) => {
+    rolledBackJob = await send(...args);
+    throw new Error('operations queue rollback');
+  });
+  try { await expect(taskService.admitOperations(maintainer, input)).rejects.toThrow('operations queue rollback'); }
+  finally { injected.mockRestore(); }
+  expect(rolledBackJob).toBeTruthy();
+  expect(await database.storage.boss.findJobs(queueName, { id: rolledBackJob! })).toEqual([]);
+  expect(await database.storage.db.select().from(operationsRequests)).toEqual([]);
+  expect(await database.storage.db.select().from(taskRecords).where(eq(taskRecords.requestKey, input.idempotencyKey))).toEqual([]);
+
+  const { task: requested } = await taskService.admitOperations(maintainer, input);
+  await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
+  await database.storage.db.insert(projectMembers).values(grant);
+  const [job] = await database.storage.boss.fetch(queueName);
+  expect(job?.data).toMatchObject({ taskId: requested.id, runId: requested.runId });
+  expect(await coordinator.claim(job!, randomUUID())).toBeNull();
+  expect((await taskService.events(maintainer, requested.id, 10, 'zh-CN')).at(-1)).toMatchObject({ reason: 'permission_revoked', state: 'needs_human' });
 });
 
 it('settles one formal rollout and releases the environment only with a complete current proof', async () => {
