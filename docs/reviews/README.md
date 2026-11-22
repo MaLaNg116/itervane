@@ -100,7 +100,7 @@ P1-UX 固定代码/已验证交付为 `4234acdb5d9c664272417713389eeef433bc7db5`
 
 ## 托管基础设施
 
-PR #86 恢复 Runner 固定基础镜像下载，已经审查并合入。托管 OCI 构造及八组 KVM 场景通过，源码快照回归使用 #78 的已验路径。 [PR #86](https://github.com/MaLaNg116/itervane/pull/86) · [镜像下载导读](runner-pinned-base-mirror.md)
+PR #86 恢复 Runner 固定基础镜像下载，已经审查并合入。托管 OCI 构造及全部九组 KVM 场景通过。 [PR #86](https://github.com/MaLaNg116/itervane/pull/86) · [镜像下载导读](runner-pinned-base-mirror.md)
 
 ## 每批交付约定
 
