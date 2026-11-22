@@ -90,6 +90,7 @@
 | 084 | P3-C1b1 人工处置决策 | [#84](https://github.com/MaLaNg116/itervane/pull/84)，依赖 #83 | [人工决策导读](p3-c-operations-decisions.md) | TypeScript、224 项单元、九项运维真库专项、八项发布决策回归及迁移一致性通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44982088627)已启动 |
 | 085 | P3-C1b2 双语处置提案与门户审批 | [#85](https://github.com/MaLaNg116/itervane/pull/85)，依赖 #84 | [处置入口导读](p3-c-operations-proposal-interfaces.md) | TypeScript、224 项单元、四项 PostgreSQL 17.12 专项及真实 Chrome 与 Keycloak 专项通过 |
 | 087 | P3-C2a Whiskers 原生重启确认协议 | [#87](https://github.com/MaLaNg116/itervane/pull/87)，依赖 #85 | [重启协议导读](p3-c-whiskers-restart-contract.md) | TypeScript、229 项单元、[15 项原生 Whiskers 验收](https://github.com/MaLaNg116/itervane/actions/runs/44985016597)通过 |
+| 088 | P3-C2b1 处置准入与发布互斥 | [#88](https://github.com/MaLaNg116/itervane/pull/88)，依赖 #87 | [持久化准入导读](p3-c-operations-execution-admission.md) | TypeScript、229 项单元、七项 PostgreSQL 17.12 专项及迁移一致性通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44986630788)已启动 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
