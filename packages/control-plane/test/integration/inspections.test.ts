@@ -14,7 +14,7 @@ import { createFormalOperations, createFormalVerification } from '@itervane/agen
 import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseTargetSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
-  operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartRequestSchema, taskDtoSchema, translate, verificationViewSchema, whiskersRestartImageDigest,
+  operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartRecoveryProofSchema, operationsRestartRequestSchema, taskDtoSchema, translate, verificationViewSchema, whiskersRestartImageDigest,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type OperationsDiagnosisObservation, type OperationsDiagnosisSection,
   type OperationsRestartInstallation,
@@ -34,7 +34,7 @@ import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, fo
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
   operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
   operationsDiagnosisRuntime, operationsExecutionIntents, operationsExecutions, operationsExecutionSchedules, operationsObservations,
-  operationsProposals, operationsRequests, operationsRestartInstallations, operationsRestartRequests, operationsRestartResumes, operationsTargets,
+  operationsProposals, operationsRequests, operationsRestartInstallations, operationsRestartRecoveries, operationsRestartRequests, operationsRestartResumes, operationsTargets,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskEvents, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
@@ -64,6 +64,7 @@ import { OperationsEvidenceStore } from '../../src/runtime/operations-evidence-s
 import { runOperationsObservation } from '../../src/runtime/operations-execution.js';
 import { OperationsExecutionCoordinator } from '../../src/runtime/operations-execution-lease.js';
 import { OperationsRestartWorker } from '../../src/runtime/operations-restart-worker.js';
+import { OperationsRestartRecoveryWorker } from '../../src/runtime/operations-restart-recovery-worker.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
 import { requireActor } from '../../src/service/access.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
@@ -3243,6 +3244,150 @@ async function pausedWhiskersRestart() {
   return { action, runtime, human, next, request, lease, approval, writer,
     binding: { ...approval, ...writer, runtimeBaselineSha256: sha256(JSON.stringify(stoppedBaseline(action.fixture))) } };
 }
+
+async function restartAwaitingRecovery(outcome: 'acknowledged' | 'unknown' = 'acknowledged') {
+  const { action, runtime, request, lease, approval, binding } = await pausedWhiskersRestart();
+  await request();
+  const sent = await lease();
+  await runtime.prepareRestartResume(sent, binding);
+  await runtime.recordRestartResume(sent, { ...approval, outcome });
+  const claimRecovery = async () => {
+    const job = await fetchOperationsWakeup();
+    const scope = await runtime.claim(job, randomUUID());
+    if (scope?.mode !== 'reconcile') throw new Error('Expected a read-only recovery lease');
+    return { scope, job };
+  };
+  const outcomeEvidence = { startedAt: '2026-01-01T00:00:00.000000002Z', runtime: action.fixture.runtime };
+  return { action, runtime, sent, approval, binding, claimRecovery, outcomeEvidence };
+}
+
+it('settles restart recovery after revocation under the original proof and frees the environment once', async () => {
+  const { action, runtime, sent, approval, claimRecovery, outcomeEvidence } = await restartAwaitingRecovery();
+  const release = await competingPublication(action.fixture);
+  await expect(release.confirm()).rejects.toMatchObject({ code: 'conflict' });
+  const { scope, job } = await claimRecovery();
+  expect(scope.fence).toBeGreaterThan(sent.fence);
+  await expect(runtime.claim(job, randomUUID())).resolves.toBeNull();
+  await expect(database.storage.db.update(operationsExecutions).set({ state: 'recovered' }).where(eq(operationsExecutions.id, action.execution.id)))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restart_recovery_verified_receipt_required' } });
+  let checks = 0;
+  const observer = new OperationsRestartRecoveryWorker(runtime, {
+    async observeRestart(subject, baseline, authorize) {
+      await authorize();
+      expect(subject).toMatchObject({ containerId: action.fixture.runtime.containerId, version: action.fixture.runtime.version });
+      expect(baseline).toEqual(stoppedBaseline(action.fixture));
+      await action.decide('revoke');
+      await authorize();
+      checks++;
+      return outcomeEvidence;
+    },
+  });
+  await expect(observer.verify(scope)).resolves.toBe('verified');
+  const [record] = await database.storage.db.select().from(operationsRestartRecoveries);
+  const proof = operationsRestartRecoveryProofSchema.parse(record?.proof);
+  expect(record).toMatchObject({ attempt: 1, state: 'verified', fence: scope.fence, proofSha256: sha256(JSON.stringify(proof)) });
+  expect(proof).toMatchObject({ observation: outcomeEvidence, native: { approvalId: approval.approvalId, attempt: 1 } });
+  expect((await database.storage.db.select().from(operationsExecutions))[0]).toMatchObject({ state: 'recovered', closedAt: record!.completedAt });
+  expect((await database.storage.pool.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
+  await expect(action.fixture.taskService.get(identity, scope.taskId)).resolves.toMatchObject({ state: 'succeeded' });
+  for (const locale of ['en', 'zh-CN'] as const) {
+    expect((await action.fixture.taskService.events(identity, scope.taskId, 50, locale)).at(-1))
+      .toMatchObject({ type: 'task.operations_restart_recovery_recorded', reasonMessage: translate(locale, 'reason.operations_restart_recovery_verified') });
+  }
+  await expect(observer.verify(scope)).resolves.toBe('lease_lost');
+  expect(checks).toBe(1);
+  await release.confirm();
+});
+
+it('retains the environment when restart recovery has health evidence and an unknown native permit', async () => {
+  const { action, runtime, approval, claimRecovery, binding, outcomeEvidence } = await restartAwaitingRecovery('unknown');
+  const release = await competingPublication(action.fixture);
+  const { scope } = await claimRecovery();
+  const forged = operationsRestartRecoveryProofSchema.parse({ version: 1, executionId: action.execution.id,
+    releaseOperationId: action.fixture.operationId, fence: scope.fence, proposalFingerprint: action.execution.proposalFingerprint,
+    callSha256: approval.callSha256, runtimeBaselineSha256: binding.runtimeBaselineSha256,
+    native: { approvalId: approval.approvalId, attempt: 1 }, observation: outcomeEvidence });
+  await expect(database.storage.db.update(operationsRestartRecoveries).set({ state: 'verified', proof: forged, proofSha256: sha256(JSON.stringify(forged)) }))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restart_recovery_evidence_required' } });
+  await expect(runtime.settleRestartRecovery(scope, outcomeEvidence)).resolves.toBe('manual_review');
+  expect((await database.storage.db.select().from(operationsRestartRecoveries))[0]).toMatchObject({
+    state: 'manual_review', failure: 'native_unconfirmed', proof: { native: null, observation: outcomeEvidence },
+  });
+  expect((await database.storage.db.select().from(operationsExecutions))[0]).toMatchObject({ state: 'reserved', closedAt: null });
+  await expect(action.fixture.taskService.get(identity, scope.taskId)).resolves.toMatchObject({ state: 'needs_human' });
+  await expect(release.confirm()).rejects.toMatchObject({ code: 'conflict' });
+  expect(await database.storage.boss.fetch(operationsExecutionQueue)).toEqual([]);
+});
+
+it('stops restart recovery without probing after the enrolled target changes', async () => {
+  const { action, runtime, claimRecovery } = await restartAwaitingRecovery();
+  const { scope } = await claimRecovery();
+  await registerOperationsTarget(database.storage, { ...action.fixture.registration,
+    whiskers: { ...action.fixture.registration.whiskers, serverId: 'rebound-after-restart' } });
+  const observeRestart = vi.fn(async () => { throw new Error('Unexpected probe'); });
+  const worker = new OperationsRestartRecoveryWorker(runtime, { observeRestart });
+  await expect(worker.verify(scope)).resolves.toBe('manual_review');
+  expect(observeRestart).not.toHaveBeenCalled();
+  expect((await database.storage.db.select().from(operationsRestartRecoveries))[0]).toMatchObject({ state: 'manual_review', failure: 'target_changed', proof: null });
+  expect((await database.storage.db.select().from(operationsExecutions))[0]?.state).toBe('reserved');
+});
+
+it('records restart recovery for an older intent with missing evidence without contacting the target', async () => {
+  const action = await queuedOperationsLease();
+  const original = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!original) throw new Error('Expected the original lease');
+  await action.runtime.prepareDispatch(original);
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await action.runtime.reconcile(randomUUID());
+  const scope = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (scope?.mode !== 'reconcile') throw new Error('Expected a read-only recovery lease');
+  const observeRestart = vi.fn(async () => { throw new Error('Unexpected probe'); });
+  await expect(new OperationsRestartRecoveryWorker(action.runtime, { observeRestart }).verify(scope)).resolves.toBe('manual_review');
+  expect(observeRestart).not.toHaveBeenCalled();
+  expect((await database.storage.db.select().from(operationsRestartRecoveries))[0]).toMatchObject({
+    state: 'manual_review', failure: 'missing_evidence', proof: null,
+  });
+  expect((await database.storage.db.select().from(operationsExecutions))[0]?.state).toBe('reserved');
+});
+
+it('bounds restart recovery retries and fences a superseded read lease', async () => {
+  const { action, runtime, claimRecovery, outcomeEvidence } = await restartAwaitingRecovery();
+  const first = (await claimRecovery()).scope;
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await runtime.reconcile(randomUUID());
+  const second = (await claimRecovery()).scope;
+  await expect(runtime.settleRestartRecovery(first, outcomeEvidence)).rejects.toBeInstanceOf(ExecutionLost);
+  expect(second.fence).toBe(first.fence + 1);
+  const worker = new OperationsRestartRecoveryWorker(runtime, {
+    async observeRestart(_subject, _baseline, authorize) { await authorize(); throw new ReleaseIngressError('health_failed'); },
+  });
+  await expect(worker.verify(second)).resolves.toBe('retry');
+  const third = (await claimRecovery()).scope;
+  await expect(worker.verify(third)).resolves.toBe('manual_review');
+  expect(await database.storage.db.select().from(operationsRestartRecoveries).orderBy(operationsRestartRecoveries.attempt)).toMatchObject([
+    { attempt: 1, state: 'retry', failure: 'lease_expired', fence: first.fence },
+    { attempt: 2, state: 'retry', failure: 'unhealthy', fence: second.fence },
+    { attempt: 3, state: 'manual_review', failure: 'unhealthy', fence: third.fence },
+  ]);
+  await expect(action.fixture.taskService.get(identity, third.taskId)).resolves.toMatchObject({ state: 'needs_human' });
+  expect((await database.storage.db.select().from(operationsExecutions))[0]?.state).toBe('reserved');
+  expect(await database.storage.boss.fetch(operationsExecutionQueue)).toEqual([]);
+});
+
+it('rolls back restart recovery proof and hold release when its event cannot commit', async () => {
+  const { runtime, claimRecovery, outcomeEvidence } = await restartAwaitingRecovery();
+  const { scope } = await claimRecovery();
+  await expect(runtime.settleRestartRecovery(scope, { ...outcomeEvidence, runtime: { ...outcomeEvidence.runtime, version: 'other-version' } }))
+    .rejects.toMatchObject({ reason: 'target_changed' });
+  await database.admin.query("ALTER TABLE itervane.task_events ADD CONSTRAINT test_restart_recovery_event CHECK (type <> 'task.operations_restart_recovery_recorded') NOT VALID");
+  try {
+    await expect(runtime.settleRestartRecovery(scope, outcomeEvidence)).rejects.toMatchObject({ cause: { code: '23514', constraint: 'test_restart_recovery_event' } });
+    expect((await database.storage.db.select().from(operationsRestartRecoveries))[0]).toMatchObject({ state: 'observing', proof: null, completedAt: null });
+    expect((await database.storage.db.select().from(operationsExecutions))[0]).toMatchObject({ state: 'reserved', closedAt: null });
+    expect((await database.storage.pool.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: scope.taskId });
+  } finally { await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT test_restart_recovery_event'); }
+  await expect(runtime.settleRestartRecovery(scope, outcomeEvidence)).resolves.toBe('verified');
+});
 
 it('requires the matching active Whiskers write installation before a native intent is recorded', async () => {
   const action = await queuedOperationsLease();
