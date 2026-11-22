@@ -13,12 +13,12 @@ import {
   admissionDtoSchema, applicationDtoSchema, auditFindingsPerScan, environmentDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema,
   formalRepairDtoSchema, formalRepairPatchDtoSchema, formalReleaseResultSchema, formalReleaseViewSchema, idSchema, komodoResourceIdSchema, projectDtoSchema,
   formalRepairRetrySchema, formalVerificationInputSchema, formalVerificationResultSchema, operationsDiagnosisReceiptSchema,
-  operationsObservationReceiptSchema, operationsObservationViewSchema,
+  operationsObservationReceiptSchema, operationsObservationViewSchema, operationsRestartInstallationSchema,
   qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
   repositoryDtoSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sha256Schema, sourceInspectionDtoSchema,
   qualifiedImageArchiveSchema, qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
   taskDtoSchema, taskEventDtoSchema, taskEventReasonSchema, translate,
-  type FormalAuditResult, type Locale, type NpmUpgradeApproval, type StandardVerificationProfile,
+  type FormalAuditResult, type Locale, type NpmUpgradeApproval, type OperationsRestartWriterProof, type StandardVerificationProfile, type TaskDto,
 } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
@@ -28,9 +28,11 @@ import { formalReleaseQueue } from '../../src/persistence/database.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
 import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
-import { KomodoReleaseClient } from '../../src/runtime/release-komodo.js';
+import { createKomodoRestartReader, KomodoReleaseClient } from '../../src/runtime/release-komodo.js';
 import { createKeycloakRolloutTokenSource, ReleaseRolloutVerifier } from '../../src/runtime/release-rollout.js';
 import { ReleaseIngressError } from '../../src/runtime/release-traefik.js';
+import { loadWhiskersWriter } from '../../src/runtime/whiskers-writer-installation.js';
+import { changeOperationsRestartInstallation } from '../../src/service/operations-restart-installations.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
 import { registerOperationsTarget } from '../../src/service/operations-targets.js';
 import { fingerprintRolloutCheck, registerReleaseTarget } from '../../src/service/release-targets.js';
@@ -44,12 +46,19 @@ import { sourceFingerprint } from '../../../verification/src/report.js';
 import { openNativeReleaseKomodo } from '../../../verification/src/native/komodo-probe.js';
 import { npmReleaseApproval, standardNpmReleaseFiles } from '../../../verification/src/native/npm-release-fixture.js';
 import { openNativeWhiskersReadScope } from '../../../portal/test/native/whiskers-read.js';
+import { openNativeWhiskersRestartScope } from '../../../portal/test/native/whiskers-restart-scope.js';
 import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from './audit-provider.js';
 import { proveKnownKomodoRecovery, proveUnknownKomodoDispatch, recoverRecordedReleaseForRollout } from './komodo-release-proof.js';
 import type { KomodoInterruption, runKomodoReleaseFixture } from './komodo-release-worker.js';
 import type { RegistryImportMarker } from './release-recovery.js';
 import { temporaryRegistry } from './registry-fixture.js';
 import { openProtectedIngress } from './protected-ingress.js';
+import { proveNativeRestart, type DiagnosisHttp } from './restart-proof.js';
+
+type NativeRestartAcceptance = {
+  writer: OperationsRestartWriterProof;
+  verify: (diagnosis: TaskDto, diagnosisSha256: string, request: DiagnosisHttp, mcp: Client) => ReturnType<typeof proveNativeRestart>;
+};
 
 const execute = promisify(execFile);
 const commit = '9167604c888416d7b6518e1c76485d7308cffb5c';
@@ -906,7 +915,7 @@ async function probe() {
         equal(english.locale, 'en');
         notEqual(chinese.message, english.message);
 
-        const verifyInstalledDiagnosis = async (enrollmentSha256: string, readKey: string) => {
+        const verifyInstalledDiagnosis = async (enrollmentSha256: string, readKey: string, restart?: NativeRestartAcceptance) => {
           phase = 'operations_formal_installation';
           const providerEnv = { ITERVANE_AUDIT_MODEL_PROVIDER: 'anthropic', ANTHROPIC_BASE_URL: audit.baseURL, ANTHROPIC_MODEL: auditFixtureModel };
           const configuration = workerConfig({ DATABASE_URL: db.runtimeUrl, ...providerEnv, ANTHROPIC_API_KEY: auditFixtureKey }).auditModel;
@@ -916,15 +925,21 @@ async function probe() {
             ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: providerSha256 };
           const diagnosisApi = createApi(db.storage, runtimeConfig({
             DATABASE_URL: db.runtimeUrl, ITERVANE_OIDC_ISSUER: oidc.config.issuer, ITERVANE_OIDC_AUDIENCE: oidc.config.audience,
-            ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_OPERATIONS_API_ENABLED: '1', ...installed,
-          }), { logger: false });
+            ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_OPERATIONS_API_ENABLED: '1', ITERVANE_PORTAL_CLIENT_ID: portalClientId, ...installed,
+          }), { logger: false, ...(restart ? { operationsRestartWriter: restart.writer } : {}) });
           const reader = new Client({ name: 'itervane-native-diagnosis', version: '0.0.0' });
           try {
             const endpoint = await diagnosisApi.listen({ host: '127.0.0.1', port: 0 });
-            const http = async (path: string, locale: Locale = 'zh-CN') => {
-              const response = await fetch(endpoint + path, { headers: { Authorization: await authorization(), 'Accept-Language': locale },
-                signal: AbortSignal.timeout(5_000) });
-              if (!response.ok) { await response.body?.cancel(); throw new Error(`fixture_diagnosis_http_${response.status}`); }
+            const http: DiagnosisHttp = async (path, { locale = 'zh-CN', payload, portal = false, status } = {}) => {
+              const token = portal ? `Bearer ${await oidc.token('owner', { azp: portalClientId })}` : await authorization();
+              const response = await fetch(endpoint + path, { headers: { Authorization: token, 'Accept-Language': locale,
+                ...(payload ? { 'content-type': 'application/json' } : {}) }, signal: AbortSignal.timeout(5_000),
+                ...(payload ? { method: 'POST', body: JSON.stringify(payload) } : {}) });
+              if (status !== undefined ? response.status !== status : !response.ok) {
+                await response.body?.cancel();
+                throw new Error(`fixture_diagnosis_http_${response.status}`);
+              }
+              if (!response.ok) { await response.body?.cancel(); return null; }
               return response.json() as Promise<unknown>;
             };
             await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp', endpoint), {
@@ -962,7 +977,8 @@ async function probe() {
             phase = 'operations_formal_worker_stop';
             await worker.stop('TERM'); worker = undefined;
             phase = 'operations_formal_model_trace';
-            deepStrictEqual(audit.calls.slice(initialCalls), ['read_operations', 'read_operations', 'read_operations', 'read_operations', 'finish_role']);
+            const expectedSections = restart ? ['container', 'release'] : ['container', 'release', 'logs', 'metrics'];
+            deepStrictEqual(audit.calls.slice(initialCalls), [...expectedSections.map(() => 'read_operations'), 'finish_role']);
 
             phase = 'operations_formal_evidence';
             const { rows } = await db.admin.query<{ document: unknown; sha256: string; container_id: string; tools_used: number }>(
@@ -977,16 +993,17 @@ async function probe() {
             equal(receipt.runId, diagnosis.runId);
             equal(receipt.taskId, diagnosis.id);
             equal(sha256(JSON.stringify(receipt)), row.sha256);
-            equal(row.tools_used, 4);
+            equal(row.tools_used, expectedSections.length);
             equal(row.container_id, proof.runtime.containerId);
-            deepStrictEqual(receipt.reads.map(item => item.section), ['container', 'release', 'logs', 'metrics']);
+            deepStrictEqual(receipt.reads.map(item => item.section), expectedSections);
             const readDiagnosis = async (lookup: Client, locale: Locale) => {
-              const response = operationsObservationViewSchema.parse(await http(`/v1/tasks/${diagnosis.id}/operations`, locale));
+              const response = operationsObservationViewSchema.parse(await http(`/v1/tasks/${diagnosis.id}/operations`, { locale }));
               const result = (await lookup.callTool({ name: 'get_operations_result', arguments: { taskId: diagnosis.id } })).structuredContent;
               deepStrictEqual(operationsObservationViewSchema.parse(result), response);
               equal(response.releaseOperationId, operationId);
               equal(response.diagnosis?.receiptSha256, row.sha256);
-              equal(response.observation?.state, 'running');
+              equal(response.observation?.state, restart ? 'exited' : 'running');
+              equal(response.diagnosis?.recommendation.code, restart ? 'review_restart' : 'continue_observation');
               const projected = JSON.stringify(response);
               for (const secret of [readKey, row.container_id]) ok(!projected.includes(secret));
               return response;
@@ -996,6 +1013,7 @@ async function probe() {
             deepStrictEqual(zh.diagnosis?.facts, en.diagnosis?.facts);
             notEqual(zh.diagnosis?.recommendation.message, en.diagnosis?.recommendation.message);
             return { runId: diagnosis.runId, releaseOperationId: operationId, sha256: row.sha256,
+              ...(restart ? { restart: await restart.verify(diagnosis, row.sha256, http, reader) } : {}),
               sections: receipt.reads.map(item => item.section), matchedPublishedTarget: true, httpMcpAgreement: true, model: 'scripted_anthropic_fixture' };
           } finally {
             try { await reader.close(); } finally { await diagnosisApi.close(); }
@@ -1116,11 +1134,69 @@ async function probe() {
               healthStatus: recovered.runtime.healthStatus };
           } finally { setDefaultCACertificates(trusted); }
         };
+        const verifyNativeRestart = async () => {
+          phase = 'operations_native_restart_installation';
+          const native = await openNativeWhiskersRestartScope();
+          try {
+            const enrollment = await registerOperationsTarget(db.storage, { environmentId: environment.id,
+              releaseTargetRevision: mapping.revision, releaseTargetSha256: mapping.fingerprint,
+              whiskers: { origin: native.origin, serverId: native.serverId } });
+            const fixtureFiles = await native.installationFiles({ environmentId: environment.id, enrollmentSha256: enrollment.fingerprint });
+            const installation = operationsRestartInstallationSchema.parse(JSON.parse(readFileSync(fixtureFiles.installation, 'utf8')));
+            const registered = await changeOperationsRestartInstallation(db.storage, { action: 'register', expectedActiveId: null, installation });
+            const { proof: writer } = await loadWhiskersWriter(fixtureFiles, native.writeKey);
+            equal(registered.installationSha256, writer.installationSha256);
+            const files = { installation: join(shared, 'restart-installation.json'), guardrails: join(shared, 'restart-guardrails.json'),
+              roles: join(shared, 'restart-roles.json') };
+            for (const name of ['installation', 'guardrails', 'roles'] as const) {
+              await execute('/usr/bin/sudo', ['-n', 'install', '-m', '0444', fixtureFiles[name], files[name]], { timeout: 5_000 });
+            }
+            const readerCredentials = await target.provisionRestartReader();
+            notEqual(readerCredentials.actorId, target.credentials.actorId);
+            const boundTarget = { ...target.binding, imageRepository: targetSettings.imageRepository, registryOrigin: targetSettings.registryOrigin };
+            const reader = createKomodoRestartReader(boundTarget, readerCredentials);
+            await reader.verifyInstallation();
+            const verifier = new ReleaseRolloutVerifier(reader, createKeycloakRolloutTokenSource(ingress.check.probeIdentity, ingress.probeSecret));
+            const { containerId, version, configDigest, imageReference } = proof.runtime;
+            const subject = { containerId, version, image, rolloutCheckSha256, check: ingress.check, target: boundTarget };
+
+            phase = 'operations_native_stop_bound_fixture';
+            await target.setOwnedContainerRunning(false, { containerId, configDigest, reference: imageReference });
+            const result = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, {
+              writer,
+              async verify(diagnosis, diagnosisSha256, request, mcp) {
+                phase = 'operations_native_restart_worker';
+                worker = await startScopedWorker(join(shared, 'restart-worker.mjs'), [
+                  'PATH=/usr/bin:/bin', 'LANG=C.UTF-8', 'ITERVANE_WORKER_POLL_MS=250', 'ITERVANE_WORKER_LEASE_SECONDS=30',
+                  `NODE_EXTRA_CA_CERTS=${ca}`, `ITERVANE_OPERATIONS_ENVIRONMENT_ID=${environment.id}`,
+                  `ITERVANE_OPERATIONS_ENROLLMENT_SHA256=${enrollment.fingerprint}`, `ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256=${mapping.fingerprint}`,
+                  `ITERVANE_RESTART_INSTALLATION_FILE=${files.installation}`, `ITERVANE_RESTART_GUARDRAILS_FILE=${files.guardrails}`,
+                  `ITERVANE_RESTART_ROLES_FILE=${files.roles}`, `ITERVANE_RESTART_KOMODO_READER_ID=${readerCredentials.actorId}`,
+                ], { DATABASE_URL: db.runtimeUrl, ITERVANE_RESTART_KOMODO_READER_KEY: readerCredentials.key,
+                  ITERVANE_RESTART_KOMODO_READER_SECRET: readerCredentials.secret, ITERVANE_RESTART_WHISKERS_WRITE_KEY: native.writeKey,
+                  ITERVANE_RESTART_PROBE_SECRET: ingress.probeSecret });
+                phase = 'operations_native_restart_application';
+                const accepted = await proveNativeRestart({ db, diagnosis, diagnosisSha256, released: proof, request, mcp,
+                  readStopped: () => verifier.captureRestartBaseline(subject, async () => {}),
+                  approve: () => native.approve(containerId), verifyAudit: () => native.verifyAudit(target.endpoint.container) });
+                await worker.stop('TERM'); worker = undefined;
+                return accepted;
+              },
+            });
+            ok(result.restart);
+            return { ...result.restart, diagnosisRunId: result.runId, diagnosisSections: result.sections,
+              distinctKomodoReader: true, model: result.model };
+          } finally {
+            try { await worker?.stop('TERM'); worker = undefined; }
+            finally { await native.close(); }
+          }
+        };
         const operations = operationsRun ? await verifyNativeObservation() : undefined;
         const restartReadback = operationsRun ? await verifyRestartReadback() : undefined;
+        const restart = operationsRun ? await verifyNativeRestart() : undefined;
         return {
           sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
-          ...(operations ? { operations: { ...operations, whiskersCleanup: true, restartReadback } } : {}),
+          ...(operations ? { operations: { ...operations, whiskersCleanup: true, restartReadback, restart } } : {}),
           ...('before' in prepared
             ? { retry: { before: prepared.before, after, retrySha256: prepared.retrySha256, generation } }
             : ('dependencyPatchSha256' in prepared
