@@ -3049,14 +3049,23 @@ it('shares authorized bilingual restore receipts through HTTP and MCP', async ()
   }
 }, 45_000);
 
+function restoreApiEnvironment(installed: OperationsWorkflowScope, mappingSha256: string) {
+  return { DATABASE_URL: database.runtimeUrl, ITERVANE_OIDC_ISSUER: issuer.config.issuer, ITERVANE_OIDC_AUDIENCE: issuer.config.audience,
+    ITERVANE_PORTAL_CLIENT_ID: operationsPortal, ITERVANE_OPERATIONS_API_ENABLED: '1', ITERVANE_RESTORE_API_ENABLED: '1',
+    ITERVANE_OPERATIONS_ENVIRONMENT_ID: installed.environmentId, ITERVANE_OPERATIONS_ENROLLMENT_SHA256: installed.enrollmentSha256,
+    ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: installed.diagnosisProviderSha256, ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: mappingSha256 };
+}
+
 it('queues one version restore through the approved human portal and cancels it before dispatch', async () => {
   const { installed, proposal, owner, decisions, decision, current, diagnosed } = await restoreExecutionCandidate();
-  const restoreTarget = { environmentId: installed.environmentId, mappingSha256: current.binding.manifest.target.mappingSha256 };
-  const config = { ...issuer.config, portalClientId: operationsPortal, operationsApi: installed };
-  const app = createApi(database.storage, config, { logger: false, operationsRestoreTarget: restoreTarget });
-  const disabled = createApi(database.storage, config, { logger: false });
-  const mismatched = createApi(database.storage, config, { logger: false,
-    operationsRestoreTarget: { ...restoreTarget, mappingSha256: sha256('old registered mapping') } });
+  const settings = restoreApiEnvironment(installed, current.binding.manifest.target.mappingSha256);
+  const start = (env: NodeJS.ProcessEnv) => createInstalledApi(database.storage, runtimeConfig(env), { logger: false });
+  await expect(start({ ...settings, ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: sha256('old registered mapping') }))
+    .rejects.toThrow('operations_restore_api_release_mapping_changed');
+  await expect(start({ ...settings, ITERVANE_OPERATIONS_ENROLLMENT_SHA256: sha256('old operations enrollment') }))
+    .rejects.toThrow('operations_restore_api_enrollment_required');
+  const { app } = await start(settings);
+  const { app: disabled } = await start({ ...settings, ITERVANE_RESTORE_API_ENABLED: undefined });
   try {
     const portal = { authorization: `Bearer ${await issuer.token('owner', { azp: operationsPortal })}`, 'accept-language': 'zh-CN' };
     const assistant = { authorization: `Bearer ${await issuer.token('owner')}` };
@@ -3071,8 +3080,6 @@ it('queues one version restore through the approved human portal and cancels it 
     expect((await view()).action).toEqual({ kind: 'enqueue', proposalId: proposal.id, ...payload });
     expect((await view(disabled)).action).toBeNull();
     expect((await post(disabled)).statusCode).toBe(404);
-    expect((await view(mismatched)).action).toBeNull();
-    expect((await post(mismatched)).statusCode).toBe(409);
     expect((await post(app, { ...portal, ...assistant })).statusCode).toBe(403);
     expect((await post(app, portal, { ...payload, restoreOperationId: randomUUID() })).statusCode).toBe(400);
     expect((await post(app, portal, { ...payload, fingerprint: sha256('unapproved proposal') })).statusCode).toBe(409);
@@ -3090,25 +3097,28 @@ it('queues one version restore through the approved human portal and cancels it 
     await decisions.decide(owner, proposal.id, { ...decision, action: 'revoke', expectedVersion: 1, idempotencyKey: randomUUID() });
     expect(await view()).toMatchObject({ execution: { id: executionId, state: 'cancelled', environmentHeld: false }, action: null });
     expect((await post()).statusCode).toBe(409);
-  } finally { await Promise.all([app.close(), disabled.close(), mismatched.close()]); }
+  } finally { await Promise.all([app.close(), disabled.close()]); }
 }, 45_000);
 
-it.each(['grant', 'publication'] as const)('rejects restore submission after its approved %s changes', async changed => {
+it.each(['grant', 'publication', 'registration'] as const)('rejects restore submission after its approved %s changes', async changed => {
   const { earlier, installed, proposal, owner, decisions, decision, current, diagnosed } = await restoreExecutionCandidate();
   await decisions.decide(owner, proposal.id, { ...decision, action: 'confirm', expectedVersion: 0, idempotencyKey: randomUUID() });
-  const app = createApi(database.storage, { ...issuer.config, portalClientId: operationsPortal, operationsApi: installed },
-    { logger: false, operationsRestoreTarget: { environmentId: installed.environmentId, mappingSha256: current.binding.manifest.target.mappingSha256 } });
+  const config = runtimeConfig(restoreApiEnvironment(installed, current.binding.manifest.target.mappingSha256));
+  const { app } = await createInstalledApi(database.storage, config, { logger: false });
   try {
     const headers = { authorization: `Bearer ${await issuer.token('owner', { azp: operationsPortal })}` };
     if (changed === 'grant') {
       const [grant] = await database.storage.db.delete(workspaceMembers).returning();
       if (!grant) throw new Error('Expected original workspace grant');
       await database.storage.db.insert(workspaceMembers).values({ principalId: grant.principalId, workspaceId: grant.workspaceId });
-    } else {
+    } else if (changed === 'publication') {
       task = (await earlier.taskService.admit(identity, { projectId: earlier.scope.projectId, source: task.source,
         purpose: 'Replace the approved runtime', dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
       const next = await queuedFormalRelease({ existingTarget: earlier.target, imageVariant: 'replacement after restore approval' });
       await finishTestRollout(await parkForRollout(next, true, 'c'.repeat(24)), 'standard-v4');
+    } else {
+      await registerReleaseTarget(database.storage, { ...earlier.target, recoveryPlanSha256: sha256('revised recovery plan') });
+      await expect(createInstalledApi(database.storage, config)).rejects.toThrow('operations_restore_api_release_mapping_changed');
     }
     const url = `/v1/tasks/${diagnosed.id}/operations-restore`;
     expect((await app.inject({ url, headers })).json()).toMatchObject({ execution: null, action: null });

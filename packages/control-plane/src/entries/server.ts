@@ -15,6 +15,6 @@ try {
     });
   } catch { await database.close(); throw new Error('API startup failed'); }
 } catch {
-  console.error('API startup failed. Check identity, database migrations and any configured restart registration.');
+  console.error('API startup failed. Check identity, database migrations and any configured operations registration.');
   process.exitCode = 1;
 }
