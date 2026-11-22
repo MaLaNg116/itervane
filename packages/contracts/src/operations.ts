@@ -73,6 +73,19 @@ export const operationsRestartRecoveryObservationSchema = z.strictObject({
   runtime: releaseRuntimeObservationSchema, startedAt: operationsRuntimeStartedAtSchema,
 });
 
+export const maxOperationsRestartRecoveryAttempts = 3;
+export const operationsRestartRecoveryFailureSchema = z.enum([
+  'missing_evidence', 'target_changed', 'native_unconfirmed', 'unhealthy', 'unavailable', 'lease_expired',
+]);
+export type OperationsRestartRecoveryFailure = z.infer<typeof operationsRestartRecoveryFailureSchema>;
+export const operationsRestartRecoveryProofSchema = z.strictObject({
+  version: z.literal(1), executionId: idSchema, releaseOperationId: idSchema, fence: revision,
+  proposalFingerprint: sha256Schema, callSha256: sha256Schema, runtimeBaselineSha256: sha256Schema,
+  native: z.strictObject({ approvalId: whiskersNativeApprovalIdSchema, attempt: revision.max(maxOperationsRestartResumes) }).nullable(),
+  observation: operationsRestartRecoveryObservationSchema,
+});
+export type OperationsRestartRecoveryProof = z.infer<typeof operationsRestartRecoveryProofSchema>;
+
 export const operationsTargetInputSchema = z.strictObject({
   environmentId: idSchema,
   releaseTargetRevision: revision,

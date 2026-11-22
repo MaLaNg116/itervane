@@ -393,6 +393,13 @@
       "when": 1795337257266,
       "tag": "0055_operations_restart_runtime_baseline",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1795338068380,
+      "tag": "0056_operations_restart_recovery_receipts",
+      "breakpoints": true
     }
   ]
 }
