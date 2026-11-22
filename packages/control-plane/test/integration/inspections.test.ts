@@ -3350,6 +3350,55 @@ it('retains the environment when restart recovery has health evidence and an unk
   expect(await database.storage.boss.fetch(operationsExecutionQueue)).toEqual([]);
 });
 
+it('moves an expired native approval wait into exactly one read-only restart recovery', async () => {
+  const fixture = await installedOperationsFixture();
+  const publication = await competingPublication(fixture);
+  await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_results
+    ALTER COLUMN created_at SET DEFAULT (now() - interval '1788 seconds')`);
+  const action = await restartExecutionCandidate(fixture).finally(() =>
+    database.admin.query('ALTER TABLE itervane.operations_diagnosis_results ALTER COLUMN created_at SET DEFAULT now()'));
+  await action.decide('confirm');
+  const { execution, schedule } = await action.enqueue();
+  const runtime = new OperationsExecutionCoordinator(coordinator, action.installed);
+  const { scope, approval, writer } = await prepareNativeRestart({ ...action, execution, schedule, runtime });
+  await runtime.pauseForRestartApproval(scope, approval);
+  const app = createApi(database.storage, { ...issuer.config, portalClientId: operationsPortal, operationsApi: action.installed },
+    { logger: false, operationsRestartWriter: writer });
+  try {
+    const token = await issuer.token('owner', { azp: operationsPortal });
+    const url = `/v1/tasks/${action.diagnosed.id}/operations-execution`;
+    const view = async (locale: 'en' | 'zh-CN' = 'en') => operationsRestartExecutionViewSchema.parse((await app.inject({
+      url, headers: { authorization: `Bearer ${token}`, 'accept-language': locale },
+    })).json());
+    await runtime.reconcile(randomUUID());
+    expect(await view()).toMatchObject({ execution: { state: 'waiting_approval', environmentHeld: true }, action: { kind: 'continue' } });
+    await database.admin.query("SELECT pg_sleep_until($1::timestamptz + interval '20 milliseconds')", [action.proposal.validUntil]);
+
+    const other = new OperationsExecutionCoordinator(coordinator, { ...action.installed, enrollmentSha256: sha256('another enrollment') });
+    await other.reconcile(randomUUID());
+    expect(await view()).toMatchObject({ execution: { state: 'waiting_approval' }, action: null });
+    await Promise.all([runtime.reconcile(randomUUID()), runtime.reconcile(randomUUID())]);
+    for (const locale of ['en', 'zh-CN'] as const) {
+      expect(await view(locale)).toMatchObject({ execution: { state: 'reconciling', environmentHeld: true,
+        nativeApprovalId: approval.approvalId, reason: 'operations_restart_approval_expired',
+        message: translate(locale, 'reason.operations_restart_approval_expired') }, action: null });
+    }
+    const events = await action.fixture.taskService.events(identity, schedule.taskId, 50, 'en');
+    expect(events.filter(event => event.reason === 'operations_restart_approval_expired')).toHaveLength(1);
+    expect(await database.storage.db.select().from(operationsRestartResumes)).toEqual([]);
+    const recovered = await runtime.claim(await fetchOperationsWakeup(), randomUUID());
+    if (recovered?.mode !== 'reconcile') throw new Error('Expected a read-only restart recovery lease');
+    expect(recovered.fence).toBeGreaterThan(scope.fence);
+    await expect(runtime.settleRestartRecovery(recovered, { startedAt: '2026-01-01T00:00:00.000000002Z',
+      runtime: fixture.runtime })).resolves.toBe('manual_review');
+    expect(await view()).toMatchObject({ execution: { state: 'needs_human', environmentHeld: true,
+      recovery: { state: 'manual_review', failure: 'native_unconfirmed' } }, action: null });
+    await expect(publication.confirm()).rejects.toMatchObject({ code: 'conflict' });
+  } finally {
+    await app.close();
+  }
+});
+
 it('stops restart recovery without probing after the enrolled target changes', async () => {
   const { action, runtime, claimRecovery } = await restartAwaitingRecovery();
   const { scope } = await claimRecovery();
