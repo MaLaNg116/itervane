@@ -1,12 +1,12 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdtemp, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import { whiskersRestartImageDigest } from '@itervane/contracts';
+import { whiskersRestartImageDigest, type OperationsRestartInstallation } from '@itervane/contracts';
 import { restartTool, whiskersOrigin } from '../../../verification/src/native/whiskers.js';
 
 const execute = promisify(execFile);
@@ -51,6 +51,8 @@ function writerKeys() {
   return { primary: randomBytes(32).toString('hex'), alternate: randomBytes(32).toString('hex'), broad: randomBytes(32).toString('hex') };
 }
 
+const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
+
 export class WhiskersFixture {
   private readonly runId = randomUUID();
   private readonly base = 'itervane-ops-' + this.runId;
@@ -59,6 +61,7 @@ export class WhiskersFixture {
   private readonly provisionedFiles = new Set<string>();
   private temp?: string;
   private writerPasswordPath?: string;
+  private writerMounts: { guardrails: string; roles: string } | undefined;
   readonly adminPassword = 'Iv!' + randomBytes(24).toString('hex') + 'A1';
   readonly operatorPassword = 'Iv!' + randomBytes(24).toString('hex') + 'A1';
   readonly primary = this.base + '-a';
@@ -95,7 +98,7 @@ export class WhiskersFixture {
   }
 
   private async bootWhiskers(passwordPath: string, keys?: ReturnType<typeof writerKeys>) {
-    const sealed = keys ? await this.sealWriterPolicy(keys) : [];
+    const sealed = keys && await this.sealWriterPolicy(keys);
     const guardrails = resolve('fixtures/whiskers', keys ? 'guardrails.json' : 'read-only-guardrails.json');
     await this.create(this.base, [
       '--publish', '127.0.0.1:49220:8080',
@@ -109,10 +112,24 @@ export class WhiskersFixture {
       '--env', 'WHISKERS_ADMIN_PASSWORD_FILE=/run/secrets/probe-admin',
       '--env', 'Features__agent__Enabled=true',
       '--env', 'VPN_PROVIDER=none',
-      ...sealed, publishedWhiskers,
+      ...(sealed?.args ?? []), publishedWhiskers,
       ...(keys ? ['-ec', 'cp /run/itervane/mcp-permissions.json /app/data/mcp-permissions.json\nexec /app/entrypoint.sh'] : []),
     ]);
     await awaitWhiskers();
+    this.writerMounts = sealed && { guardrails, roles: sealed.roles };
+  }
+
+  async restartInstallationFiles(key: string) {
+    if (!this.writerMounts) throw new Error('Expected mounted writer policy and roles');
+    const { guardrails, roles } = this.writerMounts;
+    const [policyContent, rolesContent] = await Promise.all([readFile(guardrails), readFile(roles)]);
+    const document: OperationsRestartInstallation = {
+      version: 1, installationId: randomUUID(), environmentId: this.runId, enrollmentSha256: hash(this.runId),
+      whiskers: { origin: whiskersOrigin, serverId: 'local' }, imageDigest: whiskersRestartImageDigest,
+      policySha256: hash(policyContent), rolesSha256: hash(rolesContent), credentialSha256: hash(key),
+    };
+    const installation = await this.provision(document.installationId + '-writer.json', JSON.stringify(document));
+    return { installation, guardrails, roles };
   }
 
   private async provision(name: string, document: string) {
@@ -139,15 +156,15 @@ export class WhiskersFixture {
     ];
     const permissions = await this.provision(generation + '-mcp-permissions.json', JSON.stringify({
       ApiKeys: keys.map(({ name, key, level, tools }) => ({
-        Id: randomBytes(4).toString('hex'), Name: name, KeyHash: createHash('sha256').update(key).digest('hex'),
+        Id: randomBytes(4).toString('hex'), Name: name, KeyHash: hash(key),
         Enabled: true, PermissionLevel: level, AllowedTools: tools,
       })),
     }));
-    return [
+    return { roles, args: [
       '--mount', 'type=bind,source=' + roles + ',target=/app/data/roles.json,readonly',
       '--mount', 'type=bind,source=' + permissions + ',target=/run/itervane/mcp-permissions.json,readonly',
       '--entrypoint', '/bin/sh',
-    ];
+    ] };
   }
 
   async snapshot(name: string) {
