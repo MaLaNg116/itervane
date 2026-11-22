@@ -48,6 +48,7 @@ import { FormalReleaseSteps } from '../../src/runtime/formal-release-steps.js';
 import { FormalReleaseWorker } from '../../src/runtime/formal-release-worker.js';
 import { FormalRolloutCoordinator } from '../../src/runtime/formal-rollout-claim.js';
 import { FormalRolloutWorker } from '../../src/runtime/formal-rollout-worker.js';
+import { createInstalledApi } from '../../src/runtime/installed-api.js';
 import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-rescan.js';
 import { runFormalVerification, type FormalVerificationOptions } from '../../src/runtime/formal-verification.js';
 import { BudgetExhausted, ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
@@ -4315,6 +4316,67 @@ it('rejects portal restart submission after the original approval grant is repla
     expect(await database.storage.db.select().from(operationsExecutions)).toEqual([]);
   } finally {
     await app.close();
+  }
+});
+
+it('keeps the installed API tied to the current restart registration through rotation', async () => {
+  const action = await restartExecutionCandidate();
+  await action.decide('confirm');
+  const first = restartInstallation(action.fixture);
+  const next = restartInstallation(action.fixture);
+  const directory = await mkdtemp(join(tmpdir(), 'itervane-restart-api-'));
+  const file = join(directory, 'registration.json');
+  const settings = { DATABASE_URL: database.runtimeUrl, ITERVANE_OIDC_ISSUER: issuer.config.issuer, ITERVANE_OIDC_AUDIENCE: issuer.config.audience,
+    ITERVANE_PORTAL_CLIENT_ID: operationsPortal, ITERVANE_OPERATIONS_API_ENABLED: '1',
+    ITERVANE_OPERATIONS_ENVIRONMENT_ID: action.installed.environmentId, ITERVANE_OPERATIONS_ENROLLMENT_SHA256: action.installed.enrollmentSha256,
+    ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: action.installed.diagnosisProviderSha256 };
+  const optional = { ...settings, ITERVANE_RESTART_API_INSTALLATION_FILE: file };
+  const started: ReturnType<typeof createApi>[] = [];
+  let closed = 0;
+  const start = async (env: NodeJS.ProcessEnv = optional) => {
+    const { app } = await createInstalledApi(database.storage, runtimeConfig(env), { logger: false });
+    app.addHook('onClose', async () => { closed++; });
+    started.push(app);
+    return app;
+  };
+  try {
+    const defaultApi = await start(settings);
+    const headers = { authorization: `Bearer ${await issuer.token('owner', { azp: operationsPortal })}` };
+    const url = `/v1/tasks/${action.diagnosed.id}/operations-execution`;
+    const submit = `/v1/operations/proposals/${action.proposal.id}/execution`;
+    const payload = { fingerprint: action.proposal.fingerprint, decisionVersion: 1 };
+    expect((await defaultApi.inject({ method: 'POST', url: submit, headers, payload })).statusCode).toBe(404);
+    expect((await defaultApi.inject({ url, headers })).json()).toMatchObject({ action: null });
+
+    expect(() => runtimeConfig({ ...optional, ITERVANE_PORTAL_CLIENT_ID: undefined })).toThrow('operations_restart_api_requires_formal_diagnosis_and_portal');
+    expect(() => runtimeConfig({ ...optional, ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: undefined }))
+      .toThrow('operations_restart_api_requires_formal_diagnosis_and_portal');
+    expect(() => runtimeConfig({ ...optional, ITERVANE_RESTART_API_INSTALLATION_FILE: 'registration.json' })).toThrow();
+    await writeFile(file, JSON.stringify(first), { mode: 0o600 });
+    await expect(start()).rejects.toMatchObject({ code: 'version_conflict' });
+    await registerRestartInstallation(first);
+    await writeFile(file, JSON.stringify({ ...first, enrollmentSha256: sha256('wrong enrollment') }));
+    await expect(start()).rejects.toThrow('operations_restart_api_enrollment_mismatch');
+    await writeFile(file, JSON.stringify({ ...first, policySha256: sha256('unregistered policy') }));
+    await expect(start()).rejects.toMatchObject({ code: 'version_conflict' });
+    await writeFile(file, JSON.stringify(first));
+    const original = await start();
+    expect((await original.inject({ url, headers })).json()).toMatchObject({ action: { kind: 'enqueue', proposalId: action.proposal.id } });
+
+    await registerRestartInstallation(next, first.installationId);
+    await expect(start()).rejects.toMatchObject({ code: 'version_conflict' });
+    expect((await original.inject({ url, headers })).json()).toMatchObject({ action: null });
+    expect((await original.inject({ method: 'POST', url: submit, headers, payload })).statusCode).toBe(409);
+    expect(await database.storage.db.select().from(operationsExecutions)).toEqual([]);
+    await writeFile(file, JSON.stringify(next));
+    const replacement = await start();
+    expect((await replacement.inject({ method: 'POST', url: submit, headers, payload })).statusCode).toBe(202);
+    expect((await replacement.inject({ url, headers })).json()).toMatchObject({ execution: { state: 'queued', environmentHeld: true }, action: null });
+  } finally {
+    await Promise.all(started.map(app => app.close()));
+    expect(closed).toBe(started.length);
+    await unlink(file).catch(() => {});
+    await rmdir(directory);
   }
 });
 
