@@ -1,9 +1,11 @@
 import { z } from 'zod';
+import { operationsDiagnosisResultSchema } from '@itervane/contracts';
 import {
-  auditReportSchema, deliveryRoleSchema, evidenceSchema, repairReportSchema,
+  agentRoleSchema, auditReportSchema, evidenceSchema, repairReportSchema,
   sha256, shaSchema, verificationReportSchema, type AgentOrigin, type AgentSpec,
 } from './contracts.js';
 import { agentText, type AgentReason, type Feedback } from './messages.js';
+import { finishFormalOperations, operationsObservations } from './operations-results.js';
 import { formalRepairCompletionSchema } from './repair-contracts.js';
 import { finishFormalRepair, finishFormalVerification } from './results.js';
 import { canCall, plannedToolSchema } from './tools.js';
@@ -17,17 +19,18 @@ const usageSchema = z.object({
   tokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 }).strict();
 const stateSchema = z.object({
-  version: z.literal(1), bindingSha256: shaSchema, role: deliveryRoleSchema,
+  version: z.literal(1), bindingSha256: shaSchema, role: agentRoleSchema,
   deadlineAt: z.number().int().positive(), usage: usageSchema,
   pending: z.enum(['decision', 'observation']).nullable(), nextTool: plannedToolSchema.nullable(),
   evidence: z.array(evidenceSchema).max(28),
   currentEvidence: z.array(shaSchema).max(28),
-  trace: z.array(z.object({ role: deliveryRoleSchema, operationId: shaSchema, call: plannedToolSchema, evidenceId: shaSchema }).strict()).max(28),
+  trace: z.array(z.object({ role: agentRoleSchema, operationId: shaSchema, call: plannedToolSchema, evidenceId: shaSchema }).strict()).max(28),
   stalled: z.number().int().nonnegative().max(6), feedback: z.custom<Feedback>(value => typeof value === 'string' && Object.hasOwn(feedback, value)).nullable(),
   audit: auditReportSchema.nullable(),
   repairs: z.array(repairReportSchema).max(3),
   formalRepair: formalRepairCompletionSchema.optional(),
   formalVerification: formalVerificationCompletionSchema.optional(),
+  formalOperations: operationsDiagnosisResultSchema.optional(),
   verifications: z.array(verificationReportSchema).max(3),
   stop: z.object({
     status: z.enum(['completed', 'requires_human', 'cancelled']),
@@ -38,6 +41,7 @@ export type AgentState = z.infer<typeof stateSchema>;
 export type Stop = NonNullable<AgentState['stop']>;
 
 export function initialRole(origin: AgentOrigin): AgentState['role'] {
+  if (origin === 'formal_operations') return 'operations';
   if (origin === 'formal_verification') return 'verify';
   return origin === 'formal_repair' ? 'repair' : 'audit';
 }
@@ -94,6 +98,23 @@ export function restoreState(raw: unknown, spec: AgentSpec, binding: string, ori
       if (JSON.stringify(finishFormalVerification(state.evidence, { summary, evidenceIds, followUps })) !== JSON.stringify(state.formalVerification)) return;
     }
   } else if (state.formalVerification) return;
+  if (origin === 'formal_operations') {
+    const observed = operationsObservations(state.evidence);
+    const completed = state.stop?.status === 'completed';
+    if (state.role !== 'operations' || state.audit || state.repairs.length || state.verifications.length
+        || state.evidence.length !== observed.length || state.evidence.length !== state.currentEvidence.length
+        || state.evidence.length !== state.trace.length || new Set(state.currentEvidence).size !== state.currentEvidence.length
+        || new Set(observed.map(item => item.data.section)).size !== observed.length
+        || observed.some(item => item.snapshotSha256 !== spec.snapshotSha256)
+        || state.trace.some(({ role, call, evidenceId }, index) => role !== 'operations' || call.name !== 'read_operations'
+          || observed[index]?.id !== evidenceId || observed[index]?.data.section !== call.args.section)
+        || completed !== (state.stop?.reason === 'operations_review_complete')
+        || completed !== (state.formalOperations !== undefined)) return;
+    if (state.formalOperations) {
+      const { hypotheses, recommendation } = state.formalOperations;
+      if (JSON.stringify(finishFormalOperations(observed, { hypotheses, recommendation })) !== JSON.stringify(state.formalOperations)) return;
+    }
+  } else if (state.formalOperations || state.role === 'operations' || state.stop?.reason === 'operations_review_complete') return;
   const ids = new Set(state.evidence.map(item => item.id));
   if (ids.size !== state.evidence.length || state.evidence.some(({ id, ...receipt }) =>
     receipt.origin !== origin || receipt.bindingSha256 !== binding || sha256(JSON.stringify(receipt)) !== id)

@@ -34,6 +34,7 @@ export type OperationsDiagnosisObservation = z.infer<typeof operationsDiagnosisO
 
 export const operationsHypothesisCodes = ['application_error', 'release_regression', 'memory_pressure'] as const;
 export const operationsRecommendationCodes = ['continue_observation', 'review_restart', 'review_rollback', 'investigate_code', 'human_review'] as const;
+export const operationsMemoryPressureThreshold = 85;
 const evidenceIds = z.array(sha256Schema).min(1).max(operationsDiagnosisSections.length)
   .refine(ids => ids.length === new Set(ids).size, 'Evidence references must be unique');
 export const finishOperationsInputSchema = z.strictObject({
@@ -46,7 +47,10 @@ export const operationsDiagnosisResultSchema = finishOperationsInputSchema.exten
   previousReleaseOperationId: idSchema.nullable(),
 }).refine(result => {
   const sections = new Set(result.facts.map(fact => fact.section));
+  const ids = new Set(result.facts.map(fact => fact.evidenceId));
   return sections.size === result.facts.length && sections.has('container') && sections.has('release')
+    && ids.size === result.facts.length
+    && [...result.hypotheses, result.recommendation].every(item => item.evidenceIds.every(id => ids.has(id)))
     && (result.previousReleaseOperationId !== null) === (result.recommendation.code === 'review_rollback');
-}, 'Diagnosis requires the current container and release and a rollback reference when applicable');
+}, 'Diagnosis requires scoped facts, valid references and a rollback reference when applicable');
 export type OperationsDiagnosisResult = z.infer<typeof operationsDiagnosisResultSchema>;
