@@ -613,7 +613,7 @@ export const operationsExecutions = domain.table('operations_executions', {
   state: text('state').$type<'reserved' | 'blocked'>().notNull(),
   createdAt: createdAt(),
   closedAt: timestamp('closed_at', { withTimezone: true }),
-  blockedReason: text('blocked_reason').$type<'approval_revoked' | 'proposal_expired'>(),
+  blockedReason: text('blocked_reason').$type<'approval_revoked' | 'proposal_expired' | 'restart_not_sent'>(),
 }, t => [
   unique('operations_execution_per_proposal').on(t.proposalId),
   uniqueIndex('operations_execution_environment_hold').on(t.environmentId).where(sql`${t.state} = 'reserved'`),
@@ -621,7 +621,7 @@ export const operationsExecutions = domain.table('operations_executions', {
     foreignColumns: [operationsDecisions.proposalId, operationsDecisions.version] }),
   check('operations_execution_binding', sql`${t.decisionVersion} = 1 AND ${t.proposalFingerprint} ~ '^[a-f0-9]{64}$'`),
   check('operations_execution_lifecycle', sql`((${t.state} = 'reserved' AND ${t.closedAt} IS NULL AND ${t.blockedReason} IS NULL)
-    OR (${t.state} = 'blocked' AND ${t.closedAt} >= ${t.createdAt} AND ${t.blockedReason} IN ('approval_revoked', 'proposal_expired'))) IS TRUE`),
+    OR (${t.state} = 'blocked' AND ${t.closedAt} >= ${t.createdAt} AND ${t.blockedReason} IN ('approval_revoked', 'proposal_expired', 'restart_not_sent'))) IS TRUE`),
 ]);
 
 export const operationsExecutionSchedules = domain.table('operations_execution_schedules', {

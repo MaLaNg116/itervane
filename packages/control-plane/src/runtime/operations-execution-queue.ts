@@ -50,7 +50,7 @@ export async function replaceOperationsExecutionWakeup(tx: Transaction, database
 
 // The caller has closed the parent reservation while holding the environment row lock.
 export async function closeUndispatchedOperationsExecution(tx: Transaction, database: Database, executionId: string,
-  reason: 'approval_revoked' | 'proposal_expired', actorId: string, workerId?: string) {
+  reason: NonNullable<typeof operationsExecutions.$inferSelect['blockedReason']>, actorId: string, workerId?: string) {
   const [schedule] = await tx.select().from(operationsExecutionSchedules)
     .where(eq(operationsExecutionSchedules.executionId, executionId)).for('update');
   if (!schedule) return;
@@ -58,7 +58,8 @@ export async function closeUndispatchedOperationsExecution(tx: Transaction, data
   if (!task || (task.state !== 'queued' && task.state !== 'running')) throw new DomainError('unsupported_state');
   if (schedule.wakeupJobId) await database.boss.cancel(operationsExecutionQueue, schedule.wakeupJobId, { db: fromDrizzle(tx, sql) });
   const revoked = reason === 'approval_revoked';
-  const detail = revoked ? 'operations_execution_revoked' : 'operations_execution_expired';
+  const detail = revoked ? 'operations_execution_revoked'
+    : reason === 'proposal_expired' ? 'operations_execution_expired' : 'operations_restart_not_sent';
   await tx.update(runRuntime).set({ reason: detail }).where(eq(runRuntime.runId, schedule.runId));
   await appendEvent(tx, task, revoked ? 'task.cancelled' : 'task.needs_human', revoked ? 'cancelled' : 'needs_human', {
     actorId, reason: detail, ...(workerId ? { workerId } : {}),

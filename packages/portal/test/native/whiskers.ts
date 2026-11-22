@@ -4,6 +4,7 @@ import { chromium, expect, type Browser } from '@playwright/test';
 import { localeSchema, type Check } from '@itervane/contracts';
 import { WhiskersObservationClient, WhiskersObservationError } from '../../../control-plane/src/runtime/whiskers-observation.js';
 import { WhiskersRestartClient, WhiskersRestartError } from '../../../control-plane/src/runtime/whiskers-restart.js';
+import { loadWhiskersWriter, WhiskersWriterInstallationRejected } from '../../../control-plane/src/runtime/whiskers-writer-installation.js';
 import { confirmationId, toolText, WhiskersProbeClient, whiskersOrigin, whiskersVersion } from '../../../verification/src/native/whiskers.js';
 import { executeProbe, report } from '../../../verification/src/report.js';
 import { eligibleHost, operatorEmail, WhiskersFixture } from './whiskers-fixture.js';
@@ -14,6 +15,7 @@ const messages = {
   observe: ['The authenticated MCP observation matched the running fixture.', '已认证的 MCP 观察与实际样例一致。'],
   'operator-policy': ['The native Operator could open Approvals. Guardrail management required an Admin.', '原生 Operator 可进入审批界面，护栏配置仅对管理员开放。'],
   'scoped-writer': ['The restart adapter rejected the broader Write key before requesting an action.', '重启适配器在申请操作前拒绝了超出单工具范围的写凭证。'],
+  'sealed-writer': ['The restart adapter loaded the actual mounted Confirm policy and roles with the matching Write credential.', '重启适配器从实际挂载的 Confirm 策略和角色文件加载匹配的写凭证。'],
   pending: ['The first restart request entered native approval and left the actual fixture unchanged.', '首次重启请求进入原生审批，样例运行状态未变化。'],
   approved: ['The browser approver confirmed the exact request. The fixture still awaited execution.', '浏览器身份确认了原请求，样例仍等待执行。'],
   binding: ['Changing either the caller or the target required a separate native approval.', '更换调用身份或目标均要求新的原生审批。'],
@@ -111,7 +113,6 @@ async function run() {
     record('observe', ' Whiskers ' + whiskersVersion + '.');
 
     const target = { origin: whiskersOrigin, serverId: 'local', containerId: a.id };
-    const restart = new WhiskersRestartClient(target, key);
     let allowedApproval: string | undefined;
     const authorizeRestart: Parameters<WhiskersRestartClient['requestApproval']>[0] = async (_phase, attempt, target) => {
       requireProof(target.origin === whiskersOrigin && target.serverId === 'local' && target.containerId === a.id
@@ -121,6 +122,14 @@ async function run() {
     await expect(new WhiskersRestartClient(target, broad).requestApproval(authorizeRestart)).rejects.toMatchObject({ reason: 'binding' });
     requireProof(await unchanged());
     record('scoped-writer');
+
+    step = 'sealed-writer';
+    const installedFiles = await fixture.restartInstallationFiles(key);
+    const installed = await loadWhiskersWriter(installedFiles, key);
+    await expect(loadWhiskersWriter(installedFiles, alternateKey)).rejects.toBeInstanceOf(WhiskersWriterInstallationRejected);
+    const restart = installed.connect(target);
+    requireProof(await unchanged());
+    record('sealed-writer');
 
     step = 'pending-confirmation';
     const request = await restart.requestApproval(authorizeRestart);
