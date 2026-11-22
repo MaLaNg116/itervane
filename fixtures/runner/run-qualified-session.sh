@@ -165,6 +165,12 @@ if [[ "$scenario" == protected-release* ]]; then
     --outfile=.reports/p0/qualified-release-worker.mjs
   sudo -n install -m 0444 .reports/p0/qualified-release-worker.mjs "$shared/release-worker.mjs"
 fi
+if [[ "$scenario" == protected-release-operations ]]; then
+  pnpm exec esbuild packages/control-plane/src/entries/restart-worker.ts --bundle --platform=node --format=esm --target=node24 \
+    '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
+    --outfile=.reports/p0/qualified-restart-worker.mjs
+  sudo -n install -m 0444 .reports/p0/qualified-restart-worker.mjs "$shared/restart-worker.mjs"
+fi
 if [[ "$scenario" == protected-release-drift ]]; then
   sudo -n install -m 0444 fixtures/runner/release-drift-archive.py "$shared/release-tools/release-drift-archive.py"
 fi
