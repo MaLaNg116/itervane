@@ -3,8 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { test as base, expect, type Page } from '@playwright/test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { admissionDtoSchema, catalogDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema, formalReleaseDecisionResultSchema,
-  formalReleaseViewSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema, operationsObservationViewSchema, preauditDtoSchema, releaseDecisionInputSchema,
-  sourceInspectionDtoSchema, taskDtoSchema, translate, verificationViewSchema, type FormalReleaseCandidateDto, type TaskDto } from '@itervane/contracts';
+  formalReleaseViewSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema, operationsObservationViewSchema, operationsProposalViewSchema,
+  preauditDtoSchema, releaseDecisionInputSchema, sourceInspectionDtoSchema, taskDtoSchema, translate, verificationViewSchema,
+  type FormalReleaseCandidateDto, type Locale, type TaskDto } from '@itervane/contracts';
 import { browserStack } from './stack.js';
 
 type Stack = Awaited<ReturnType<typeof browserStack>>;
@@ -499,7 +500,7 @@ async function expectMotionCsp(page: Page) {
   expect((await motionProbe(page)).csp).toEqual([]);
 }
 
-test('diagnoses the visible release with bilingual evidence, scoped retry and live project permissions', async ({ page, stack }) => {
+test('diagnoses the visible release with bilingual evidence, scoped retry and live project permissions', async ({ browser, page, stack }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await observeMotion(page, stack.origin);
   const project = await seedProject(stack, true);
@@ -537,10 +538,6 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
     const response = await route.fetch();
     return response.ok() ? route.fulfill({ json: { ...delivery, state: 'succeeded' } }) : route.fulfill({ response });
   });
-  await page.route(diagnosticPath, async route => {
-    const response = await route.fetch();
-    return response.ok() ? route.fulfill({ json: activeTask() }) : route.fulfill({ response });
-  });
   await page.route(`${deliveryPath}/release`, route => {
     const locale = replyLocale(route.request().headers());
     return route.fulfill({ json: formalReleaseViewSchema.parse({
@@ -558,10 +555,9 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
   await page.route(`${deliveryPath}/operations-option`, route => route.fulfill({ json: {
     option: { projectId: project.id, environmentId: target.environmentId, releaseOperationId: availableOperation, diagnosis: true },
   } }));
-  await page.route(`${diagnosticPath}/operations`, route => {
-    const locale = replyLocale(route.request().headers());
+  const diagnosticView = (locale: Locale) => {
     const current = activeTask();
-    return route.fulfill({ json: operationsObservationViewSchema.parse({
+    return operationsObservationViewSchema.parse({
       version: 1, taskId: current.id, runId: current.runId, taskVersion: current.version, state: current.state,
       applicationId: target.applicationId, environmentId: target.environmentId, releaseOperationId,
       observation: observed ? { state: 'exited', stateLabel: translate(locale, 'operations.container.exited'), observedAt, receiptSha256 } : null,
@@ -569,8 +565,8 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
         receiptSha256: diagnosisDigest, previousReleaseOperationId: null,
         hypotheses: [{ code: 'application_error', evidenceIds: [logsEvidenceId],
           message: locale === 'zh-CN' ? '采样日志包含应用错误。' : 'The sampled logs contain application errors.' }],
-        recommendation: { code: 'investigate_code', evidenceIds: [logsEvidenceId, releaseEvidenceId],
-          message: locale === 'zh-CN' ? '调查相关代码。' : 'Investigate the associated code.' },
+        recommendation: { code: 'review_restart', evidenceIds: [containerEvidenceId, releaseEvidenceId],
+          message: locale === 'zh-CN' ? '评估是否重启已发布容器。' : 'Review restarting the published container.' },
         facts: [
           { section: 'container', evidenceId: containerEvidenceId, proofSha256: hash('normalized state'), result: { state: 'exited', observedAt } },
           { section: 'release', evidenceId: releaseEvidenceId, proofSha256: hash('verified release history'),
@@ -584,8 +580,47 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
       } } : {}),
       locale, message: translate(locale, observed ? 'task.operations_observed' : 'state.queued'), reason: observed ? 'operations_diagnosed' : null,
       reasonMessage: observed ? translate(locale, 'reason.operations_diagnosed') : null,
-    }) });
+    });
+  };
+  const proposalId = randomUUID();
+  const fingerprint = hash('operations action proposal');
+  const decisionUrl = `${stack.origin}/v1/operations/proposals/${proposalId}/decisions`;
+  const proposalSubmissions: unknown[] = [];
+  const decisionSubmissions: unknown[] = [];
+  const ownerActorId = randomUUID();
+  let maintainerCanWrite = true;
+  let prepared = false;
+  let decidedAt: string | undefined;
+  const proposalView = (locale: Locale, owner: boolean) => operationsProposalViewSchema.parse({
+    taskId: diagnostic.id, runId: persisted.runId, taskVersion: activeTask().version, locale,
+    draft: observed && !prepared && (owner || maintainerCanWrite) ? { diagnosisSha256: diagnosisDigest, kind: 'restart' } : null,
+    proposal: prepared ? {
+      id: proposalId, fingerprint, kind: 'restart', status: decidedAt ? 'confirmed' : 'pending',
+      message: translate(locale, decidedAt ? 'operations.proposal_confirmed' : 'operations.proposal_pending'),
+      validUntil: new Date(Date.parse(observedAt) + 120_000).toISOString(),
+      current: { operationId: releaseOperationId, manifestDigest: candidate.manifest.image.manifestDigest },
+      restore: null, actions: owner ? decidedAt ? ['revoke'] : ['confirm', 'reject'] : [],
+      decisions: decidedAt ? [{ version: 1, action: 'confirm', actorId: ownerActorId, selfConfirmed: false, decidedAt }] : [],
+    } : null,
   });
+  const setDiagnosticRoutes = async (sessionPage: Page, owner: boolean) => {
+    await sessionPage.route(diagnosticPath, async route => {
+      const response = await route.fetch();
+      return response.ok() ? route.fulfill({ json: activeTask() }) : route.fulfill({ response });
+    });
+    await sessionPage.route(`${diagnosticPath}/operations`, route =>
+      route.fulfill({ json: diagnosticView(replyLocale(route.request().headers())) }));
+    await sessionPage.route(`${diagnosticPath}/operations-proposal`, route => {
+      const request = route.request();
+      if (request.method() === 'POST') {
+        if (!owner && !maintainerCanWrite) return route.fulfill({ status: 403 });
+        proposalSubmissions.push(request.postDataJSON());
+        prepared = true;
+      }
+      return route.fulfill({ json: proposalView(replyLocale(request.headers()), owner) });
+    });
+  };
+  await setDiagnosticRoutes(page, false);
   const submissions: unknown[] = [];
   const late = Promise.withResolvers<void>();
   const startUrl = `${stack.origin}/v1/operations/diagnoses`;
@@ -622,8 +657,8 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
   await expect(panel.locator('time')).toHaveAttribute('datetime', observedAt);
   const diagnosis = panel.getByTestId('operations-diagnosis');
   await expect(panel.getByRole('heading', { name: '运维诊断' })).toBeVisible();
-  await expect(diagnosis.getByText('调查相关代码。', { exact: true })).toBeVisible();
-  await expect(diagnosis.getByRole('list', { name: '引用证据' }).first().getByRole('listitem')).toHaveText(['日志信号', '已核验发布']);
+  await expect(diagnosis.getByText('评估是否重启已发布容器。', { exact: true })).toBeVisible();
+  await expect(diagnosis.getByRole('list', { name: '引用证据' }).first().getByRole('listitem')).toHaveText(['容器状态', '已核验发布']);
   await expect(diagnosis.getByText(logDigest, { exact: true })).toBeHidden();
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const beforeDisclosure = await motionProbe(page);
@@ -635,7 +670,47 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
   expect((await motionProbe(page)).disclosures).toBe(beforeDisclosure.disclosures);
   await language(page, 'en');
   await expect(panel.getByText('Exited', { exact: true })).toBeVisible();
-  await expect(diagnosis.getByText('Investigate the associated code.', { exact: true })).toBeVisible();
+  await expect(diagnosis.getByText('Review restarting the published container.', { exact: true })).toBeVisible();
+
+  const proposal = panel.getByTestId('operations-proposal');
+  await proposal.getByRole('button', { name: 'Prepare restart proposal', exact: true }).click();
+  await expect(proposal.getByRole('status')).toHaveText(translate('en', 'operations.proposal_pending'));
+  await expect(proposal.getByRole('button', { name: 'Approve action', exact: true })).toHaveCount(0);
+  expect(proposalSubmissions).toEqual([{ diagnosisSha256: diagnosisDigest }]);
+  const diagnosticPage = `${stack.origin}/#/tasks/${diagnostic.id}`;
+  const ownerPage = await browser.newPage({ reducedMotion: 'reduce' });
+  try {
+    await setDiagnosticRoutes(ownerPage, true);
+    await ownerPage.route(decisionUrl, route => {
+      const input = releaseDecisionInputSchema.parse(route.request().postDataJSON());
+      decisionSubmissions.push(input);
+      if (decisionSubmissions.length === 1) return route.abort('failed');
+      decidedAt = new Date().toISOString();
+      return route.fulfill({ json: proposalView(replyLocale(route.request().headers()), true) });
+    });
+    await login(ownerPage, stack, 'owner', 'zh-CN');
+    await expect(ownerPage.getByRole('link', { name: project.title, exact: true })).toBeVisible();
+    await ownerPage.goto(diagnosticPage);
+    const ownerProposal = ownerPage.getByTestId('operations-proposal');
+    await ownerProposal.getByRole('button', { name: '批准处置', exact: true }).click();
+    const decision = ownerPage.getByRole('dialog', { name: '核对此处置决定' });
+    await expect(decision.getByText(candidate.manifest.image.manifestDigest, { exact: true })).toBeVisible();
+    const confirm = decision.getByRole('button', { name: '批准处置', exact: true });
+    await confirm.click();
+    await expect(decision.getByRole('alert')).toBeVisible();
+    await confirm.click();
+    await expect(decision).toHaveCount(0);
+    expect(decisionSubmissions).toEqual(Array.from({ length: 2 }, () => ({
+      action: 'confirm', fingerprint, expectedVersion: 0, idempotencyKey: expect.any(String),
+    })));
+    expect(decisionSubmissions[1]).toEqual(decisionSubmissions[0]);
+    await expect(ownerProposal.getByRole('list', { name: '决定历史' })).toContainText('已批准');
+    await language(ownerPage, 'en');
+    await expect(ownerProposal.getByRole('status')).toHaveText(translate('en', 'operations.proposal_confirmed'));
+    await expect(ownerProposal.getByRole('list', { name: 'Decision history' })).toContainText('Approved');
+  } finally {
+    await ownerPage.close();
+  }
 
   await page.goto(sourcePage);
   try {
@@ -649,13 +724,16 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
     await expect(panel).toHaveCount(0);
   } finally { late.resolve(); }
   await stack.database.admin.query("UPDATE itervane.project_members SET role='viewer' WHERE project_id=$1", [project.id]);
+  maintainerCanWrite = false;
   const access = page.waitForResponse(`${stack.origin}/v1/projects/${project.id}/access`);
   await page.goto(sourcePage);
   expect(await (await access).json()).toMatchObject({ canWrite: false });
   await expect(page.getByTestId('release-result')).toBeVisible();
   await expect(launch).toHaveCount(0);
-  await page.goto(`${stack.origin}/#/tasks/${diagnostic.id}`);
+  await page.goto(diagnosticPage);
   await expect(panel.getByText('Exited', { exact: true })).toBeVisible();
+  await expect(proposal.getByRole('status')).toHaveText(translate('en', 'operations.proposal_confirmed'));
+  await expect(proposal.getByRole('button', { name: 'Withdraw approval', exact: true })).toHaveCount(0);
   await stack.database.admin.query('DELETE FROM itervane.project_members WHERE project_id=$1', [project.id]);
   await expect(panel).toHaveCount(0);
   await expect(page.getByText(receiptSha256, { exact: true })).toHaveCount(0);
