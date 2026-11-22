@@ -23,6 +23,9 @@ import { FormalReleaseService } from './service/formal-release.js';
 import { VerificationViewService } from './service/verification-view.js';
 import { PreauditService, RuleService } from './service/preaudits.js';
 import { OperationsObservationViewService } from './service/operations-observation-view.js';
+import { OperationsDecisionService } from './service/operations-decisions.js';
+import { OperationsProposalViewService } from './service/operations-proposal-view.js';
+import { OperationsProposalService } from './service/operations-proposals.js';
 
 declare module 'fastify' {
   interface FastifyRequest { verifiedIdentity: VerifiedIdentity | null; locale: Locale }
@@ -32,6 +35,7 @@ declare module 'fastify' {
 const projectParam = z.object({ projectId: idSchema }).strict();
 const taskParam = z.object({ taskId: idSchema }).strict();
 const candidateParam = z.strictObject({ candidateId: idSchema });
+const proposalParam = z.strictObject({ proposalId: idSchema });
 const identity = (request: FastifyRequest) => {
   if (!request.verifiedIdentity) throw new AuthenticationError();
   return request.verifiedIdentity;
@@ -177,6 +181,25 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
     app.get('/v1/tasks/:taskId/operations-option', async request => {
       const { taskId } = parseInput(taskParam, request.params);
       return operationsLaunchViewSchema.parse(await operations.getLaunchOption(identity(request), taskId, operationsApi));
+    });
+  }
+  if (operationsApi?.diagnosisProviderSha256) {
+    const proposals = new OperationsProposalService(database, operationsApi);
+    const decisions = new OperationsDecisionService(database, operationsApi, config.portalClientId);
+    const views = new OperationsProposalViewService(database, operationsApi, config.portalClientId);
+    app.get('/v1/tasks/:taskId/operations-proposal', async request => {
+      const { taskId } = parseInput(taskParam, request.params);
+      return views.get(identity(request), taskId, request.locale);
+    });
+    app.post('/v1/tasks/:taskId/operations-proposal', async (request, reply) => {
+      const { taskId } = parseInput(taskParam, request.params);
+      const { replayed } = await proposals.freeze(identity(request), taskId, request.body);
+      return reply.code(replayed ? 200 : 201).send(await views.get(identity(request), taskId, request.locale));
+    });
+    app.post('/v1/operations/proposals/:proposalId/decisions', async request => {
+      const { proposalId } = parseInput(proposalParam, request.params);
+      const { taskId } = await decisions.decide(identity(request), proposalId, request.body);
+      return views.get(identity(request), taskId, request.locale);
     });
   }
   app.get('/v1/projects/:projectId/tasks', async request => {

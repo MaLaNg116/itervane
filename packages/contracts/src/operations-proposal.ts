@@ -1,8 +1,10 @@
 import { z } from 'zod';
+import { localeSchema } from './i18n.js';
 import { sha256Schema } from './inspection.js';
 import { operationsRequestBindingSchema } from './operations.js';
 import { idSchema } from './primitives.js';
 import { ociDigestSchema } from './qualified-standard-image.js';
+import { releaseDecisionDtoSchema, releaseDecisionSchema } from './release.js';
 
 const rollbackRelease = z.strictObject({
   operationId: idSchema, manifestDigest: ociDigestSchema, configDigest: ociDigestSchema, proofSha256: sha256Schema,
@@ -26,3 +28,21 @@ export const operationsProposalSchema = z.strictObject({
 'Rollback requires a different verified release');
 
 export type OperationsProposal = z.infer<typeof operationsProposalSchema>;
+
+const proposalStatus = z.enum(['pending', 'confirmed', 'rejected', 'revoked', 'expired', 'stale']);
+const operationKind = z.enum(['restart', 'rollback']);
+const releaseSummary = z.strictObject({ operationId: idSchema, manifestDigest: ociDigestSchema });
+const shownProposal = z.strictObject({
+  id: idSchema, fingerprint: sha256Schema, status: proposalStatus, message: z.string().min(1).max(320),
+  kind: operationKind, validUntil: operationsProposalSchema.shape.validUntil,
+  current: releaseSummary, restore: releaseSummary.nullable(),
+  decisions: z.array(releaseDecisionDtoSchema).max(2), actions: z.array(releaseDecisionSchema).max(2),
+}).refine(proposal => (proposal.kind === 'rollback') === (proposal.restore !== null));
+
+export const operationsProposalViewSchema = z.strictObject({
+  taskId: idSchema, runId: idSchema, taskVersion: z.int().positive(), locale: localeSchema,
+  draft: z.strictObject({ diagnosisSha256: sha256Schema, kind: operationKind }).nullable(),
+  proposal: shownProposal.nullable(),
+}).refine(view => !(view.draft && view.proposal));
+
+export type OperationsProposalView = z.infer<typeof operationsProposalViewSchema>;

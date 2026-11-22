@@ -37,7 +37,7 @@ export class OperationsDecisionService {
       if (duplicate) {
         if (duplicate.action !== input.action || duplicate.version !== input.expectedVersion + 1) throw new DomainError('idempotency_conflict');
         if (duplicate.grantId !== actor.workspaceGrantId) throw new DomainError('version_conflict');
-        return { decision: duplicate, replayed: true };
+        return { taskId: task.id, decision: duplicate, replayed: true };
       }
       const last = history.at(-1);
       const version = last?.version ?? 0;
@@ -60,7 +60,7 @@ export class OperationsDecisionService {
         actorId: actor.principalId, grantId: actor.workspaceGrantId, idempotencyKey: input.idempotencyKey, action: input.action,
         selfConfirmed: input.action === 'confirm' && actor.principalId === proposal.proposedBy, decidedAt }).returning();
       if (!decision) throw new DomainError('unavailable');
-      return { decision, replayed: false };
+      return { taskId: task.id, decision, replayed: false };
     });
   }
 }

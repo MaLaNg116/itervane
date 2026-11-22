@@ -10,7 +10,8 @@ import type { AgentEvidence } from '@itervane/agent';
 import { createFormalOperations, createFormalVerification } from '@itervane/agent';
 import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseTargetSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
-  formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema, taskDtoSchema, translate, verificationViewSchema,
+  formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
+  operationsProposalViewSchema, taskDtoSchema, translate, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type OperationsDiagnosisObservation, type OperationsDiagnosisSection,
   type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
@@ -2866,6 +2867,61 @@ it('serializes competing owner decisions for a proposal submitted by a project m
   expect(before?.actorId).not.toBe(principalId);
   await expect(decisions.decide(owner, proposal.id, { ...input, expectedVersion: 1, action: 'confirm', idempotencyKey: randomUUID() }))
     .rejects.toMatchObject({ code: 'unsupported_state' });
+});
+
+it('shares authorized operations proposals across HTTP and MCP and records decisions through the portal identity', async () => {
+  const { fixture, installed, diagnosis, task } = await settleProposalDiagnosis('restart');
+  const { environmentId, enrollmentSha256, diagnosisProviderSha256 } = installed;
+  const publicUrl = 'http://127.0.0.1:4330';
+  const app = createApi(database.storage, { ...issuer.config, portalClientId: operationsPortal, publicUrl, operationsApi: {
+    environmentId, enrollmentSha256, diagnosisProviderSha256,
+  } }, { logger: false });
+  const client = new Client({ name: 'operations-proposal-test', version: '0.0.0' });
+  try {
+    const path = `/v1/tasks/${task.id}/operations-proposal`;
+    const normalHeaders = { authorization: `Bearer ${await issuer.token('owner')}`, 'accept-language': 'en' };
+    const portalHeaders = { authorization: `Bearer ${await issuer.token('owner', { azp: operationsPortal })}`, 'accept-language': 'zh-CN' };
+    const get = async (headers = normalHeaders) => operationsProposalViewSchema.parse((await app.inject({ url: path, headers })).json());
+    const draft = await get();
+    expect(draft.draft).toEqual({ diagnosisSha256: diagnosis.sha256, kind: 'restart' });
+    const endpoint = await app.listen({ host: '127.0.0.1', port: 0 });
+    const mcpToken = await issuer.token('owner', { aud: `${publicUrl}/mcp`, scope: 'itervane:read itervane:write' });
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', endpoint), {
+      requestInit: { headers: { authorization: `Bearer ${mcpToken}`, 'accept-language': 'en' } },
+    }));
+    const request = { name: 'request_operations_proposal', arguments: { taskId: task.id, diagnosisSha256: diagnosis.sha256 } };
+    const read = { name: 'get_operations_proposal', arguments: { taskId: task.id } };
+    const announced = (await client.listTools()).tools;
+    expect(announced.some(tool => /operations.*decision/.test(tool.name))).toBe(false);
+    expect(operationsProposalViewSchema.parse((await client.callTool(read)).structuredContent)).toEqual(draft);
+    const formed = operationsProposalViewSchema.parse((await client.callTool(request)).structuredContent);
+    expect(formed).toEqual(await get());
+    const proposal = formed.proposal;
+    if (!proposal) throw new Error('Expected a projected proposal');
+    expect(proposal).toMatchObject({ status: 'pending', actions: [], current: { operationId: fixture.operationId } });
+    for (const privateValue of [fixture.runtime.containerId, fixture.registration.whiskers.origin, operationsFixtureKey]) {
+      expect(JSON.stringify(formed)).not.toContain(privateValue);
+    }
+    expect((await app.inject({ method: 'POST', url: path, headers: portalHeaders, payload: { diagnosisSha256: diagnosis.sha256 } })).statusCode).toBe(200);
+    expect((await get(portalHeaders)).proposal).toMatchObject({ actions: ['confirm', 'reject'], message: '此处置正在等待人工审批。' });
+
+    const url = `/v1/operations/proposals/${proposal.id}/decisions`;
+    const payload = { action: 'confirm', fingerprint: proposal.fingerprint, expectedVersion: 0, idempotencyKey: randomUUID() };
+    expect((await app.inject({ method: 'POST', url, headers: normalHeaders, payload })).statusCode).toBe(403);
+    expect((await app.inject({ method: 'POST', url, headers: portalHeaders, payload })).json()).toMatchObject({
+      proposal: { status: 'confirmed', actions: ['revoke'], decisions: [{ action: 'confirm', selfConfirmed: true }] },
+    });
+    expect(operationsProposalViewSchema.parse((await client.callTool(read)).structuredContent)).toEqual(await get());
+    await registerOperationsTarget(database.storage, { ...fixture.registration,
+      whiskers: { ...fixture.registration.whiskers, serverId: 'proposal-target-moved' } });
+    expect((await get(portalHeaders)).proposal).toMatchObject({ status: 'stale', actions: ['revoke'] });
+    expect((await app.inject({ method: 'POST', url, headers: portalHeaders, payload: {
+      ...payload, action: 'revoke', expectedVersion: 1, idempotencyKey: randomUUID(),
+    } })).json()).toMatchObject({ proposal: { status: 'revoked', actions: [] } });
+  } finally {
+    await client.close();
+    await app.close();
+  }
 });
 
 it.each(['replaced', 'proposer_revoked', 'publishing', 'expired'] as const)('blocks human confirmation when the proposal is %s', async mode => {
