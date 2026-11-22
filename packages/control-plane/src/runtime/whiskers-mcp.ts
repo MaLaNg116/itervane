@@ -10,6 +10,8 @@ type Invoke = (name: Tool, options?: WhiskersReadOptions) => Promise<CallToolRes
 
 const responseLimit = 64 * 1024;
 const toolTextLimit = 8 * 1024;
+const myPermissionsUri = 'whiskers://me/permissions';
+const restartPermission = /^# My Whiskers permissions\r?\n- Caller: API key "[^"\r\n]{1,128}"\r?\n- Scope: explicit tool list\r?\n- [^\r\n]{1,256}\r?\n\r?\n## Tools I may call \(1\)\r?\n\r?\n- `restart_container`\r?\n$/;
 
 export class WhiskersMcpError extends Error {
   constructor(readonly reason: WhiskersMcpFailure) { super('whiskers_mcp_' + reason); }
@@ -72,6 +74,15 @@ export async function withWhiskersMcp<T>(binding: WhiskersContainerBinding, key:
     await client.connect(transport, { signal: active }).catch(protocolFailure);
     const server = client.getServerVersion();
     if (server?.name !== 'whiskers' || server.version !== '0.15.0') throw new WhiskersMcpError('binding');
+    if (purpose === 'restart') {
+      // The catalog describes the server. This native resource describes the caller's key.
+      const { contents } = await client.readResource({ uri: myPermissionsUri }, { signal: active }).catch(protocolFailure);
+      const scope = contents[0];
+      if (contents.length !== 1 || scope?.uri !== myPermissionsUri || !('text' in scope)
+          || Buffer.byteLength(scope.text) > toolTextLimit || !restartPermission.test(scope.text)) {
+        throw new WhiskersMcpError('binding');
+      }
+    }
     requireTime();
     return await run(async (name, options) => {
       requireTime();
