@@ -568,6 +568,20 @@ export const operationsProposals = domain.table('operations_proposals', {
     AND ${t.document}->>'targetProofSha256' ~ '^[a-f0-9]{64}$' AND octet_length(${t.document}::text) <= 8192) IS TRUE`),
 ]);
 
+export const operationsDecisions = domain.table('operations_decisions', {
+  proposalId: uuid('proposal_id').notNull().references(() => operationsProposals.id),
+  version: integer('version').notNull(), actorId: uuid('actor_id').notNull().references(() => principals.id),
+  grantId: uuid('grant_id').notNull(), idempotencyKey: uuid('idempotency_key').notNull(),
+  action: text('action').$type<ReleaseDecision>().notNull(), selfConfirmed: boolean('self_confirmed').notNull(),
+  decidedAt: timestamp('decided_at', { withTimezone: true }).notNull(),
+}, t => [
+  primaryKey({ columns: [t.proposalId, t.version] }),
+  unique('operations_decision_request').on(t.proposalId, t.actorId, t.idempotencyKey),
+  check('operations_decision_action_version', sql`(${t.version} = 1 AND ${t.action} IN ('confirm', 'reject'))
+    OR (${t.version} = 2 AND ${t.action} = 'revoke')`),
+  check('operations_decision_self_confirmed', sql`NOT ${t.selfConfirmed} OR ${t.action} = 'confirm'`),
+]);
+
 export const formalReleaseSteps = domain.table('formal_release_steps', {
   operationId: uuid('operation_id').notNull().references(() => releaseOperations.id),
   kind: text('kind').$type<'archive' | 'registry' | 'komodo_config' | 'komodo_dispatch'>().notNull(),

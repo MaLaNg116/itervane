@@ -13,7 +13,7 @@ import { applications, environments, formalReleaseTargets, formalVerificationInp
   releaseDecisions, releaseOperations, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { appendEvent, type TaskRow } from '../runtime/authority.js';
 import { blockQueuedRelease, enqueueReleaseOperation } from '../runtime/release-queue.js';
-import { requireActor, requireProject, requireProjectAccess, requireStoredActor, type Actor, type Transaction } from './access.js';
+import { isHumanWorkspaceOwner, requireActor, requireProject, requireProjectAccess, requireStoredActor, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 import { readFormalReleaseOperationResult } from './release-result.js';
 import { readReleaseTarget } from './release-targets.js';
@@ -180,11 +180,6 @@ const targetDisplay = {
 export class FormalReleaseService {
   constructor(private readonly database: Database, private readonly humanClientId?: string) {}
 
-  private canDecide(identity: VerifiedIdentity, actor: Actor, workspaceId: string): actor is Actor & { workspaceGrantId: string } {
-    return !!this.humanClientId && this.humanClientId !== 'signed-access-token' && identity.clientId === this.humanClientId
-      && actor.workspaceId === workspaceId && actor.workspaceGrantId !== null;
-  }
-
   async freeze(identity: VerifiedIdentity, taskId: string, raw: unknown, locale: Locale) {
     parseInput(idSchema, taskId);
     const { environmentId, expectedVersion } = parseInput(freezeFormalReleaseSchema, raw);
@@ -266,7 +261,7 @@ export class FormalReleaseService {
         .where(and(eq(environments.id, target.environmentId), eq(environments.projectId, task.projectId),
           eq(applications.id, target.applicationId))) : [];
       const mayPrepare = (role === 'owner' || role === 'maintainer') && canPrepare(task, run);
-      const mayDecide = assessment !== null && this.canDecide(identity, actor, project.workspaceId);
+      const mayDecide = assessment !== null && isHumanWorkspaceOwner(identity, actor, project.workspaceId, this.humanClientId);
       const requesterAuthorized = (mayPrepare || (mayDecide && candidate?.status === 'pending')) && await requesterCanWrite(tx, task);
       const actions: ReleaseDecision[] = [];
       if (mayDecide && candidate?.status === 'pending') {
@@ -311,7 +306,7 @@ export class FormalReleaseService {
       const [row] = await tx.select().from(releaseCandidates).where(eq(releaseCandidates.id, candidateId));
       if (row?.document.origin !== 'formal_verification') throw new DomainError('not_found');
       const { actor, task, project } = await visibleTask(tx, identity, row.taskId, true);
-      if (!this.canDecide(identity, actor, project.workspaceId)) throw new DomainError('forbidden');
+      if (!isHumanWorkspaceOwner(identity, actor, project.workspaceId, this.humanClientId)) throw new DomainError('forbidden');
       if (row.fingerprint !== input.fingerprint) throw new DomainError('version_conflict');
       const manifest = readReleaseManifest(row);
       const assessment = await assessCandidate(tx, task, row, manifest);

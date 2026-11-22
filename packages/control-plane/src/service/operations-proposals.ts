@@ -6,7 +6,7 @@ import type { VerifiedIdentity } from '../auth/identity.js';
 import type { OperationsEnrollmentScope } from '../config.js';
 import type { Database } from '../persistence/database.js';
 import { operationsProposals, tasks } from '../persistence/schema.js';
-import { requireActor, requireProjectAccess, requireStoredActor } from './access.js';
+import { requireActor, requireProjectAccess, requireStoredActor, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 import { readOperationsTaskRecord } from './operations-records.js';
 import { freezeOperationsRequest } from './operations-requests.js';
@@ -25,6 +25,42 @@ export function readOperationsProposal(row: Row) {
   return document;
 }
 
+export async function readOperationsProposalBasis(tx: Transaction, task: typeof tasks.$inferSelect,
+  diagnosisSha256: string, installation: OperationsEnrollmentScope) {
+  const { run, request, observation, diagnosis } = await readOperationsTaskRecord(tx, task);
+  if (!diagnosis || !observation) throw new DomainError('unsupported_state');
+  if (diagnosis.sha256 !== diagnosisSha256) throw new DomainError('version_conflict');
+  const { environmentId, enrollmentSha256 } = request.document;
+  if (environmentId !== installation.environmentId || enrollmentSha256 !== installation.enrollmentSha256) {
+    throw new DomainError('unavailable');
+  }
+  const { recommendation, previousReleaseOperationId } = diagnosis.receipt.result;
+  const { state, observedAt } = observation.receipt.observation;
+  if ((recommendation.code !== 'review_restart' && recommendation.code !== 'review_rollback')
+      || (state !== 'exited' && state !== 'dead')) throw new DomainError('unsupported_state');
+
+  const requester = await requireStoredActor(tx, task.requestedBy);
+  const target = await readOperationsObservationTarget(tx, requester, request.document, { includePrevious: recommendation.code === 'review_rollback' });
+  if (freezeOperationsRequest(target).sha256 !== request.sha256) throw new DomainError('version_conflict');
+  let action: OperationsProposal['action'] = { kind: 'restart' };
+  if (recommendation.code === 'review_rollback') {
+    const release = diagnosis.facts.find(({ data }) => data.section === 'release')?.data;
+    const priorFact = release?.section === 'release' ? release.result.previous : undefined;
+    const previous = target.previous;
+    if (!previous || !priorFact || previous.releaseOperationId !== previousReleaseOperationId
+        || previous.releaseOperationId !== priorFact.operationId || previous.manifestDigest !== priorFact.manifestDigest
+        || previous.verifiedAt !== priorFact.verifiedAt) throw new DomainError('version_conflict');
+    action = { kind: 'rollback', restore: { operationId: previous.releaseOperationId, manifestDigest: previous.manifestDigest,
+      configDigest: previous.configDigest, proofSha256: previous.proofSha256 } };
+  }
+  // The database timestamp anchors the window to the diagnosis, including across Worker clocks or request retries.
+  const validUntil = new Date(diagnosis.recordedAt.getTime() + target.approvalTtlSeconds * 1_000);
+  return { run, environmentId, validUntil, document: {
+    version: 1 as const, diagnosis: { taskId: task.id, runId: run.id, sha256: diagnosis.sha256, observedAt },
+    target: request.document, targetProofSha256: target.proofSha256, action, validUntil: validUntil.toISOString(),
+  } };
+}
+
 export class OperationsProposalService {
   constructor(private readonly database: Database, private readonly installation: OperationsEnrollmentScope) {}
 
@@ -36,42 +72,13 @@ export class OperationsProposalService {
       const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId)).for('update');
       if (!task) throw new DomainError('not_found');
       const { grantId } = await requireProjectAccess(tx, actor, task.projectId, true);
-      const { run, request, observation, diagnosis } = await readOperationsTaskRecord(tx, task);
-      if (!diagnosis || !observation) throw new DomainError('unsupported_state');
-      if (diagnosis.sha256 !== diagnosisSha256) throw new DomainError('version_conflict');
-      const { environmentId, enrollmentSha256 } = request.document;
-      if (environmentId !== this.installation.environmentId || enrollmentSha256 !== this.installation.enrollmentSha256) {
-        throw new DomainError('unavailable');
-      }
-      const { recommendation, previousReleaseOperationId } = diagnosis.receipt.result;
-      const { state, observedAt } = observation.receipt.observation;
-      if ((recommendation.code !== 'review_restart' && recommendation.code !== 'review_rollback')
-          || (state !== 'exited' && state !== 'dead')) throw new DomainError('unsupported_state');
-
-      const requester = await requireStoredActor(tx, task.requestedBy);
-      const target = await readOperationsObservationTarget(tx, requester, request.document, { includePrevious: recommendation.code === 'review_rollback' });
-      if (freezeOperationsRequest(target).sha256 !== request.sha256) throw new DomainError('version_conflict');
-      let action: OperationsProposal['action'] = { kind: 'restart' };
-      if (recommendation.code === 'review_rollback') {
-        const release = diagnosis.facts.find(({ data }) => data.section === 'release')?.data;
-        const priorFact = release?.section === 'release' ? release.result.previous : undefined;
-        const previous = target.previous;
-        if (!previous || !priorFact || previous.releaseOperationId !== previousReleaseOperationId
-            || previous.releaseOperationId !== priorFact.operationId || previous.manifestDigest !== priorFact.manifestDigest
-            || previous.verifiedAt !== priorFact.verifiedAt) throw new DomainError('version_conflict');
-        action = { kind: 'rollback', restore: { operationId: previous.releaseOperationId, manifestDigest: previous.manifestDigest,
-          configDigest: previous.configDigest, proofSha256: previous.proofSha256 } };
-      }
-
+      const { run, environmentId, validUntil, document: basis } = await readOperationsProposalBasis(tx, task, diagnosisSha256, this.installation);
       const now = await databaseNow(tx);
       if (identity.expiresAt * 1_000 <= now.getTime()) throw new DomainError('unauthenticated');
-      // The database timestamp anchors the window to the diagnosis, including across Worker clocks or request retries.
-      const validUntil = new Date(diagnosis.recordedAt.getTime() + target.approvalTtlSeconds * 1_000);
       if (validUntil <= now) throw new DomainError('unsupported_state');
       const [existing] = await tx.select().from(operationsProposals).where(eq(operationsProposals.diagnosisRunId, run.id));
       const document = operationsProposalSchema.parse({
-        version: 1, diagnosis: { taskId, runId: run.id, sha256: diagnosis.sha256, observedAt },
-        target: request.document, targetProofSha256: target.proofSha256, action, validUntil: validUntil.toISOString(),
+        ...basis,
         proposedBy: existing?.proposedBy ?? actor.principalId, grantId: existing?.grantId ?? grantId,
       });
       const fingerprint = sha256(JSON.stringify(document));
