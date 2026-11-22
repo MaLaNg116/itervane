@@ -126,11 +126,11 @@ export const toolCalls = domain.table('tool_calls', {
 // 底层 saver 与领域事务分离：只有已发布的中间写入才参与恢复。
 export const checkpointWrites = domain.table('checkpoint_write_receipts', {
   runId: uuid('run_id').notNull().references(() => taskRuns.id),
-  graph: text('graph').$type<'preflight' | 'audit' | 'repair' | 'verify'>().notNull().default('preflight'),
+  graph: text('graph').$type<'preflight' | 'audit' | 'repair' | 'verify' | 'operations'>().notNull().default('preflight'),
   checkpointId: text('checkpoint_id').notNull(),
   writeHash: text('write_hash').notNull(),
 }, t => [primaryKey({ columns: [t.runId, t.graph, t.checkpointId, t.writeHash] }),
-  check('checkpoint_write_graph', sql`${t.graph} IN ('preflight', 'audit', 'repair', 'verify')`)]);
+  check('checkpoint_write_graph', sql`${t.graph} IN ('preflight', 'audit', 'repair', 'verify', 'operations')`)]);
 
 // A prepared intent is not a fetched snapshot or a completed scan. One immutable policy per logical run.
 export const inspectionPlans = domain.table('inspection_plans', {
@@ -515,6 +515,14 @@ export const operationsDiagnosisInputs = domain.table('operations_diagnosis_inpu
   runId: uuid('run_id').primaryKey().references(() => operationsRequests.runId),
   inputSha256: text('input_sha256').notNull(), providerSha256: text('provider_sha256').notNull(), createdAt: createdAt(),
 }, t => [check('operations_diagnosis_fingerprints', sql`${t.inputSha256} ~ '^[a-f0-9]{64}$' AND ${t.providerSha256} ~ '^[a-f0-9]{64}$'`)]);
+
+export const operationsDiagnosisRuntime = domain.table('operations_diagnosis_runtime', {
+  runId: uuid('run_id').primaryKey().references(() => operationsDiagnosisInputs.runId),
+  inputSha256: text('input_sha256').notNull(), checkpointId: text('checkpoint_id').notNull(),
+  checkpointStep: integer('checkpoint_step').notNull(), publishedFence: integer('published_fence').notNull(),
+  workerId: uuid('worker_id').notNull(),
+}, t => [check('operations_diagnosis_runtime_binding', sql`${t.inputSha256} ~ '^[a-f0-9]{64}$'
+  AND char_length(${t.checkpointId}) BETWEEN 1 AND 128 AND ${t.checkpointStep} >= -1 AND ${t.publishedFence} > 0`)]);
 
 export const operationsDiagnosisReads = domain.table('operations_diagnosis_reads', {
   runId: uuid('run_id').notNull().references(() => operationsDiagnosisInputs.runId),

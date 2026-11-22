@@ -295,6 +295,13 @@
       "when": 1795313922737,
       "tag": "0041_operations_diagnosis",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1795314788768,
+      "tag": "0042_operations_diagnosis_checkpoint",
+      "breakpoints": true
     }
   ]
 }
