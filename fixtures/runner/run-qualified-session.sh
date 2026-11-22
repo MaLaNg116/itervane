@@ -17,7 +17,7 @@ node=$(command -v node)
 case "$scenario" in
   regression) features=(--enable-repair --enable-verification) ;;
   standard-build) features=(--enable-verification --enable-standard-build --enable-standard-baseline) ;;
-  standard-oci|protected-release|protected-release-npm|protected-release-drift|protected-release-faults)
+  standard-oci|protected-release|protected-release-npm|protected-release-drift|protected-release-faults|protected-release-operations)
     artifacts="$directory/artifacts"
     sudo -n install -d -m 0700 -o "$runner" -g "$runner" "$artifacts"
     features=(--enable-repair --enable-verification --enable-standard-build --enable-standard-baseline --enable-standard-oci --artifact-store "$artifacts")

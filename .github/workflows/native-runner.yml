@@ -21,7 +21,10 @@ on:
       - 'fixtures/runner/**'
       - 'fixtures/komodo/**'
       - 'fixtures/ingress/**'
+      - 'fixtures/whiskers/**'
+      - 'packages/portal/test/native/whiskers*.ts'
       - 'packages/verification/src/native/komodo*.ts'
+      - 'packages/verification/src/native/whiskers.ts'
       - 'packages/verification/src/native/rollout-realm.ts'
       - 'packages/verification/src/native/npm-release-fixture.ts'
       - 'fixtures/standard-app/**'
@@ -48,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm, protected-release-drift, protected-release-faults]
+        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm, protected-release-drift, protected-release-faults, protected-release-operations]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -203,6 +206,12 @@ jobs:
           jq -e '.release.healthStatus == 200 and .release.httpMcpAgreement == true' "$report" >/dev/null
           if [[ "$NATIVE_SCENARIO" == protected-release-npm ]]; then
             jq -e '.release.repairCategory == "npm_dependency" and .dependency.advisoryId != null' "$report" >/dev/null
+          fi
+          if [[ "$NATIVE_SCENARIO" == protected-release-operations ]]; then
+            jq -e '.operations.releaseOperationId == .release.operationId and .operations.state == "running" and
+              .operations.receipts == 1 and .operations.reads == 1 and .operations.releaseDispatches == 1 and
+              .operations.matchedPublishedTarget and .operations.httpMcpAgreement and .operations.slotReleased and
+              .operations.whiskersCleanup' "$report" >/dev/null
           fi
       - name: Retain independent KVM evidence
         if: always()

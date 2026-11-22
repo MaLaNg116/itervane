@@ -11,19 +11,23 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import {
   admissionDtoSchema, applicationDtoSchema, auditFindingsPerScan, environmentDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema,
   formalRepairDtoSchema, formalRepairPatchDtoSchema, formalReleaseResultSchema, formalReleaseViewSchema, idSchema, komodoResourceIdSchema, projectDtoSchema,
-  formalRepairRetrySchema, formalVerificationInputSchema, formalVerificationResultSchema, qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
+  formalRepairRetrySchema, formalVerificationInputSchema, formalVerificationResultSchema, operationsObservationReceiptSchema,
+  qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
   repositoryDtoSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sha256Schema, sourceInspectionDtoSchema,
   qualifiedImageArchiveSchema, qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
   taskDtoSchema, taskEventDtoSchema, translate, type FormalAuditResult, type Locale, type NpmUpgradeApproval, type StandardVerificationProfile,
 } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
+import { createIdentityVerifier } from '../../src/auth/identity.js';
 import { formalReleaseQueue } from '../../src/persistence/database.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
+import { registerOperationsTarget } from '../../src/service/operations-targets.js';
 import { fingerprintRolloutCheck, registerReleaseTarget } from '../../src/service/release-targets.js';
 import { bootstrapOwner } from '../../src/service/resources.js';
+import { TaskService } from '../../src/service/tasks.js';
 import { databaseFixture } from '../helpers/database.js';
 import { identityFixture } from '../helpers/identity.js';
 import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../verification/src/agent/npm-repair-fixture.js';
@@ -31,6 +35,7 @@ import { temporaryPostgres } from '../../../verification/src/postgres-fixture.js
 import { sourceFingerprint } from '../../../verification/src/report.js';
 import { openNativeReleaseKomodo } from '../../../verification/src/native/komodo-probe.js';
 import { npmReleaseApproval, standardNpmReleaseFiles } from '../../../verification/src/native/npm-release-fixture.js';
+import { openNativeWhiskersReadScope } from '../../../portal/test/native/whiskers-read.js';
 import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from './audit-provider.js';
 import { proveKnownKomodoRecovery, proveUnknownKomodoDispatch, recoverRecordedReleaseForRollout } from './komodo-release-proof.js';
 import type { KomodoInterruption, runKomodoReleaseFixture } from './komodo-release-worker.js';
@@ -280,7 +285,8 @@ async function probe() {
   const dependencyRun = buildMode === 'protected-release-npm';
   const driftRun = buildMode === 'protected-release-drift';
   const faultRun = buildMode === 'protected-release-faults';
-  const protectedRun = buildMode === 'protected-release' || dependencyRun || driftRun || faultRun;
+  const operationsRun = buildMode === 'protected-release-operations';
+  const protectedRun = buildMode === 'protected-release' || dependencyRun || driftRun || faultRun || operationsRun;
   const ociRun = buildMode === 'standard-oci' || protectedRun;
   const buildRun = buildMode === 'standard-build' || buildMode === 'standard-build-missing-cache' || ociRun;
   if (process.platform !== 'linux' || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted' || process.env.DATABASE_URL
@@ -891,8 +897,88 @@ async function probe() {
         equal(chinese.locale, 'zh-CN');
         equal(english.locale, 'en');
         notEqual(chinese.message, english.message);
+
+        const verifyNativeObservation = async () => {
+          phase = 'operations_whiskers_installation';
+          const native = await openNativeWhiskersReadScope();
+          try {
+            const enrollment = await registerOperationsTarget(db.storage, { environmentId: environment.id,
+              releaseTargetRevision: mapping.revision, releaseTargetSha256: mapping.fingerprint,
+              whiskers: { origin: native.origin, serverId: native.serverId } });
+            const human = await createIdentityVerifier(oidc.config)(await oidc.token());
+            const admitted = await new TaskService(db.storage).admitOperations(human, { projectId: project.id, environmentId: environment.id,
+              idempotencyKey: randomUUID(), locale: 'zh-CN' });
+            const diagnostic = admitted.task;
+            equal(diagnostic.state, 'queued');
+            equal(admitted.replayed, false);
+
+            phase = 'operations_whiskers_observation';
+            worker = await startScopedWorker(bundle, ['PATH=/usr/bin:/bin', 'LANG=C.UTF-8', 'ITERVANE_WORKER_POLL_MS=100',
+              'ITERVANE_WORKER_LEASE_SECONDS=30', `ITERVANE_OPERATIONS_ENVIRONMENT_ID=${environment.id}`,
+              `ITERVANE_OPERATIONS_ENROLLMENT_SHA256=${enrollment.fingerprint}`,
+            ], { DATABASE_URL: db.runtimeUrl, ITERVANE_OPERATIONS_WHISKERS_READ_KEY: native.readKey });
+            const completed = await poll(async () => {
+              const task = taskDtoSchema.parse(await request(`/v1/tasks/${diagnostic.id}`));
+              if (task.state === 'needs_human' || task.state === 'failed') {
+                const history = (await request(`/v1/tasks/${task.id}/events`)) as { items?: unknown[] };
+                const last = taskEventDtoSchema.safeParse(history.items?.at(-1));
+                throw new Error(last.data?.reason ?? 'operations_observation_failed');
+              }
+              return task.state === 'succeeded' ? task : undefined;
+            }, 38_000, 'operations_observation');
+            await worker.stop('TERM'); worker = undefined;
+
+            phase = 'operations_whiskers_evidence';
+            const { rows } = await db.admin.query<{ proof: unknown; binding_sha256: string; sha256: string; fence: number; tools_used: number }>(
+              `SELECT observation.document AS proof, observation.binding_sha256, observation.sha256, observation.fence, runtime.tools_used
+                FROM itervane.operations_observations observation
+                JOIN itervane.run_runtime runtime ON runtime.run_id=observation.run_id
+                WHERE observation.run_id=$1`, [diagnostic.runId]);
+            equal(rows.length, 1);
+            const row = rows[0]!;
+            const receipt = operationsObservationReceiptSchema.parse(row.proof);
+            equal(receipt.taskId, diagnostic.id);
+            equal(receipt.runId, diagnostic.runId);
+            equal(receipt.releaseOperationId, operationId);
+            equal(receipt.observation.containerId, proof.runtime.containerId);
+            equal(receipt.observation.serverId, native.serverId);
+            equal(receipt.observation.state, 'running');
+            equal(receipt.bindingSha256, row.binding_sha256);
+            equal(receipt.fence, row.fence);
+            equal(row.sha256, sha256(JSON.stringify(receipt)));
+            equal(row.tools_used, 1);
+
+            const compareReader = async (lookup: Client, locale: Locale) => {
+              const task = (await lookup.callTool({ name: 'get_task', arguments: { taskId: diagnostic.id } })).structuredContent;
+              deepStrictEqual(taskDtoSchema.parse(task), completed);
+              const events = (await lookup.callTool({ name: 'get_task_events', arguments: { taskId: diagnostic.id } })).structuredContent as { items: unknown[] };
+              const http = (await request(`/v1/tasks/${diagnostic.id}/events`, undefined, false, locale)) as { items: unknown[] };
+              deepStrictEqual(events.items.map(item => taskEventDtoSchema.parse(item)), http.items.map(item => taskEventDtoSchema.parse(item)));
+              const latest = taskEventDtoSchema.parse(events.items.at(-1));
+              equal(latest.type, 'task.operations_observed');
+              equal(latest.locale, locale);
+              return latest.message;
+            };
+            notEqual(await compareReader(client, 'zh-CN'), await withEnglishReader(lookup => compareReader(lookup, 'en')));
+            equal((await target.observeContainer(proof.runtime.imageReference, image.configDigest)).containerId, receipt.observation.containerId);
+            const [counts] = (await db.admin.query(`SELECT
+              (SELECT count(*)::int FROM itervane.release_operations WHERE environment_id=$1) AS releases,
+              (SELECT count(*)::int FROM itervane.formal_release_steps WHERE operation_id=$2 AND kind='komodo_dispatch') AS dispatches,
+              (SELECT task_id FROM itervane.execution_slot WHERE id=1) AS slot_task`, [environment.id, operationId])).rows;
+            deepStrictEqual(counts, { releases: 1, dispatches: 1, slot_task: null });
+            return { taskId: diagnostic.id, runId: diagnostic.runId, releaseOperationId: operationId, bindingSha256: receipt.bindingSha256,
+              containerId: receipt.observation.containerId, state: receipt.observation.state, observedAt: receipt.observation.observedAt,
+              fence: receipt.fence, receipts: rows.length, reads: row.tools_used, releaseDispatches: 1, slotReleased: true,
+              matchedPublishedTarget: true, httpMcpAgreement: true };
+          } finally {
+            try { await worker?.stop('TERM'); worker = undefined; }
+            finally { await native.close(); }
+          }
+        };
+        const operations = operationsRun ? await verifyNativeObservation() : undefined;
         return {
           sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
+          ...(operations ? { operations: { ...operations, whiskersCleanup: true } } : {}),
           ...('before' in prepared
             ? { retry: { before: prepared.before, after, retrySha256: prepared.retrySha256, generation } }
             : ('dependencyPatchSha256' in prepared
