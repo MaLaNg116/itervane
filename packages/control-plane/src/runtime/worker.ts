@@ -6,7 +6,7 @@ import { eventReasonMessages, sourceInspectionObservationSchema, sourceInspectio
   type SourceInspectionPauseReason, type StandardVerificationProfile, type ToolResult } from '@itervane/contracts';
 import { queueName, type Database } from '../persistence/database.js';
 import type { runRuntime } from '../persistence/schema.js';
-import type { OperationsInstallation } from '../config.js';
+import type { OperationsInstallation, OperationsWorkflowScope } from '../config.js';
 import { DomainError } from '../service/errors.js';
 import { publishFormalRepair } from '../service/repair-result.js';
 import { readRepairRetry, verificationProfileFingerprint } from '../service/repair-retry.js';
@@ -15,6 +15,7 @@ import { BudgetExhausted, ExecutionLost, type ExecutionScope } from './authority
 import { GuardedCheckpointer } from './checkpointer.js';
 import { ExecutionCoordinator } from './coordinator.js';
 import { runFormalAudit, type AuditModel } from './formal-audit.js';
+import { runFormalOperations } from './formal-operations.js';
 import { runFormalRepair, type FormalRepairOptions } from './formal-repair.js';
 import { runFormalVerification, type FormalVerificationOptions } from './formal-verification.js';
 import { OperationsExecutionError, runOperationsObservation } from './operations-execution.js';
@@ -24,6 +25,7 @@ import type { InspectionRunner } from './source-inspection.js';
 import { prepareFormalVerificationInput } from './verification-input.js';
 
 type VerificationOptions = FormalVerificationOptions & { profile: StandardVerificationProfile };
+type OperationsOptions = OperationsInstallation & OperationsWorkflowScope;
 type PreflightRuntime = Pick<typeof runRuntime.$inferSelect, 'checkpointId' | 'resumeCount' | 'resumePending'>;
 
 const State = Annotation.Root({
@@ -52,7 +54,7 @@ export class DurableWorker {
   private readonly auditModel: AuditModel | undefined;
   private readonly repair: FormalRepairOptions | undefined;
   private readonly verification: VerificationOptions | undefined;
-  readonly #operations: OperationsInstallation | undefined;
+  readonly #operations: OperationsOptions | undefined;
   private active: Promise<boolean> | undefined;
   private abort: AbortController | undefined;
   private closing = false;
@@ -60,7 +62,7 @@ export class DurableWorker {
 
   constructor(readonly database: Database, connectionString: string,
     options: { leaseSeconds?: number; runner?: InspectionRunner; auditModel?: AuditModel;
-      repair?: FormalRepairOptions; verification?: VerificationOptions; operations?: OperationsInstallation } = {}) {
+      repair?: FormalRepairOptions; verification?: VerificationOptions; operations?: OperationsOptions } = {}) {
     this.coordinator = new ExecutionCoordinator(database, options);
     this.gateway = new ToolGateway(this.coordinator, options.runner);
     this.auditModel = options.auditModel;
@@ -68,6 +70,9 @@ export class DurableWorker {
     this.verification = options.verification;
     this.#operations = options.operations;
     if (this.verification && (!options.runner || !options.auditModel)) throw new Error('Incomplete verification Worker');
+    if (this.#operations?.diagnosisProviderSha256 && this.#operations.diagnosisProviderSha256 !== this.auditModel?.providerSha256) {
+      throw new Error('Configured operations diagnosis model does not match the installation');
+    }
     const pool = new pg.Pool({ connectionString, max: 2, connectionTimeoutMillis: 3_000, statement_timeout: 5_000, idle_in_transaction_session_timeout: 5_000 });
     pool.on('error', () => console.error(JSON.stringify({ level: 'error', code: 'infrastructure_error', component: 'checkpointer' })));
     this.saver = new PostgresSaver(pool, undefined, { schema: 'itervane_checkpoint' });
@@ -101,12 +106,18 @@ export class DurableWorker {
     timer.unref();
     let phase: 'preflight' | 'audit' | 'repair' | 'verification' | 'operations' = 'preflight';
     try {
-      const { runtime, retry, role } = await this.coordinator.withLease(scope, async (tx, current) => ({
-        runtime: current.runtime, retry: await readRepairRetry(tx, current.task, scope), role: current.run.role,
+      const { runtime, retry, role, diagnosis } = await this.coordinator.withLease(scope, async (tx, current) => ({
+        runtime: current.runtime, retry: await readRepairRetry(tx, current.task, scope), role: current.run.role, diagnosis: current.operationsDiagnosis,
       }));
       if (role === 'operations') {
         phase = 'operations';
         if (!this.#operations) return await this.coordinator.stop(scope, 'operations_unavailable');
+        if (diagnosis) {
+          const { diagnosisProviderSha256 } = this.#operations;
+          if (!diagnosisProviderSha256 || !this.auditModel) return await this.coordinator.stop(scope, 'operations_unavailable');
+          return await runFormalOperations(this.coordinator, scope, this.saver, { ...this.#operations, diagnosisProviderSha256 },
+            this.auditModel, controller.signal);
+        }
         return await runOperationsObservation(this.coordinator, scope, this.#operations, controller.signal);
       }
       if (retry && (!this.repair || !this.verification || retry.repairPolicySha256 !== repairPolicyFingerprint(this.repair)
