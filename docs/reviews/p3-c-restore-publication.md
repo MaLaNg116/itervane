@@ -8,3 +8,5 @@
 4. 真库验证已核验回执不能单独提交，结算缺回执也会回滚。A → B → 恢复 A 后重新诊断并完成已批准重启，旧 A 的批准在服务层和数据库均被阻断。正式发布 C 接管后续诊断的当前版本。 [结算与故障用例](https://github.com/MaLaNg116/itervane/blob/a584c5ada314d5f328920b584e09fb910204668d/packages/control-plane/test/integration/inspections.test.ts#L2986) · [跨版本回归](https://github.com/MaLaNg116/itervane/blob/a584c5ada314d5f328920b584e09fb910204668d/packages/control-plane/test/integration/inspections.test.ts#L3073)
 
 TypeScript、247 项单元、22 项 PostgreSQL 17.12 专项及 Drizzle 一致性检查通过。真库专项使用可控的 Komodo 回执和入口状态。参考环境的实际双版本恢复以及门户与 MCP 入口验收归 C2d4，恢复入口在该联验通过后启用。 [托管检查](https://github.com/MaLaNg116/itervane/pull/112/checks)
+
+固定代码的[九项托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45029329925)全部通过，涵盖现有隔离 Runner、受保护发布和原生重启回归。
