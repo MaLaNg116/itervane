@@ -99,6 +99,7 @@
 | 094 | P3-C2c2b1 Whiskers 单工具写凭证与 Operator 原生审批 | [#94](https://github.com/MaLaNg116/itervane/pull/94)，依赖 #93 | [原生写范围导读](p3-c-whiskers-writer-scope.md) | TypeScript、232 项单元及固定版本的 [17 项原生 Whiskers 复验](https://github.com/MaLaNg116/itervane/actions/runs/44998153417/job/137133578762)通过 |
 | 095 | P3-C2c2b1 Whiskers 写安装登记、轮换与只读核对 | [#95](https://github.com/MaLaNg116/itervane/pull/95)，依赖 #94 | [写安装导读](p3-c-whiskers-restart-installation.md) | TypeScript、232 项单元、18 项 PostgreSQL 17.12 专项、迁移一致性及[18 项原生 Whiskers 验证](https://github.com/MaLaNg116/itervane/actions/runs/45000369654)通过 |
 | 096 | P3-C2c2b2 受信安装、重启派发和回执核对 | [#96](https://github.com/MaLaNg116/itervane/pull/96)，依赖 #95 | [重启派发导读](p3-c-whiskers-restart-driver.md) | TypeScript、232 项单元、五项 PostgreSQL 17.12 专项及迁移一致性通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/96/checks) |
+| 097 | P3-C2c3a 同一容器的停止锚点与独立恢复核验 | [#97](https://github.com/MaLaNg116/itervane/pull/97)，依赖 #96 | [恢复证据导读](p3-c-restart-recovery-evidence.md) | TypeScript、244 项单元及[八项原生 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/45003300502)通过，[托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45003300535) |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
