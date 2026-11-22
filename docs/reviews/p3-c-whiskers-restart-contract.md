@@ -8,4 +8,6 @@
 
 本机 TypeScript 和 229 项单元通过，其中五项覆盖原生重启边界，十二项覆盖既有观察适配器。托管 Whiskers 的 15 项通过，报告源码指纹为 `565be267ced4e4817c06e24759f7e72338b41f0576c566f1941d3595bec3055d`。待批和人工批准阶段均核对容器未重启。续发后只观察到目标容器的启动时间推进、健康通过和唯一原生重启审计。 [Native Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/44985016597) · [Runner 回归](https://github.com/MaLaNg116/itervane/actions/runs/44985016671)
 
+合入复核针对 `bb69b67c20361bab321aacb11bdb59104b1c0db4`，原生 Whiskers 15 项、托管 KVM 九组和 PR 常规检查通过。原生报告及标准应用诊断报告的源码指纹均为 `98c921d1aa07b42cfa3ecec8c6d80afc204b2845e436ead685dab182fa41fc91`。标准应用真实复查容器、发布、日志与指标四类证据，并确认释放执行槽与清理 Whiskers。保留全部提交，合并提交为 `96299aab6af4f4bc4ef1330ddc7be0d93296f54c`。 [原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/45000608484) · [KVM 检查](https://github.com/MaLaNg116/itervane/actions/runs/45000608502) · [常规检查](https://github.com/MaLaNg116/itervane/actions/runs/45000611256)
+
 正式派发仍由后续批次接入。调用者应持久化批准 ID 和执行意图，保持环境互斥，并用独立证据验证容器版本和受保护入口。适配器的已应答状态只记录原生工具回复。
