@@ -82,6 +82,7 @@
 | 076 | P3-B3a 诊断发布历史证据 | [#76](https://github.com/MaLaNg116/itervane/pull/76)，已合入 main | [发布历史导读](p3-b-operations-release-evidence.md) | 223 项单元、四项 PostgreSQL 17.12 专项及[九组 KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44974795976)通过 |
 | 077 | P3-B3b 诊断输入与证据预留 | [#77](https://github.com/MaLaNg116/itervane/pull/77)，依赖 #76 | [诊断预留导读](p3-b-operations-evidence-store.md) | TypeScript、223 项单元及六项 PostgreSQL 17.12 专项通过，[托管 KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44976096568)运行中 |
 | 078 | P3-B3c1 正式诊断检查点 | [#78](https://github.com/MaLaNg116/itervane/pull/78)，依赖 #77 | [检查点导读](p3-b-operations-checkpoints.md) | TypeScript、223 项单元、八项 PostgreSQL 17.12 专项及迁移一致性验证通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44977332136)已启动 |
+| 079 | P3-B3c2 正式诊断 Worker 与证据化结算 | [#79](https://github.com/MaLaNg116/itervane/pull/79)，依赖 #78 | [调查与结算导读](p3-b-operations-diagnosis-worker.md) | TypeScript、223 项单元、十项 PostgreSQL 17.12 专项及迁移一致性验证通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44978105152)已启动 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
@@ -99,7 +100,7 @@ P1-UX 固定代码/已验证交付为 `4234acdb5d9c664272417713389eeef433bc7db5`
 
 ## 托管基础设施
 
-PR #86 恢复 Runner 固定基础镜像下载。已完成本机摘要校验、回退模拟与八项 OCI 单元，托管构造和 KVM 回归开始验收。 [PR #86](https://github.com/MaLaNg116/itervane/pull/86) · [镜像下载导读](runner-pinned-base-mirror.md)
+PR #86 恢复 Runner 固定基础镜像下载，已经审查并合入。托管 OCI 构造及全部九组 KVM 场景通过。 [PR #86](https://github.com/MaLaNg116/itervane/pull/86) · [镜像下载导读](runner-pinned-base-mirror.md)
 
 ## 每批交付约定
 

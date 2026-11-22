@@ -8,9 +8,9 @@ import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { createFormalOperations, createFormalVerification } from '@itervane/agent';
-import { admissionDtoSchema, apiErrorSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
+import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseTargetSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
-  formalVerificationResultSchema, operationsLaunchViewSchema, operationsObservationViewSchema, taskDtoSchema, translate, verificationViewSchema,
+  formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema, taskDtoSchema, translate, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type OperationsDiagnosisObservation, type OperationsDiagnosisSection,
   type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
@@ -19,7 +19,7 @@ import type { ModelAdapter } from '@itervane/model';
 import { canonicalRepairCommand, canonicalRepairObservation, canonicalVerificationCommand, prepareQualifiedVerificationRequest,
   scannerProfiles, sha256, verifyQualifiedVerificationReceipt } from '@itervane/runner';
 import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../verification/src/agent/npm-repair-fixture.js';
-import { scriptedOperations } from '../../../verification/src/agent/operations-fixture.js';
+import { operationsDecision, scriptedOperations } from '../../../verification/src/agent/operations-fixture.js';
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
@@ -27,12 +27,13 @@ import type { OperationsWorkflowScope } from '../../src/config.js';
 import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
-  operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisRuntime, operationsObservations, operationsRequests,
+  operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults, operationsDiagnosisRuntime, operationsObservations, operationsRequests,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
-  taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
+  taskEvents, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
 import { FormalKomodoSteps } from '../../src/runtime/formal-komodo-steps.js';
+import { runFormalOperations } from '../../src/runtime/formal-operations.js';
 import { runFormalRepair } from '../../src/runtime/formal-repair.js';
 import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
 import { FormalReleaseSteps } from '../../src/runtime/formal-release-steps.js';
@@ -2360,8 +2361,10 @@ it('rolls back an operations task and a real queue insert together, and rejects 
 
 const operationsFixtureKey = 'b'.repeat(64);
 
-function scopedWhiskers(fixture: Awaited<ReturnType<typeof installedOperationsFixture>>, beforeReply = async () => {}) {
+function scopedWhiskers(fixture: Awaited<ReturnType<typeof installedOperationsFixture>>, beforeReply = async () => {},
+  diagnosisState?: 'running' | 'exited') {
   const observe = vi.fn(beforeReply);
+  const tools: string[] = [];
   const originalFetch = globalThis.fetch;
   const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, options) => {
     const url = input instanceof Request ? input.url : String(input);
@@ -2373,15 +2376,33 @@ function scopedWhiskers(fixture: Awaited<ReturnType<typeof installedOperationsFi
     const reply = (result: object) => Response.json({ jsonrpc: '2.0', id: command.id, result });
     if (command.method === 'initialize') return reply({ protocolVersion: '2025-11-25', capabilities: { tools: {} },
       serverInfo: { name: 'whiskers', version: '0.15.0' } });
-    expect(command).toMatchObject({ method: 'tools/call', params: { name: 'get_container_details',
-      arguments: { containerId: fixture.runtime.containerId, serverId: fixture.registration.whiskers.serverId } } });
+    const name = command.params?.name;
+    expect(command.method).toEqual('tools/call');
+    const target = { containerId: fixture.runtime.containerId, serverId: fixture.registration.whiskers.serverId };
+    const state = diagnosisState ?? 'exited';
+    const text = (content: string) => reply({ content: [{ type: 'text', text: content }] });
+    if (diagnosisState && name === 'get_container_logs') {
+      expect(command.params?.arguments).toEqual({ ...target, lines: 40 });
+      tools.push(name);
+      await observe();
+      return text('Logs for trusted-test-container (last 40 lines):\nwarning diagnostic label\nerror local-log-canary-value');
+    }
+    if (diagnosisState && name === 'get_container_metrics') {
+      expect(command.params?.arguments).toEqual({ ...target, period: '1h' });
+      tools.push(name);
+      await observe();
+      return text(`Metrics for container ${target.containerId.slice(0, 12)} (last 1h):\nCPU: avg 3.0%, max 9.0%, min 1.0%\nMemory: avg 92.0%, max 98.0%, min 45.0%\nData points: 3`);
+    }
+    expect(name).toEqual('get_container_details');
+    expect(command.params?.arguments).toEqual(target);
+    tools.push('get_container_details');
     await observe();
-    return reply({ content: [{ type: 'text', text: [
-      'Name: trusted-test-container', `ID: ${fixture.runtime.containerId}`, 'Image: sample:v2', 'State: exited', 'Health: none',
-      'Status: exited', 'Created: 2026-01-01', `Server: local (${fixture.registration.whiskers.serverId})`, 'Labels: demo-only-metadata',
-    ].join('\n') }] });
+    return text([
+      'Name: trusted-test-container', `ID: ${target.containerId}`, 'Image: sample:v2', `State: ${state}`, 'Health: none',
+      `Status: ${state}`, 'Created: 2026-01-01', `Server: local (${target.serverId})`, 'Labels: demo-only-metadata',
+    ].join('\n'));
   });
-  return { observe, restore: () => spy.mockRestore() };
+  return { observe, tools, restore: () => spy.mockRestore() };
 }
 
 function installedOperations(fixture: Awaited<ReturnType<typeof installedOperationsFixture>>) {
@@ -2600,6 +2621,107 @@ it('freezes diagnostic mode once and admits only a matching operations Worker', 
     expect(await fixture.taskService.get(identity, first.task.id)).toMatchObject({ state: 'queued' });
   }
   await expect(claimOperations(installed)).resolves.toMatchObject({ runId: first.task.runId, taskId: first.task.id });
+});
+
+it('settles only the scoped operations diagnosis through the Worker and its three verified reads', async () => {
+  const fixture = await installedOperationsFixture();
+  const operations = diagnosisInstallation(fixture);
+  const { task } = await fixture.taskService.admitOperations(identity, { ...fixture.scope, idempotencyKey: randomUUID() }, operations);
+  const auditModel = { adapter: scriptedOperations(), providerSha256: operations.diagnosisProviderSha256 };
+  expect(() => new DurableWorker(database.storage, database.runtimeUrl, { operations })).toThrow('diagnosis model');
+  const whiskers = scopedWhiskers(fixture, undefined, 'running');
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { operations, auditModel, leaseSeconds: 30 });
+  try { expect(await worker.tick()).toBe(true); }
+  finally { await worker.close(); whiskers.restore(); }
+  expect(whiskers.tools).toEqual(['get_container_details', 'get_container_metrics']);
+
+  expect(await fixture.taskService.get(identity, task.id)).toMatchObject({ state: 'succeeded' });
+  const [result] = await database.storage.db.select().from(operationsDiagnosisResults);
+  const [container] = await database.storage.db.select().from(operationsObservations);
+  const [event] = await database.storage.db.select().from(taskEvents)
+    .where(and(eq(taskEvents.taskId, task.id), eq(taskEvents.type, 'task.operations_observed')));
+  const receipt = operationsDiagnosisReceiptSchema.parse(result?.document);
+  expect(result?.sha256).toBe(sha256(JSON.stringify(receipt)));
+  expect(receipt).toMatchObject({
+    runId: task.runId, taskId: task.id, providerSha256: operations.diagnosisProviderSha256, observationSha256: container?.sha256,
+    usage: { turns: 4, toolCalls: 3 }, result: { hypotheses: [{ code: 'memory_pressure' }], recommendation: { code: 'continue_observation' } },
+  });
+  expect(receipt.reads.map(read => read.section)).toEqual(['container', 'metrics', 'release']);
+  expect(event).toMatchObject({ workerId: worker.id, detail: {
+    runId: task.runId, releaseOperationId: fixture.operationId, observationSha256: container?.sha256, diagnosisSha256: result?.sha256,
+  } });
+  expect(JSON.stringify(result)).not.toContain(operationsFixtureKey);
+  await expect(new OperationsObservationViewService(database.storage).get(identity, task.id, 'zh-CN')).resolves
+    .toMatchObject({ state: 'succeeded', observation: { state: 'running' }, reason: 'operations_diagnosed', reasonMessage: '已记录诊断结论及其证据。' });
+  await expect(database.storage.db.delete(operationsDiagnosisResults)).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'operations_diagnosis_result_is_immutable' } });
+});
+
+it('rolls back diagnosis settlement on event failure and replays the published conclusion after takeover', async () => {
+  const { fixture, installed, scope } = await startDiagnosis();
+  const scripted = scriptedOperations();
+  const complete = vi.fn<ModelAdapter['complete']>(async input => {
+    const response = await scripted.complete(input);
+    const call = response.calls[0];
+    if (call?.name !== 'finish_role') return response;
+    const draft = finishOperationsInputSchema.parse(call.input);
+    return operationsDecision('finish_role', { ...draft, recommendation: { ...draft.recommendation, code: 'review_restart' } });
+  });
+  const model = { adapter: { ...scripted, complete }, providerSha256: installed.diagnosisProviderSha256 };
+  const whiskers = scopedWhiskers(fixture, undefined, 'exited');
+  const run = async (lease: ExecutionScope) => {
+    const saver = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+    try { await runFormalOperations(coordinator, lease, saver, installed, model, new AbortController().signal); }
+    finally { await saver.end(); }
+  };
+  try {
+    await database.admin.query(`ALTER TABLE itervane.task_events ADD CONSTRAINT injected_operations_event_failure
+      CHECK (detail->>'diagnosisSha256' IS NULL) NOT VALID`);
+    try { await expect(run(scope)).rejects.toMatchObject({ cause: { code: '23514', constraint: 'injected_operations_event_failure' } }); }
+    finally { await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_operations_event_failure'); }
+    expect(await database.storage.db.select().from(operationsDiagnosisResults)).toEqual([]);
+    expect(await database.storage.db.select().from(operationsObservations)).toEqual([]);
+    expect(await fixture.taskService.get(identity, scope.taskId)).toMatchObject({ state: 'running' });
+    const [published] = await database.storage.db.select().from(operationsDiagnosisRuntime);
+    expect(published).toMatchObject({ runId: scope.runId, publishedFence: scope.fence });
+    const reads = await database.storage.db.select().from(operationsDiagnosisReads);
+    expect(reads).toHaveLength(3);
+    expect(reads.every(read => read.state === 'recorded')).toBe(true);
+    expect(JSON.stringify(reads)).not.toContain('local-log-canary-value');
+    expect(complete).toHaveBeenCalledTimes(4);
+    expect(whiskers.tools).toEqual(['get_container_details', 'get_container_logs']);
+
+    const successor = await reclaimDiagnosis(scope, installed);
+    await expect(run(scope)).rejects.toBeInstanceOf(ExecutionLost);
+    await run(successor);
+    const [result] = await database.storage.db.select().from(operationsDiagnosisResults);
+    expect(result).toMatchObject({ workerId: successor.workerId, fence: successor.fence, checkpointId: published?.checkpointId,
+      document: { result: { recommendation: { code: 'review_restart' } } } });
+    expect(await fixture.taskService.get(identity, scope.taskId)).toMatchObject({ state: 'succeeded' });
+    expect(whiskers.tools).toEqual(['get_container_details', 'get_container_logs']);
+    expect(complete).toHaveBeenCalledTimes(4);
+  } finally { whiskers.restore(); }
+});
+
+it('drops a pending operations diagnosis fetch after the installed server is changed', async () => {
+  const fixture = await installedOperationsFixture();
+  const operations = diagnosisInstallation(fixture);
+  const { task } = await fixture.taskService.admitOperations(identity, { ...fixture.scope, idempotencyKey: randomUUID() }, operations);
+  const auditModel = { adapter: scriptedOperations(), providerSha256: operations.diagnosisProviderSha256 };
+  const whiskers = scopedWhiskers(fixture, async () => {
+    await registerOperationsTarget(database.storage, { ...fixture.registration,
+      whiskers: { ...fixture.registration.whiskers, serverId: 'replaced-during-diagnosis' } });
+  }, 'running');
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { operations, auditModel, leaseSeconds: 30 });
+  try { expect(await worker.tick()).toBe(true); }
+  finally { await worker.close(); whiskers.restore(); }
+  expect(whiskers.tools).toEqual(['get_container_details']);
+  expect(await database.storage.db.select().from(operationsObservations)).toEqual([]);
+  expect(await database.storage.db.select().from(operationsDiagnosisResults)).toEqual([]);
+  expect((await database.storage.db.select().from(operationsDiagnosisReads)).at(0)).toMatchObject({ section: 'container', state: 'reserved' });
+  expect((await fixture.taskService.events(identity, task.id, 10, 'en')).at(-1)).toMatchObject({
+    state: 'needs_human', reason: 'operations_target_changed',
+  });
 });
 
 it('reserves one budget per evidence section, replays its record and limits successor attempts', async () => {

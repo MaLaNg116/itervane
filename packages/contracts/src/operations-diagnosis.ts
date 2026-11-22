@@ -54,3 +54,17 @@ export const operationsDiagnosisResultSchema = finishOperationsInputSchema.exten
     && (result.previousReleaseOperationId !== null) === (result.recommendation.code === 'review_rollback');
 }, 'Diagnosis requires scoped facts, valid references and a rollback reference when applicable');
 export type OperationsDiagnosisResult = z.infer<typeof operationsDiagnosisResultSchema>;
+
+export const operationsDiagnosisReceiptSchema = z.strictObject({
+  version: z.literal(1), taskId: idSchema, runId: idSchema, fence: z.int().positive(),
+  requestSha256: sha256Schema, inputSha256: sha256Schema, providerSha256: sha256Schema, bindingSha256: sha256Schema,
+  checkpointId: z.string().min(1).max(128), observationSha256: sha256Schema,
+  usage: z.strictObject({ turns: z.int().positive(), toolCalls: z.int().positive(), tokens: z.int().nonnegative() }),
+  reads: z.array(z.strictObject({ section: operationsDiagnosisSectionSchema, operationId: sha256Schema, readSha256: sha256Schema }))
+    .min(2).max(operationsDiagnosisSections.length),
+  result: operationsDiagnosisResultSchema,
+}).refine(receipt => receipt.usage.toolCalls === receipt.reads.length && receipt.result.facts.length === receipt.reads.length
+  && receipt.reads.every((read, index) => read.section === receipt.result.facts[index]?.section)
+  && new Set(receipt.reads.map(read => read.operationId)).size === receipt.reads.length,
+'Recorded reads must match the diagnosis facts and tool budget');
+export type OperationsDiagnosisReceipt = z.infer<typeof operationsDiagnosisReceiptSchema>;

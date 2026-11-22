@@ -9,3 +9,4 @@ export { createFormalAudit } from './formal-audit.js';
 export { createFormalRepair } from './formal-repair.js';
 export { createFormalVerification } from './formal-verification.js';
 export { createFormalOperations } from './formal-operations.js';
+export { finishFormalOperations } from './operations-results.js';
