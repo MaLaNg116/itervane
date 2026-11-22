@@ -56,10 +56,10 @@ function checkedRelease({ operation, candidate, sourceTask, receipt, dispatch }:
     proofSha256: sha256(JSON.stringify({ proof, dispatch: dispatched.data })) };
 }
 
-export async function readOperationsDeployment(tx: Transaction, actor: Actor, scope: { projectId: string; environmentId: string },
+// Internal evidence lookup. Callers must authorize the project or bind a historical effect under its lease first.
+export async function readPublishedOperationsDeployment(tx: Transaction, scope: { projectId: string; environmentId: string },
   options: { includePrevious?: boolean } = {}) {
   const { projectId, environmentId } = scope;
-  const { grantId } = await requireProjectAccess(tx, actor, projectId, true);
   const [environment] = await tx.select().from(environments).where(and(eq(environments.id, environmentId),
     eq(environments.projectId, projectId), eq(environments.access, 'protected'))).for('share');
   if (!environment) throw new DomainError('not_found');
@@ -92,7 +92,13 @@ export async function readOperationsDeployment(tx: Transaction, actor: Actor, sc
   if (!current) throw new DomainError('unsupported_state');
   const previous = earlier ? checkedRelease(earlier, mapping, target) : null;
   if (earlier?.operation.id === current.releaseOperationId) throw new Error('operations_deployment_evidence_integrity');
-  return { projectId, environmentId, applicationId: environment.applicationId, grantId,
+  return { projectId, environmentId, applicationId: environment.applicationId,
     targetRevision: mapping.revision, mappingSha256: mapping.sha256, deploymentId: target.deploymentId,
     approvalTtlSeconds: target.approvalTtlSeconds, ...current, previous };
+}
+
+export async function readOperationsDeployment(tx: Transaction, actor: Actor, scope: { projectId: string; environmentId: string },
+  options: { includePrevious?: boolean } = {}) {
+  const { grantId } = await requireProjectAccess(tx, actor, scope.projectId, true);
+  return { ...await readPublishedOperationsDeployment(tx, scope, options), grantId };
 }

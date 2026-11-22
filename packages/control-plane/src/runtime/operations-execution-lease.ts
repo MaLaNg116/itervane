@@ -23,6 +23,8 @@ import { appendEvent, assertLeaseLive, assignSlot, clearSlot, ExecutionLost, loc
 import type { ExecutionCoordinator } from './coordinator.js';
 import { closeUndispatchedOperationsExecution, operationsExecutionWakeupSchema, replaceOperationsExecutionWakeup } from './operations-execution-queue.js';
 import { attachOperationsRestartApproval, prepareOperationsRestartRequest, readOperationsRestartRequest, readOperationsRestartSubject } from './operations-restart-request.js';
+import { findActiveRestartRecovery, finishRestartRecovery, proveRestartRecovery, readRestartRecoveryBinding, startRestartRecovery,
+  type RecoveryFailure } from './operations-restart-recovery.js';
 import { blockQueuedRestartResume, latestRestartResume } from './operations-restart-resume.js';
 import { matchRestartBaseline } from './release-rollout.js';
 
@@ -51,6 +53,13 @@ async function lockOperationsExecution(tx: Transaction, executionId: string) {
 
 type BoundExecution = NonNullable<Awaited<ReturnType<typeof lockOperationsExecution>>>;
 type ApprovedExecution = Awaited<ReturnType<typeof requireOperationsExecutionApproval>>;
+
+async function requireRestartRecoveryAttempt(tx: Transaction, scope: OperationsExecutionLease) {
+  if (scope.mode !== 'reconcile') throw new ExecutionLost();
+  const attempt = await findActiveRestartRecovery(tx, scope);
+  if (!attempt) throw new ExecutionLost();
+  return attempt;
+}
 
 async function requireSavedRestartWriter(tx: Transaction, target: OperationsEnrollmentScope, whiskers: OperationsRestartInstallation['whiskers'],
   request: Awaited<ReturnType<typeof readOperationsRestartRequest>>) {
@@ -104,6 +113,13 @@ export async function recoverOperationsExecutionSlot(tx: Transaction, database: 
   const bound = await lockOperationsExecution(tx, linked.id);
   if (!bound || bound.schedule.runId !== slot.runId || bound.schedule.wakeupJobId) throw new ExecutionLost();
   const { execution, schedule, task, intent } = bound;
+  if (!slot.live && slot.workerId && bound.reason === 'operations_execution_reconciling') {
+    const attempt = await findActiveRestartRecovery(tx, { executionId: execution.id, fence: slot.fence, workerId: slot.workerId });
+    if (attempt) {
+      await finishRestartRecovery(tx, database, bound, attempt, workerId, { failure: 'lease_expired' });
+      return true;
+    }
+  }
   if (execution.state === 'blocked') {
     if (intent || (task.state !== 'cancelled' && task.state !== 'needs_human')) throw new ExecutionLost();
   } else {
@@ -148,7 +164,7 @@ export class OperationsExecutionCoordinator {
 
       const { execution, schedule, task, proposal, diagnosis } = bound;
       if (mode === 'dispatch' && await expireUndispatchedOperations(tx, database, execution.environmentId, task.requestedBy, workerId)) return null;
-      const { target } = readOperationsProposal(proposal);
+      const { target, action } = readOperationsProposal(proposal);
       const eligible = !slot.taskId && target.environmentId === this.installation.environmentId
         && target.enrollmentSha256 === this.installation.enrollmentSha256;
       let authorized = true;
@@ -182,7 +198,9 @@ export class OperationsExecutionCoordinator {
         workerId, reason, operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: lease.fence },
       });
       await tx.update(operationsExecutionSchedules).set({ wakeupJobId: null }).where(eq(operationsExecutionSchedules.executionId, execution.id));
-      return Object.freeze({ ...lease, executionId: execution.id, mode });
+      const scope = Object.freeze({ ...lease, executionId: execution.id, mode });
+      if (mode === 'reconcile' && action.kind === 'restart') await startRestartRecovery(tx, scope);
+      return scope;
     });
   }
 
@@ -406,6 +424,29 @@ export class OperationsExecutionCoordinator {
     });
   }
 
+  async authorizeRestartRecovery(scope: OperationsExecutionLease) {
+    return this.withLease(scope, async (tx, bound) => {
+      await requireRestartRecoveryAttempt(tx, scope);
+      const { subject, baseline } = await readRestartRecoveryBinding(tx, bound, this.installation);
+      return { subject, baseline };
+    });
+  }
+
+  async settleRestartRecovery(scope: OperationsExecutionLease, raw: unknown) {
+    return this.withLease(scope, async (tx, bound) => {
+      const attempt = await requireRestartRecoveryAttempt(tx, scope);
+      const proof = await proveRestartRecovery(tx, scope, bound, this.installation, raw);
+      return finishRestartRecovery(tx, this.coordinator.database, bound, attempt, scope.workerId, { proof });
+    });
+  }
+
+  async deferRestartRecovery(scope: OperationsExecutionLease, failure: RecoveryFailure) {
+    return this.withLease(scope, async (tx, bound) => {
+      const attempt = await requireRestartRecoveryAttempt(tx, scope);
+      return finishRestartRecovery(tx, this.coordinator.database, bound, attempt, scope.workerId, { failure });
+    });
+  }
+
   async reconcile(workerId: string) {
     idSchema.parse(workerId);
     const database = this.coordinator.database;
@@ -452,5 +493,21 @@ export class OperationsExecutionCoordinator {
       await assertLeaseLive(tx, slot.leaseUntil);
       return result;
     });
+  }
+}
+
+export async function withOperationsLeaseHeartbeat<T>(coordinator: OperationsExecutionCoordinator, scope: OperationsExecutionLease,
+  signal: AbortSignal | undefined, run: (signal: AbortSignal) => Promise<T>) {
+  const controller = new AbortController();
+  const live = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  let heartbeat: Promise<void> | undefined;
+  const timer = setInterval(() => {
+    if (heartbeat || live.aborted) return;
+    heartbeat = coordinator.heartbeat(scope).catch(error => controller.abort(error)).finally(() => { heartbeat = undefined; });
+  }, coordinator.leaseSeconds * 1000 / 3);
+  try { return await run(live); }
+  finally {
+    clearInterval(timer);
+    await heartbeat;
   }
 }
