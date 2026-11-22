@@ -6,3 +6,5 @@
 2. 双语发布详情只在当前选项与可见发布一致时提供观察按钮。切换显示语言保留原请求键和提交语言。任务接收成功后只在原任务页仍打开时跳转。诊断页沿用授权和任务事件，显示观察时间、容器状态、原因与回执摘要。状态和证据披露沿用 GSAP 与无动效偏好。 [观察按钮与回执](https://github.com/MaLaNg116/itervane/blob/60182114d28758251f24f7b3ad0fa797db86e8aa/packages/portal/src/pages/task-operations.tsx#L13)
 
 本机 TypeScript 与 211 项单元检查通过。独立 PostgreSQL 17.12 三项专项通过，覆盖发布操作不符、后端换绑、授权收回以及新旧任务列表。真实 Chrome、Keycloak 与 PostgreSQL 的观察门户专项和三项发布详情回归通过。观察专项在浏览器中使用受控发布和回执，实际任务及项目读取走真实授权。已发布容器的原生 Whiskers 读取沿用 #71 证据。 [浏览器专项](https://github.com/MaLaNg116/itervane/blob/60182114d28758251f24f7b3ad0fa797db86e8aa/packages/portal/test/browser/portal.spec.ts#L502) · [原生观察验收](https://github.com/MaLaNg116/itervane/actions/runs/44968006971/job/137041290751)
+
+合入前核对 `a3791ad0dc2dfe3f529d1b8a60efaf1e2c5a7d9d` 的六项托管常规检查，并确认同一非文档内容通过九组 KVM 场景。 [托管常规检查](https://github.com/MaLaNg116/itervane/actions/runs/44972393029) · [KVM 矩阵](https://github.com/MaLaNg116/itervane/actions/runs/44971339106) · [合入记录](https://github.com/MaLaNg116/itervane/commit/5f021c19122e85f901a98b965896adee5125fc1f)

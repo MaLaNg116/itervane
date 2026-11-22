@@ -9,3 +9,5 @@
 本机 TypeScript、215 项单元检查通过，含四项新的日志和指标协议验证。实际采样与清理由托管独立宿主验收。B2 和 B3 接续运维 Agent 的证据选择与正式任务持久化。
 
 固定验收版本 `d9678aedd1daae4eb95a49feff392d93630aa745` 通过托管 Whiskers 0.15.0 验收。必过条件包含停止容器的日志信号、运行容器的指标样本、明确无样本返回和夹具清理。 [原生验证](https://github.com/MaLaNg116/itervane/actions/runs/44972075364) · [脱敏验收材料](https://github.com/MaLaNg116/itervane/actions/runs/44972075364/artifacts/14733773893)
+
+已合入版本 `ed7e7d1d7e28cf6ccd67b0504aa66a9f92007df8` 通过六项托管常规检查，与九组通过的 KVM 场景及原生 Whiskers 检查具有相同的非文档内容。 [托管常规检查](https://github.com/MaLaNg116/itervane/actions/runs/44974223013) · [KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44972075435) · [合入记录](https://github.com/MaLaNg116/itervane/commit/93258b8a7b3bfc432dc72d5adfe630362898c342)
