@@ -11,7 +11,8 @@ import {
   type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt,
   type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
-  type ReleaseKomodoCompletion, type ReleaseKomodoConfiguration, type ReleaseKomodoIntent, type ReleaseRolloutFailure, type ReleaseRolloutProof,
+  type ReleaseKomodoCompletion, type ReleaseKomodoConfiguration, type ReleaseKomodoIntent, type ReleaseKomodoUpdate,
+  type ReleaseRolloutFailure, type ReleaseRolloutProof,
 } from '@itervane/contracts';
 
 export const domain = pgSchema('itervane');
@@ -657,6 +658,23 @@ export const operationsExecutionIntents = domain.table('operations_execution_int
   check('operations_restore_plan_binding', sql`((${t.restorePlan} IS NULL AND ${t.restorePlanSha256} IS NULL)
     OR (${t.restorePlan}->>'version' = '1' AND ${t.restorePlanSha256} ~ '^[a-f0-9]{64}$'
       AND octet_length(${t.restorePlan}::text) <= 4096)) IS TRUE`),
+]);
+
+export const operationsRestoreSteps = domain.table('operations_restore_steps', {
+  executionId: uuid('execution_id').notNull().references(() => operationsExecutionIntents.executionId),
+  kind: text('kind').$type<'configure' | 'deploy'>().notNull(),
+  planSha256: text('plan_sha256').notNull(),
+  workerId: uuid('worker_id').notNull(),
+  fence: integer('fence').notNull(),
+  sentAt: timestamp('sent_at', { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
+  receipt: jsonb('receipt').$type<ReleaseKomodoConfiguration | ReleaseKomodoUpdate>(),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }),
+}, t => [
+  primaryKey({ columns: [t.executionId, t.kind] }),
+  uniqueIndex('operations_restore_native_update').on(sql`(${t.receipt}->>'updateId')`).where(sql`${t.kind} = 'deploy' AND ${t.receipt} IS NOT NULL`),
+  check('operations_restore_step_binding', sql`${t.kind} IN ('configure', 'deploy') AND ${t.fence} > 0 AND ${t.planSha256} ~ '^[a-f0-9]{64}$'`),
+  check('operations_restore_step_receipt', sql`((${t.receipt} IS NULL AND ${t.recordedAt} IS NULL)
+    OR (jsonb_typeof(${t.receipt}) = 'object' AND octet_length(${t.receipt}::text) <= 4096 AND ${t.recordedAt} >= ${t.sentAt})) IS TRUE`),
 ]);
 
 export const operationsRestartRequests = domain.table('operations_restart_requests', {

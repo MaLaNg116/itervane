@@ -407,6 +407,13 @@
       "when": 1795346945437,
       "tag": "0057_operations_restore_intents",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1795348930908,
+      "tag": "0058_operations_restore_steps",
+      "breakpoints": true
     }
   ]
 }
