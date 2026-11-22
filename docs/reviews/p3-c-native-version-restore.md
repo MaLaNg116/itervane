@@ -7,3 +7,5 @@
 3. 成功后形成本次恢复的独立核验回执，释放环境与全局执行槽。HTTP 和外部 MCP 逐语种比较回执，随后用同一个 Whiskers 安装再次诊断，核对请求绑定恢复执行和 A 的实际容器。B 留为可查的已核验历史。 [托管断言](https://github.com/MaLaNg116/itervane/blob/78d78003f20a0f3612097005d4a73721b81cff00/.github/workflows/native-runner.yml#L219)
 
 TypeScript、248 项单元、Bash 语法、Restore Worker 打包与 Node 语法检查通过。实际恢复以托管 `protected-release-restore` 的独立回执、发布历史及归档为准。审批过期、权限撤销、目标变化、应答中断、接管和公开参考安装进入 C2d4c3。 [托管检查](https://github.com/MaLaNg116/itervane/pull/116/checks)
+
+交付提交 `b45856eab337aa82fe07ff3832cce74a59ee7169` 的专用托管 KVM 任务通过。归档源码指纹为 `cd9129c83251635b296ee1c8983e231ee661f5b2a9458b464d4eefe2669b00a7`，回执摘要为 `7394af2272a5149e10e2f63f0e3df304e5a31e5cac822f8ebbe760dbae1368b0`。原生更新 `6b0315db9cc14035c7e9a0df` 将 B 恢复为 A，镜像摘要与 A 一致，授权健康返回 200、匿名返回 401。派发与核验代次分别为 8 和 9，后续诊断回到常规观察。另复跑 21 项 PostgreSQL 17.12 恢复、授权及回读测试，全部通过。 [托管任务](https://github.com/MaLaNg116/itervane/actions/runs/45042222516/job/137268978495) · [归档报告](https://github.com/MaLaNg116/itervane/actions/runs/45042222516/artifacts/14762024713)
