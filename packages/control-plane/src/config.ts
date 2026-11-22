@@ -17,6 +17,15 @@ export function canonicalPublicUrl(value: string): string {
   return url.origin;
 }
 
+const operationsEnrollmentScopeSchema = z.strictObject({ environmentId: idSchema, enrollmentSha256: sha256Schema });
+const operationsInstallationSchema = operationsEnrollmentScopeSchema.extend({ readKey: whiskersReadKeySchema });
+export type OperationsEnrollmentScope = Readonly<z.infer<typeof operationsEnrollmentScopeSchema>>;
+export type OperationsInstallation = Readonly<z.infer<typeof operationsInstallationSchema>>;
+
+function operationsEnvironment(env: NodeJS.ProcessEnv) {
+  return { environmentId: env.ITERVANE_OPERATIONS_ENVIRONMENT_ID, enrollmentSha256: env.ITERVANE_OPERATIONS_ENROLLMENT_SHA256 };
+}
+
 export function runtimeConfig(env: NodeJS.ProcessEnv = process.env) {
   const config = z.object({
     databaseUrl, issuer: z.string().min(1), audience: z.string().min(1),
@@ -25,8 +34,10 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env) {
     audience: env.ITERVANE_OIDC_AUDIENCE, host: env.ITERVANE_API_HOST ?? '127.0.0.1', port: env.ITERVANE_API_PORT ?? 4310 });
   validateIdentityConfig(config);
   const portalClientId = env.ITERVANE_PORTAL_CLIENT_ID ? z.string().trim().min(1).max(255).parse(env.ITERVANE_PORTAL_CLIENT_ID) : undefined;
+  const operationsApi = z.enum(['0', '1']).parse(env.ITERVANE_OPERATIONS_API_ENABLED ?? '0') === '1'
+    ? operationsEnrollmentScopeSchema.parse(operationsEnvironment(env)) : undefined;
   return { ...config, publicUrl: canonicalPublicUrl(env.ITERVANE_PUBLIC_URL ?? `http://127.0.0.1:${config.port}`),
-    ...(portalClientId ? { portalClientId } : {}) };
+    ...(portalClientId ? { portalClientId } : {}), ...(operationsApi ? { operationsApi } : {}) };
 }
 
 function sharedWorkerConfig(env: NodeJS.ProcessEnv) {
@@ -43,14 +54,10 @@ function workerRunnerConfig(env: NodeJS.ProcessEnv) {
   }).parse(address) : undefined;
 }
 
-const operationsInstallationSchema = z.strictObject({ environmentId: idSchema, enrollmentSha256: sha256Schema, readKey: whiskersReadKeySchema });
-export type OperationsInstallation = Readonly<z.infer<typeof operationsInstallationSchema>>;
-
 export function workerConfig(env: NodeJS.ProcessEnv = process.env) {
   const worker = sharedWorkerConfig(env);
   const runner = workerRunnerConfig(env);
-  const operationsSettings = { environmentId: env.ITERVANE_OPERATIONS_ENVIRONMENT_ID,
-    enrollmentSha256: env.ITERVANE_OPERATIONS_ENROLLMENT_SHA256, readKey: env.ITERVANE_OPERATIONS_WHISKERS_READ_KEY };
+  const operationsSettings = { ...operationsEnvironment(env), readKey: env.ITERVANE_OPERATIONS_WHISKERS_READ_KEY };
   const operations = Object.values(operationsSettings).some(value => value !== undefined)
     ? operationsInstallationSchema.parse(operationsSettings) : undefined;
   const selected = env.ITERVANE_AUDIT_MODEL_PROVIDER;

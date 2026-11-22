@@ -8,9 +8,9 @@ import { emptyCheckpoint } from '@langchain/langgraph-checkpoint';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { createFormalVerification } from '@itervane/agent';
-import { apiErrorSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
+import { admissionDtoSchema, apiErrorSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
   formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
-  formalVerificationResultSchema, translate, verificationViewSchema,
+  formalVerificationResultSchema, operationsObservationViewSchema, translate, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type FormalReleaseManifest, type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
@@ -57,6 +57,7 @@ import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
 import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { FormalReleaseService } from '../../src/service/formal-release.js';
 import { readOperationsDeployment } from '../../src/service/operations-deployment.js';
+import { OperationsObservationViewService } from '../../src/service/operations-observation-view.js';
 import { readOperationsObservationTarget, registerOperationsTarget } from '../../src/service/operations-targets.js';
 import { publishFormalRepair } from '../../src/service/repair-result.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
@@ -2420,7 +2421,135 @@ it('stops an operations run before contacting Whiskers when the persisted read b
     expect(downstream.observe).not.toHaveBeenCalled();
     expect(await database.storage.db.select().from(operationsObservations)).toEqual([]);
     expect((await fixture.taskService.events(identity, request.id, 10)).at(-1)).toMatchObject({ reason: 'budget_exhausted', state: 'needs_human' });
+    await expect(new OperationsObservationViewService(database.storage).get(identity, request.id, 'zh-CN')).resolves.toMatchObject({
+      state: 'needs_human', observation: null, reason: 'budget_exhausted', reasonMessage: '持久化工具预算已耗尽。', locale: 'zh-CN',
+    });
   } finally { downstream.restore(); await worker.close(); }
+});
+
+it('projects a historical operations receipt in both languages under current project read access', async () => {
+  const fixture = await installedOperationsFixture();
+  const diagnostic = (await fixture.taskService.admitOperations(identity, { ...fixture.scope, idempotencyKey: randomUUID() })).task;
+  const view = new OperationsObservationViewService(database.storage);
+  await expect(view.get(identity, task.id, 'en')).rejects.toMatchObject({ code: 'not_found' });
+  await expect(view.get(identity, diagnostic.id, 'en')).resolves.toMatchObject({ state: 'queued', observation: null, message: 'Queued' });
+
+  const principalId = randomUUID();
+  const subject = 'operations-viewer';
+  await database.storage.db.insert(principals).values({ id: principalId, issuer: issuer.config.issuer, subject });
+  const viewer = await createIdentityVerifier(issuer.config)(await issuer.token(subject));
+  await expect(view.get(viewer, diagnostic.id, 'en')).rejects.toMatchObject({ code: 'not_found' });
+  await database.storage.db.insert(projectMembers).values({ projectId: fixture.scope.projectId, principalId, role: 'viewer' });
+
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { operations: installedOperations(fixture) });
+  const downstream = scopedWhiskers(fixture);
+  try { await worker.tick(); } finally { downstream.restore(); await worker.close(); }
+  const [zh, en] = await Promise.all([view.get(viewer, diagnostic.id, 'zh-CN'), view.get(viewer, diagnostic.id, 'en')]);
+  expect(zh).toMatchObject({ state: 'succeeded', releaseOperationId: fixture.operationId, environmentId: fixture.scope.environmentId,
+    observation: { state: 'exited', stateLabel: '已退出', observedAt: expect.any(String), receiptSha256: expect.stringMatching(/^[a-f0-9]{64}$/) } });
+  expect(en.observation).toEqual({ ...zh.observation, stateLabel: 'Exited' });
+  expect(zh.message).not.toBe(en.message);
+  expect(Object.keys(en.observation!).sort()).toEqual(['observedAt', 'receiptSha256', 'state', 'stateLabel']);
+  expect(JSON.stringify(en)).not.toContain(fixture.registration.whiskers.origin);
+
+  await registerOperationsTarget(database.storage, { ...fixture.registration, whiskers: { ...fixture.registration.whiskers, serverId: 'new-origin-scope' } });
+  await expect(view.get(viewer, diagnostic.id, 'en')).resolves.toEqual(en);
+  await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
+  await expect(view.get(viewer, diagnostic.id, 'en')).rejects.toMatchObject({ code: 'not_found' });
+});
+
+it('shares one authorized diagnosis across opt-in HTTP and MCP and fences a replaced enrollment', async () => {
+  const fixture = await installedOperationsFixture();
+  const { environmentId } = fixture.scope;
+  const publicUrl = 'http://127.0.0.1:4329';
+  const config = { ...issuer.config, publicUrl };
+  const app = createApi(database.storage, { ...config,
+    operationsApi: { environmentId, enrollmentSha256: fixture.enrollment.fingerprint } }, { logger: false });
+  const disabled = createApi(database.storage, config, { logger: false });
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { operations: installedOperations(fixture) });
+  const clients: Client[] = [];
+  try {
+    const url = '/v1/operations/diagnoses';
+    const payload = { ...fixture.scope, idempotencyKey: randomUUID(), locale: 'zh-CN' };
+    const headers = { authorization: `Bearer ${await issuer.token('owner')}`, 'accept-language': 'zh-CN' };
+    expect((await disabled.inject({ method: 'POST', url, headers, payload })).statusCode).toBe(404);
+    expect((await disabled.inject({ url: '/v1/capabilities', headers })).json()).toMatchObject({ stage: 'p1-e', operations: false });
+    expect((await app.inject({ url: '/v1/capabilities', headers })).json()).toMatchObject({ stage: 'p3-a', operations: true });
+    const post = (input: Record<string, unknown> = payload, requestHeaders = headers) => app.inject({ method: 'POST', url, headers: requestHeaders, payload: input });
+    expect((await post({ ...payload, environmentId: randomUUID() })).statusCode).toBe(404);
+    expect((await post({ ...payload, containerId: fixture.runtime.containerId })).statusCode).toBe(400);
+
+    const subject = 'diagnosis-api-viewer';
+    const principalId = randomUUID();
+    await database.storage.db.insert(principals).values({ id: principalId, issuer: issuer.config.issuer, subject });
+    await database.storage.db.insert(projectMembers).values({ projectId: fixture.scope.projectId, principalId, role: 'viewer' });
+    const viewerHeaders = { authorization: `Bearer ${await issuer.token(subject)}`, 'accept-language': 'en' };
+    expect((await post(payload, viewerHeaders)).statusCode).toBe(403);
+    const accepted = await post();
+    expect(accepted.statusCode).toBe(202);
+    const admission = admissionDtoSchema.parse(accepted.json());
+    expect(admission).toMatchObject({ replayed: false, task: { state: 'queued', purpose: '诊断已发布应用' } });
+    const resultPath = `/v1/tasks/${admission.task.id}/operations`;
+    expect((await disabled.inject({ url: resultPath, headers })).statusCode).toBe(404);
+
+    const address = await app.listen({ host: '127.0.0.1', port: 0 });
+    async function connect(caller: string, scope: string, locale: string) {
+      const token = await issuer.token(caller, { aud: `${publicUrl}/mcp`, scope });
+      const client = new Client({ name: 'operations-test', version: '0.0.0' });
+      clients.push(client);
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+        requestInit: { headers: { Authorization: `Bearer ${token}`, 'Accept-Language': locale } },
+      }));
+      return client;
+    }
+    const owner = await connect('owner', 'itervane:read itervane:write', 'zh-CN');
+    const viewer = await connect(subject, 'itervane:read', 'en');
+    const start = { name: 'start_operations_diagnosis', arguments: payload };
+    expect((await owner.listTools()).tools.find(tool => tool.name === start.name)).toMatchObject({
+      description: translate('zh-CN', 'mcp.operations_start'), annotations: { readOnlyHint: false } });
+    const query = { name: 'get_operations_result', arguments: { taskId: admission.task.id } };
+    const readerTools = (await viewer.listTools()).tools;
+    expect(readerTools.some(tool => tool.name === start.name)).toBe(false);
+    expect(readerTools.find(tool => tool.name === query.name)).toMatchObject({
+      description: translate('en', 'mcp.operations_result'), annotations: { readOnlyHint: true } });
+    const viewerStart = await fetch(new URL('/mcp', address), {
+      method: 'POST', headers: { authorization: `Bearer ${await issuer.token(subject, { aud: `${publicUrl}/mcp`, scope: 'itervane:read' })}`,
+        'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: start }),
+    });
+    expect(viewerStart.status).toBe(403);
+    expect(viewerStart.headers.get('www-authenticate')).toContain('scope="itervane:write"');
+    expect(apiErrorSchema.parse(await viewerStart.json()).error.code).toBe('forbidden');
+    expect(admissionDtoSchema.parse((await owner.callTool(start)).structuredContent))
+      .toEqual({ ...admission, replayed: true });
+    const downstream = scopedWhiskers(fixture);
+    try { await worker.tick(); } finally { downstream.restore(); }
+    expect(downstream.observe).toHaveBeenCalledOnce();
+
+    const response = await app.inject({ url: resultPath, headers: viewerHeaders });
+    expect(response.statusCode).toBe(200);
+    const observed = operationsObservationViewSchema.parse(response.json());
+    expect(observed).toMatchObject({ state: 'succeeded', releaseOperationId: fixture.operationId,
+      observation: { state: 'exited', stateLabel: 'Exited' } });
+    expect(operationsObservationViewSchema.parse((await viewer.callTool(query)).structuredContent)).toEqual(observed);
+    expect(operationsObservationViewSchema.parse((await owner.callTool(query)).structuredContent).observation?.stateLabel).toBe('已退出');
+    expect(response.body).not.toContain(fixture.registration.whiskers.origin);
+    expect(response.body).not.toContain(operationsFixtureKey);
+
+    await registerOperationsTarget(database.storage, { ...fixture.registration, whiskers: { ...fixture.registration.whiskers, serverId: 'next-server' } });
+    expect((await post(payload)).statusCode).toBe(200);
+    const stale = await post({ ...payload, idempotencyKey: randomUUID() });
+    expect(stale.statusCode).toBe(503);
+    expect(apiErrorSchema.parse(stale.json()).error).toMatchObject({ code: 'unavailable', locale: 'zh-CN' });
+    expect(await database.storage.db.select().from(operationsRequests)).toHaveLength(1);
+
+    await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
+    expect((await app.inject({ url: resultPath, headers: viewerHeaders })).statusCode).toBe(404);
+    expect(apiErrorSchema.parse((await viewer.callTool(query)).structuredContent).error.code).toBe('not_found');
+  } finally {
+    await Promise.all(clients.map(client => client.close()));
+    await Promise.all([app.close(), disabled.close(), worker.close()]);
+  }
 });
 
 it('settles one formal rollout and releases the environment only with a complete current proof', async () => {

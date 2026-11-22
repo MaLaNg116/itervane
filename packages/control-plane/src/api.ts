@@ -13,7 +13,7 @@ import { errorCode, localizedError, statusFor } from './service/presentation.js'
 import { ResourceService } from './service/resources.js';
 import { TaskService } from './service/tasks.js';
 import { createMcpEndpoint } from './mcp.js';
-import { canonicalPublicUrl } from './config.js';
+import { canonicalPublicUrl, type OperationsEnrollmentScope } from './config.js';
 import { registerPortal } from './portal.js';
 import { InspectionService } from './service/inspections.js';
 import { FormalAuditService } from './service/formal-audit.js';
@@ -21,6 +21,7 @@ import { FormalRepairService } from './service/repair-result.js';
 import { FormalReleaseService } from './service/formal-release.js';
 import { VerificationViewService } from './service/verification-view.js';
 import { PreauditService, RuleService } from './service/preaudits.js';
+import { OperationsObservationViewService } from './service/operations-observation-view.js';
 
 declare module 'fastify' {
   interface FastifyRequest { verifiedIdentity: VerifiedIdentity | null; locale: Locale }
@@ -36,7 +37,7 @@ const identity = (request: FastifyRequest) => {
 };
 const limit = (request: FastifyRequest) => parseInput(listQuerySchema, request.query).limit;
 
-export type ApiConfig = IdentityConfig & { publicUrl?: string; portalClientId?: string };
+export type ApiConfig = IdentityConfig & { publicUrl?: string; portalClientId?: string; operationsApi?: OperationsEnrollmentScope };
 export function createApi(database: Database, config: ApiConfig, options: { logger?: boolean; portalRoot?: string } = {}) {
   const verify = createIdentityVerifier(config);
   const resources = new ResourceService(database); const tasks = new TaskService(database);
@@ -83,6 +84,7 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
   });
   app.setNotFoundHandler((request, reply) => reply.code(404).send(localizedError('not_found', request.id, request.locale)));
   const portalAvailable = registerPortal(app, options.portalRoot, config);
+  const { operationsApi } = config;
 
   app.get('/health/live', { config: { public: true } }, async () => ({ status: 'alive' }));
   app.get('/portal-config', { config: { public: true } }, async () => {
@@ -97,10 +99,10 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
   app.get('/v1/me', async request => meDtoSchema.parse(await resources.me(identity(request))));
   app.get('/v1/capabilities', async request => {
     await resources.me(identity(request));
-    return capabilitiesSchema.parse({ stage: 'p1-e', taskAdmission: true, taskExecution: false, durableScheduling: true, externalMcp: true,
+    return capabilitiesSchema.parse({ stage: operationsApi ? 'p3-a' : 'p1-e', taskAdmission: true, taskExecution: false, durableScheduling: true, externalMcp: true,
       ruleQuery: true, limitedTextPreaudit: true, autonomousAgents: false,
       sourceInspectionPlanning: true, sourceSnapshots: false, sourceScanning: false,
-      portal: portalAvailable, browserLogin: portalAvailable && Boolean(config.portalClientId), sandbox: false, deployment: false, operations: false });
+      portal: portalAvailable, browserLogin: portalAvailable && Boolean(config.portalClientId), sandbox: false, deployment: false, operations: Boolean(operationsApi) });
   });
   app.post('/v1/projects', async (request, reply) => reply.code(201).send(projectDtoSchema.parse(await resources.createProject(identity(request), request.body))));
   app.get('/v1/projects', async request => ({ items: projectDtoSchema.array().parse(await resources.listProjects(identity(request), limit(request))) }));
@@ -160,6 +162,17 @@ export function createApi(database: Database, config: ApiConfig, options: { logg
     const result = admissionDtoSchema.parse(await tasks.admit(identity(request), request.body));
     return reply.code(result.replayed ? 200 : 202).send(result);
   });
+  if (operationsApi) {
+    const operations = new OperationsObservationViewService(database);
+    app.post('/v1/operations/diagnoses', async (request, reply) => {
+      const result = admissionDtoSchema.parse(await tasks.admitOperations(identity(request), request.body, operationsApi));
+      return reply.code(result.replayed ? 200 : 202).send(result);
+    });
+    app.get('/v1/tasks/:taskId/operations', async request => {
+      const { taskId } = parseInput(taskParam, request.params);
+      return operations.get(identity(request), taskId, request.locale);
+    });
+  }
   app.get('/v1/projects/:projectId/tasks', async request => {
     const { projectId } = parseInput(projectParam, request.params);
     return { items: taskDtoSchema.array().parse(await tasks.list(identity(request), projectId, limit(request))) };
