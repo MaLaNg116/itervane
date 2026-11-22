@@ -1,0 +1,9 @@
+# P3-A2-C1/C2 · 只读诊断的授权回执、HTTP 与 MCP
+
+接续 [发布容器的原生观察 #71](https://github.com/MaLaNg116/itervane/pull/71)。双语读模型固定于 `6d5146cf076bae7a7fa14632f5c72a4fbc228f5c`，传输与安装边界固定于 `de54f95c3aa3bd9b67cd57f318f5f15d5cf61b63`。 [分批计划](../plans/p3-a-observation-interfaces.md)
+
+1. 回执查询需要当前项目读取权限。读模型对照任务、run、冻结请求、回执摘要和完成事件。返回观察时间、容器状态、发布操作与回执摘要，并提供双语状态和失败原因。后续换绑保留历史观察，项目撤权收回查询权限。 [读模型](https://github.com/MaLaNg116/itervane/blob/6d5146cf076bae7a7fa14632f5c72a4fbc228f5c/packages/control-plane/src/service/operations-observation-view.ts#L12)
+2. 安装维护者在 API 配置 `ITERVANE_OPERATIONS_API_ENABLED=1`、登记的环境 ID 与登记摘要，入口默认关闭。配套 Worker 使用同一登记，并单独接收 Whiskers Read 凭证。MCP 创建同时要求 `itervane:write` 和项目写权限。领域事务核对安装环境、当前正式发布及后端登记后入队。同一请求键的历史重放返回原任务。 [安装配置](https://github.com/MaLaNg116/itervane/blob/de54f95c3aa3bd9b67cd57f318f5f15d5cf61b63/packages/control-plane/src/config.ts#L25) · [领域接收](https://github.com/MaLaNg116/itervane/blob/de54f95c3aa3bd9b67cd57f318f5f15d5cf61b63/packages/control-plane/src/service/tasks.ts#L86)
+3. `POST /v1/operations/diagnoses` 与 `start_operations_diagnosis` 接收 `projectId`、`environmentId`、`idempotencyKey` 和可选的 `locale`。HTTP 新任务返回 202，重放返回 200。通过 `GET /v1/tasks/:taskId/operations` 或 `get_operations_result` 查询，显示语言由 `Accept-Language` 决定。 [HTTP](https://github.com/MaLaNg116/itervane/blob/de54f95c3aa3bd9b67cd57f318f5f15d5cf61b63/packages/control-plane/src/api.ts#L165) · [MCP](https://github.com/MaLaNg116/itervane/blob/de54f95c3aa3bd9b67cd57f318f5f15d5cf61b63/packages/control-plane/src/mcp.ts#L52)
+
+本机 TypeScript、211 项单元检查与独立 PostgreSQL 17.12 的四项专项通过。覆盖两个入口共用幂等、默认关闭、限定环境、拒绝指定容器、MCP 写范围、项目只读与撤权、换绑拒绝新任务和回执脱敏。数据库专项用受控 Whiskers 协议夹具，原生下游证据由 #71 提供。门户接续在 C3。 [跨入口回归](https://github.com/MaLaNg116/itervane/blob/de54f95c3aa3bd9b67cd57f318f5f15d5cf61b63/packages/control-plane/test/integration/inspections.test.ts#L2461)

@@ -75,6 +75,7 @@
 | 069 | P3-A2-B2-A 持久化诊断请求与调度 | [#69](https://github.com/MaLaNg116/itervane/pull/69)，基于已合入 #68 的 main | [诊断接收导读](p3-a-durable-observation.md) | TypeScript、210 项单元、本机 PostgreSQL 17.12 两项专项及[托管真实数据库](https://github.com/MaLaNg116/itervane/actions/runs/44966792269)通过，托管 KVM 运行中 |
 | 070 | P3-A2-B2-B 持租约执行并记录只读观察 | [#70](https://github.com/MaLaNg116/itervane/pull/70)，依赖 #69 | [观察执行导读](p3-a-observation-execution.md) | TypeScript、210 项单元、本机 PostgreSQL 17.12 八项专项、[托管 CI](https://github.com/MaLaNg116/itervane/actions/runs/44967527210)和[原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/44967521367)通过，托管 KVM 运行中 |
 | 071 | P3-A2-B2-C 同一发布容器的原生 Whiskers 观察 | [#71](https://github.com/MaLaNg116/itervane/pull/71)，依赖 #70 | [已发布容器验收导读](p3-a-published-observation-native.md) | TypeScript、210 项单元、宿主脚本语法及[原生 Whiskers 回归](https://github.com/MaLaNg116/itervane/actions/runs/44968006870)通过，[原生接续](https://github.com/MaLaNg116/itervane/actions/runs/44968006971/job/137041290751)已调度 |
+| 待合入 | P3-A2-C1/C2 双语诊断回执及 HTTP/MCP 接入 | 依赖 #71 | [接入导读](p3-a-observation-interfaces.md) | TypeScript、211 项单元和四项本机 PostgreSQL 17.12 专项通过 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
