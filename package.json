@@ -23,6 +23,7 @@
     "probe:formal-audit": "tsx --env-file-if-exists=.env packages/verification/src/entries/formal-audit.ts",
     "probe:formal-repair": "tsx --env-file-if-exists=.env packages/verification/src/entries/formal-repair.ts",
     "probe:formal-verify": "tsx --env-file-if-exists=.env packages/verification/src/entries/formal-verification.ts",
+    "probe:operations-agent": "tsx --env-file-if-exists=.env packages/verification/src/entries/operations-agent.ts",
     "verify:p0": "tsx --env-file-if-exists=.env packages/verification/src/cli.ts readiness",
     "start:api": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/server.ts",
     "build:portal": "pnpm --filter @itervane/portal build",
