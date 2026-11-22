@@ -10,4 +10,4 @@
 
 Whiskers 0.15 的原生许可按调用者、工具和规范参数绑定，批准后的许可有效期为十分钟。参考安装限定专用调用身份和 Confirm 策略，续发前仍按平台当前授权和提案有效期检查。批准 ID 是关联证据，执行许可仍由 Whiskers 现场裁定。 [原生执行护栏](https://github.com/LupusMalusDeviant/Whiskers/blob/e10cfa62ed8c3129302f68e0b4ec6e3ece8994e4/src/Whiskers/Services/Agent/Guardrails/DirectMcpCallGuard.cs)
 
-C2c1 用 PostgreSQL 17 验证绑定变更、旧 fence、重复回执、暂停提交失败与发布互斥。实际执行启用前，以同一个已发布的合成工作负载复验平台批准、原生审批、调用、健康、取消及恢复。保留 Worker 的独立执行边界、现有双语界面与后续指定版本恢复计划。
+C2c1 用 PostgreSQL 17 验证绑定变更、旧 fence、重复回执、暂停提交失败与发布互斥。平台批准撤销时，已到达或随后到达的原生回执进入只读核对。实际执行启用前，以同一个已发布的合成工作负载复验平台批准、原生审批、调用、健康、取消及恢复。保留 Worker 的独立执行边界、现有双语界面与后续指定版本恢复计划。
