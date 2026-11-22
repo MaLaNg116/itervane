@@ -1,4 +1,5 @@
 import { releaseKomodoCompletionSchema, releaseRegistryHost, releaseRolloutProofSchema, taskDtoSchema } from '@itervane/contracts';
+import { sha256 } from '@itervane/runner';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { environments, formalReleaseRolloutAttempts, formalReleaseSteps, formalReleaseTargets,
   releaseCandidates, releaseOperations, tasks } from '../persistence/schema.js';
@@ -7,44 +8,26 @@ import { DomainError } from './errors.js';
 import { readReleaseManifest } from './formal-release.js';
 import { readReleaseTarget } from './release-targets.js';
 
-export async function readOperationsDeployment(tx: Transaction, actor: Actor, scope: { projectId: string; environmentId: string }) {
-  const { projectId, environmentId } = scope;
-  const { grantId } = await requireProjectAccess(tx, actor, projectId, true);
-  const [environment] = await tx.select().from(environments).where(and(eq(environments.id, environmentId),
-    eq(environments.projectId, projectId), eq(environments.access, 'protected'))).for('share');
-  if (!environment) throw new DomainError('not_found');
+type Mapping = typeof formalReleaseTargets.$inferSelect;
+type VerifiedDeployment = {
+  operation: typeof releaseOperations.$inferSelect;
+  candidate: typeof releaseCandidates.$inferSelect;
+  sourceTask: typeof tasks.$inferSelect;
+  receipt: typeof formalReleaseRolloutAttempts.$inferSelect | null;
+  dispatch: typeof formalReleaseSteps.$inferSelect | null;
+};
 
-  const [mapping] = await tx.select().from(formalReleaseTargets).where(and(eq(formalReleaseTargets.environmentId, environment.id),
-    eq(formalReleaseTargets.projectId, projectId), eq(formalReleaseTargets.applicationId, environment.applicationId))).for('share');
-  if (!mapping) throw new DomainError('unsupported_state');
+function installedTarget(mapping: Mapping) {
   const target = readReleaseTarget(mapping);
-  if (!target.komodo || !target.registryOrigin || !target.rolloutCheck) throw new DomainError('unsupported_state');
+  const { komodo, registryOrigin, rolloutCheck } = target;
+  if (!komodo || !registryOrigin || !rolloutCheck) throw new DomainError('unsupported_state');
+  return { ...target, komodo, registryOrigin, rolloutCheck };
+}
 
-  const [pending] = await tx.select({ id: releaseOperations.id }).from(releaseOperations).where(
-    and(eq(releaseOperations.environmentId, environment.id), inArray(releaseOperations.state, ['queued', 'dispatching', 'reconciling'])),
-  ).limit(1);
-  if (pending) throw new DomainError('conflict');
-
-  // Pick the latest settled formal release before validating its receipt. Broken evidence cannot fall back to an older version.
-  const [latest] = await tx.select({ operation: releaseOperations, candidate: releaseCandidates, sourceTask: tasks,
-    receipt: formalReleaseRolloutAttempts, dispatch: formalReleaseSteps })
-    .from(releaseOperations).innerJoin(releaseCandidates, and(eq(releaseCandidates.id, releaseOperations.candidateId),
-      eq(releaseCandidates.environmentId, environment.id), eq(releaseCandidates.projectId, projectId),
-      eq(releaseCandidates.applicationId, environment.applicationId)))
-    .innerJoin(tasks, and(eq(tasks.id, releaseCandidates.taskId), eq(tasks.projectId, projectId)))
-    .leftJoin(formalReleaseRolloutAttempts, and(eq(formalReleaseRolloutAttempts.operationId, releaseOperations.id),
-      eq(formalReleaseRolloutAttempts.state, 'verified')))
-    .leftJoin(formalReleaseSteps, and(eq(formalReleaseSteps.operationId, releaseOperations.id),
-      eq(formalReleaseSteps.kind, 'komodo_dispatch'), eq(formalReleaseSteps.state, 'confirmed')))
-    .where(and(eq(releaseOperations.environmentId, environment.id), eq(releaseOperations.state, 'verified_formal')))
-    .orderBy(desc(releaseOperations.updatedAt), desc(releaseOperations.id)).limit(1);
-  if (!latest) throw new DomainError('unsupported_state');
-
-  const { operation, candidate, sourceTask, receipt, dispatch } = latest;
+function checkedRelease({ operation, candidate, sourceTask, receipt, dispatch }: VerifiedDeployment,
+  mapping: Mapping, target: ReturnType<typeof installedTarget>) {
   const manifest = readReleaseManifest(candidate);
-  if (manifest.target.revision !== mapping.revision || manifest.target.mappingSha256 !== mapping.sha256) {
-    throw new DomainError('unsupported_state');
-  }
+  if (manifest.target.revision !== mapping.revision || manifest.target.mappingSha256 !== mapping.sha256) return null;
   const verified = releaseRolloutProofSchema.safeParse(receipt?.proof);
   const dispatched = releaseKomodoCompletionSchema.safeParse(dispatch?.proof);
   if (!verified.success || !receipt?.completedAt || !dispatched.success
@@ -66,10 +49,49 @@ export async function readOperationsDeployment(tx: Transaction, actor: Actor, sc
       || update.actorId !== target.komodo.actorId || update.actorId !== dispatched.data.actorId) {
     throw new Error('operations_deployment_evidence_integrity');
   }
-  return { projectId, environmentId, applicationId: environment.applicationId, grantId,
-    releaseOperationId: operation.id, releaseTaskId: candidate.taskId, source: manifest.source,
+  return { releaseOperationId: operation.id, releaseTaskId: candidate.taskId, source: manifest.source,
     dataClass: taskDtoSchema.shape.dataClass.parse(sourceTask.dataClass),
-    targetRevision: mapping.revision, mappingSha256: mapping.sha256, deploymentId: target.deploymentId,
     containerId: runtime.containerId, manifestDigest: proof.manifestDigest, configDigest: runtime.configDigest,
-    version: runtime.version, updateId: update.updateId, verifiedAt: receipt.completedAt.toISOString() };
+    version: runtime.version, updateId: update.updateId, verifiedAt: receipt.completedAt.toISOString(),
+    proofSha256: sha256(JSON.stringify({ proof, dispatch: dispatched.data })) };
+}
+
+export async function readOperationsDeployment(tx: Transaction, actor: Actor, scope: { projectId: string; environmentId: string },
+  options: { includePrevious?: boolean } = {}) {
+  const { projectId, environmentId } = scope;
+  const { grantId } = await requireProjectAccess(tx, actor, projectId, true);
+  const [environment] = await tx.select().from(environments).where(and(eq(environments.id, environmentId),
+    eq(environments.projectId, projectId), eq(environments.access, 'protected'))).for('share');
+  if (!environment) throw new DomainError('not_found');
+
+  const [mapping] = await tx.select().from(formalReleaseTargets).where(and(eq(formalReleaseTargets.environmentId, environment.id),
+    eq(formalReleaseTargets.projectId, projectId), eq(formalReleaseTargets.applicationId, environment.applicationId))).for('share');
+  if (!mapping) throw new DomainError('unsupported_state');
+  const target = installedTarget(mapping);
+
+  const [pending] = await tx.select({ id: releaseOperations.id }).from(releaseOperations).where(
+    and(eq(releaseOperations.environmentId, environment.id), inArray(releaseOperations.state, ['queued', 'dispatching', 'reconciling'])),
+  ).limit(1);
+  if (pending) throw new DomainError('conflict');
+
+  // Pick the latest settled formal release before validating its receipt. Broken evidence cannot fall back to an older version.
+  const [latest, earlier] = await tx.select({ operation: releaseOperations, candidate: releaseCandidates, sourceTask: tasks,
+    receipt: formalReleaseRolloutAttempts, dispatch: formalReleaseSteps })
+    .from(releaseOperations).innerJoin(releaseCandidates, and(eq(releaseCandidates.id, releaseOperations.candidateId),
+      eq(releaseCandidates.environmentId, environment.id), eq(releaseCandidates.projectId, projectId),
+      eq(releaseCandidates.applicationId, environment.applicationId)))
+    .innerJoin(tasks, and(eq(tasks.id, releaseCandidates.taskId), eq(tasks.projectId, projectId)))
+    .leftJoin(formalReleaseRolloutAttempts, and(eq(formalReleaseRolloutAttempts.operationId, releaseOperations.id),
+      eq(formalReleaseRolloutAttempts.state, 'verified')))
+    .leftJoin(formalReleaseSteps, and(eq(formalReleaseSteps.operationId, releaseOperations.id),
+      eq(formalReleaseSteps.kind, 'komodo_dispatch'), eq(formalReleaseSteps.state, 'confirmed')))
+    .where(and(eq(releaseOperations.environmentId, environment.id), eq(releaseOperations.state, 'verified_formal')))
+    .orderBy(desc(releaseOperations.updatedAt), desc(releaseOperations.id)).limit(options.includePrevious ? 2 : 1);
+  if (!latest) throw new DomainError('unsupported_state');
+  const current = checkedRelease(latest, mapping, target);
+  if (!current) throw new DomainError('unsupported_state');
+  const previous = earlier ? checkedRelease(earlier, mapping, target) : null;
+  if (earlier?.operation.id === current.releaseOperationId) throw new Error('operations_deployment_evidence_integrity');
+  return { projectId, environmentId, applicationId: environment.applicationId, grantId,
+    targetRevision: mapping.revision, mappingSha256: mapping.sha256, deploymentId: target.deploymentId, ...current, previous };
 }

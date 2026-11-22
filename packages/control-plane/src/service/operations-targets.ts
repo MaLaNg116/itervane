@@ -1,4 +1,4 @@
-import { operationsTargetInputSchema } from '@itervane/contracts';
+import { operationsTargetInputSchema, type OperationsRequestBinding } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { and, eq } from 'drizzle-orm';
 import type { Database } from '../persistence/database.js';
@@ -6,6 +6,7 @@ import { environments, formalReleaseTargets, operationsTargets } from '../persis
 import type { Actor, Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 import { readOperationsDeployment } from './operations-deployment.js';
+import { freezeOperationsRequest } from './operations-requests.js';
 import { readReleaseTarget } from './release-targets.js';
 
 function readEnrollment(row: typeof operationsTargets.$inferSelect) {
@@ -46,8 +47,9 @@ export async function registerOperationsTarget(database: Database, raw: unknown)
   });
 }
 
-export async function readOperationsObservationTarget(tx: Transaction, actor: Actor, scope: { projectId: string; environmentId: string }) {
-  const deployment = await readOperationsDeployment(tx, actor, scope);
+export async function readOperationsObservationTarget(tx: Transaction, actor: Actor, scope: { projectId: string; environmentId: string },
+  options?: { includePrevious?: boolean }) {
+  const deployment = await readOperationsDeployment(tx, actor, scope, options);
   const [binding] = await tx.select().from(operationsTargets).where(and(eq(operationsTargets.environmentId, scope.environmentId),
     eq(operationsTargets.projectId, scope.projectId), eq(operationsTargets.applicationId, deployment.applicationId))).for('share');
   if (!binding) throw new DomainError('unsupported_state');
@@ -56,4 +58,15 @@ export async function readOperationsObservationTarget(tx: Transaction, actor: Ac
     throw new DomainError('version_conflict');
   }
   return { ...deployment, whiskers: enrolled.whiskers, enrollmentRevision: binding.revision, enrollmentSha256: binding.sha256 };
+}
+
+export async function readOperationsReleaseEvidence(tx: Transaction, actor: Actor, request: { document: OperationsRequestBinding; sha256: string }) {
+  if (sha256(JSON.stringify(request.document)) !== request.sha256) throw new DomainError('unsupported_state');
+  const deployment = await readOperationsObservationTarget(tx, actor, request.document, { includePrevious: true });
+  if (freezeOperationsRequest(deployment).sha256 !== request.sha256) throw new DomainError('version_conflict');
+  const summarize = (release: Pick<typeof deployment, 'releaseOperationId' | 'manifestDigest' | 'verifiedAt'>) =>
+    ({ operationId: release.releaseOperationId, manifestDigest: release.manifestDigest, verifiedAt: release.verifiedAt });
+  const result = { current: summarize(deployment), previous: deployment.previous ? summarize(deployment.previous) : null };
+  return { proofSha256: sha256(JSON.stringify({ version: 1, requestSha256: request.sha256,
+    currentProofSha256: deployment.proofSha256, previousProofSha256: deployment.previous?.proofSha256 ?? null, result })), result };
 }

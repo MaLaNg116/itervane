@@ -9,10 +9,10 @@ import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { AgentEvidence } from '@itervane/agent';
 import { createFormalVerification } from '@itervane/agent';
 import { admissionDtoSchema, apiErrorSchema, fixtureReleaseManifestSchema, formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, formalRepairDtoSchema, formalRepairInputSchema, formalRepairPatchDtoSchema,
-  formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
+  formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseTargetSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
   formalVerificationResultSchema, operationsLaunchViewSchema, operationsObservationViewSchema, taskDtoSchema, translate, verificationViewSchema,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
-  type FormalReleaseManifest, type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
+  type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
 import { canonicalRepairCommand, canonicalRepairObservation, canonicalVerificationCommand, prepareQualifiedVerificationRequest,
@@ -58,7 +58,8 @@ import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { FormalReleaseService } from '../../src/service/formal-release.js';
 import { readOperationsDeployment } from '../../src/service/operations-deployment.js';
 import { OperationsObservationViewService } from '../../src/service/operations-observation-view.js';
-import { readOperationsObservationTarget, registerOperationsTarget } from '../../src/service/operations-targets.js';
+import { freezeOperationsRequest } from '../../src/service/operations-requests.js';
+import { readOperationsObservationTarget, readOperationsReleaseEvidence, registerOperationsTarget } from '../../src/service/operations-targets.js';
 import { publishFormalRepair } from '../../src/service/repair-result.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
 import { fingerprintRolloutCheck, readInstalledReleaseTarget, registerReleaseTarget } from '../../src/service/release-targets.js';
@@ -1301,7 +1302,9 @@ const rolloutCheckFixture = {
     clientId: 'demo-probe', subject: 'expected-probe-service-account' },
 } as const;
 
-async function queuedFormalRelease(options: { separateRequester?: boolean; expiring?: boolean; komodo?: boolean; rolloutCheck?: boolean } = {}) {
+async function queuedFormalRelease(options: {
+  separateRequester?: boolean; expiring?: boolean; komodo?: boolean; rolloutCheck?: boolean; existingTarget?: FormalReleaseTarget;
+} = {}) {
   const taskService = new TaskService(database.storage);
   const resources = new ResourceService(database.storage);
   const verifyIdentity = createIdentityVerifier(issuer.config);
@@ -1325,7 +1328,7 @@ async function queuedFormalRelease(options: { separateRequester?: boolean; expir
       observe: async () => idleRepairRunner(),
       verify: async (coordinates, input, repair, authorize) => {
         await authorize();
-        const [stored] = await database.storage.db.select().from(inspectionAttempts);
+        const [stored] = await database.storage.db.select().from(inspectionAttempts).where(eq(inspectionAttempts.runId, task.runId));
         const original = qualifiedInspectionResponseSchema.parse(stored?.receipt);
         if (original.kind !== 'receipt') throw new Error('Missing verified original');
         const request = prepareQualifiedVerificationRequest(coordinates, canonicalVerificationCommand({ input, repair }));
@@ -1335,15 +1338,18 @@ async function queuedFormalRelease(options: { separateRequester?: boolean; expir
     } },
   });
   try { await processAdmittedTestTask(worker); } finally { await worker.close(); }
-  const application = await resources.createApplication(identity, task.projectId, { name: 'Claim sample' });
-  const environment = await resources.createEnvironment(identity, task.projectId, { applicationId: application.id, name: 'Protected sample' });
-  const target = { environmentId: environment.id, deploymentId: 'a'.repeat(24), serverId: 'b'.repeat(24),
-    imageRepository: 'testing/standard', registryOrigin: releaseOrigin, runtimeConfigSha256: sha256('runtime configuration'),
-    verificationProfileSha256: verificationProfileFingerprint(standardVerificationProfile), verificationMaxAgeSeconds: 60,
-    rolloutCheckSha256: options.rolloutCheck ? fingerprintRolloutCheck(rolloutCheckFixture) : sha256('health verification'),
-    recoveryPlanSha256: sha256('known release'), ...(options.rolloutCheck ? { rolloutCheck: rolloutCheckFixture } : {}),
-    ...(options.komodo ? { komodo: komodoBinding } : {}),
-  };
+  let target = options.existingTarget;
+  if (!target) {
+    const application = await resources.createApplication(identity, task.projectId, { name: 'Claim sample' });
+    const environment = await resources.createEnvironment(identity, task.projectId, { applicationId: application.id, name: 'Protected sample' });
+    target = formalReleaseTargetSchema.parse({ environmentId: environment.id, deploymentId: 'a'.repeat(24), serverId: 'b'.repeat(24),
+      imageRepository: 'testing/standard', registryOrigin: releaseOrigin, runtimeConfigSha256: sha256('runtime configuration'),
+      verificationProfileSha256: verificationProfileFingerprint(standardVerificationProfile), verificationMaxAgeSeconds: 60,
+      rolloutCheckSha256: options.rolloutCheck ? fingerprintRolloutCheck(rolloutCheckFixture) : sha256('health verification'),
+      recoveryPlanSha256: sha256('known release'), ...(options.rolloutCheck ? { rolloutCheck: rolloutCheckFixture } : {}),
+      ...(options.komodo ? { komodo: komodoBinding } : {}),
+    });
+  }
   await registerReleaseTarget(database.storage, target);
   const portal = 'itervane-claim-portal';
   const owner = await verifyIdentity(await issuer.token('owner', { azp: portal }));
@@ -1354,7 +1360,7 @@ async function queuedFormalRelease(options: { separateRequester?: boolean; expir
     // Exercise expiry below the runtime's five-second statement timeout even on a fast database.
     await adjustFixtureVerification("UPDATE itervane.formal_verification_results SET created_at=clock_timestamp()-interval '57 seconds'");
   }
-  const frozen = (await service.freeze(requester, task.id, { environmentId: environment.id, expectedVersion: verified.version }, 'zh-CN')).candidate;
+  const frozen = (await service.freeze(requester, task.id, { environmentId: target.environmentId, expectedVersion: verified.version }, 'zh-CN')).candidate;
   const approval = (await service.decide(owner, frozen.id, {
     action: 'confirm', fingerprint: frozen.fingerprint, expectedVersion: 0, idempotencyKey: randomUUID(),
   }, 'zh-CN')).candidate;
@@ -1894,7 +1900,7 @@ it('records one Komodo configuration and dispatch with separately bound observat
   expect(zh.at(-1)?.message).toMatch(/独立核对/);
 });
 
-async function parkForRollout({ approval, target }: Awaited<ReturnType<typeof queuedFormalRelease>>, success = true) {
+async function parkForRollout({ approval, target }: Awaited<ReturnType<typeof queuedFormalRelease>>, success = true, updateId = 'e'.repeat(24)) {
   const release = new FormalReleaseCoordinator(coordinator, releaseOrigin);
   const registry = new FormalReleaseSteps(release);
   const importScope = await release.claim(await fetchFormalWakeup(), randomUUID());
@@ -1914,7 +1920,7 @@ async function parkForRollout({ approval, target }: Awaited<ReturnType<typeof qu
   await komodo.confirmConfiguration(writer, configuration);
   await komodo.prepareDispatch(writer);
   await komodo.authorizeWrite(writer, 'komodo_dispatch');
-  const update = { updateId: 'e'.repeat(24), actorId: komodoBinding.actorId, deploymentId: target.deploymentId,
+  const update = { updateId, actorId: komodoBinding.actorId, deploymentId: target.deploymentId,
     status: 'Complete', success } as const;
   await komodo.recordUpdate(writer, { ...update, status: 'Queued', success: false });
   await komodo.confirmDispatch(writer, update);
@@ -2081,6 +2087,59 @@ async function installedOperationsFixture() {
   const enrollment = await registerOperationsTarget(database.storage, registration);
   return { ...submitted, scope, registration, enrollment, runtime, image };
 }
+
+it('reads the current and preceding verified releases only for the frozen operations scope', async () => {
+  const fixture = await installedOperationsFixture();
+  const capture = () => database.storage.db.transaction(async tx =>
+    freezeOperationsRequest(await readOperationsObservationTarget(tx, await requireActor(tx, identity), fixture.scope)));
+  const read = (request: Awaited<ReturnType<typeof capture>>, actor = identity) => database.storage.db.transaction(async tx =>
+    readOperationsReleaseEvidence(tx, await requireActor(tx, actor), request));
+  const queueNext = async (target: FormalReleaseTarget, purpose: string) => {
+    task = (await fixture.taskService.admit(identity, { projectId: fixture.scope.projectId, source: task.source, purpose,
+      dataClass: 'synthetic', locale: 'zh-CN', idempotencyKey: randomUUID() })).task;
+    return queuedFormalRelease({ existingTarget: target });
+  };
+  const original = await capture();
+  const first = await read(original);
+  expect(first.result).toEqual({ current: { operationId: fixture.operationId,
+    manifestDigest: fixture.image.manifestDigest, verifiedAt: expect.any(String) }, previous: null });
+
+  const next = await queueNext(fixture.target, 'Second verified release');
+  await expect(read(original)).rejects.toMatchObject({ code: 'conflict' });
+  const second = await finishTestRollout(await parkForRollout(next, true, 'd'.repeat(24)));
+  await expect(read(original)).rejects.toMatchObject({ code: 'version_conflict' });
+  const current = await capture();
+  const history = await read(current);
+  expect(history).toEqual({ proofSha256: expect.stringMatching(/^[a-f0-9]{64}$/), result: {
+    current: { operationId: next.operationId, manifestDigest: second.image.manifestDigest, verifiedAt: expect.any(String) },
+    previous: first.result.current,
+  } });
+  expect(history.proofSha256).not.toBe(first.proofSha256);
+  await expect(read(current)).resolves.toEqual(history);
+  expect(JSON.stringify(history)).not.toContain(fixture.registration.whiskers.origin);
+  await expect(read({ ...current, sha256: sha256('altered request') })).rejects.toMatchObject({ code: 'unsupported_state' });
+
+  const foreign = await new ResourceService(database.storage).createProject(identity, { name: 'Other release history', slug: 'other-release-history' });
+  const document = { ...current.document, projectId: foreign.id };
+  await expect(read({ document, sha256: sha256(JSON.stringify(document)) })).rejects.toMatchObject({ code: 'not_found' });
+  const principalId = randomUUID();
+  const subject = 'diagnosis-history-viewer';
+  await database.storage.db.insert(principals).values({ id: principalId, issuer: issuer.config.issuer, subject });
+  await database.storage.db.insert(projectMembers).values({ projectId: fixture.scope.projectId, principalId, role: 'viewer' });
+  const viewer = await createIdentityVerifier(issuer.config)(await issuer.token(subject));
+  await expect(read(current, viewer)).rejects.toMatchObject({ code: 'forbidden' });
+  await database.storage.db.update(projectMembers).set({ role: 'maintainer' }).where(eq(projectMembers.principalId, principalId));
+  await expect(read(current, viewer)).rejects.toMatchObject({ code: 'version_conflict' });
+
+  await registerOperationsTarget(database.storage, { ...fixture.registration, whiskers: { ...fixture.registration.whiskers, serverId: 'rebound' } });
+  await expect(read(current)).rejects.toMatchObject({ code: 'version_conflict' });
+
+  const remapped = await queueNext({ ...fixture.target, runtimeConfigSha256: sha256('new runtime baseline') }, 'Remapped release');
+  const settled = await finishTestRollout(await parkForRollout(remapped, true, 'f'.repeat(24)));
+  await registerOperationsTarget(database.storage, { ...fixture.registration,
+    releaseTargetRevision: settled.binding.manifest.target.revision, releaseTargetSha256: settled.binding.manifest.target.mappingSha256 });
+  expect((await read(await capture())).result).toMatchObject({ current: { operationId: remapped.operationId }, previous: null });
+});
 
 it.each(['verified', 'manual_review'] as const)('shares the %s formal release result between HTTP and MCP under current grants', async status => {
   const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
