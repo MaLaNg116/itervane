@@ -236,6 +236,19 @@ jobs:
               $restored.postRestoreDiagnosis.restoreExecutionId == $restored.executionId and
               ([$restored.stoppedDiagnosis, $restored.postRestoreDiagnosis] |
                 all(.httpMcpAgreement and .matchedPublishedTarget and .model == "scripted_anthropic_fixture"))' "$report" >/dev/null
+            jq -e '.restoration as $restored | $restored.interruption as $interrupted |
+              $interrupted.executionId != $restored.executionId and
+              $interrupted.diagnosisRestoreExecutionId == $restored.executionId and
+              $interrupted.currentOperationId == $restored.restoredOperationId and
+              $interrupted.attemptedOperationId == $restored.currentOperationId and
+              $interrupted.observedConfigDigest == .dualVersion.second.release.configDigest and
+              $interrupted.observedContainerId != $restored.restoredContainerId and
+              $interrupted.reason == "missing_update" and
+              $interrupted.acknowledgementMissing and $interrupted.changedWorker and
+              $interrupted.sendSteps == 2 and $interrupted.readFence > $interrupted.sendFence and
+              $interrupted.sendFence > $restored.readFence and
+              $interrupted.matchingRuntimeBeforeAndAfter and $interrupted.environmentHeld and
+              $interrupted.publicationBlocked and $interrupted.slotReleased and $interrupted.httpMcpAgreement' "$report" >/dev/null
           fi
           if [[ "$NATIVE_SCENARIO" == protected-release-operations ]]; then
             jq -e '.operations.releaseOperationId == .release.operationId and .operations.state == "running" and

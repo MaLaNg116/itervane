@@ -55,7 +55,7 @@ import type { KomodoInterruption, runKomodoReleaseFixture } from './komodo-relea
 import type { RegistryImportMarker } from './release-recovery.js';
 import { temporaryRegistry } from './registry-fixture.js';
 import { openProtectedIngress } from './protected-ingress.js';
-import { proveNativeRestore } from './restore-proof.js';
+import { proveInterruptedNativeRestore, proveNativeRestore } from './restore-proof.js';
 import { proveNativeRestart, type DiagnosisHttp, type DiagnosisReaders } from './restart-proof.js';
 
 type NativeDiagnosisPublication = {
@@ -1069,6 +1069,23 @@ async function probe() {
             const boundTarget = { ...target.binding, imageRepository: targetSettings.imageRepository, registryOrigin: targetSettings.registryOrigin };
             const reader = KomodoReleaseClient.readOnly(boundTarget, readerCredentials);
             await reader.verifyInstallation();
+            const startRestoreProcess = async (leaseSeconds = 30) => {
+              ok(!worker);
+              worker = await startScopedWorker(join(shared, 'restore-worker.mjs'), [
+                'PATH=/usr/bin:/bin', 'LANG=C.UTF-8', 'ITERVANE_WORKER_POLL_MS=250', `ITERVANE_WORKER_LEASE_SECONDS=${leaseSeconds}`,
+                `NODE_EXTRA_CA_CERTS=${ca}`, `ITERVANE_OPERATIONS_ENVIRONMENT_ID=${environment.id}`,
+                `ITERVANE_OPERATIONS_ENROLLMENT_SHA256=${enrollment.fingerprint}`,
+                `ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256=${mapping.fingerprint}`,
+                `ITERVANE_RESTORE_KOMODO_READER_ID=${readerCredentials.actorId}`,
+              ], { DATABASE_URL: db.runtimeUrl, ITERVANE_RESTORE_KOMODO_WRITER_KEY: target.credentials.key,
+                ITERVANE_RESTORE_KOMODO_WRITER_SECRET: target.credentials.secret, ITERVANE_RESTORE_KOMODO_READER_KEY: readerCredentials.key,
+                ITERVANE_RESTORE_KOMODO_READER_SECRET: readerCredentials.secret, ITERVANE_RESTORE_PROBE_SECRET: ingress.probeSecret });
+            };
+            const stopRestoreProcess = async (signal: 'TERM' | 'KILL') => {
+              ok(worker);
+              await worker.stop(signal);
+              worker = undefined;
+            };
             const stopped = second.proof.runtime;
             phase = 'operations_native_restore_stop_bound_fixture';
             await target.setOwnedContainerRunning(false, { containerId: stopped.containerId, reference: stopped.imageReference,
@@ -1087,21 +1104,13 @@ async function probe() {
                 return proveNativeRestore({ db, diagnosis, diagnosisSha256, current: second.proof, previous: first.proof,
                   ...readers, async startWorker() {
                     phase = 'operations_native_restore_worker';
-                    worker = await startScopedWorker(join(shared, 'restore-worker.mjs'), [
-                      'PATH=/usr/bin:/bin', 'LANG=C.UTF-8', 'ITERVANE_WORKER_POLL_MS=250', 'ITERVANE_WORKER_LEASE_SECONDS=30',
-                      `NODE_EXTRA_CA_CERTS=${ca}`, `ITERVANE_OPERATIONS_ENVIRONMENT_ID=${environment.id}`,
-                      `ITERVANE_OPERATIONS_ENROLLMENT_SHA256=${enrollment.fingerprint}`,
-                      `ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256=${mapping.fingerprint}`,
-                      `ITERVANE_RESTORE_KOMODO_READER_ID=${readerCredentials.actorId}`,
-                    ], { DATABASE_URL: db.runtimeUrl, ITERVANE_RESTORE_KOMODO_WRITER_KEY: target.credentials.key,
-                      ITERVANE_RESTORE_KOMODO_WRITER_SECRET: target.credentials.secret, ITERVANE_RESTORE_KOMODO_READER_KEY: readerCredentials.key,
-                      ITERVANE_RESTORE_KOMODO_READER_SECRET: readerCredentials.secret, ITERVANE_RESTORE_PROBE_SECRET: ingress.probeSecret });
+                    await startRestoreProcess();
                   },
                 });
               },
             });
-            ok(accepted && worker);
-            await worker.stop('TERM'); worker = undefined;
+            ok(accepted);
+            await stopRestoreProcess('TERM');
 
             phase = 'operations_native_restore_readback';
             const { runtime, update } = accepted.proof;
@@ -1109,11 +1118,38 @@ async function probe() {
             equal((await target.observeContainer(runtime.imageReference, runtime.configDigest)).containerId, runtime.containerId);
             const anonymous = await ingress.anonymousHealthStatus();
             ok(anonymous === 401 || anonymous === 403);
-            const postRestoreDiagnosis = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, {
+            const restoredPublication = {
               ...firstPublication, containerId: runtime.containerId, restoreExecutionId: accepted.proof.executionId,
-            });
+            };
+            const postRestoreDiagnosis = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, restoredPublication);
             notEqual(postRestoreDiagnosis.runId, stoppedDiagnosis.runId);
-            return { ...accepted.report, distinctKomodoReader: true, stoppedState: baseline.state, stoppedDiagnosis, postRestoreDiagnosis };
+
+            phase = 'operations_native_restore_stop_restored_fixture';
+            await target.setOwnedContainerRunning(false, { containerId: runtime.containerId, reference: runtime.imageReference,
+              configDigest: runtime.configDigest });
+            const interrupted = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, restoredPublication, {
+              kind: 'rollback', previousOperationId: second.report.operationId,
+              verify(diagnosis, diagnosisSha256, readers) {
+                phase = 'operations_native_restore_lost_acknowledgement';
+                return proveInterruptedNativeRestore({ db, diagnosis, diagnosisSha256, environmentId: environment.id,
+                  current: { ...first.proof, runtime, update }, previous: second.proof, ...readers,
+                  startWorker: () => startRestoreProcess(18),
+                  stopSender: () => stopRestoreProcess('KILL'),
+                  async observeApplied() {
+                    const observed = await target.observeContainer(second.proof.runtime.imageReference, second.proof.runtime.configDigest);
+                    const independent = await reader.inspectRuntime(boundTarget, second.report, target.endpoint.network, authorizeRead);
+                    equal(independent.containerId, observed.containerId);
+                    equal(independent.imageReference, observed.reference);
+                    return observed;
+                  },
+                });
+              },
+            });
+            ok(interrupted.accepted);
+            await stopRestoreProcess('TERM');
+            notEqual(interrupted.runId, postRestoreDiagnosis.runId);
+            return { ...accepted.report, distinctKomodoReader: true, stoppedState: baseline.state, stoppedDiagnosis, postRestoreDiagnosis,
+              interruption: { ...interrupted.accepted, diagnosisRunId: interrupted.runId, diagnosisRestoreExecutionId: interrupted.restoreExecutionId } };
           } finally {
             try { await worker?.stop('TERM'); worker = undefined; }
             finally { await native.close(); }
