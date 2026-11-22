@@ -101,6 +101,8 @@ async function run() {
     step = 'native-mcp-connect';
     const client = await connect(key);
     const alternateClient = await connect(alternateKey);
+    step = 'native-permissions-resource';
+    console.log('Whiskers scope metadata ' + JSON.stringify(await client.restartScopeFacts()));
     step = 'mcp-observe';
     const observed = await (await connect(readKey)).observe(a.id);
     const observedText = toolText(observed);

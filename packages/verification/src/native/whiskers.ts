@@ -41,6 +41,23 @@ export class WhiskersProbeClient {
     return this.call(observeTool, containerId);
   }
 
+  async restartScopeFacts() {
+    const uri = 'whiskers://me/permissions';
+    const { contents } = await this.client.readResource({ uri }, { timeout: 5_000 });
+    const entry = contents[0];
+    const value = entry && 'text' in entry ? entry.text : '';
+    const lines = value.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    return {
+      blocks: contents.length,
+      uriMatches: entry?.uri === uri,
+      textLines: lines.length,
+      namedKey: lines[1]?.startsWith('- Caller: API key "') ?? false,
+      explicitScope: lines.includes('- Scope: explicit tool list'),
+      oneTool: lines.includes('## Tools I may call (1)'),
+      restartListed: lines.includes('- `restart_container`'),
+    };
+  }
+
   async restart(containerId: string) {
     return this.call(restartTool, containerId);
   }
