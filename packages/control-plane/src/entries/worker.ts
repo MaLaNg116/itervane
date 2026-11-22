@@ -12,6 +12,7 @@ try {
   const database = await openDatabase(config.databaseUrl);
   const worker = new DurableWorker(database, config.databaseUrl, { leaseSeconds: config.leaseSeconds,
     ...(runner ? { runner } : {}), ...(auditModel ? { auditModel } : {}),
+    ...(config.operations ? { operations: config.operations } : {}),
     ...(runner && config.repairProtectedPaths ? { repair: { runner, protectedPaths: config.repairProtectedPaths,
       npmApprovals: config.npmRepairApprovals,
     } } : {}),
@@ -32,6 +33,6 @@ try {
     try { await worker.close(); } finally { await database.close(); }
   }
 } catch {
-  console.error('Worker startup failed. Verify database migrations, Runner settings, and model settings.');
+  console.error('Worker startup failed. Verify database migrations and enabled Worker integrations.');
   process.exitCode = 1;
 }

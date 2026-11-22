@@ -1,10 +1,8 @@
-import { sha256Schema, whiskersEndpointSchema } from '@itervane/contracts';
+import { sha256Schema, whiskersEndpointSchema, whiskersObservationSchema, whiskersReadKeySchema } from '@itervane/contracts';
 import { Client, StreamableHTTPClientTransport, type CallToolResult } from '@modelcontextprotocol/client';
 import { z } from 'zod';
 
 const bindingSchema = whiskersEndpointSchema.extend({ containerId: sha256Schema });
-const readKeySchema = z.string().regex(/^[a-f0-9]{64}$/);
-const stateSchema = z.enum(['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead']);
 const responseLimit = 64 * 1024;
 const toolTextLimit = 8 * 1024;
 const requestTimeout = 10_000;
@@ -28,7 +26,7 @@ function observation(result: CallToolResult, binding: Binding) {
     throw new WhiskersObservationError('response');
   }
   const header = detailHeader.exec(block.text);
-  const state = stateSchema.safeParse(header?.[2]);
+  const state = whiskersObservationSchema.shape.state.safeParse(header?.[2]);
   if (!header || !state.success) throw new WhiskersObservationError('response');
   if (header[1] !== binding.containerId || header[3] !== binding.serverId) throw new WhiskersObservationError('binding');
   return { containerId: binding.containerId, serverId: binding.serverId, state: state.data, observedAt: new Date().toISOString() };
@@ -40,7 +38,7 @@ export class WhiskersObservationClient {
 
   constructor(binding: z.input<typeof bindingSchema>, readKey: string) {
     const target = bindingSchema.safeParse(binding);
-    const key = readKeySchema.safeParse(readKey);
+    const key = whiskersReadKeySchema.safeParse(readKey);
     if (!target.success || !key.success) throw new WhiskersObservationError('binding');
     this.#binding = target.data;
     this.#readKey = key.data;

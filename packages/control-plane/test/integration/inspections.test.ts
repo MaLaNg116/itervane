@@ -24,7 +24,7 @@ import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/id
 import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
-  operationsRequests, principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
+  operationsObservations, operationsRequests, principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
@@ -48,6 +48,7 @@ import { ToolGateway } from '../../src/runtime/tools.js';
 import { prepareFormalVerificationInput } from '../../src/runtime/verification-input.js';
 import { projectVerificationEvidence } from '../../src/runtime/verification-evidence.js';
 import { DurableWorker } from '../../src/runtime/worker.js';
+import { runOperationsObservation } from '../../src/runtime/operations-execution.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
 import { requireActor } from '../../src/service/access.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
@@ -2248,8 +2249,9 @@ it('atomically admits one localized operations task with an immutable published 
   const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner });
   try {
     await worker.tick();
-    expect(await service.get(identity, recorded.id)).toMatchObject({ state: 'needs_human' });
-    expect((await service.events(identity, recorded.id, 10)).at(-1)).toMatchObject({ reason: 'operations_unavailable' });
+    expect(await service.get(identity, recorded.id)).toMatchObject({ state: 'queued' });
+    const [deferredRun] = await database.storage.db.select().from(taskRuns).where(eq(taskRuns.id, recorded.runId));
+    expect(deferredRun?.wakeupJobId).not.toBe(run?.wakeupJobId);
     expect(runner.inspect).not.toHaveBeenCalled();
   } finally { await worker.close(); }
 });
@@ -2286,6 +2288,139 @@ it('rolls back an operations task and a real queue insert together, and rejects 
   expect(job?.data).toMatchObject({ taskId: requested.id, runId: requested.runId });
   expect(await coordinator.claim(job!, randomUUID())).toBeNull();
   expect((await taskService.events(maintainer, requested.id, 10, 'zh-CN')).at(-1)).toMatchObject({ reason: 'permission_revoked', state: 'needs_human' });
+});
+
+const operationsFixtureKey = 'b'.repeat(64);
+
+function scopedWhiskers(fixture: Awaited<ReturnType<typeof installedOperationsFixture>>, beforeReply = async () => {}) {
+  const observe = vi.fn(beforeReply);
+  const originalFetch = globalThis.fetch;
+  const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, options) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url !== `${fixture.registration.whiskers.origin}/mcp`) return originalFetch(input, options);
+    expect(new Headers(options?.headers).get('authorization')).toBe(`Bearer ${operationsFixtureKey}`);
+    if (options?.method === 'GET') return new Response(null, { status: 405 });
+    const command = JSON.parse(String(options?.body)) as { id?: number; method: string; params?: Record<string, unknown> };
+    if (command.method === 'notifications/initialized') return new Response(null, { status: 202 });
+    const reply = (result: object) => Response.json({ jsonrpc: '2.0', id: command.id, result });
+    if (command.method === 'initialize') return reply({ protocolVersion: '2025-11-25', capabilities: { tools: {} },
+      serverInfo: { name: 'whiskers', version: '0.15.0' } });
+    expect(command).toMatchObject({ method: 'tools/call', params: { name: 'get_container_details',
+      arguments: { containerId: fixture.runtime.containerId, serverId: fixture.registration.whiskers.serverId } } });
+    await observe();
+    return reply({ content: [{ type: 'text', text: [
+      'Name: trusted-test-container', `ID: ${fixture.runtime.containerId}`, 'Image: sample:v2', 'State: exited', 'Health: none',
+      'Status: exited', 'Created: 2026-01-01', `Server: local (${fixture.registration.whiskers.serverId})`, 'Labels: demo-only-metadata',
+    ].join('\n') }] });
+  });
+  return { observe, restore: () => spy.mockRestore() };
+}
+
+function installedOperations(fixture: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  return { environmentId: fixture.scope.environmentId, enrollmentSha256: fixture.enrollment.fingerprint, readKey: operationsFixtureKey };
+}
+
+it('observes a bound deployment using a compatible Worker and atomically records its receipt', async () => {
+  const fixture = await installedOperationsFixture();
+  const request = (await fixture.taskService.admitOperations(identity, { ...fixture.scope, idempotencyKey: randomUUID() })).task;
+  const enabled = installedOperations(fixture);
+  const wrong = new DurableWorker(database.storage, database.runtimeUrl, { operations: { ...enabled, environmentId: randomUUID() } });
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { operations: enabled });
+  const downstream = scopedWhiskers(fixture);
+  try {
+    await wrong.tick();
+    expect(await fixture.taskService.get(identity, request.id)).toMatchObject({ state: 'queued' });
+    expect(downstream.observe).not.toHaveBeenCalled();
+    await vi.waitFor(async () => {
+      await worker.tick();
+      expect(await fixture.taskService.get(identity, request.id)).toMatchObject({ state: 'succeeded' });
+    }, { timeout: 5_000, interval: 100 });
+    expect(downstream.observe).toHaveBeenCalledOnce();
+    const [binding] = await database.storage.db.select().from(operationsRequests).where(eq(operationsRequests.runId, request.runId));
+    const [receipt] = await database.storage.db.select().from(operationsObservations).where(eq(operationsObservations.runId, request.runId));
+    expect(receipt).toMatchObject({ runId: request.runId, workerId: worker.id, bindingSha256: binding?.sha256, document: {
+      taskId: request.id, releaseOperationId: fixture.operationId,
+      observation: { containerId: fixture.runtime.containerId, serverId: 'local', state: 'exited', observedAt: expect.any(String) },
+    } });
+    expect(receipt?.document.observation).not.toHaveProperty('labels');
+    expect((await fixture.taskService.events(identity, request.id, 10, 'zh-CN')).at(-1)).toMatchObject({
+      type: 'task.operations_observed', locale: 'zh-CN', message: '已记录绑定容器的状态。',
+    });
+    expect((await fixture.taskService.events(identity, request.id, 10, 'en')).at(-1)).toMatchObject({
+      type: 'task.operations_observed', locale: 'en', message: 'The bound container state was recorded.',
+    });
+    await expect(database.storage.pool.query('DELETE FROM itervane.operations_observations WHERE run_id=$1', [request.runId]))
+      .rejects.toMatchObject({ code: '23514', message: 'operations_observation_is_immutable' });
+  } finally { downstream.restore(); await Promise.all([wrong.close(), worker.close()]); }
+});
+
+it.each(['cancel', 'change enrollment'] as const)('discards an in-flight Whiskers result after %s', async mode => {
+  const fixture = await installedOperationsFixture();
+  const request = (await fixture.taskService.admitOperations(identity, { ...fixture.scope, idempotencyKey: randomUUID() })).task;
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { operations: installedOperations(fixture) });
+  const reply = Promise.withResolvers<void>();
+  const downstream = scopedWhiskers(fixture, () => reply.promise);
+  const pending = worker.tick();
+  try {
+    await vi.waitFor(() => expect(downstream.observe).toHaveBeenCalledOnce(), { timeout: 5_000 });
+    if (mode === 'cancel') {
+      const running = await fixture.taskService.get(identity, request.id);
+      await fixture.taskService.cancel(identity, request.id, { expectedVersion: running.version });
+    } else {
+      await registerOperationsTarget(database.storage, { ...fixture.registration,
+        whiskers: { ...fixture.registration.whiskers, serverId: 'changed-server' } });
+    }
+    reply.resolve();
+    await pending;
+    expect(await database.storage.db.select().from(operationsObservations)).toEqual([]);
+    expect(await fixture.taskService.get(identity, request.id)).toMatchObject({ state: mode === 'cancel' ? 'cancelled' : 'needs_human' });
+    expect((await fixture.taskService.events(identity, request.id, 10)).at(-1)).toMatchObject({
+      reason: mode === 'cancel' ? 'cancelled' : 'operations_target_changed',
+    });
+  } finally { reply.resolve(); try { await pending; } finally { downstream.restore(); await worker.close(); } }
+});
+
+it('lets a successor re-observe within the persisted budget and rejects the old fence', async () => {
+  const fixture = await installedOperationsFixture();
+  const request = (await fixture.taskService.admitOperations(identity, { ...fixture.scope, idempotencyKey: randomUUID() })).task;
+  const installed = installedOperations(fixture);
+  const [job] = await database.storage.boss.fetch(queueName);
+  const initial = await coordinator.claim(job!, randomUUID(), installed.environmentId);
+  if (!initial) throw new Error('Expected operations lease');
+  const abandoned = Promise.withResolvers<void>();
+  let callCount = 0;
+  const downstream = scopedWhiskers(fixture, async () => { if (++callCount === 1) await abandoned.promise; });
+  const first = runOperationsObservation(coordinator, initial, installed, new AbortController().signal)
+    .then(() => undefined, (error: unknown) => error);
+  const nextWorker = new DurableWorker(database.storage, database.runtimeUrl, { operations: installed });
+  try {
+    await vi.waitFor(() => expect(downstream.observe).toHaveBeenCalledOnce(), { timeout: 5_000 });
+    await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp() - interval '1 second' WHERE worker_id=$1", [initial.workerId]);
+    await nextWorker.tick();
+    expect(await fixture.taskService.get(identity, request.id)).toMatchObject({ state: 'succeeded' });
+    abandoned.resolve();
+    expect(await first).toBeInstanceOf(ExecutionLost);
+    expect(downstream.observe).toHaveBeenCalledTimes(2);
+    const [budget] = await database.storage.db.select().from(runRuntime).where(eq(runRuntime.runId, request.runId));
+    expect(budget).toMatchObject({ toolsUsed: 2, maxTools: 2 });
+    const rows = await database.storage.db.select().from(operationsObservations);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ workerId: nextWorker.id, fence: initial.fence + 1 });
+  } finally { abandoned.resolve(); await first; downstream.restore(); await nextWorker.close(); }
+});
+
+it('stops an operations run before contacting Whiskers when the persisted read budget is spent', async () => {
+  const fixture = await installedOperationsFixture();
+  const request = (await fixture.taskService.admitOperations(identity, { ...fixture.scope, idempotencyKey: randomUUID() })).task;
+  await database.storage.db.update(runRuntime).set({ toolsUsed: 2 }).where(eq(runRuntime.runId, request.runId));
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { operations: installedOperations(fixture) });
+  const downstream = scopedWhiskers(fixture);
+  try {
+    await worker.tick();
+    expect(downstream.observe).not.toHaveBeenCalled();
+    expect(await database.storage.db.select().from(operationsObservations)).toEqual([]);
+    expect((await fixture.taskService.events(identity, request.id, 10)).at(-1)).toMatchObject({ reason: 'budget_exhausted', state: 'needs_human' });
+  } finally { downstream.restore(); await worker.close(); }
 });
 
 it('settles one formal rollout and releases the environment only with a complete current proof', async () => {
