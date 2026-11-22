@@ -68,7 +68,7 @@ export async function appendEvent(tx: Transaction, task: TaskRow, type: string, 
     verification?: { runId: string; verificationResultSha256: string };
     operations?: { runId: string; releaseOperationId: string; observationSha256: string; fence: number; diagnosisSha256?: string };
     operationsExecution?: { executionId: string; proposalId: string; fence?: number; nativeApprovalId?: string; nativeCallSha256?: string;
-      resumeAttempt?: number };
+      resumeAttempt?: number; recoveryAttempt?: number; recoverySha256?: string };
     releaseCandidate?: { candidateId: string; fingerprint: string };
     releaseDecision?: { candidateId: string; fingerprint: string; decisionVersion: number; operationId?: string; fence?: number; rolloutFence?: number };
     retry?: { runId: string; previousRunId: string; retrySha256: string } } = {}) {

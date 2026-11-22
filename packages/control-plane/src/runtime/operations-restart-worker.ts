@@ -1,6 +1,6 @@
 import { sha256 } from '@itervane/runner';
 import { ExecutionLost } from './authority.js';
-import type { OperationsExecutionCoordinator, OperationsExecutionLease } from './operations-execution-lease.js';
+import { withOperationsLeaseHeartbeat, type OperationsExecutionCoordinator, type OperationsExecutionLease } from './operations-execution-lease.js';
 import type { ReleaseRolloutVerifier } from './release-rollout.js';
 import type { WhiskersRestartClient } from './whiskers-restart.js';
 import { loadWhiskersWriter, WhiskersWriterInstallationRejected, type WhiskersWriterFiles } from './whiskers-writer-installation.js';
@@ -17,28 +17,18 @@ export class OperationsRestartWorker {
 
   async dispatch(scope: OperationsExecutionLease, signal?: AbortSignal): Promise<RestartDispatchStatus> {
     if (scope.mode === 'reconcile') return 'reconciling';
-    const controller = new AbortController();
-    const live = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-    let heartbeat: Promise<void> | undefined;
-    const timer = setInterval(() => {
-      if (heartbeat || live.aborted) return;
-      heartbeat = this.execution.heartbeat(scope).catch(error => controller.abort(error)).finally(() => { heartbeat = undefined; });
-    }, this.execution.leaseSeconds * 1000 / 3);
-
-    try {
-      return await this.send(scope, live);
-    } catch (error) {
-      if (error instanceof ExecutionLost) return 'lease_lost';
-      // If the database committed an intent and its reply was lost, the durable state still forces reconciliation.
-      try { return await this.execution.deferRestart(scope); }
-      catch (settlement) {
-        if (settlement instanceof ExecutionLost) return 'lease_lost';
-        throw settlement;
+    return withOperationsLeaseHeartbeat(this.execution, scope, signal, async live => {
+      try { return await this.send(scope, live); }
+      catch (error) {
+        if (error instanceof ExecutionLost) return 'lease_lost';
+        // If the database committed an intent and its reply was lost, the durable state still forces reconciliation.
+        try { return await this.execution.deferRestart(scope); }
+        catch (settlement) {
+          if (settlement instanceof ExecutionLost) return 'lease_lost';
+          throw settlement;
+        }
       }
-    } finally {
-      clearInterval(timer);
-      await heartbeat;
-    }
+    });
   }
 
   private async send(scope: OperationsExecutionLease, signal: AbortSignal): Promise<RestartDispatchStatus> {

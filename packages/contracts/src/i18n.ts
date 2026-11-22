@@ -160,6 +160,9 @@ export const en = {
   'reason.operations_execution_expired': 'The approval expired before dispatch.',
   'reason.operations_restart_not_sent': 'The worker stopped before authorizing the restart request.',
   'reason.operations_restart_result_unknown': 'The restart request requires independent readback.',
+  'reason.operations_restart_recovery_verified': 'Recovery and the original native approval were verified. The environment is available.',
+  'reason.operations_restart_recovery_retry': 'Another read-only check is queued. The environment remains reserved.',
+  'reason.operations_restart_recovery_manual': 'Restart recovery requires manual review. The environment remains reserved.',
   'task.operations_started': 'Read-only operations observation started.',
   'task.operations_observed': 'The bound container state was recorded.',
   'task.operations_execution_started': 'Operations execution acquired a lease.',
@@ -169,6 +172,7 @@ export const en = {
   'task.operations_restart_resume_requested': 'Restart continuation queued.',
   'task.operations_restart_resume_prepared': 'Restart continuation intent saved.',
   'task.operations_restart_resume_recorded': 'Whiskers continuation response recorded.',
+  'task.operations_restart_recovery_recorded': 'Restart recovery outcome recorded.',
   'operations.container.created': 'Created', 'operations.container.running': 'Running', 'operations.container.paused': 'Paused',
   'operations.container.restarting': 'Restarting', 'operations.container.removing': 'Removing',
   'operations.container.exited': 'Exited', 'operations.container.dead': 'Dead',
@@ -347,6 +351,9 @@ export const zhCN: Record<MessageKey, string> = {
   'reason.operations_execution_expired': '处置批准在派发前已过期。',
   'reason.operations_restart_not_sent': '执行器在授权发送重启请求前停止。',
   'reason.operations_restart_result_unknown': '需要独立核对重启请求的结果。',
+  'reason.operations_restart_recovery_verified': '已核验恢复结果和原生批准，环境占用已释放。',
+  'reason.operations_restart_recovery_retry': '已安排下一次只读核对，环境仍被占用。',
+  'reason.operations_restart_recovery_manual': '重启结果需要人工核对，环境仍被占用。',
   'task.operations_started': '已开始只读运维观察。', 'task.operations_observed': '已记录绑定容器的状态。',
   'task.operations_execution_started': '运维处置已取得执行权。',
   'task.operations_execution_recovered': '运维处置已重新调度。',
@@ -355,6 +362,7 @@ export const zhCN: Record<MessageKey, string> = {
   'task.operations_restart_resume_requested': '重启续发已入队。',
   'task.operations_restart_resume_prepared': '已保存重启续发意图。',
   'task.operations_restart_resume_recorded': '已记录 Whiskers 续发应答。',
+  'task.operations_restart_recovery_recorded': '已记录重启核对结果。',
   'operations.container.created': '已创建', 'operations.container.running': '运行中', 'operations.container.paused': '已暂停',
   'operations.container.restarting': '重启中', 'operations.container.removing': '删除中',
   'operations.container.exited': '已退出', 'operations.container.dead': '已失效',
@@ -393,7 +401,7 @@ export const taskEventTypes = ['task.accepted', 'task.cancelled', 'task.started'
   'task.operations_started', 'task.operations_observed',
   'task.operations_execution_started', 'task.operations_execution_recovered', 'task.operations_execution_dispatch_intended',
   'task.operations_execution_native_approval', 'task.operations_restart_resume_requested',
-  'task.operations_restart_resume_prepared', 'task.operations_restart_resume_recorded'] as const;
+  'task.operations_restart_resume_prepared', 'task.operations_restart_resume_recorded', 'task.operations_restart_recovery_recorded'] as const;
 
 export const eventReasonMessages = {
   runner_unavailable: 'tool.runner_unavailable', lease_expired: 'reason.lease_expired', expired_cancel: 'reason.expired_cancel',
@@ -435,6 +443,9 @@ export const eventReasonMessages = {
   operations_execution_expired: 'reason.operations_execution_expired',
   operations_restart_not_sent: 'reason.operations_restart_not_sent',
   operations_restart_result_unknown: 'reason.operations_restart_result_unknown',
+  operations_restart_recovery_verified: 'reason.operations_restart_recovery_verified',
+  operations_restart_recovery_retry: 'reason.operations_restart_recovery_retry',
+  operations_restart_recovery_manual: 'reason.operations_restart_recovery_manual',
   cancelled_or_interrupted: 'reason.cancelled_or_interrupted', execution_error: 'reason.execution_error', child_task: 'reason.child_task',
   'project.describe': 'tool.project_describe', 'source.inspect': 'tool.source_inspect', unsupported: 'reason.tool_denied',
 } as const satisfies Record<string, MessageKey>;

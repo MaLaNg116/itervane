@@ -6,7 +6,7 @@ import {
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
   type OperationsDiagnosisObservation, type OperationsDiagnosisReceipt, type OperationsDiagnosisSection,
   type OperationsObservationReceipt, type OperationsProposal, type OperationsRequestBinding, type OperationsRestartBaseline,
-  type OperationsRestartInstallation, type OperationsRestartRequest,
+  type OperationsRestartInstallation, type OperationsRestartRecoveryFailure, type OperationsRestartRecoveryProof, type OperationsRestartRequest,
   type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt,
   type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
@@ -611,7 +611,7 @@ export const operationsExecutions = domain.table('operations_executions', {
   proposalFingerprint: text('proposal_fingerprint').notNull(),
   environmentId: uuid('environment_id').notNull().references(() => environments.id),
   decisionVersion: integer('decision_version').notNull(),
-  state: text('state').$type<'reserved' | 'blocked'>().notNull(),
+  state: text('state').$type<'reserved' | 'blocked' | 'recovered'>().notNull(),
   createdAt: createdAt(),
   closedAt: timestamp('closed_at', { withTimezone: true }),
   blockedReason: text('blocked_reason').$type<'approval_revoked' | 'proposal_expired' | 'restart_not_sent'>(),
@@ -622,7 +622,8 @@ export const operationsExecutions = domain.table('operations_executions', {
     foreignColumns: [operationsDecisions.proposalId, operationsDecisions.version] }),
   check('operations_execution_binding', sql`${t.decisionVersion} = 1 AND ${t.proposalFingerprint} ~ '^[a-f0-9]{64}$'`),
   check('operations_execution_lifecycle', sql`((${t.state} = 'reserved' AND ${t.closedAt} IS NULL AND ${t.blockedReason} IS NULL)
-    OR (${t.state} = 'blocked' AND ${t.closedAt} >= ${t.createdAt} AND ${t.blockedReason} IN ('approval_revoked', 'proposal_expired', 'restart_not_sent'))) IS TRUE`),
+    OR (${t.state} = 'blocked' AND ${t.closedAt} >= ${t.createdAt} AND ${t.blockedReason} IN ('approval_revoked', 'proposal_expired', 'restart_not_sent'))
+    OR (${t.state} = 'recovered' AND ${t.closedAt} >= ${t.createdAt} AND ${t.blockedReason} IS NULL)) IS TRUE`),
 ]);
 
 export const operationsExecutionSchedules = domain.table('operations_execution_schedules', {
@@ -701,6 +702,34 @@ export const operationsRestartResumes = domain.table('operations_restart_resumes
       AND ((${t.state} = 'prepared' AND ${t.recordedAt} IS NULL)
         OR (${t.state} IN ('pending', 'acknowledged', 'unknown') AND ${t.recordedAt} >= ${t.preparedAt})))
   ) IS TRUE`),
+]);
+
+export const operationsRestartRecoveries = domain.table('operations_restart_recoveries', {
+  executionId: uuid('execution_id').notNull().references(() => operationsExecutionIntents.executionId),
+  attempt: integer('attempt').notNull(), fence: integer('fence').notNull(), workerId: uuid('worker_id').notNull(),
+  state: text('state').$type<'observing' | 'retry' | 'manual_review' | 'verified'>().notNull().default('observing'),
+  failure: text('failure').$type<OperationsRestartRecoveryFailure>(),
+  proof: jsonb('proof').$type<OperationsRestartRecoveryProof>(), proofSha256: text('proof_sha256'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+}, t => [
+  primaryKey({ columns: [t.executionId, t.attempt] }),
+  unique('operations_restart_recovery_fence').on(t.executionId, t.fence),
+  check('operations_restart_recovery_scope', sql`${t.attempt} BETWEEN 1 AND 3 AND ${t.fence} > 0`),
+  check('operations_restart_recovery_proof', sql`((${t.proof} IS NULL AND ${t.proofSha256} IS NULL)
+    OR (jsonb_typeof(${t.proof}) = 'object' AND octet_length(${t.proof}::text) <= 4096
+      AND ${t.proofSha256} ~ '^[a-f0-9]{64}$')) IS TRUE`),
+  check('operations_restart_recovery_lifecycle', sql`(
+    (${t.state} = 'observing' AND ${t.completedAt} IS NULL AND ${t.failure} IS NULL AND ${t.proof} IS NULL)
+    OR (${t.completedAt} >= ${t.createdAt} AND (
+      (${t.state} = 'verified' AND ${t.failure} IS NULL AND ${t.proof} IS NOT NULL)
+      OR (${t.state} = 'retry' AND ${t.attempt} < 3 AND ${t.failure} IN ('unhealthy', 'unavailable', 'lease_expired') AND ${t.proof} IS NULL)
+      OR (${t.state} = 'manual_review' AND (
+        (${t.failure} = 'native_unconfirmed' AND ${t.proof} IS NOT NULL)
+        OR (${t.failure} IN ('missing_evidence', 'target_changed') AND ${t.proof} IS NULL)
+        OR (${t.attempt} = 3 AND ${t.failure} IN ('unhealthy', 'unavailable', 'lease_expired') AND ${t.proof} IS NULL)
+      ))
+    ))) IS TRUE`),
 ]);
 
 export const formalReleaseSteps = domain.table('formal_release_steps', {
