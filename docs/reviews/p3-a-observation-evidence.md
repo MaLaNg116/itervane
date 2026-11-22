@@ -7,3 +7,5 @@
 3. 集成测试通过正式发布协调器写入成功证明，覆盖发布占用、跨项目、只读成员、撤权、映射更新和原生标识一致性。 [真实数据库用例](https://github.com/MaLaNg116/itervane/blob/3a5fdf014a19a256c6c532ff4da395d8ac3f8ea9/packages/control-plane/test/integration/inspections.test.ts#L2135)
 
 本机 TypeScript 与 210 项单元检查通过。托管 PostgreSQL 17 的十个集成文件全部通过，覆盖本批新增目标校验的检查文件有 96 项通过。KVM 回归在同一测试版本运行。本批先交付可信目标选择，后续以同一绑定登记 Whiskers、入队并保存有执行代次的观察。 [真实数据库](https://github.com/MaLaNg116/itervane/actions/runs/44964376454/job/137029975440) · [KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44964376461)
+
+审查核对了项目授权锁、发布占用、最新正式收据、Komodo 更新、镜像与容器身份。最终审查版本 `a9a7a5f3f2451bedcd162eb1cb0c7b6925fae191` 与八组 KVM 验收的非文档内容一致。六项常规检查及 KVM 均通过，已合入 `54a85a5e439d8f601d2e0877ad2385080dc968b9`。 [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44965399008) · [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44965395710) · [KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44964376461)

@@ -55,6 +55,7 @@ import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
 import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { FormalReleaseService } from '../../src/service/formal-release.js';
 import { readOperationsDeployment } from '../../src/service/operations-deployment.js';
+import { readOperationsObservationTarget, registerOperationsTarget } from '../../src/service/operations-targets.js';
 import { publishFormalRepair } from '../../src/service/repair-result.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
 import { fingerprintRolloutCheck, readInstalledReleaseTarget, registerReleaseTarget } from '../../src/service/release-targets.js';
@@ -2158,6 +2159,27 @@ it('binds operations to the latest verified deployment under current project aut
   const other = await new ResourceService(database.storage).createProject(identity, { name: 'Other operations', slug: 'other-operations' });
   await expect(read(identity, other.id)).rejects.toMatchObject({ code: 'not_found' });
 
+  const readEnrolled = (projectId = task.projectId) => database.storage.db.transaction(async tx =>
+    readOperationsObservationTarget(tx, await requireActor(tx, identity), { projectId, environmentId: target.environmentId }));
+  await expect(readEnrolled()).rejects.toMatchObject({ code: 'unsupported_state' });
+  const registration = { environmentId: target.environmentId, releaseTargetRevision: selected.targetRevision,
+    releaseTargetSha256: selected.mappingSha256, whiskers: { origin: 'https://ops.example.invalid', serverId: 'local' } };
+  await expect(registerOperationsTarget(database.storage, { ...registration, readKey: 'fixture-secret' }))
+    .rejects.toMatchObject({ code: 'invalid_input' });
+  const register = () => registerOperationsTarget(database.storage, registration);
+  const [first, repeated] = await Promise.all([register(), register()]);
+  expect(first).toEqual({ environmentId: target.environmentId, revision: 1, fingerprint: expect.any(String) });
+  expect(repeated).toEqual(first);
+  await expect(readEnrolled()).resolves.toMatchObject({ ...selected, whiskers: registration.whiskers, enrollmentRevision: 1,
+    enrollmentSha256: first.fingerprint });
+  await expect(readEnrolled(other.id)).rejects.toMatchObject({ code: 'not_found' });
+
+  const nextWhiskers = { ...registration.whiskers, serverId: 'replacement-server' };
+  const enrolled = await registerOperationsTarget(database.storage, { ...registration, whiskers: nextWhiskers });
+  expect(enrolled.revision).toBe(2);
+  expect(enrolled.fingerprint).not.toBe(first.fingerprint);
+  await expect(readEnrolled()).resolves.toMatchObject({ ...selected, whiskers: nextWhiskers, enrollmentRevision: 2 });
+
   const principalId = randomUUID();
   const subject = 'ops-reader';
   await database.storage.db.insert(principals).values({ id: principalId, issuer: issuer.config.issuer, subject });
@@ -2171,6 +2193,8 @@ it('binds operations to the latest verified deployment under current project aut
 
   await registerReleaseTarget(database.storage, { ...target, runtimeConfigSha256: sha256('new runtime config') });
   await expect(read()).rejects.toMatchObject({ code: 'unsupported_state' });
+  await expect(register()).rejects.toMatchObject({ code: 'version_conflict' });
+  await expect(readEnrolled()).rejects.toMatchObject({ code: 'unsupported_state' });
 });
 
 it('settles one formal rollout and releases the environment only with a complete current proof', async () => {

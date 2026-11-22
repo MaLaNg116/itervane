@@ -1,12 +1,8 @@
-import { serviceOriginSchema } from '@itervane/contracts';
+import { sha256Schema, whiskersEndpointSchema } from '@itervane/contracts';
 import { Client, StreamableHTTPClientTransport, type CallToolResult } from '@modelcontextprotocol/client';
 import { z } from 'zod';
 
-const bindingSchema = z.strictObject({
-  origin: serviceOriginSchema('Whiskers'),
-  serverId: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/),
-  containerId: z.string().regex(/^[a-f0-9]{64}$/),
-});
+const bindingSchema = whiskersEndpointSchema.extend({ containerId: sha256Schema });
 const readKeySchema = z.string().regex(/^[a-f0-9]{64}$/);
 const stateSchema = z.enum(['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead']);
 const responseLimit = 64 * 1024;

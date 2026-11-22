@@ -4,7 +4,7 @@ import {
   agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairInput, type FormalRepairResult, type FormalRepairRetry,
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
-  type PreauditRecord, type QualifiedInspectionReceipt, type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
+  type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt, type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
   type ReleaseKomodoCompletion, type ReleaseKomodoConfiguration, type ReleaseKomodoIntent, type ReleaseRolloutFailure, type ReleaseRolloutProof,
 } from '@itervane/contracts';
@@ -391,6 +391,19 @@ export const formalReleaseTargets = domain.table('formal_release_targets', {
   check('formal_release_target_binding', sql`(${t.revision} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
     AND ${t.deploymentId} ~ '^[a-f0-9]{24}$' AND ${t.document}->>'deploymentId' = ${t.deploymentId}
     AND ${t.document}->>'environmentId' = ${t.environmentId}::text AND octet_length(${t.document}::text) <= 4096) IS TRUE`),
+]);
+
+export const operationsTargets = domain.table('operations_targets', {
+  environmentId: uuid('environment_id').primaryKey().references(() => formalReleaseTargets.environmentId),
+  projectId: uuid('project_id').notNull(), applicationId: uuid('application_id').notNull(),
+  revision: integer('revision').notNull(), sha256: text('sha256').notNull(),
+  document: jsonb('document').$type<OperationsTargetInput>().notNull(), createdAt: createdAt(),
+}, t => [
+  foreignKey({ name: 'operations_target_environment_fk', columns: [t.environmentId, t.projectId, t.applicationId],
+    foreignColumns: [environments.id, environments.projectId, environments.applicationId] }),
+  check('operations_target_binding', sql`(${t.revision} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.document}->>'environmentId' = ${t.environmentId}::text
+    AND jsonb_typeof(${t.document}->'whiskers') = 'object' AND octet_length(${t.document}::text) <= 4096) IS TRUE`),
 ]);
 
 export const releaseCandidates = domain.table('release_candidates', {
