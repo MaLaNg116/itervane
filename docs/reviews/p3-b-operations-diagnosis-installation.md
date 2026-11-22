@@ -13,3 +13,5 @@ pnpm exec tsx --env-file-if-exists=.env -e 'import { workerConfig } from "./pack
 ```
 
 本机 TypeScript、224 项单元、PostgreSQL 17.12 专项五项及 Chrome 场景通过。真库专项覆盖本机 Anthropic HTTP 脚本模型、四类证据、双语响应、权限和旧观察兼容。原生端到端走相同协议的脚本模型，实模证据按独立运行归档。 [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44979952380) · [原生 Whiskers 回归](https://github.com/MaLaNg116/itervane/actions/runs/44979952343)
+
+原生诊断首轮停在 `operations_formal_investigation`。`79deb06` 为后续复跑补充了白名单原因、证据类别及记录状态，区分调查、进程关闭和模型调用核对。 [首轮作业](https://github.com/MaLaNg116/itervane/actions/runs/44979952380/job/137078061605) · [复跑](https://github.com/MaLaNg116/itervane/actions/runs/44981348666)
