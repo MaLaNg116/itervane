@@ -101,6 +101,10 @@ P1-E 文档交付版本 `54e095fd3add9a028105bf0141d95dbf0384efcc` 的 [PR CI](h
 
 P1-UX 固定代码/已验证交付为 `4234acdb5d9c664272417713389eeef433bc7db5`，[PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44663181433) 与 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44663174416) 均通过三组检查。本地与 Linux 指纹一致，完整 20 项真实浏览器通过；随后仅补文档证据。#7 的交付基于 #6，保留 Runner 和完整阶段的独立验收。
 
+## 托管基础设施
+
+PR #86 恢复 Runner 固定基础镜像下载，已经审查并合入。托管 OCI 构造及全部九组 KVM 场景通过。 [PR #86](https://github.com/MaLaNg116/itervane/pull/86) · [镜像下载导读](runner-pinned-base-mirror.md)
+
 ## 每批交付约定
 
 1. 先提交该批开发计划，写明目标、依赖、验收和未覆盖事项。
