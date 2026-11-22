@@ -6,7 +6,7 @@ import { cancelTaskSchema, resumeTaskSchema, idSchema, listQuerySchema, startOpe
 import type { VerifiedIdentity } from '../auth/identity.js';
 import type { OperationsWorkflowScope } from '../config.js';
 import { queueName, type Database } from '../persistence/database.js';
-import { formalAuditInputs, formalAuditResults, operationsDiagnosisInputs, operationsRequests, releaseCandidates, releaseOperations, repositories,
+import { formalAuditInputs, formalAuditResults, operationsDiagnosisInputs, operationsExecutionSchedules, operationsRequests, releaseCandidates, releaseOperations, repositories,
   runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
 import { requireActor, requireProject, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
@@ -29,6 +29,12 @@ async function taskView(tx: Transaction, taskId: string) {
     .innerJoin(taskRuns, and(eq(taskRuns.taskId, tasks.id), eq(taskRuns.generation, tasks.generation))).where(eq(tasks.id, taskId));
   if (!row) throw new DomainError('not_found');
   return presentTask(row.task, row.run);
+}
+
+async function requireGenericTaskControl(tx: Transaction, taskId: string) {
+  const [effect] = await tx.select({ id: operationsExecutionSchedules.executionId }).from(operationsExecutionSchedules)
+    .where(eq(operationsExecutionSchedules.taskId, taskId));
+  if (effect) throw new DomainError('unsupported_state');
 }
 
 type TaskAdmission = Pick<typeof tasks.$inferInsert,
@@ -162,6 +168,7 @@ export class TaskService {
       await lockSlot(tx);
       const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId)).for('update');
       if (!task) throw new DomainError('not_found');
+      await requireGenericTaskControl(tx, taskId);
       if (task.state === 'cancelled' || task.state === 'cancel_requested') return taskView(tx, taskId);
       if (!['queued', 'running', 'waiting_input', 'waiting_approval', 'reconciling'].includes(task.state)) throw new DomainError('unsupported_state');
       if (task.version !== input.expectedVersion) throw new DomainError('version_conflict');
@@ -195,6 +202,7 @@ export class TaskService {
       await lockSlot(tx);
       const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId)).for('update');
       if (!task) throw new DomainError('not_found');
+      await requireGenericTaskControl(tx, taskId);
       if (task.version !== input.expectedVersion) throw new DomainError('version_conflict');
       if (task.state !== 'waiting_input') throw new DomainError('unsupported_state');
       const [run] = await tx.select().from(taskRuns).where(and(eq(taskRuns.taskId, taskId), eq(taskRuns.generation, task.generation)));

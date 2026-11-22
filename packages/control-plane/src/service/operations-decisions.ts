@@ -1,11 +1,13 @@
 import { idSchema, operationsProposalSchema, releaseDecisionInputSchema } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import type { OperationsEnrollmentScope } from '../config.js';
 import type { Database } from '../persistence/database.js';
-import { operationsDecisions, operationsProposals, operationsRequests, tasks } from '../persistence/schema.js';
+import { operationsDecisions, operationsExecutions, operationsProposals, operationsRequests, tasks } from '../persistence/schema.js';
+import { closeQueuedOperationsExecution } from '../runtime/operations-execution-queue.js';
 import { isHumanWorkspaceOwner, requireActor, requireProjectAccess, requireStoredActor } from './access.js';
+import { lockEnvironmentForEffect } from './environment-effects.js';
 import { DomainError, parseInput } from './errors.js';
 import { readOperationsProposal, readOperationsProposalBasis } from './operations-proposals.js';
 import { databaseNow } from './releases.js';
@@ -44,6 +46,7 @@ export class OperationsDecisionService {
       if (version !== input.expectedVersion) throw new DomainError('version_conflict');
       if (input.action === 'revoke') {
         if (last?.action !== 'confirm') throw new DomainError('unsupported_state');
+        await lockEnvironmentForEffect(tx, proposal.environmentId);
       } else {
         if (last || proposal.validUntil <= now) throw new DomainError('unsupported_state');
         const proposer = await requireProjectAccess(tx, await requireStoredActor(tx, proposal.proposedBy), task.projectId, true);
@@ -60,6 +63,11 @@ export class OperationsDecisionService {
         actorId: actor.principalId, grantId: actor.workspaceGrantId, idempotencyKey: input.idempotencyKey, action: input.action,
         selfConfirmed: input.action === 'confirm' && actor.principalId === proposal.proposedBy, decidedAt }).returning();
       if (!decision) throw new DomainError('unavailable');
+      if (input.action === 'revoke') {
+        const [closed] = await tx.select({ id: operationsExecutions.id }).from(operationsExecutions)
+          .where(and(eq(operationsExecutions.proposalId, proposalId), eq(operationsExecutions.blockedReason, 'approval_revoked')));
+        if (closed) await closeQueuedOperationsExecution(tx, this.database, closed.id, 'approval_revoked', actor.principalId);
+      }
       return { taskId: task.id, decision, replayed: false };
     });
   }

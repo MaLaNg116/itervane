@@ -10,13 +10,14 @@ import { DomainError } from '../service/errors.js';
 import { appendEvent, type TaskRow } from './authority.js';
 
 export async function enqueueReleaseOperation(tx: Transaction, database: Database, queue: typeof releaseFixtureQueue | typeof formalReleaseQueue, scope: {
-  candidateId: string; environmentId: string; approvalVersion: number;
+  candidateId: string; environmentId: string; approvalVersion: number; actorId: string;
 }) {
-  await lockEnvironmentForEffect(tx, scope.environmentId);
-  await requireNoOperationsHold(tx, scope.environmentId);
+  const { actorId, ...binding } = scope;
+  await lockEnvironmentForEffect(tx, binding.environmentId);
+  await requireNoOperationsHold(tx, database, binding.environmentId, actorId);
   const id = randomUUID();
   await tx.insert(releaseOperations).values({
-    id, ...scope, wakeupJobId: queue === formalReleaseQueue ? id : null,
+    id, ...binding, wakeupJobId: queue === formalReleaseQueue ? id : null,
   });
   const jobId = await database.boss.send(queue, releaseWakeupSchema.parse({ operationId: id }), {
     id, db: fromDrizzle(tx, sql),
