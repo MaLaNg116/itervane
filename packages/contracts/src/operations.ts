@@ -45,7 +45,8 @@ export const operationsRequestBindingSchema = z.strictObject({
 
 export type OperationsRequestBinding = z.infer<typeof operationsRequestBindingSchema>;
 
-export const whiskersReadKeySchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const whiskersMcpKeySchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const whiskersReadKeySchema = whiskersMcpKeySchema;
 
 export const whiskersObservationSchema = z.strictObject({
   containerId: sha256Schema,
