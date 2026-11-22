@@ -7,3 +7,5 @@
 3. `POST /v1/operations/diagnoses` 与 `start_operations_diagnosis` 接收 `projectId`、`environmentId`、`idempotencyKey` 和可选的 `locale`。HTTP 新任务返回 202，重放返回 200。通过 `GET /v1/tasks/:taskId/operations` 或 `get_operations_result` 查询，显示语言由 `Accept-Language` 决定。 [HTTP](https://github.com/MaLaNg116/itervane/blob/de54f95c3aa3bd9b67cd57f318f5f15d5cf61b63/packages/control-plane/src/api.ts#L165) · [MCP](https://github.com/MaLaNg116/itervane/blob/de54f95c3aa3bd9b67cd57f318f5f15d5cf61b63/packages/control-plane/src/mcp.ts#L52)
 
 本机 TypeScript、211 项单元检查与独立 PostgreSQL 17.12 的四项专项通过。覆盖两个入口共用幂等、默认关闭、限定环境、拒绝指定容器、MCP 写范围、项目只读与撤权、换绑拒绝新任务和回执脱敏。数据库专项用受控 Whiskers 协议夹具，原生下游证据由 #71 提供。门户接续在 C3。 [跨入口回归](https://github.com/MaLaNg116/itervane/blob/de54f95c3aa3bd9b67cd57f318f5f15d5cf61b63/packages/control-plane/test/integration/inspections.test.ts#L2461)
+
+合入时核对 `dbd156122dd58146d1df9296723f058613cfa51d` 的六项托管常规检查，以及同一非文档版本的九组 KVM 回归均通过。 [托管 CI](https://github.com/MaLaNg116/itervane/actions/runs/44971558927) · [KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44969436588) · [合入记录](https://github.com/MaLaNg116/itervane/commit/5060bc3076c6067a31b223602b35e68380af7049)

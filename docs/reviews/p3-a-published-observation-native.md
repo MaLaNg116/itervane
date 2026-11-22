@@ -9,3 +9,5 @@
 本机 TypeScript、210 项单元及两个 Bash 接续脚本语法检查通过。业务诊断的独立 HTTP/MCP 接收及专用回执读模型由 A2-C 交付。
 
 固定版本 `040548351c90fd9cb67b04f88ec4fd914f0fe3ee` 的原生接续通过。证据核对运行中的容器属于同一正式发布，读取、回执与发布派发各一次，HTTP 与 MCP 的任务状态一致，执行槽和 Whiskers 夹具已清理。 [Whiskers 回归](https://github.com/MaLaNg116/itervane/actions/runs/44968006870) · [原生接续](https://github.com/MaLaNg116/itervane/actions/runs/44968006971/job/137041290751) · [接续证据](https://github.com/MaLaNg116/itervane/actions/runs/44968006971/artifacts/14732933258)
+
+已合入版本 `7b1722629265342d3760a4971fdac96ab7874cae` 通过六项托管常规检查，与九组通过的 KVM 场景具有相同的非文档内容。 [托管常规检查](https://github.com/MaLaNg116/itervane/actions/runs/44969738220) · [KVM 矩阵](https://github.com/MaLaNg116/itervane/actions/runs/44968006971) · [合入记录](https://github.com/MaLaNg116/itervane/commit/4215bc3e36bc56b315cdea54dfa6045db34b3ac5)
