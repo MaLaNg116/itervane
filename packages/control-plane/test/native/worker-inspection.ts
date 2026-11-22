@@ -16,7 +16,8 @@ import {
   qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
   repositoryDtoSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sha256Schema, sourceInspectionDtoSchema,
   qualifiedImageArchiveSchema, qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
-  taskDtoSchema, taskEventDtoSchema, translate, type FormalAuditResult, type Locale, type NpmUpgradeApproval, type StandardVerificationProfile,
+  taskDtoSchema, taskEventDtoSchema, taskEventReasonSchema, translate,
+  type FormalAuditResult, type Locale, type NpmUpgradeApproval, type StandardVerificationProfile,
 } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
@@ -946,11 +947,17 @@ async function probe() {
               const item = taskDtoSchema.parse(await http(`/v1/tasks/${diagnosis.id}`));
               if (item.state === 'needs_human' || item.state === 'failed') {
                 const events = await http(`/v1/tasks/${item.id}/events`) as { items?: unknown[] };
-                throw new Error(taskEventDtoSchema.safeParse(events.items?.at(-1)).data?.reason ?? 'operations_diagnosis_failed');
+                const reason = taskEventDtoSchema.safeParse(events.items?.at(-1)).data?.reason ?? 'operations_diagnosis_failed';
+                const { rows } = await db.admin.query<{ section: string; state: string }>(
+                  'SELECT section, state FROM itervane.operations_diagnosis_reads WHERE run_id=$1 ORDER BY created_at', [item.runId]);
+                console.error(JSON.stringify({ phase, state: item.state, reason, evidence: rows, modelCalls: audit.calls.slice(initialCalls) }));
+                throw new Error(reason);
               }
               return item.state === 'succeeded' ? true : undefined;
             }, 50_000, 'operations_diagnosis');
+            phase = 'operations_formal_worker_stop';
             await worker.stop('TERM'); worker = undefined;
+            phase = 'operations_formal_model_trace';
             deepStrictEqual(audit.calls.slice(initialCalls), ['read_operations', 'read_operations', 'read_operations', 'read_operations', 'finish_role']);
 
             phase = 'operations_formal_evidence';
@@ -1606,7 +1613,8 @@ async function probe() {
 
 try { console.log(JSON.stringify(await probe())); }
 catch (error) {
-  const message = error instanceof Error && /^(?:[a-z_]+_timeout|fixture_http_[1-5][0-9]{2}|verification_fixture_phase_[a-z_]{1,56}|(?:protected_ingress|release_(?:rollout|registry|komodo))_[a-z_]{1,48})$/.test(error.message)
+  const message = error instanceof Error && (taskEventReasonSchema.safeParse(error.message).success
+    || /^(?:[a-z_]+_timeout|fixture_(?:diagnosis_)?http_[1-5][0-9]{2}|verification_fixture_phase_[a-z_]{1,56}|(?:protected_ingress|release_(?:rollout|registry|komodo))_[a-z_]{1,48})$/.test(error.message))
     ? ` (${error.message})` : '';
   console.error(`Native Worker inspection failed during ${phase}${message}.`);
   process.exitCode = 1;
