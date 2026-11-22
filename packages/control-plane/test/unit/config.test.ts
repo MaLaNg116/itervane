@@ -25,6 +25,26 @@ it('enables the operations API only for a complete enrollment and keeps the Read
   expect(() => runtimeConfig({ ...installation, ITERVANE_OPERATIONS_API_ENABLED: 'true' })).toThrow();
 });
 
+it('requires a trusted model fingerprint and configured Worker model for full operations diagnosis', () => {
+  const environmentId = '01020304-1000-4000-8000-010203040507';
+  const enrollmentSha256 = 'a'.repeat(64);
+  const diagnosisProviderSha256 = 'c'.repeat(64);
+  const readKey = 'b'.repeat(64);
+  const installation = { ...configured, ITERVANE_OPERATIONS_API_ENABLED: '1', ITERVANE_OPERATIONS_ENVIRONMENT_ID: environmentId,
+    ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollmentSha256, ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: diagnosisProviderSha256 };
+  expect(runtimeConfig(installation).operationsApi).toEqual({ environmentId, enrollmentSha256, diagnosisProviderSha256 });
+  expect(runtimeConfig({ ...installation, ITERVANE_OPERATIONS_API_ENABLED: '0' }).operationsApi).toBeUndefined();
+  expect(() => runtimeConfig({ ...installation, ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: 'invalid' })).toThrow();
+  const worker = { ...installation, ITERVANE_OPERATIONS_WHISKERS_READ_KEY: readKey };
+  expect(() => workerConfig(worker)).toThrow('requires a configured model');
+  for (const [protocol, prefix] of [['anthropic', 'ANTHROPIC'], ['openai', 'OPENAI']] as const) {
+    const config = workerConfig({ ...worker, ITERVANE_AUDIT_MODEL_PROVIDER: protocol, [`${prefix}_BASE_URL`]: 'http://127.0.0.1:23001',
+      [`${prefix}_API_KEY`]: 'fixture', [`${prefix}_MODEL`]: 'fixture-model' });
+    expect(config.auditModel?.protocol).toBe(protocol);
+    expect(config.operations).toEqual({ environmentId, enrollmentSha256, diagnosisProviderSha256, readKey });
+  }
+});
+
 it('does not reuse the runtime credential as an implicit migration credential', () => {
   expect(() => migrationConfig(configured)).toThrow();
   expect(migrationConfig({ ITERVANE_MIGRATION_DATABASE_URL: 'postgresql://localhost/itervane' })).toBe('postgresql://localhost/itervane');

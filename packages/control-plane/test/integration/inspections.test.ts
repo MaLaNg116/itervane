@@ -23,7 +23,7 @@ import { operationsDecision, scriptedOperations } from '../../../verification/sr
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
-import type { OperationsWorkflowScope } from '../../src/config.js';
+import { runtimeConfig, workerConfig, type OperationsWorkflowScope } from '../../src/config.js';
 import { formalReleaseQueue, queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
@@ -2783,6 +2783,27 @@ it('reserves one budget per evidence section, replays its record and limits succ
   expect(budget).toMatchObject({ maxTools: 4, toolsUsed: 2 });
 });
 
+it('records diagnosis evidence when the database clock is behind the reservation timestamp', async () => {
+  const { fixture, installed, scope } = await startDiagnosis();
+  const store = new OperationsEvidenceStore(coordinator, installed);
+  const operationId = sha256('logs with a previous higher clock reading');
+  const evidence = { kind: 'operations_section', section: 'logs', proofSha256: sha256('fixed log signals'), result: {
+    containerId: fixture.runtime.containerId, serverId: fixture.registration.whiskers.serverId,
+    observedAt: new Date().toISOString(), tailLines: 40, lines: 4, warningLines: 1, errorLines: 1,
+  } } as const;
+  await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_reads
+    ALTER COLUMN created_at SET DEFAULT (clock_timestamp() + interval '5 minutes')`);
+  try { await store.reserve(scope, 'logs', operationId); }
+  finally {
+    await database.admin.query('ALTER TABLE itervane.operations_diagnosis_reads ALTER COLUMN created_at SET DEFAULT now()');
+  }
+  await expect(store.record(scope, operationId, evidence)).resolves.toEqual(evidence);
+  const [recorded] = await database.storage.db.select().from(operationsDiagnosisReads)
+    .where(and(eq(operationsDiagnosisReads.runId, scope.runId), eq(operationsDiagnosisReads.section, 'logs')));
+  expect(recorded?.state).toBe('recorded');
+  expect(recorded?.recordedAt).toEqual(recorded?.createdAt);
+});
+
 it.each(['cancel', 'remap'] as const)('rejects a diagnosis result after %s during its reservation', async mode => {
   const fixture = await installedOperationsFixture();
   const installed = diagnosisInstallation(fixture);
@@ -3061,18 +3082,30 @@ it('shares one authorized diagnosis across opt-in HTTP and MCP and fences a repl
 
 it('serves the same authorized bilingual diagnosis and facts over HTTP and MCP', async () => {
   const fixture = await installedOperationsFixture();
-  const operations = diagnosisInstallation(fixture);
+  const publishedTaskId = task.id;
+  const provider = await auditProtocolFixture();
+  const model = workerConfig({ DATABASE_URL: database.runtimeUrl, ITERVANE_AUDIT_MODEL_PROVIDER: 'anthropic',
+    ANTHROPIC_BASE_URL: provider.baseURL, ANTHROPIC_API_KEY: auditFixtureKey, ANTHROPIC_MODEL: auditFixtureModel }).auditModel;
+  if (!model) throw new Error('Expected the protocol fixture model');
+  const auditModel = configuredAuditModel(model);
+  const operations = { ...installedOperations(fixture), diagnosisProviderSha256: auditModel.providerSha256 };
   const { environmentId, enrollmentSha256, diagnosisProviderSha256 } = operations;
   const publicUrl = 'http://127.0.0.1:4329';
-  const app = createApi(database.storage, { ...issuer.config, publicUrl, operationsApi: {
-    environmentId, enrollmentSha256, diagnosisProviderSha256,
-  } }, { logger: false });
-  const auditModel = { adapter: scriptedOperations(), providerSha256: diagnosisProviderSha256 };
+  const app = createApi(database.storage, runtimeConfig({
+    DATABASE_URL: database.runtimeUrl, ITERVANE_OIDC_ISSUER: issuer.config.issuer, ITERVANE_OIDC_AUDIENCE: issuer.config.audience,
+    ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_OPERATIONS_API_ENABLED: '1', ITERVANE_OPERATIONS_ENVIRONMENT_ID: environmentId,
+    ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollmentSha256, ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: diagnosisProviderSha256,
+  }), { logger: false });
   const worker = new DurableWorker(database.storage, database.runtimeUrl, { operations, auditModel, leaseSeconds: 30 });
   const viewer = new Client({ name: 'diagnosis-view-test', version: '0.0.0' });
   try {
+    const headers = { authorization: `Bearer ${await issuer.token('owner')}` };
+    expect((await app.inject({ url: '/v1/capabilities', headers })).json()).toMatchObject({ stage: 'p3-b', operations: true });
+    expect((await app.inject({ url: `/v1/tasks/${publishedTaskId}/operations-option`, headers })).json()).toEqual({
+      option: { ...fixture.scope, releaseOperationId: fixture.operationId, diagnosis: true },
+    });
     const start = await app.inject({ method: 'POST', url: '/v1/operations/diagnoses',
-      headers: { authorization: `Bearer ${await issuer.token('owner')}` },
+      headers,
       payload: { ...fixture.scope, locale: 'zh-CN', idempotencyKey: randomUUID(), expectedReleaseOperationId: fixture.operationId } });
     expect(start.statusCode).toBe(202);
     const { task } = admissionDtoSchema.parse(start.json());
@@ -3088,6 +3121,8 @@ it('serves the same authorized bilingual diagnosis and facts over HTTP and MCP',
 
     const downstream = scopedWhiskers(fixture, undefined, 'running');
     try { expect(await worker.tick()).toBe(true); } finally { downstream.restore(); }
+    expect(downstream.tools).toEqual(['get_container_details', 'get_container_logs', 'get_container_metrics']);
+    expect(provider.calls).toEqual(['read_operations', 'read_operations', 'read_operations', 'read_operations', 'finish_role']);
 
     const address = await app.listen({ host: '127.0.0.1', port: 0 });
     const token = await issuer.token(subject, { aud: `${publicUrl}/mcp`, scope: 'itervane:read' });
@@ -3100,7 +3135,7 @@ it('serves the same authorized bilingual diagnosis and facts over HTTP and MCP',
     const zh = operationsObservationViewSchema.parse(chinese.json());
     expect(operationsObservationViewSchema.parse((await viewer.callTool(payload)).structuredContent)).toEqual(zh);
     expect(en.diagnosis).toMatchObject({
-      hypotheses: [{ code: 'memory_pressure', evidenceIds: [expect.any(String)] }],
+      hypotheses: [],
       recommendation: { code: 'continue_observation', evidenceIds: [expect.any(String), expect.any(String)] },
     });
     expect(zh.diagnosis?.receiptSha256).toBe(en.diagnosis?.receiptSha256);
@@ -3109,10 +3144,11 @@ it('serves the same authorized bilingual diagnosis and facts over HTTP and MCP',
     expect(zh.diagnosis?.facts).toEqual(en.diagnosis?.facts);
     expect(en.diagnosis?.facts).toMatchObject([
       { section: 'container', result: { state: 'running' } },
-      { section: 'metrics', result: { status: 'observed', dataPoints: 3, memory: { average: 92 } } },
       { section: 'release', result: { current: { operationId: fixture.operationId }, previous: null } },
+      { section: 'logs', result: { lines: 2, errorLines: 1 } },
+      { section: 'metrics', result: { status: 'observed', dataPoints: 3, memory: { average: 92 } } },
     ]);
-    for (const value of [operationsFixtureKey, fixture.runtime.containerId, fixture.registration.whiskers.origin]) {
+    for (const value of [operationsFixtureKey, fixture.runtime.containerId, fixture.registration.whiskers.origin, 'local-log-canary-value']) {
       expect(english.body).not.toContain(value);
       expect(chinese.body).not.toContain(value);
     }
@@ -3130,7 +3166,7 @@ it('serves the same authorized bilingual diagnosis and facts over HTTP and MCP',
     expect(apiErrorSchema.parse((await viewer.callTool(payload)).structuredContent).error.code).toBe('not_found');
   } finally {
     await viewer.close();
-    await Promise.all([app.close(), worker.close()]);
+    await Promise.all([app.close(), worker.close(), provider.close()]);
   }
 });
 

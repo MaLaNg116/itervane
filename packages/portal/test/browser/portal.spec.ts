@@ -556,7 +556,7 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
     }) });
   });
   await page.route(`${deliveryPath}/operations-option`, route => route.fulfill({ json: {
-    option: { projectId: project.id, environmentId: target.environmentId, releaseOperationId: availableOperation },
+    option: { projectId: project.id, environmentId: target.environmentId, releaseOperationId: availableOperation, diagnosis: true },
   } }));
   await page.route(`${diagnosticPath}/operations`, route => {
     const locale = replyLocale(route.request().headers());
@@ -600,7 +600,7 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
   const sourcePage = `${stack.origin}/#/tasks/${delivery.id}`;
   await page.goto(sourcePage);
   await expect(page.getByTestId('release-result')).toBeVisible();
-  const launch = page.getByRole('button', { name: 'Observe published container', exact: true });
+  const launch = page.getByRole('button', { name: 'Diagnose published application', exact: true });
   await expect(launch).toHaveCount(0);
   availableOperation = releaseOperationId;
   await launch.click();

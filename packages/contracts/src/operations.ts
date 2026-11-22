@@ -31,6 +31,7 @@ export type StartOperationsTask = z.infer<typeof startOperationsTaskSchema>;
 
 export const operationsLaunchOptionSchema = z.strictObject({
   projectId: idSchema, environmentId: idSchema, releaseOperationId: idSchema,
+  diagnosis: z.literal(true).optional(),
 });
 export const operationsLaunchViewSchema = z.strictObject({ option: operationsLaunchOptionSchema.nullable() });
 export type OperationsLaunchOption = z.infer<typeof operationsLaunchOptionSchema>;

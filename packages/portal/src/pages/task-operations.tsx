@@ -44,8 +44,9 @@ export function StartOperationsObservation({ taskId, projectId, releaseOperation
       launch.mutate(input, { onSuccess: task => {
         if (location.hash === `#/tasks/${taskId}`) navigate(`#/tasks/${task.id}`);
       } });
-    }}>{t(error ? 'retrySubmission' : 'operationsObserve')}</Button>}
-    {currentSubmission && launch.isPending && <p className="muted" role="status">{t('operationsStarting')}</p>}
+    }}>{t(error ? 'retrySubmission' : target.diagnosis ? 'operationsDiagnose' : 'operationsObserve')}</Button>}
+    {currentSubmission && launch.isPending && <p className="muted" role="status">
+      {t(target?.diagnosis ? 'operationsDiagnosisStarting' : 'operationsStarting')}</p>}
     {error && <Failure error={error} locale={locale} />}
   </div>;
 }
