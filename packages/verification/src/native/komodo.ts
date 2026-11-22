@@ -60,8 +60,9 @@ export async function readBounded(response: Response, maxBytes: number) {
 type Credentials = { jwt: string } | { key: string; secret: string };
 
 const nativeError = z.object({ error: z.string(), trace: z.array(z.string()).default([]) });
-async function isDeploymentReadDenied(method: string, response: Response) {
-  if (method !== 'GetDeployment' || ![403, 500].includes(response.status)) {
+async function isDeploymentPermissionDenied(method: string, response: Response) {
+  const level = method === 'GetDeployment' ? 'Read' : method === 'UpdateDeployment' ? 'Write' : undefined;
+  if (!level || ![403, 500].includes(response.status)) {
     await response.body?.cancel().catch(() => undefined);
     return false;
   }
@@ -69,7 +70,7 @@ async function isDeploymentReadDenied(method: string, response: Response) {
     const body = await readBounded(response, 8192);
     const error = nativeError.parse(JSON.parse(body.toString('utf8')));
     // Komodo 2.3.4's permission helper wraps this denial as HTTP 500.
-    const denied = 'User does not have required permissions on this Deployment. Must have at least Read permissions';
+    const denied = `User does not have required permissions on this Deployment. Must have at least ${level} permissions`;
     return [error.error, ...error.trace].some(message => message === denied);
   } catch {
     return false;
@@ -100,7 +101,7 @@ export class KomodoNativeClient {
       throw new KomodoError(method, 'transport');
     }
     if (!response.ok) {
-      const denied = await isDeploymentReadDenied(method, response);
+      const denied = await isDeploymentPermissionDenied(method, response);
       throw new KomodoError(method, denied ? 'permission' : 'http', response.status);
     }
     try {

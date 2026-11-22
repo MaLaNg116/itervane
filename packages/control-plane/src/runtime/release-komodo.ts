@@ -15,6 +15,7 @@ type Authorize = () => Promise<void>;
 
 const objectId = z.object({ $oid: komodoResourceIdSchema });
 const apiKeyOwner = z.object({ key: secret, user_id: komodoResourceIdSchema });
+const readPrincipal = z.object({ _id: objectId, admin: z.literal(false), enabled: z.literal(true) });
 const imageReference = releaseKomodoConfigurationSchema.shape.imageReference;
 const imageConfig = z.strictObject({ type: z.literal('Image'), params: z.strictObject({ image: imageReference }) });
 const json = z.json();
@@ -54,7 +55,7 @@ const deployedContainer = z.object({
 });
 
 const routes = { ListApiKeys: 'read', GetDeployment: 'read', InspectDeploymentContainer: 'read',
-  UpdateDeployment: 'write', Deploy: 'execute', GetUpdate: 'read' } as const;
+  UpdateDeployment: 'write', Deploy: 'execute', GetUpdate: 'read', GetUser: 'user' } as const;
 type Method = keyof typeof routes;
 
 function normalizeContainerStart(raw?: string) {
@@ -135,12 +136,13 @@ export class KomodoReleaseClient {
     signal?.throwIfAborted();
     const timeout = AbortSignal.timeout(8_000);
     const active = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    const ownUser = method === 'GetUser';
     let response: Response;
     try {
-      response = await fetch(`${this.origin}/${routes[method]}/${method}`, {
-        method: 'POST', headers: { 'content-type': 'application/json',
+      response = await fetch(this.origin + (ownUser ? '/user' : `/${routes[method]}/${method}`), {
+        method: ownUser ? 'GET' : 'POST', headers: { 'content-type': 'application/json',
           'x-api-key': this.#credentials.key, 'x-api-secret': this.#credentials.secret },
-        body: JSON.stringify(params), redirect: 'error', signal: active,
+        ...(ownUser ? {} : { body: JSON.stringify(params) }), redirect: 'error', signal: active,
       });
     } catch { throw new KomodoReleaseError(method, 'transport'); }
     if (!response.ok) {
@@ -182,6 +184,12 @@ export class KomodoReleaseClient {
     if (!keys.some(key => key.key === this.#credentials.key && key.user_id === this.#credentials.actorId)) {
       throw new KomodoReleaseError('ListApiKeys', 'binding');
     }
+  }
+
+  async verifyReadPrincipal(signal?: AbortSignal) {
+    const caller = await this.call('GetUser', {}, readPrincipal, async () => {}, signal);
+    if (caller._id.$oid !== this.#credentials.actorId) throw new KomodoReleaseError('GetUser', 'binding');
+    await this.verifyCredentialOwner(signal);
   }
 
   async inspectTarget(raw: KomodoReleaseTarget, authorize: Authorize, signal?: AbortSignal) {
@@ -261,4 +269,29 @@ export class KomodoReleaseClient {
     const observed = await this.call('GetUpdate', { id: id.data }, update, authorize, signal);
     return this.verifyUpdate('GetUpdate', target, observed, id.data);
   }
+}
+
+export function createKomodoRestartReader(frozen: KomodoReleaseTarget, credentials: Credentials) {
+  const original = komodoReleaseTargetSchema.parse(frozen);
+  if (original.komodo.actorId === credentials.actorId) throw new KomodoReleaseError('configuration', 'binding');
+  const adapter = new KomodoReleaseClient(original.komodo.origin, credentials);
+  const fingerprint = sha256(JSON.stringify(original));
+  const readerTarget = { ...original, komodo: { ...original.komodo, actorId: credentials.actorId } };
+  const bind = (target: KomodoReleaseTarget) => {
+    const checked = komodoReleaseTargetSchema.safeParse(target);
+    if (!checked.success || sha256(JSON.stringify(checked.data)) !== fingerprint) throw new KomodoReleaseError('target', 'binding');
+    return readerTarget;
+  };
+  return {
+    async verifyInstallation(signal?: AbortSignal) {
+      await adapter.verifyReadPrincipal(signal);
+      await adapter.inspectTarget(readerTarget, async () => {}, signal);
+    },
+    inspectRuntime(target, image, network, authorize, signal?: AbortSignal) {
+      return adapter.inspectRuntime(bind(target), image, network, authorize, signal);
+    },
+    inspectStoppedRuntime(target, image, network, authorize, signal?: AbortSignal) {
+      return adapter.inspectStoppedRuntime(bind(target), image, network, authorize, signal);
+    },
+  } satisfies Pick<KomodoReleaseClient, 'inspectRuntime' | 'inspectStoppedRuntime'> & { verifyInstallation(signal?: AbortSignal): Promise<void> };
 }

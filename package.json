@@ -29,6 +29,7 @@
     "build:portal": "pnpm --filter @itervane/portal build",
     "start:worker": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/worker.ts",
     "start:release-worker": "tsx packages/control-plane/src/entries/release-worker.ts",
+    "start:restart-worker": "tsx packages/control-plane/src/entries/restart-worker.ts",
     "db:migrate": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/migrate.ts",
     "bootstrap:owner": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/bootstrap.ts",
     "register:release-target": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/register-release-target.ts",
