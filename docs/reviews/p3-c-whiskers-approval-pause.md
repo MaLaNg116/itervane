@@ -8,3 +8,5 @@
 4. `8894a47` 用真实 PostgreSQL 核对目标绑定、过期执行者、事件故障回滚和撤销前后到达的回执。其他开发任务可在原生等待期间使用全局槽。 [真库用例](https://github.com/MaLaNg116/itervane/blob/8894a476e822ff102f65e26b4775b2ff9deb6f04/packages/control-plane/test/integration/inspections.test.ts#L2891)
 
 本机 TypeScript、229 项单元、七项 PostgreSQL 17.12 专项与 Drizzle 迁移一致性通过。六项在同组运行通过。一项在旧处置准入的准备阶段被数据库拒绝，隔离复跑通过并核对伪造目标被当前约束拒绝。C2c2 接入符合原生 Confirm 策略的实际派发和受控续发，C2c3 接续运行状态与受保护入口的独立核验。 [托管检查](https://github.com/MaLaNg116/itervane/pull/92/checks)
+
+2026-11-22 合入复核固定在 `a17c8d349e32805f1526661045a2ea90abcfb815`。核对了原生申请绑定、暂停事务、撤销后的核对队列与环境占用。17 项托管检查全部通过，含九组 KVM、原生 Whiskers、密封输入及常规回归。 [KVM 联验](https://github.com/MaLaNg116/itervane/actions/runs/45015438117) · [原生确认](https://github.com/MaLaNg116/itervane/actions/runs/45015438102) · [主线合并提交](https://github.com/MaLaNg116/itervane/commit/43885d739a0afb7ee40ccea58bfd098134d8790b)

@@ -30,7 +30,7 @@ import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, fo
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
   operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
   operationsDiagnosisRuntime, operationsExecutionIntents, operationsExecutions, operationsExecutionSchedules, operationsObservations,
-  operationsProposals, operationsRequests, operationsRestartRequests,
+  operationsProposals, operationsRequests, operationsRestartRequests, operationsRestartResumes,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskEvents, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
@@ -2985,6 +2985,140 @@ it('fences a Whiskers restart approval receipt after the sender loses its lease'
   await expect(action.runtime.pauseForRestartApproval(scope, approval)).rejects.toBeInstanceOf(ExecutionLost);
   await expect(action.runtime.pauseForRestartApproval(resumed, approval)).rejects.toBeInstanceOf(ExecutionLost);
   expect((await database.storage.db.select().from(operationsRestartRequests))[0]).toMatchObject({ approvalId: null });
+});
+
+async function pausedWhiskersRestart() {
+  const action = await queuedOperationsLease();
+  const { scope, approval, credentialSha256 } = await prepareNativeRestart(action);
+  await action.runtime.pauseForRestartApproval(scope, approval);
+  const runtime = new OperationsExecutionCoordinator(coordinator, action.installed, operationsPortal);
+  const human = await decisionIdentity();
+  const next = async () => {
+    const current = await action.fixture.taskService.get(identity, scope.taskId);
+    return { ...approval, expectedVersion: current.version, idempotencyKey: randomUUID() };
+  };
+  const request = async () => runtime.requestRestartResume(human, action.execution.id, await next());
+  const lease = async () => {
+    const claimed = await runtime.claim(await fetchOperationsWakeup(), randomUUID());
+    if (claimed?.mode !== 'restart_resume') throw new Error('Expected a restart continuation lease');
+    return claimed;
+  };
+  return { action, runtime, human, next, request, lease, approval, binding: { ...approval, credentialSha256 } };
+}
+
+it('deduplicates human restart continuation and binds its send intent to the original credential', async () => {
+  const { action, runtime, human, next, lease, binding } = await pausedWhiskersRestart();
+  const input = await next();
+  const submit = () => runtime.requestRestartResume(human, action.execution.id, input);
+  await expect(runtime.requestRestartResume(identity, action.execution.id, input)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(runtime.requestRestartResume(human, action.execution.id, { ...input, approvalId: randomUUID().replaceAll('-', '') }))
+    .rejects.toMatchObject({ code: 'version_conflict' });
+  const requests = await Promise.all([submit(), submit()]);
+  expect(requests.map(item => item.replayed).sort()).toEqual([false, true]);
+  expect(requests[0]?.resume).toEqual(requests[1]?.resume);
+  expect(requests[0]?.resume).toMatchObject({ attempt: 1, state: 'queued', approvalId: input.approvalId });
+  await expect(runtime.requestRestartResume(human, action.execution.id, { ...input, idempotencyKey: randomUUID() }))
+    .rejects.toMatchObject({ code: 'version_conflict' });
+
+  const scope = await lease();
+  await expect(runtime.prepareRestartResume(scope, { ...binding, credentialSha256: sha256('replacement key') }))
+    .rejects.toMatchObject({ code: 'version_conflict' });
+  await expect(database.storage.db.update(operationsRestartResumes).set({ state: 'prepared', workerId: scope.workerId, fence: scope.fence }))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restart_resume_task_must_transition' } });
+  const { resume } = await runtime.prepareRestartResume(scope, binding);
+  expect(resume).toMatchObject({ state: 'prepared', attempt: 1, workerId: scope.workerId, fence: scope.fence });
+  await expect(runtime.prepareRestartResume(scope, binding)).rejects.toBeInstanceOf(ExecutionLost);
+  for (const locale of ['en', 'zh-CN'] as const) {
+    expect((await action.fixture.taskService.events(identity, scope.taskId, 10, locale)).at(-1))
+      .toMatchObject({ type: 'task.operations_restart_resume_prepared', reason: 'operations_restart_resume_prepared',
+        reasonMessage: translate(locale, 'reason.operations_restart_resume_prepared') });
+  }
+});
+
+it('allows at most three human continuations after explicit unchanged Whiskers pending results', async () => {
+  const { action, runtime, request, lease, binding, approval } = await pausedWhiskersRestart();
+  for (const attempt of [1, 2, 3]) {
+    expect((await request()).resume.attempt).toBe(attempt);
+    const scope = await lease();
+    await runtime.prepareRestartResume(scope, binding);
+    await expect(runtime.recordRestartResume(scope, { ...approval, outcome: 'pending' })).resolves.toMatchObject({ attempt, state: 'pending' });
+    expect((await database.storage.pool.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
+    expect((await action.fixture.taskService.get(identity, scope.taskId)).state).toBe(attempt < 3 ? 'waiting_approval' : 'reconciling');
+  }
+  await expect(request()).rejects.toMatchObject({ code: 'unsupported_state' });
+  await expect(runtime.claim(await fetchOperationsWakeup(), randomUUID())).resolves.toMatchObject({ mode: 'reconcile' });
+});
+
+it.each(['acknowledged', 'unknown'] as const)('moves a %s Whiskers continuation into read-only verification', async outcome => {
+  const { action, runtime, request, lease, binding, approval } = await pausedWhiskersRestart();
+  await request();
+  const scope = await lease();
+  await runtime.prepareRestartResume(scope, binding);
+  await expect(runtime.recordRestartResume(scope, { ...approval, approvalId: randomUUID().replaceAll('-', ''), outcome }))
+    .rejects.toBeInstanceOf(ExecutionLost);
+  await expect(runtime.recordRestartResume(scope, { ...approval, outcome })).resolves.toMatchObject({ state: outcome, recordedAt: expect.any(Date) });
+  expect((await database.storage.db.select().from(operationsExecutions))[0]?.state).toBe('reserved');
+  expect((await action.fixture.taskService.get(identity, scope.taskId)).state).toBe('reconciling');
+  await expect(request()).rejects.toMatchObject({ code: 'unsupported_state' });
+  const observer = await runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!observer) throw new Error('Expected a read-only lease');
+  expect(observer.mode).toBe('reconcile');
+  await expect(runtime.prepareRestartResume(observer, binding)).rejects.toBeInstanceOf(ExecutionLost);
+});
+
+it('reclaims an unsent Whiskers continuation and fences recovery after its send intent', async () => {
+  const { runtime, request, lease, binding, approval } = await pausedWhiskersRestart();
+  await request();
+  const first = await lease();
+  const expire = () => database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await expire();
+  await runtime.reconcile(randomUUID());
+  const second = await lease();
+  expect(second.fence).toBe(first.fence + 1);
+  await expect(runtime.prepareRestartResume(first, binding)).rejects.toBeInstanceOf(ExecutionLost);
+  expect((await runtime.prepareRestartResume(second, binding)).resume).toMatchObject({ attempt: 1, fence: second.fence });
+  await expire();
+  await runtime.reconcile(randomUUID());
+  const observer = await runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  expect(observer).toMatchObject({ mode: 'reconcile', fence: second.fence + 1 });
+  await expect(runtime.recordRestartResume(second, { ...approval, outcome: 'acknowledged' })).rejects.toBeInstanceOf(ExecutionLost);
+  expect(await database.storage.db.select().from(operationsRestartResumes)).toMatchObject([{ attempt: 1, state: 'prepared', recordedAt: null }]);
+});
+
+it('replaces a queued Whiskers continuation with read-only work on platform withdrawal', async () => {
+  const { action, runtime, request } = await pausedWhiskersRestart();
+  await request();
+  const queued = await fetchOperationsWakeup();
+  await action.decide('revoke');
+  await expect(runtime.claim(queued, randomUUID())).resolves.toBeNull();
+  expect(await database.storage.db.select().from(operationsRestartResumes)).toMatchObject([{ attempt: 1, state: 'blocked', fence: null }]);
+  expect((await action.fixture.taskService.get(identity, action.schedule.taskId)).state).toBe('reconciling');
+  expect((await database.storage.db.select().from(operationsExecutions))[0]?.state).toBe('reserved');
+  await expect(runtime.claim(await fetchOperationsWakeup(), randomUUID())).resolves.toMatchObject({ mode: 'reconcile' });
+});
+
+it('fences a claimed Whiskers continuation after platform withdrawal', async () => {
+  const { action, runtime, request, lease, binding } = await pausedWhiskersRestart();
+  await request();
+  const scope = await lease();
+  await action.decide('revoke');
+  await expect(runtime.heartbeat(scope)).rejects.toMatchObject({ code: 'unsupported_state' });
+  await expect(runtime.prepareRestartResume(scope, binding)).rejects.toMatchObject({ code: 'unsupported_state' });
+  await runtime.blockRestartResume(scope);
+  expect(await database.storage.db.select().from(operationsRestartResumes)).toMatchObject([{ attempt: 1, state: 'blocked', fence: null }]);
+  expect((await database.storage.db.select().from(operationsExecutions))[0]?.state).toBe('reserved');
+  await expect(runtime.claim(await fetchOperationsWakeup(), randomUUID())).resolves.toMatchObject({ mode: 'reconcile' });
+});
+
+it('blocks an unprepared continuation when its native caller changes', async () => {
+  const { runtime, request, lease, binding } = await pausedWhiskersRestart();
+  await request();
+  const scope = await lease();
+  await expect(runtime.prepareRestartResume(scope, { ...binding, credentialSha256: sha256('changed native caller') }))
+    .rejects.toMatchObject({ code: 'version_conflict' });
+  await runtime.blockRestartResume(scope);
+  expect(await database.storage.db.select().from(operationsRestartResumes)).toMatchObject([{ attempt: 1, state: 'blocked', fence: null }]);
+  await expect(runtime.claim(await fetchOperationsWakeup(), randomUUID())).resolves.toMatchObject({ mode: 'reconcile' });
 });
 
 it('uses the shared slot for operations and fences replaced wakeups', async () => {
