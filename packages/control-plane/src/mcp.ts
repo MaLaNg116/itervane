@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { cancelTaskSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, freezeFormalReleaseSchema, idSchema, listQuerySchema, preauditInputSchema,
   resumeTaskSchema, ruleIdSchema, ruleQuerySchema, startOperationsTaskSchema, startTaskSchema, translate, type Locale } from '@itervane/contracts';
 import { assertVerifiedIdentity, AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
-import { canonicalPublicUrl, type OperationsEnrollmentScope } from './config.js';
+import { canonicalPublicUrl, type OperationsWorkflowScope } from './config.js';
 import type { Database } from './persistence/database.js';
 import { DomainError, parseInput } from './service/errors.js';
 import { errorCode, localizedError } from './service/presentation.js';
@@ -54,7 +54,7 @@ const operationsSpecs = [
   { name: 'get_operations_result', key: 'mcp.operations_result', input: taskIdInput, write: false },
 ] as const;
 
-export function createMcpEndpoint(database: Database, config: IdentityConfig & { publicUrl?: string; operationsApi?: OperationsEnrollmentScope }, onerror: () => void) {
+export function createMcpEndpoint(database: Database, config: IdentityConfig & { publicUrl?: string; operationsApi?: OperationsWorkflowScope }, onerror: () => void) {
   const { operationsApi } = config;
   const specs = [...coreSpecs, ...(operationsApi ? operationsSpecs : [])];
   const publicUrl = canonicalPublicUrl(config.publicUrl ?? 'http://127.0.0.1:4310');

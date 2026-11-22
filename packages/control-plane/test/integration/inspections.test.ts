@@ -3059,6 +3059,81 @@ it('shares one authorized diagnosis across opt-in HTTP and MCP and fences a repl
   }
 });
 
+it('serves the same authorized bilingual diagnosis and facts over HTTP and MCP', async () => {
+  const fixture = await installedOperationsFixture();
+  const operations = diagnosisInstallation(fixture);
+  const { environmentId, enrollmentSha256, diagnosisProviderSha256 } = operations;
+  const publicUrl = 'http://127.0.0.1:4329';
+  const app = createApi(database.storage, { ...issuer.config, publicUrl, operationsApi: {
+    environmentId, enrollmentSha256, diagnosisProviderSha256,
+  } }, { logger: false });
+  const auditModel = { adapter: scriptedOperations(), providerSha256: diagnosisProviderSha256 };
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { operations, auditModel, leaseSeconds: 30 });
+  const viewer = new Client({ name: 'diagnosis-view-test', version: '0.0.0' });
+  try {
+    const start = await app.inject({ method: 'POST', url: '/v1/operations/diagnoses',
+      headers: { authorization: `Bearer ${await issuer.token('owner')}` },
+      payload: { ...fixture.scope, locale: 'zh-CN', idempotencyKey: randomUUID(), expectedReleaseOperationId: fixture.operationId } });
+    expect(start.statusCode).toBe(202);
+    const { task } = admissionDtoSchema.parse(start.json());
+    const payload = { name: 'get_operations_result', arguments: { taskId: task.id } };
+    const path = `/v1/tasks/${task.id}/operations`;
+    const subject = 'formal-diagnosis-viewer';
+    const principalId = randomUUID();
+    await database.storage.db.insert(principals).values({ id: principalId, issuer: issuer.config.issuer, subject });
+    await database.storage.db.insert(projectMembers).values({ projectId: fixture.scope.projectId, principalId, role: 'viewer' });
+    const actor = `Bearer ${await issuer.token(subject)}`;
+    const http = (language: string) => app.inject({ url: path, headers: { authorization: actor, 'accept-language': language } });
+    expect((await http('en')).json()).not.toHaveProperty('diagnosis');
+
+    const downstream = scopedWhiskers(fixture, undefined, 'running');
+    try { expect(await worker.tick()).toBe(true); } finally { downstream.restore(); }
+
+    const address = await app.listen({ host: '127.0.0.1', port: 0 });
+    const token = await issuer.token(subject, { aud: `${publicUrl}/mcp`, scope: 'itervane:read' });
+    await viewer.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+      requestInit: { headers: { Authorization: `Bearer ${token}`, 'Accept-Language': 'zh-CN' } },
+    }));
+    const [english, chinese] = await Promise.all([http('en'), http('zh-CN')]);
+    expect([english.statusCode, chinese.statusCode]).toEqual([200, 200]);
+    const en = operationsObservationViewSchema.parse(english.json());
+    const zh = operationsObservationViewSchema.parse(chinese.json());
+    expect(operationsObservationViewSchema.parse((await viewer.callTool(payload)).structuredContent)).toEqual(zh);
+    expect(en.diagnosis).toMatchObject({
+      hypotheses: [{ code: 'memory_pressure', evidenceIds: [expect.any(String)] }],
+      recommendation: { code: 'continue_observation', evidenceIds: [expect.any(String), expect.any(String)] },
+    });
+    expect(zh.diagnosis?.receiptSha256).toBe(en.diagnosis?.receiptSha256);
+    expect(zh.diagnosis?.recommendation.message).toMatch(/[\u3400-\u9fff]/u);
+    expect(en.diagnosis?.recommendation.message).not.toBe(zh.diagnosis?.recommendation.message);
+    expect(zh.diagnosis?.facts).toEqual(en.diagnosis?.facts);
+    expect(en.diagnosis?.facts).toMatchObject([
+      { section: 'container', result: { state: 'running' } },
+      { section: 'metrics', result: { status: 'observed', dataPoints: 3, memory: { average: 92 } } },
+      { section: 'release', result: { current: { operationId: fixture.operationId }, previous: null } },
+    ]);
+    for (const value of [operationsFixtureKey, fixture.runtime.containerId, fixture.registration.whiskers.origin]) {
+      expect(english.body).not.toContain(value);
+      expect(chinese.body).not.toContain(value);
+    }
+    expect(en.diagnosis?.facts.every(fact => !('serverId' in fact.result))).toBe(true);
+    await registerOperationsTarget(database.storage, { ...fixture.registration,
+      whiskers: { ...fixture.registration.whiskers, serverId: 'next-diagnosis-target' } });
+    expect(operationsObservationViewSchema.parse((await http('en')).json())).toEqual(en);
+
+    await database.admin.query(`UPDATE itervane.task_events SET detail = detail || jsonb_build_object('diagnosisSha256', $2::text)
+      WHERE task_id=$1 AND type='task.operations_observed'`, [task.id, sha256('unbound diagnostic event')]);
+    expect((await http('en')).statusCode).toBe(500);
+    expect((await viewer.callTool(payload)).isError).toBe(true);
+    await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
+    expect((await http('en')).statusCode).toBe(404);
+    expect(apiErrorSchema.parse((await viewer.callTool(payload)).structuredContent).error.code).toBe('not_found');
+  } finally {
+    await viewer.close();
+    await Promise.all([app.close(), worker.close()]);
+  }
+});
+
 it('settles one formal rollout and releases the environment only with a complete current proof', async () => {
   const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
   const { operationId, target, taskService, approval } = submitted;

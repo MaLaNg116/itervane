@@ -14,7 +14,7 @@ import { errorCode, localizedError, statusFor } from './service/presentation.js'
 import { ResourceService } from './service/resources.js';
 import { TaskService } from './service/tasks.js';
 import { createMcpEndpoint } from './mcp.js';
-import { canonicalPublicUrl, type OperationsEnrollmentScope } from './config.js';
+import { canonicalPublicUrl, type OperationsWorkflowScope } from './config.js';
 import { registerPortal } from './portal.js';
 import { InspectionService } from './service/inspections.js';
 import { FormalAuditService } from './service/formal-audit.js';
@@ -38,7 +38,7 @@ const identity = (request: FastifyRequest) => {
 };
 const limit = (request: FastifyRequest) => parseInput(listQuerySchema, request.query).limit;
 
-export type ApiConfig = IdentityConfig & { publicUrl?: string; portalClientId?: string; operationsApi?: OperationsEnrollmentScope };
+export type ApiConfig = IdentityConfig & { publicUrl?: string; portalClientId?: string; operationsApi?: OperationsWorkflowScope };
 export function createApi(database: Database, config: ApiConfig, options: { logger?: boolean; portalRoot?: string } = {}) {
   const verify = createIdentityVerifier(config);
   const resources = new ResourceService(database); const tasks = new TaskService(database);

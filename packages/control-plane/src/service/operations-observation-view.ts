@@ -8,6 +8,7 @@ import type { Database } from '../persistence/database.js';
 import { operationsObservations, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
 import { requireActor, requireProject } from './access.js';
 import { DomainError, parseInput } from './errors.js';
+import { readOperationsDiagnosisView } from './operations-diagnosis-view.js';
 import { readOperationsRequest } from './operations-requests.js';
 import { readOperationsObservationTarget } from './operations-targets.js';
 
@@ -48,6 +49,7 @@ export class OperationsObservationViewService {
       if ((task.state === 'succeeded') !== Boolean(recorded)) throw new Error('operations_view_receipt_integrity');
 
       let observation: OperationsObservationView['observation'] = null;
+      let diagnosis: Awaited<ReturnType<typeof readOperationsDiagnosisView>>;
       if (recorded) {
         const receipt = operationsObservationReceiptSchema.parse(recorded.document);
         if (receipt.taskId !== task.id || receipt.runId !== run.id || receipt.releaseOperationId !== request.document.releaseOperationId
@@ -59,12 +61,14 @@ export class OperationsObservationViewService {
         }
         const { state, observedAt } = receipt.observation;
         observation = { state, observedAt, stateLabel: translate(locale, `operations.container.${state}`), receiptSha256: recorded.sha256 };
+        diagnosis = await readOperationsDiagnosisView(tx, task, request, receipt, event, locale);
       }
 
       const { applicationId, environmentId, releaseOperationId } = request.document;
       const reason = taskEventReasonSchema.safeParse(event.detail.reason).data ?? null;
       return operationsObservationViewSchema.parse({ version: 1, taskId, runId: run.id, taskVersion: task.version,
         state: task.state, applicationId, environmentId, releaseOperationId, observation, locale, reason,
+        ...(diagnosis ? { diagnosis } : {}),
         message: translate(locale, observation ? 'task.operations_observed' : `state.${task.state}`),
         reasonMessage: reason ? translate(locale, eventReasonMessages[reason]) : null });
     });

@@ -12,7 +12,8 @@ import { BudgetExhausted, ExecutionLost, type ExecutionScope } from './authority
 import type { CurrentExecution, ExecutionCoordinator } from './coordinator.js';
 import { OperationsExecutionError, requireCurrentOperationsTarget } from './operations-execution.js';
 
-type Target = Awaited<ReturnType<typeof requireCurrentOperationsTarget>>;
+type CurrentTarget = Awaited<ReturnType<typeof requireCurrentOperationsTarget>>;
+type Target = Pick<CurrentTarget, 'containerId' | 'releaseOperationId' | 'manifestDigest'> & { whiskers: Pick<CurrentTarget['whiskers'], 'serverId'> };
 type Read = typeof operationsDiagnosisReads.$inferSelect;
 type DiagnosisInstallation = OperationsWorkflowScope & { diagnosisProviderSha256: string };
 
