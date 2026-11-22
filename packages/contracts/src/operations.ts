@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { taskDtoSchema } from './control-plane.js';
-import { localeSchema } from './i18n.js';
+import { localeSchema, taskEventReasonSchema } from './i18n.js';
 import { sha256Schema } from './inspection.js';
-import { idSchema, serviceOriginSchema, sourceRefSchema } from './primitives.js';
+import { idSchema, serviceOriginSchema, sourceRefSchema, taskStateSchema } from './primitives.js';
 import { ociDigestSchema } from './qualified-standard-image.js';
 
 const revision = z.int().min(1).max(2_147_483_647);
@@ -50,3 +50,15 @@ export const operationsObservationReceiptSchema = z.strictObject({
 });
 
 export type OperationsObservationReceipt = z.infer<typeof operationsObservationReceiptSchema>;
+
+export const operationsObservationViewSchema = z.strictObject({
+  version: z.literal(1), taskId: idSchema, runId: idSchema, taskVersion: revision,
+  applicationId: idSchema, environmentId: idSchema, releaseOperationId: idSchema,
+  state: taskStateSchema, observation: whiskersObservationSchema.pick({ state: true, observedAt: true }).extend({
+    stateLabel: z.string().min(1).max(120), receiptSha256: sha256Schema,
+  }).nullable(),
+  message: z.string().min(1).max(320), reason: taskEventReasonSchema.nullable(),
+  reasonMessage: z.string().min(1).max(320).nullable(), locale: localeSchema,
+}).refine(view => (view.state === 'succeeded') === (view.observation !== null), 'Completed observation evidence is required');
+
+export type OperationsObservationView = z.infer<typeof operationsObservationViewSchema>;

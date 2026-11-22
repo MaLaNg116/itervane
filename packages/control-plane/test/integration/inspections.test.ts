@@ -57,6 +57,7 @@ import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
 import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { FormalReleaseService } from '../../src/service/formal-release.js';
 import { readOperationsDeployment } from '../../src/service/operations-deployment.js';
+import { OperationsObservationViewService } from '../../src/service/operations-observation-view.js';
 import { readOperationsObservationTarget, registerOperationsTarget } from '../../src/service/operations-targets.js';
 import { publishFormalRepair } from '../../src/service/repair-result.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
@@ -2420,7 +2421,41 @@ it('stops an operations run before contacting Whiskers when the persisted read b
     expect(downstream.observe).not.toHaveBeenCalled();
     expect(await database.storage.db.select().from(operationsObservations)).toEqual([]);
     expect((await fixture.taskService.events(identity, request.id, 10)).at(-1)).toMatchObject({ reason: 'budget_exhausted', state: 'needs_human' });
+    await expect(new OperationsObservationViewService(database.storage).get(identity, request.id, 'zh-CN')).resolves.toMatchObject({
+      state: 'needs_human', observation: null, reason: 'budget_exhausted', reasonMessage: '持久化工具预算已耗尽。', locale: 'zh-CN',
+    });
   } finally { downstream.restore(); await worker.close(); }
+});
+
+it('projects a historical operations receipt in both languages under current project read access', async () => {
+  const fixture = await installedOperationsFixture();
+  const diagnostic = (await fixture.taskService.admitOperations(identity, { ...fixture.scope, idempotencyKey: randomUUID() })).task;
+  const view = new OperationsObservationViewService(database.storage);
+  await expect(view.get(identity, task.id, 'en')).rejects.toMatchObject({ code: 'not_found' });
+  await expect(view.get(identity, diagnostic.id, 'en')).resolves.toMatchObject({ state: 'queued', observation: null, message: 'Queued' });
+
+  const principalId = randomUUID();
+  const subject = 'operations-viewer';
+  await database.storage.db.insert(principals).values({ id: principalId, issuer: issuer.config.issuer, subject });
+  const viewer = await createIdentityVerifier(issuer.config)(await issuer.token(subject));
+  await expect(view.get(viewer, diagnostic.id, 'en')).rejects.toMatchObject({ code: 'not_found' });
+  await database.storage.db.insert(projectMembers).values({ projectId: fixture.scope.projectId, principalId, role: 'viewer' });
+
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { operations: installedOperations(fixture) });
+  const downstream = scopedWhiskers(fixture);
+  try { await worker.tick(); } finally { downstream.restore(); await worker.close(); }
+  const [zh, en] = await Promise.all([view.get(viewer, diagnostic.id, 'zh-CN'), view.get(viewer, diagnostic.id, 'en')]);
+  expect(zh).toMatchObject({ state: 'succeeded', releaseOperationId: fixture.operationId, environmentId: fixture.scope.environmentId,
+    observation: { state: 'exited', stateLabel: '已退出', observedAt: expect.any(String), receiptSha256: expect.stringMatching(/^[a-f0-9]{64}$/) } });
+  expect(en.observation).toEqual({ ...zh.observation, stateLabel: 'Exited' });
+  expect(zh.message).not.toBe(en.message);
+  expect(Object.keys(en.observation!).sort()).toEqual(['observedAt', 'receiptSha256', 'state', 'stateLabel']);
+  expect(JSON.stringify(en)).not.toContain(fixture.registration.whiskers.origin);
+
+  await registerOperationsTarget(database.storage, { ...fixture.registration, whiskers: { ...fixture.registration.whiskers, serverId: 'new-origin-scope' } });
+  await expect(view.get(viewer, diagnostic.id, 'en')).resolves.toEqual(en);
+  await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
+  await expect(view.get(viewer, diagnostic.id, 'en')).rejects.toMatchObject({ code: 'not_found' });
 });
 
 it('settles one formal rollout and releases the environment only with a complete current proof', async () => {
