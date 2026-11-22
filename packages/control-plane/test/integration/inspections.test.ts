@@ -2860,7 +2860,8 @@ it('serializes competing owner decisions for a proposal submitted by a project m
     decisions.decide(owner, proposal.id, { ...input, action: 'reject', idempotencyKey: randomUUID() }),
   ]);
   expect(attempts).toEqual(expect.arrayContaining([
-    expect.objectContaining({ status: 'fulfilled', value: { replayed: false, decision: expect.objectContaining({ version: 1, selfConfirmed: false }) } }),
+    expect.objectContaining({ status: 'fulfilled', value: { taskId: task.id, replayed: false,
+      decision: expect.objectContaining({ version: 1, selfConfirmed: false }) } }),
     expect.objectContaining({ status: 'rejected', reason: expect.objectContaining({ code: 'version_conflict' }) }),
   ]));
   const before = (await database.storage.db.select().from(operationsDecisions)).at(0);
@@ -3037,6 +3038,27 @@ it('reserves one budget per evidence section, replays its record and limits succ
   ]));
   const [budget] = await database.storage.db.select().from(runRuntime).where(eq(runRuntime.runId, fourth.runId));
   expect(budget).toMatchObject({ maxTools: 4, toolsUsed: 2 });
+});
+
+it('records diagnosis evidence when the database clock is behind the reservation timestamp', async () => {
+  const { fixture, installed, scope } = await startDiagnosis();
+  const store = new OperationsEvidenceStore(coordinator, installed);
+  const operationId = sha256('logs with a previous higher clock reading');
+  const evidence = { kind: 'operations_section', section: 'logs', proofSha256: sha256('fixed log signals'), result: {
+    containerId: fixture.runtime.containerId, serverId: fixture.registration.whiskers.serverId,
+    observedAt: new Date().toISOString(), tailLines: 40, lines: 4, warningLines: 1, errorLines: 1,
+  } } as const;
+  await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_reads
+    ALTER COLUMN created_at SET DEFAULT (clock_timestamp() + interval '5 minutes')`);
+  try { await store.reserve(scope, 'logs', operationId); }
+  finally {
+    await database.admin.query('ALTER TABLE itervane.operations_diagnosis_reads ALTER COLUMN created_at SET DEFAULT now()');
+  }
+  await expect(store.record(scope, operationId, evidence)).resolves.toEqual(evidence);
+  const [recorded] = await database.storage.db.select().from(operationsDiagnosisReads)
+    .where(and(eq(operationsDiagnosisReads.runId, scope.runId), eq(operationsDiagnosisReads.section, 'logs')));
+  expect(recorded?.state).toBe('recorded');
+  expect(recorded?.recordedAt).toEqual(recorded?.createdAt);
 });
 
 it.each(['cancel', 'remap'] as const)('rejects a diagnosis result after %s during its reservation', async mode => {

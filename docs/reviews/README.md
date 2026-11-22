@@ -82,14 +82,14 @@
 | 076 | P3-B3a 诊断发布历史证据 | [#76](https://github.com/MaLaNg116/itervane/pull/76)，已合入 main | [发布历史导读](p3-b-operations-release-evidence.md) | 223 项单元、四项 PostgreSQL 17.12 专项及[九组 KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44974795976)通过 |
 | 077 | P3-B3b 诊断输入与证据预留 | [#77](https://github.com/MaLaNg116/itervane/pull/77)，已合入 main | [诊断预留导读](p3-b-operations-evidence-store.md) | TypeScript、223 项单元、六项 PostgreSQL 17.12 专项及[九组 KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44976096568)通过 |
 | 078 | P3-B3c1 正式诊断检查点 | [#78](https://github.com/MaLaNg116/itervane/pull/78)，已合入 main | [检查点导读](p3-b-operations-checkpoints.md) | TypeScript、223 项单元、八项 PostgreSQL 17.12 专项、迁移一致性及[九组 KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44977332136)通过 |
-| 079 | P3-B3c2 正式诊断 Worker 与证据化结算 | [#79](https://github.com/MaLaNg116/itervane/pull/79)，依赖 #78 | [调查与结算导读](p3-b-operations-diagnosis-worker.md) | TypeScript、223 项单元、十项 PostgreSQL 17.12 专项及迁移一致性验证通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44978105152)已启动 |
-| 080 | P3-B3d1 HTTP 与 MCP 双语诊断 | [#80](https://github.com/MaLaNg116/itervane/pull/80)，依赖 #79 | [查询导读](p3-b-operations-diagnosis-view.md) | TypeScript、223 项单元及五项 PostgreSQL 17.12 专项通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44978641748)已启动 |
-| 081 | P3-B3d2 双语运维诊断门户 | [#81](https://github.com/MaLaNg116/itervane/pull/81)，依赖 #80 | [门户导读](p3-b-operations-diagnosis-portal.md) | TypeScript、223 项单元、Vite 构建及真实 Chrome 专项通过，[托管验收](https://github.com/MaLaNg116/itervane/actions/runs/44979250267)已启动 |
-| 082 | P3-B3d3 安装态正式诊断与原生验收 | [#82](https://github.com/MaLaNg116/itervane/pull/82)，依赖 #81 | [安装与原生验收导读](p3-b-operations-diagnosis-installation.md) | TypeScript、224 项单元、五项 PostgreSQL 17.12 专项及真实 Chrome 场景通过，原生诊断[首轮失败](https://github.com/MaLaNg116/itervane/actions/runs/44979952380/job/137078061605)并[补充脱敏诊断复跑](https://github.com/MaLaNg116/itervane/actions/runs/44981348666) |
-| 083 | P3-C1a 证据绑定的运维处置提案 | [#83](https://github.com/MaLaNg116/itervane/pull/83)，依赖 #82 | [处置提案导读](p3-c-operations-proposals.md) | TypeScript、224 项单元、十项 PostgreSQL 17.12 专项及迁移一致性通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44981434576)已启动 |
-| 084 | P3-C1b1 人工处置决策 | [#84](https://github.com/MaLaNg116/itervane/pull/84)，依赖 #83 | [人工决策导读](p3-c-operations-decisions.md) | TypeScript、224 项单元、九项运维真库专项、八项发布决策回归及迁移一致性通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44982088627)已启动 |
-| 085 | P3-C1b2 双语处置提案与门户审批 | [#85](https://github.com/MaLaNg116/itervane/pull/85)，依赖 #84 | [处置入口导读](p3-c-operations-proposal-interfaces.md) | TypeScript、224 项单元、四项 PostgreSQL 17.12 专项及真实 Chrome 与 Keycloak 专项通过 |
-| 087 | P3-C2a Whiskers 原生重启确认协议 | [#87](https://github.com/MaLaNg116/itervane/pull/87)，依赖 #85 | [重启协议导读](p3-c-whiskers-restart-contract.md) | TypeScript、229 项单元、[15 项原生 Whiskers 验收](https://github.com/MaLaNg116/itervane/actions/runs/44985016597)通过 |
+| 079 | P3-B3c2 正式诊断 Worker 与证据化结算 | [#79](https://github.com/MaLaNg116/itervane/pull/79)，已合入 main | [调查与结算导读](p3-b-operations-diagnosis-worker.md) | TypeScript、223 项单元、十项 PostgreSQL 17.12 专项及迁移一致性通过，合入记录保存发布目标与工件漂移的证据 |
+| 080 | P3-B3d1 HTTP 与 MCP 双语诊断 | [#80](https://github.com/MaLaNg116/itervane/pull/80)，已合入 main | [查询导读](p3-b-operations-diagnosis-view.md) | TypeScript、223 项单元、五项 PostgreSQL 17.12 专项及[九组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44978641748)通过 |
+| 081 | P3-B3d2 双语运维诊断门户 | [#81](https://github.com/MaLaNg116/itervane/pull/81)，已合入 main | [门户导读](p3-b-operations-diagnosis-portal.md) | TypeScript、223 项单元、Vite 构建、真实 Chrome 专项及[托管检查](https://github.com/MaLaNg116/itervane/actions/runs/44979324307)通过 |
+| 082 | P3-B3d3 安装态正式诊断与原生验收 | [#82](https://github.com/MaLaNg116/itervane/pull/82)，基于已合入 #81 的 main | [安装与原生验收导读](p3-b-operations-diagnosis-installation.md) | 固定版本通过[托管检查](https://github.com/MaLaNg116/itervane/actions/runs/44990232708)、[原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/44990234055)和[安装态 KVM 正式诊断](https://github.com/MaLaNg116/itervane/actions/runs/44990230823/job/137109454654) |
+| 083 | P3-C1a 证据绑定的运维处置提案 | [#83](https://github.com/MaLaNg116/itervane/pull/83)，已合入 main | [处置提案导读](p3-c-operations-proposals.md) | 固定版本通过[托管常规检查与 206 项 PostgreSQL 集成](https://github.com/MaLaNg116/itervane/actions/runs/44992261344)、[原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/44992257898)和[安装态 KVM 诊断回归](https://github.com/MaLaNg116/itervane/actions/runs/44992257894/job/137115664544) |
+| 084 | P3-C1b1 人工处置决策 | [#84](https://github.com/MaLaNg116/itervane/pull/84)，基于已合入 #83 的 main | [人工决策导读](p3-c-operations-decisions.md) | 固定版本通过六项本机 PostgreSQL 17.12 复验、[托管常规检查](https://github.com/MaLaNg116/itervane/actions/runs/44994305320)、[原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/44994300304)和[安装态 KVM 运维诊断](https://github.com/MaLaNg116/itervane/actions/runs/44994300285/job/137121900446) |
+| 085 | P3-C1b2 双语处置提案与门户审批 | [#85](https://github.com/MaLaNg116/itervane/pull/85)，基于已合入 #84 的 main | [处置入口导读](p3-c-operations-proposal-interfaces.md) | TypeScript、224 项单元、四项 PostgreSQL 17.12 专项、真实浏览器、[托管常规检查](https://github.com/MaLaNg116/itervane/actions/runs/44996741041)及[九项安装态 KVM 检查](https://github.com/MaLaNg116/itervane/actions/runs/44996736228/attempts/2)通过 |
+| 087 | P3-C2a Whiskers 原生重启确认协议 | [#87](https://github.com/MaLaNg116/itervane/pull/87)，基于已合入 #85 的 main | [重启协议导读](p3-c-whiskers-restart-contract.md) | TypeScript、229 项单元、[15 项原生 Whiskers 验收](https://github.com/MaLaNg116/itervane/actions/runs/44985016597)通过 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
@@ -104,6 +104,10 @@ P1-E 固定代码快照为 `1f93809aef42c70bce52f3dd1fac7af58d929358`，对应�
 P1-E 文档交付版本 `54e095fd3add9a028105bf0141d95dbf0384efcc` 的 [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44501368994) 和 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44501335089) 均通过 deterministic/portal/scanners 三组。Linux/本地浏览器与扫描器源码指纹一致；5 项 CLI 仍只验证可信样例，runtimeQualified=false。本次随后只补充 PR/证据索引。
 
 P1-UX 固定代码/已验证交付为 `4234acdb5d9c664272417713389eeef433bc7db5`，[PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44663181433) 与 [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44663174416) 均通过三组检查。本地与 Linux 指纹一致，完整 20 项真实浏览器通过；随后仅补文档证据。#7 的交付基于 #6，保留 Runner 和完整阶段的独立验收。
+
+## 托管基础设施
+
+PR #86 恢复 Runner 固定基础镜像下载，已经审查并合入。托管 OCI 构造及全部九组 KVM 场景通过。 [PR #86](https://github.com/MaLaNg116/itervane/pull/86) · [镜像下载导读](runner-pinned-base-mirror.md)
 
 ## 每批交付约定
 
