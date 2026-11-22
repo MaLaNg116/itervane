@@ -15,3 +15,5 @@ pnpm exec tsx --env-file-if-exists=.env -e 'import { workerConfig } from "./pack
 本机 TypeScript、224 项单元、PostgreSQL 17.12 专项五项及 Chrome 场景通过。真库专项覆盖本机 Anthropic HTTP 脚本模型、四类证据、双语响应、权限和旧观察兼容。原生端到端走相同协议的脚本模型，实模证据按独立运行归档。 [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/44979952380) · [原生 Whiskers 回归](https://github.com/MaLaNg116/itervane/actions/runs/44979952343)
 
 原生诊断首轮停在 `operations_formal_investigation`。`79deb06` 为后续复跑补充了白名单原因、证据类别及记录状态，区分调查、进程关闭和模型调用核对。 [首轮作业](https://github.com/MaLaNg116/itervane/actions/runs/44979952380/job/137078061605) · [复跑](https://github.com/MaLaNg116/itervane/actions/runs/44981348666)
+
+复跑确认详情与发布证据已记录，日志读取被托管夹具的工具策略拦截。`9f9d327` 将该 Read 策略的允许列表限定为容器详情、日志和指标。 [复跑作业](https://github.com/MaLaNg116/itervane/actions/runs/44981348666/job/137082373936) · [固定后的 Read 策略](https://github.com/MaLaNg116/itervane/blob/9f9d3278a5451a95a6463aa23f9c18a3cf57181d/fixtures/whiskers/read-only-guardrails.json) · [复验](https://github.com/MaLaNg116/itervane/actions/runs/44982452271)
