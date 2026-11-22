@@ -92,7 +92,8 @@
 | 087 | P3-C2a Whiskers 原生重启确认协议 | [#87](https://github.com/MaLaNg116/itervane/pull/87)，已合入 main | [重启协议导读](p3-c-whiskers-restart-contract.md) | [15 项原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/45000608484)、[九组托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45000608502)及[常规检查](https://github.com/MaLaNg116/itervane/actions/runs/45000611256)通过 |
 | 088 | P3-C2b1 处置准入与发布互斥 | [#88](https://github.com/MaLaNg116/itervane/pull/88)，已合入 main | [持久化准入导读](p3-c-operations-execution-admission.md) | 迁移一致性、[托管常规](https://github.com/MaLaNg116/itervane/actions/runs/45003733555)、[九组 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45003730130)及[原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/45003730077)通过 |
 | 089 | P3-C2b2a 处置事务入队和关闭 | [#89](https://github.com/MaLaNg116/itervane/pull/89)，已合入 | [处置调度导读](p3-c-operations-execution-schedule.md) | TypeScript、11 项 PostgreSQL 专项及 [17 项托管检查](https://github.com/MaLaNg116/itervane/pull/89/checks)通过 |
-| 090 | P3-C2b2b 处置租约、发送意图和接管 | [#90](https://github.com/MaLaNg116/itervane/pull/90)，依赖 #89 | [处置执行权导读](p3-c-operations-execution-intent.md) | TypeScript、229 项单元、18 项 PostgreSQL 17.12 专项及迁移一致性通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/90/checks) |
+| 090 | P3-C2b2b 处置租约、发送意图和接管 | [#90](https://github.com/MaLaNg116/itervane/pull/90)，已合入 | [处置执行权导读](p3-c-operations-execution-intent.md) | TypeScript、18 项 PostgreSQL 专项及 [17 项托管检查](https://github.com/MaLaNg116/itervane/pull/90/checks)通过 |
+| 091 | 正式上线领取与回执的时间顺序修复 | [#91](https://github.com/MaLaNg116/itervane/pull/91)，依赖 #90 | [时间顺序导读](rollout-timestamp-order.md) | PostgreSQL 17.12 对照复现并修正，五项专项、229 项单元与迁移一致性通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/91/checks) |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 

@@ -2075,7 +2075,19 @@ it('rejects direct formal rollout lease changes outside the recorded handoff and
   await parkForRollout(submitted);
   await expect(insert(2, 45)).rejects.toMatchObject({ code: '23514', message: 'formal_rollout_lease_required' });
   await expect(insert(1, 46)).rejects.toMatchObject({ code: '23514', message: 'formal_rollout_lease_required' });
+  const rollback = new Error('rollback legacy lease probe');
+  await expect(database.storage.db.transaction(async tx => {
+    const legacy = await tx.execute<{ bounded: boolean }>(sql`INSERT
+      INTO itervane.formal_release_rollout_attempts (operation_id, fence, worker_id, lease_until)
+      VALUES (${operationId}, 1, ${randomUUID()}, clock_timestamp() + interval '45 seconds')
+      RETURNING lease_until > created_at AND lease_until <= created_at + interval '45 seconds' AS bounded`);
+    expect(legacy.rows[0]?.bounded).toBe(true);
+    throw rollback;
+  })).rejects.toBe(rollback);
   expect(await observer.claimNext(randomUUID())).toMatchObject({ operationId, fence: 1 });
+  const lease = await database.storage.pool.query<{ exact: boolean }>(`SELECT lease_until - created_at = interval '45 seconds' AS exact
+    FROM itervane.formal_release_rollout_attempts WHERE operation_id=$1`, [operationId]);
+  expect(lease.rows[0]?.exact).toBe(true);
   await expect(insert(2, 45)).rejects.toMatchObject({ code: '23514', message: 'formal_rollout_lease_required' });
   await expect(database.storage.pool.query("UPDATE itervane.formal_release_rollout_attempts SET state='expired' WHERE operation_id=$1", [operationId]))
     .rejects.toMatchObject({ code: '23514', message: 'formal_rollout_attempt_is_immutable' });
@@ -3906,6 +3918,27 @@ it('settles one formal rollout and releases the environment only with a complete
   }
   await expect(registerReleaseTarget(database.storage, { ...target, runtimeConfigSha256: sha256('next revision') }))
     .resolves.toMatchObject({ revision: approval.manifest.target.revision + 1 });
+});
+
+it('keeps formal rollout completion ordered when the database clock is behind the claim timestamp', async () => {
+  const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
+  const parked = await parkForRollout(submitted);
+  await database.admin.query(`CREATE FUNCTION itervane.test_future_rollout_claim() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN NEW.created_at := NEW.lease_until - interval '15 seconds'; RETURN NEW; END;
+    $$`);
+  try {
+    await database.admin.query(`CREATE TRIGGER test_future_rollout_claim BEFORE INSERT ON itervane.formal_release_rollout_attempts
+      FOR EACH ROW EXECUTE FUNCTION itervane.test_future_rollout_claim()`);
+    try { await finishTestRollout(parked); }
+    finally {
+      await database.admin.query('DROP TRIGGER test_future_rollout_claim ON itervane.formal_release_rollout_attempts');
+    }
+  } finally { await database.admin.query('DROP FUNCTION itervane.test_future_rollout_claim()'); }
+  const [attempt] = await database.storage.db.select().from(formalReleaseRolloutAttempts)
+    .where(eq(formalReleaseRolloutAttempts.operationId, submitted.operationId));
+  expect(attempt?.state).toBe('verified');
+  expect(attempt?.completedAt).toEqual(attempt?.createdAt);
+  expect(await readOperation(submitted.operationId)).toMatchObject({ state: 'verified_formal' });
 });
 
 it('rejects wrong, stale and partial formal rollout evidence while preserving a later cancellation', async () => {
