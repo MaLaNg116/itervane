@@ -84,6 +84,7 @@
 | 078 | P3-B3c1 正式诊断检查点 | [#78](https://github.com/MaLaNg116/itervane/pull/78)，依赖 #77 | [检查点导读](p3-b-operations-checkpoints.md) | TypeScript、223 项单元、八项 PostgreSQL 17.12 专项及迁移一致性验证通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44977332136)已启动 |
 | 079 | P3-B3c2 正式诊断 Worker 与证据化结算 | [#79](https://github.com/MaLaNg116/itervane/pull/79)，依赖 #78 | [调查与结算导读](p3-b-operations-diagnosis-worker.md) | TypeScript、223 项单元、十项 PostgreSQL 17.12 专项及迁移一致性验证通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44978105152)已启动 |
 | 080 | P3-B3d1 HTTP 与 MCP 双语诊断 | [#80](https://github.com/MaLaNg116/itervane/pull/80)，依赖 #79 | [查询导读](p3-b-operations-diagnosis-view.md) | TypeScript、223 项单元及五项 PostgreSQL 17.12 专项通过，[托管回归](https://github.com/MaLaNg116/itervane/actions/runs/44978641748)已启动 |
+| 081 | P3-B3d2 双语运维诊断门户 | [#81](https://github.com/MaLaNg116/itervane/pull/81)，依赖 #80 | [门户导读](p3-b-operations-diagnosis-portal.md) | TypeScript、223 项单元、Vite 构建及真实 Chrome 专项通过，[托管验收](https://github.com/MaLaNg116/itervane/actions/runs/44979250267)已启动 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
