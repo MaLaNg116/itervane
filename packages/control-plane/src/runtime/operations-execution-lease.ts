@@ -9,7 +9,7 @@ import { alias } from 'drizzle-orm/pg-core';
 import { fromDrizzle, type Job } from 'pg-boss';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import type { OperationsEnrollmentScope } from '../config.js';
-import { operationsExecutionQueue, type Database } from '../persistence/database.js';
+import { operationsExecutionQueue, operationsRestoreQueue, type Database } from '../persistence/database.js';
 import { operationsExecutionIntents, operationsExecutionSchedules, operationsExecutions, operationsProposals, operationsRestartResumes, operationsRestoreSteps,
   runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { isHumanWorkspaceOwner, requireActor, requireProjectAccess, type Transaction } from '../service/access.js';
@@ -23,7 +23,8 @@ import { databaseNow } from '../service/releases.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope } from './authority.js';
 import type { ExecutionCoordinator } from './coordinator.js';
-import { closeUndispatchedOperationsExecution, operationsExecutionWakeupSchema, replaceOperationsExecutionWakeup } from './operations-execution-queue.js';
+import { cancelOperationsExecutionWakeup, closeUndispatchedOperationsExecution, operationsExecutionWakeupSchema, operationsQueueForAction,
+  replaceOperationsExecutionWakeup, type OperationsActionKind } from './operations-execution-queue.js';
 import { attachOperationsRestartApproval, prepareOperationsRestartRequest, readOperationsRestartRequest, readOperationsRestartSubject,
   reconcileUnavailableRestart } from './operations-restart-request.js';
 import { findActiveRestartRecovery, finishRestartRecovery, proveRestartRecovery, readRestartRecoveryBinding, startRestartRecovery,
@@ -109,7 +110,7 @@ async function reconcileBlockedRestartResume(tx: Transaction, database: Database
   await appendEvent(tx, task, 'task.operations_execution_recovered', 'reconciling', {
     workerId, reason, operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, resumeAttempt: blocked.attempt },
   });
-  await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation);
+  await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation, 'restart');
 }
 
 export async function recoverOperationsExecutionSlot(tx: Transaction, database: Database,
@@ -148,7 +149,7 @@ export async function recoverOperationsExecutionSlot(tx: Transaction, database: 
       await appendEvent(tx, task, 'task.operations_execution_recovered', reason === 'operations_execution_reconciling' ? 'reconciling' : 'queued', {
         workerId, reason, operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: slot.fence },
       });
-      await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation);
+      await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation, readOperationsProposal(bound.proposal).action.kind);
     }
   }
   await clearSlot(tx);
@@ -161,14 +162,25 @@ export class OperationsExecutionCoordinator {
 
   get leaseSeconds() { return this.coordinator.leaseSeconds; }
 
-  async claim(job: Job<unknown>, workerId: string, supportedAction?: 'restart' | 'rollback'): Promise<OperationsExecutionLease | null> {
+  async claimNext(workerId: string, supportedAction: OperationsActionKind, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    await this.reconcile(workerId, supportedAction);
+    const [job] = await this.coordinator.database.boss.fetch(operationsQueueForAction(supportedAction));
+    if (!job) return null;
+    signal?.throwIfAborted();
+    return this.claim(job, workerId, supportedAction);
+  }
+
+  async claim(job: Job<unknown>, workerId: string, supportedAction?: OperationsActionKind): Promise<OperationsExecutionLease | null> {
     idSchema.parse(workerId);
+    const queue = job.name;
+    if (queue !== operationsExecutionQueue && queue !== operationsRestoreQueue) return null;
     const database = this.coordinator.database;
     const request = operationsExecutionWakeupSchema.safeParse(job.data);
     return database.db.transaction(async tx => {
       await this.coordinator.recoverExpired(tx, workerId);
       const slot = await lockSlot(tx);
-      const complete = () => database.boss.complete(operationsExecutionQueue, job, undefined, { db: fromDrizzle(tx, sql) });
+      const complete = () => database.boss.complete(queue, job, undefined, { db: fromDrizzle(tx, sql) });
       const wakeup = request.success ? request.data : undefined;
       const bound = wakeup ? await lockOperationsExecution(tx, wakeup.executionId) : undefined;
       const mode = bound && wakeupMode(bound);
@@ -181,7 +193,7 @@ export class OperationsExecutionCoordinator {
       const { execution, schedule, task, proposal, diagnosis } = bound;
       if (mode === 'dispatch' && await expireUndispatchedOperations(tx, database, execution.environmentId, task.requestedBy, workerId)) return null;
       const { target, action } = readOperationsProposal(proposal);
-      const eligible = !slot.taskId && target.environmentId === this.installation.environmentId
+      const eligible = queue === operationsQueueForAction(action.kind) && !slot.taskId && target.environmentId === this.installation.environmentId
         && target.enrollmentSha256 === this.installation.enrollmentSha256 && (!supportedAction || action.kind === supportedAction);
       let authorized = true;
       if (eligible && mode !== 'reconcile') {
@@ -202,7 +214,7 @@ export class OperationsExecutionCoordinator {
         return null;
       }
       if (!eligible || !authorized) {
-        await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation, slot.taskId ? 1 : 5);
+        await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation, action.kind, slot.taskId ? 1 : 5);
         return null;
       }
 
@@ -337,7 +349,7 @@ export class OperationsExecutionCoordinator {
       await appendEvent(tx, task, 'task.operations_execution_recovered', 'reconciling', {
         workerId: scope.workerId, reason, operationsExecution: { executionId: scope.executionId, proposalId: proposal.id, fence: scope.fence },
       });
-      await replaceOperationsExecutionWakeup(tx, this.coordinator.database, schedule, task.generation);
+      await replaceOperationsExecutionWakeup(tx, this.coordinator.database, schedule, task.generation, 'rollback');
       await clearSlot(tx);
       return 'reconciling' as const;
     });
@@ -406,7 +418,7 @@ export class OperationsExecutionCoordinator {
         operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: scope.fence,
           nativeApprovalId: approval.approvalId, nativeCallSha256: approval.callSha256 },
       });
-      if (!canAwaitApproval) await replaceOperationsExecutionWakeup(tx, this.coordinator.database, schedule, task.generation);
+      if (!canAwaitApproval) await replaceOperationsExecutionWakeup(tx, this.coordinator.database, schedule, task.generation, 'restart');
       await clearSlot(tx);
       return { ...recorded, waiting: canAwaitApproval };
     });
@@ -452,7 +464,7 @@ export class OperationsExecutionCoordinator {
         actorId: actor.principalId, reason: queued,
         operationsExecution: { executionId, proposalId: execution.proposalId, resumeAttempt: resume.attempt },
       });
-      await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation);
+      await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation, 'restart');
       return { resume, replayed: false };
     });
   }
@@ -513,7 +525,7 @@ export class OperationsExecutionCoordinator {
         workerId: scope.workerId, reason: nextReason,
         operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: scope.fence, resumeAttempt: current.attempt },
       });
-      if (!wait) await replaceOperationsExecutionWakeup(tx, this.coordinator.database, schedule, task.generation);
+      if (!wait) await replaceOperationsExecutionWakeup(tx, this.coordinator.database, schedule, task.generation, 'restart');
       await clearSlot(tx);
       return { ...resume, waiting: wait };
     });
@@ -543,7 +555,7 @@ export class OperationsExecutionCoordinator {
           operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: scope.fence,
             nativeCallSha256: request.callSha256, ...(request.approvalId ? { nativeApprovalId: request.approvalId } : {}) },
         });
-        await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation);
+        await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation, 'restart');
       }
       await clearSlot(tx);
       return 'reconciling' as const;
@@ -573,17 +585,22 @@ export class OperationsExecutionCoordinator {
     });
   }
 
-  async reconcile(workerId: string) {
+  async reconcile(workerId: string, supportedAction?: OperationsActionKind) {
     idSchema.parse(workerId);
     const database = this.coordinator.database;
     await database.db.transaction(tx => this.coordinator.recoverExpired(tx, workerId));
-    await this.reconcileExpiredRestartApproval(workerId);
-    const candidates = await database.db.select({ id: operationsExecutionSchedules.executionId, jobId: operationsExecutionSchedules.wakeupJobId })
+    if (supportedAction !== 'rollback') await this.reconcileExpiredRestartApproval(workerId);
+    const action = sql<OperationsActionKind>`${operationsProposals.document}#>>'{action,kind}'`;
+    const candidates = await database.db.select({ id: operationsExecutionSchedules.executionId, jobId: operationsExecutionSchedules.wakeupJobId, action })
       .from(operationsExecutionSchedules).innerJoin(tasks, eq(tasks.id, operationsExecutionSchedules.taskId))
-      .where(and(inArray(tasks.state, ['queued', 'reconciling']), isNotNull(operationsExecutionSchedules.wakeupJobId))).limit(20);
-    for (const { id, jobId } of candidates) {
+      .innerJoin(operationsExecutions, eq(operationsExecutions.id, operationsExecutionSchedules.executionId))
+      .innerJoin(operationsProposals, eq(operationsProposals.id, operationsExecutions.proposalId))
+      .where(and(eq(operationsExecutions.environmentId, this.installation.environmentId), eq(operationsExecutions.state, 'reserved'),
+        inArray(tasks.state, ['queued', 'reconciling']), isNotNull(operationsExecutionSchedules.wakeupJobId),
+        supportedAction ? eq(action, supportedAction) : undefined)).limit(20);
+    for (const { id, jobId, action: kind } of candidates) {
       if (!jobId) continue;
-      const [job] = await database.boss.findJobs(operationsExecutionQueue, { id: jobId });
+      const [job] = await database.boss.findJobs(operationsQueueForAction(kind), { id: jobId });
       if (job?.state === 'created' || job?.state === 'retry') continue;
       await database.db.transaction(async tx => {
         await lockSlot(tx);
@@ -594,9 +611,9 @@ export class OperationsExecutionCoordinator {
         if (mode === 'dispatch' && await expireUndispatchedOperations(tx, database, execution.environmentId, task.requestedBy, workerId)) return;
         if (job?.state === 'active') {
           if (!job.startedOn || (await databaseNow(tx)).getTime() - new Date(job.startedOn).getTime() < this.coordinator.leaseSeconds * 1_000) return;
-          await database.boss.cancel(operationsExecutionQueue, jobId, { db: fromDrizzle(tx, sql) });
         }
-        await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation);
+        if (!job || job.state === 'active') await cancelOperationsExecutionWakeup(tx, database, kind, jobId);
+        await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation, kind);
       });
     }
   }

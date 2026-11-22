@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { expect, it } from 'vitest';
-import { canonicalPublicUrl, migrationConfig, releaseWorkerConfig, restartWorkerConfig, runtimeConfig, workerConfig } from '../../src/config.js';
+import { canonicalPublicUrl, migrationConfig, releaseWorkerConfig, restartWorkerConfig, restoreWorkerConfig, runtimeConfig, workerConfig } from '../../src/config.js';
 
 const configured = {
   DATABASE_URL: 'postgresql://localhost/itervane', ITERVANE_OIDC_ISSUER: 'https://identity.example/realms/personal',
@@ -132,6 +132,24 @@ it.each(['anthropic', 'openai'] as const)('configures the %s audit adapter only 
   expect(workerConfig(enabled).auditModel).toMatchObject({ protocol, baseURL: endpoint, model: 'test-model' });
   expect(() => workerConfig({ ...enabled, [`${prefix}_BASE_URL`]: 'http://example.invalid' })).toThrow();
   expect(() => workerConfig({ ...enabled, [`${prefix}_MODEL`]: undefined })).toThrow();
+});
+
+it('binds the restore worker to the enrollment, release mapping and separate Komodo credentials', () => {
+  const environment = { DATABASE_URL: configured.DATABASE_URL,
+    ITERVANE_OPERATIONS_ENVIRONMENT_ID: '3c486a10-028d-4295-8c0c-d89a38061649',
+    ITERVANE_OPERATIONS_ENROLLMENT_SHA256: 'a'.repeat(64), ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: 'b'.repeat(64),
+    ITERVANE_RESTORE_KOMODO_WRITER_KEY: 'writer-key', ITERVANE_RESTORE_KOMODO_WRITER_SECRET: 'writer-secret',
+    ITERVANE_RESTORE_KOMODO_READER_ID: 'c'.repeat(24), ITERVANE_RESTORE_KOMODO_READER_KEY: 'reader-key',
+    ITERVANE_RESTORE_KOMODO_READER_SECRET: 'reader-secret', ITERVANE_RESTORE_PROBE_SECRET: 'probe-secret' };
+  expect(restoreWorkerConfig(environment)).toMatchObject({
+    installed: { environmentId: environment.ITERVANE_OPERATIONS_ENVIRONMENT_ID, enrollmentSha256: 'a'.repeat(64), mappingSha256: 'b'.repeat(64) },
+    writer: { key: 'writer-key' }, reader: { actorId: 'c'.repeat(24), key: 'reader-key' },
+  });
+  for (const overrides of [{ ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: undefined }, { ITERVANE_OPERATIONS_ENROLLMENT_SHA256: 'wrong' },
+    { ITERVANE_RESTORE_KOMODO_WRITER_SECRET: undefined }, { ITERVANE_RESTORE_KOMODO_READER_ID: undefined },
+    { ITERVANE_RESTORE_KOMODO_READER_KEY: 'writer-key' }, { ITERVANE_RESTORE_PROBE_SECRET: undefined }]) {
+    expect(() => restoreWorkerConfig({ ...environment, ...overrides })).toThrow();
+  }
 });
 
 it('requires explicit formal repair, a qualified Runner, a configured model and canonical protected paths', () => {

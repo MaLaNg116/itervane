@@ -32,7 +32,7 @@ import { scriptedVerification } from '../../../verification/src/agent/verificati
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { runtimeConfig, workerConfig, type OperationsWorkflowScope } from '../../src/config.js';
-import { formalReleaseQueue, operationsExecutionQueue, queueName } from '../../src/persistence/database.js';
+import { formalReleaseQueue, operationsExecutionQueue, operationsRestoreQueue, queueName } from '../../src/persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
   operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
@@ -75,6 +75,7 @@ import { OperationsRestartWorker } from '../../src/runtime/operations-restart-wo
 import { OperationsRestartRecoveryWorker } from '../../src/runtime/operations-restart-recovery-worker.js';
 import { holdRestartAcknowledgement } from '../native/restart-crash-barrier.js';
 import { RestartQueueWorker } from '../../src/runtime/installed-restart-worker.js';
+import { RestoreQueueWorker } from '../../src/runtime/installed-restore-worker.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
 import { requireActor } from '../../src/service/access.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
@@ -2839,7 +2840,7 @@ it('binds a rollback intent and read-only takeover to the approved image after a
   expect(await database.storage.db.select().from(releaseOperations)).toHaveLength(3);
 
   const executor = new OperationsExecutionCoordinator(coordinator, installed);
-  const scope = await executor.claim(await fetchOperationsWakeup(), randomUUID());
+  const scope = await executor.claim(await fetchOperationsWakeup(operationsRestoreQueue), randomUUID());
   if (!scope) throw new Error('Expected the rollback dispatch lease');
   const { deploymentId, serverId, imageRepository, registryOrigin, runtimeConfigSha256, komodo, rolloutCheckSha256 } = next.target;
   const plan = operationsRestorePlanSchema.parse({ version: 1, environmentId: first.scope.environmentId,
@@ -2890,7 +2891,7 @@ it('binds a rollback intent and read-only takeover to the approved image after a
   })).rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restore_step_send_authority_required' } });
   await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
   await coordinator.reconcile(randomUUID());
-  const reader = await executor.claim(await fetchOperationsWakeup(), randomUUID());
+  const reader = await executor.claim(await fetchOperationsWakeup(operationsRestoreQueue), randomUUID());
   if (!reader) throw new Error('Expected read-only takeover');
   expect(reader).toMatchObject({ mode: 'reconcile', fence: scope.fence + 1 });
   await expect(executor.prepareDispatch(reader)).rejects.toBeInstanceOf(ExecutionLost);
@@ -2900,14 +2901,18 @@ it('binds a rollback intent and read-only takeover to the approved image after a
   expect(await database.storage.db.select({ state: operationsExecutions.state }).from(operationsExecutions)).toEqual([{ state: 'reserved' }]);
 });
 
-async function dispatchedRestore(outcome: 'acknowledged' | 'reply_lost' | 'prior_receipt' | 'approval_revoked',
-  prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+async function queuedRestore(prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>, expiresSoon = false) {
   const earlier = prepared ?? await installedOperationsFixture();
   task = (await earlier.taskService.admit(identity, { projectId: earlier.scope.projectId, source: task.source, purpose: 'Publish a newer image',
     dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
   const next = await queuedFormalRelease({ existingTarget: earlier.target, imageVariant: 'newer rollback fixture' });
   const current = await finishTestRollout(await parkForRollout(next, true, 'd'.repeat(24)), 'standard-v3');
-  const { diagnosis, installed, task: diagnosed, service } = await settleProposalDiagnosis('rollback', { ...earlier, ...next, ...current });
+  if (expiresSoon) await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_results
+    ALTER COLUMN created_at SET DEFAULT (now() - interval '1788 seconds')`);
+  const { diagnosis, installed, task: diagnosed, service } = await settleProposalDiagnosis('rollback', { ...earlier, ...next, ...current })
+    .finally(async () => {
+      if (expiresSoon) await database.admin.query('ALTER TABLE itervane.operations_diagnosis_results ALTER COLUMN created_at SET DEFAULT now()');
+    });
   const { proposal } = await service.freeze(identity, diagnosed.id, { diagnosisSha256: diagnosis.sha256 });
   const owner = await decisionIdentity();
   const decisions = new OperationsDecisionService(database.storage, installed, operationsPortal);
@@ -2916,7 +2921,13 @@ async function dispatchedRestore(outcome: 'acknowledged' | 'reply_lost' | 'prior
   const { execution, schedule } = await new OperationsExecutionAdmission(database.storage, installed)
     .enqueue({ ...decision, proposalId: proposal.id, decisionVersion: 1 });
   const executor = new OperationsExecutionCoordinator(coordinator, installed);
-  const scope = await executor.claim(await fetchOperationsWakeup(), randomUUID(), 'rollback');
+  return { earlier, next, current, proposal, owner, decisions, decision, execution, schedule, executor };
+}
+
+async function dispatchedRestore(outcome: 'acknowledged' | 'reply_lost' | 'prior_receipt' | 'approval_revoked',
+  prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  const { earlier, next, current, proposal, owner, decisions, decision, execution, schedule, executor } = await queuedRestore(prepared);
+  const scope = await executor.claim(await fetchOperationsWakeup(operationsRestoreQueue), randomUUID(), 'rollback');
   if (!scope) throw new Error('Expected a restore lease');
   const { deploymentId, serverId, runtimeConfigSha256 } = next.target;
   const config = { deploymentId, serverId, runtimeConfigSha256, imageReference: earlier.runtime.imageReference };
@@ -2967,10 +2978,64 @@ async function dispatchedRestore(outcome: 'acknowledged' | 'reply_lost' | 'prior
   await expect(earlier.taskService.get(identity, schedule.taskId)).resolves.toMatchObject({ state: 'reconciling' });
   expect((await database.storage.db.select().from(operationsExecutions).where(eq(operationsExecutions.id, execution.id)))[0]?.state)
     .toBe('reserved');
-  const successor = await executor.claim(await fetchOperationsWakeup(), randomUUID(), 'rollback');
+  const successor = await executor.claim(await fetchOperationsWakeup(operationsRestoreQueue), randomUUID(), 'rollback');
   if (!successor) throw new Error('Expected a read-only restore lease');
   return { earlier, current, executor, scope, successor, execution, schedule, config, ack, sends };
 }
+
+it.each(['legacy', 'missing'] as const)('routes a %s restore wakeup and takes over through the reader', async kind => {
+  const { earlier, current, executor, schedule, execution } = await queuedRestore();
+  const jobId = schedule.wakeupJobId!;
+  expect((await database.storage.boss.findJobs(operationsRestoreQueue, { id: jobId }))[0]?.state).toBe('created');
+  const restartWriter = vi.fn<OperationsRestartWorker['dispatch']>();
+  const restartObserver = vi.fn<OperationsRestartRecoveryWorker['verify']>();
+  await expect(new RestartQueueWorker(executor, { dispatch: restartWriter }, { verify: restartObserver }).tick()).resolves.toBe('idle');
+  expect(restartWriter).not.toHaveBeenCalled();
+  expect(restartObserver).not.toHaveBeenCalled();
+
+  await database.storage.boss.deleteJob(operationsRestoreQueue, jobId);
+  if (kind === 'legacy') await database.storage.boss.send(operationsExecutionQueue, {
+    executionId: execution.id, taskId: schedule.taskId, runId: schedule.runId, generation: 1,
+  }, { id: jobId });
+  const dispatch = vi.fn<OperationsRestoreWorker['dispatch']>(async scope => {
+    await executor.prepareRestoreDispatch(scope, { environmentId: earlier.scope.environmentId,
+      mappingSha256: current.binding.manifest.target.mappingSha256 });
+    return executor.deferRestore(scope);
+  });
+  const verify = vi.fn<OperationsRestoreRecoveryWorker['verify']>(scope => executor.deferRestoreRecovery(scope, 'missing_update'));
+  const worker = new RestoreQueueWorker(executor, { dispatch }, { verify });
+  await expect(worker.tick()).resolves.toBe('reconciling');
+  if (kind === 'legacy') expect((await database.storage.boss.findJobs(operationsExecutionQueue, { id: jobId }))[0]?.state).toBe('cancelled');
+  const takeover = new RestoreQueueWorker(executor, { dispatch }, { verify });
+  await expect(takeover.tick()).resolves.toBe('manual_review');
+  await expect(takeover.tick()).resolves.toBe('idle');
+  expect(dispatch).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ mode: 'dispatch', workerId: worker.workerId, executionId: execution.id }), undefined);
+  expect(verify).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ mode: 'reconcile', workerId: takeover.workerId, executionId: execution.id,
+    fence: dispatch.mock.calls[0]![0].fence + 1 }), undefined);
+  expect((await database.storage.db.select().from(operationsExecutions))[0]?.state).toBe('reserved');
+}, 45_000);
+
+it.each(['revoked', 'expired'] as const)('closes the %s restore wakeup before dispatch', async mode => {
+  const { earlier, executor, decisions, decision, owner, proposal, schedule } = await queuedRestore(undefined, mode === 'expired');
+  const dispatch = vi.fn<OperationsRestoreWorker['dispatch']>();
+  const verify = vi.fn<OperationsRestoreRecoveryWorker['verify']>();
+  if (mode === 'revoked') await decisions.decide(owner, proposal.id, {
+    ...decision, action: 'revoke', expectedVersion: 1, idempotencyKey: randomUUID(),
+  });
+  else await vi.waitFor(async () => {
+    const expired = await database.storage.pool.query<{ value: boolean }>('SELECT clock_timestamp() >= $1 AS value', [proposal.validUntil]);
+    expect(expired.rows[0]?.value).toBe(true);
+  }, { timeout: 15_000, interval: 300 });
+  await expect(new RestoreQueueWorker(executor, { dispatch }, { verify }).tick()).resolves.toBe('idle');
+  expect(dispatch).not.toHaveBeenCalled();
+  expect(verify).not.toHaveBeenCalled();
+  expect(await database.storage.db.select().from(operationsExecutionIntents)).toEqual([]);
+  expect((await database.storage.db.select().from(operationsExecutions))[0]).toMatchObject({
+    state: 'blocked', blockedReason: mode === 'revoked' ? 'approval_revoked' : 'proposal_expired',
+  });
+  expect((await database.storage.boss.findJobs(operationsRestoreQueue, { id: schedule.wakeupJobId! }))[0]?.state).toBe('cancelled');
+  await expect(earlier.taskService.get(identity, schedule.taskId)).resolves.toMatchObject({ state: mode === 'revoked' ? 'cancelled' : 'needs_human' });
+}, 45_000);
 
 it.each(['acknowledged', 'reply_lost', 'prior_receipt', 'approval_revoked'] as const)('keeps a fenced restore dispatch accountable when %s', async outcome => {
   const { executor, scope, successor, config, ack } = await dispatchedRestore(outcome);
@@ -3021,7 +3086,7 @@ it.each(['verified', 'missing_update', 'wrong_runtime', 'expired_reader', 'updat
     await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
     await coordinator.reconcile(randomUUID());
     await expect(worker.verify(successor)).resolves.toBe('lease_lost');
-    const retry = await executor.claim(await fetchOperationsWakeup(), randomUUID(), 'rollback');
+    const retry = await executor.claim(await fetchOperationsWakeup(operationsRestoreQueue), randomUUID(), 'rollback');
     if (!retry) throw new Error('Expected a replacement restore reader');
     expect(retry.fence).toBe(successor.fence + 1);
     reader = retry;
@@ -3029,7 +3094,7 @@ it.each(['verified', 'missing_update', 'wrong_runtime', 'expired_reader', 'updat
   if (result === 'update_pending') {
     for (let attempt = 1; attempt <= 2; attempt++) {
       await expect(worker.verify(reader)).resolves.toBe('retry');
-      const retry = await executor.claim(await fetchOperationsWakeup(), randomUUID(), 'rollback');
+      const retry = await executor.claim(await fetchOperationsWakeup(operationsRestoreQueue), randomUUID(), 'rollback');
       if (!retry) throw new Error('Expected the next restore reader');
       reader = retry;
     }
@@ -3194,9 +3259,9 @@ async function queuedOperationsLease(prepared?: Awaited<ReturnType<typeof instal
   return { ...action, execution, schedule, runtime };
 }
 
-async function fetchOperationsWakeup() {
+async function fetchOperationsWakeup(queue: typeof operationsExecutionQueue | typeof operationsRestoreQueue = operationsExecutionQueue) {
   return vi.waitFor(async () => {
-    const [job] = await database.storage.boss.fetch(operationsExecutionQueue);
+    const [job] = await database.storage.boss.fetch(queue);
     if (!job) throw new Error('Waiting for an operations execution wakeup');
     return job;
   }, { timeout: 8_000, interval: 50 });
@@ -3354,7 +3419,7 @@ it('routes an installed restart queue across native pause, continuation and inde
       await authorize();
       return { startedAt: '2026-01-01T00:00:00.000000002Z', runtime: action.fixture.runtime };
     });
-    const queue = new RestartQueueWorker(database.storage, action.runtime, worker,
+    const queue = new RestartQueueWorker(action.runtime, worker,
       new OperationsRestartRecoveryWorker(action.runtime, { observeRestart }));
     await expect(queue.tick()).resolves.toBe('awaiting_approval');
     await expect(queue.tick()).resolves.toBe('idle');

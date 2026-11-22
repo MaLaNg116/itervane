@@ -1,13 +1,14 @@
 import { operationsTargetInputSchema, type OperationsRequestBinding } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { and, eq } from 'drizzle-orm';
+import type { OperationsEnrollmentScope } from '../config.js';
 import type { Database } from '../persistence/database.js';
 import { environments, formalReleaseTargets, operationsTargets } from '../persistence/schema.js';
 import type { Actor, Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 import { readOperationsDeployment } from './operations-deployment.js';
 import { freezeOperationsRequest } from './operations-requests.js';
-import { readReleaseTarget } from './release-targets.js';
+import { readReleaseTarget, type InstalledReleaseTarget } from './release-targets.js';
 
 export function readOperationsEnrollment(row: typeof operationsTargets.$inferSelect) {
   const parsed = operationsTargetInputSchema.safeParse(row.document);
@@ -15,6 +16,19 @@ export function readOperationsEnrollment(row: typeof operationsTargets.$inferSel
     throw new Error('operations_target_integrity');
   }
   return parsed.data;
+}
+
+export async function readInstalledOperationsEnrollment(tx: Transaction, installed: OperationsEnrollmentScope & InstalledReleaseTarget) {
+  const [bound] = await tx.select({ enrollment: operationsTargets, mappingRevision: formalReleaseTargets.revision })
+    .from(operationsTargets).innerJoin(formalReleaseTargets, and(eq(formalReleaseTargets.environmentId, operationsTargets.environmentId),
+      eq(formalReleaseTargets.sha256, installed.mappingSha256)))
+    .where(and(eq(operationsTargets.environmentId, installed.environmentId), eq(operationsTargets.sha256, installed.enrollmentSha256))).for('share');
+  if (!bound) throw new DomainError('unavailable');
+  const enrollment = readOperationsEnrollment(bound.enrollment);
+  if (enrollment.releaseTargetSha256 !== installed.mappingSha256 || enrollment.releaseTargetRevision !== bound.mappingRevision) {
+    throw new DomainError('version_conflict');
+  }
+  return enrollment;
 }
 
 export async function registerOperationsTarget(database: Database, raw: unknown) {

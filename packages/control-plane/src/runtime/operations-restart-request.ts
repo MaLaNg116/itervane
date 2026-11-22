@@ -84,5 +84,5 @@ export async function reconcileUnavailableRestart(tx: Transaction, database: Dat
     ...('expiryWorkerId' in disabled ? { workerId: disabled.expiryWorkerId, reason: 'operations_restart_approval_expired' } : { reason }),
     operationsExecution: { executionId: schedule.executionId, proposalId },
   });
-  await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation);
+  await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation, 'restart');
 }
