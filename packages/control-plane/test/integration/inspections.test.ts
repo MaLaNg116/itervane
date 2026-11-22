@@ -48,11 +48,13 @@ import { prepareFormalVerificationInput } from '../../src/runtime/verification-i
 import { projectVerificationEvidence } from '../../src/runtime/verification-evidence.js';
 import { DurableWorker } from '../../src/runtime/worker.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
+import { requireActor } from '../../src/service/access.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
 import { InspectionService, prepareInspection } from '../../src/service/inspections.js';
 import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
 import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { FormalReleaseService } from '../../src/service/formal-release.js';
+import { readOperationsDeployment } from '../../src/service/operations-deployment.js';
 import { publishFormalRepair } from '../../src/service/repair-result.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
 import { fingerprintRolloutCheck, readInstalledReleaseTarget, registerReleaseTarget } from '../../src/service/release-targets.js';
@@ -2128,6 +2130,47 @@ it.each(['verified', 'manual_review'] as const)('shares the %s formal release re
     await Promise.all(clients.map(client => client.close()));
     await api.close();
   }
+});
+
+it('binds operations to the latest verified deployment under current project authority', async () => {
+  const submitted = await queuedFormalRelease({ komodo: true, rolloutCheck: true });
+  const { operationId, target } = submitted;
+  const read = (caller = identity, projectId = task.projectId) => database.storage.db.transaction(async tx =>
+    readOperationsDeployment(tx, await requireActor(tx, caller), { projectId, environmentId: target.environmentId }));
+  await expect(read()).rejects.toMatchObject({ code: 'conflict' });
+  const { image, update } = await parkForRollout(submitted);
+  await expect(read()).rejects.toMatchObject({ code: 'conflict' });
+  const observe = new FormalRolloutCoordinator(database.storage, releaseOrigin);
+  const scope = await observe.claimNext(randomUUID());
+  if (!scope) throw new Error('Expected formal rollout attempt');
+  const binding = await observe.authorize(scope);
+  const runtime = observedRuntime(binding);
+  await observe.settle(scope, { version: 1, ...binding.decision, rolloutFence: scope.fence, generation: binding.manifest.generation,
+    targetRevision: binding.manifest.target.revision, mappingSha256: binding.manifest.target.mappingSha256,
+    manifestDigest: image.manifestDigest, update, runtime });
+
+  const selected = await read();
+  expect(selected).toMatchObject({ projectId: task.projectId, environmentId: target.environmentId, releaseOperationId: operationId,
+    releaseTaskId: task.id, source: task.source, updateId: update.updateId, deploymentId: target.deploymentId,
+    containerId: runtime.containerId, manifestDigest: image.manifestDigest, configDigest: image.configDigest,
+    targetRevision: binding.manifest.target.revision, mappingSha256: binding.manifest.target.mappingSha256,
+    version: runtime.version, verifiedAt: expect.any(String) });
+  const other = await new ResourceService(database.storage).createProject(identity, { name: 'Other operations', slug: 'other-operations' });
+  await expect(read(identity, other.id)).rejects.toMatchObject({ code: 'not_found' });
+
+  const principalId = randomUUID();
+  const subject = 'ops-reader';
+  await database.storage.db.insert(principals).values({ id: principalId, issuer: issuer.config.issuer, subject });
+  const viewer = await createIdentityVerifier(issuer.config)(await issuer.token(subject));
+  await database.storage.db.insert(projectMembers).values({ projectId: task.projectId, principalId, role: 'viewer' });
+  await expect(read(viewer)).rejects.toMatchObject({ code: 'forbidden' });
+  await database.storage.db.update(projectMembers).set({ role: 'maintainer' }).where(eq(projectMembers.principalId, principalId));
+  expect((await read(viewer)).grantId).not.toBe(selected.grantId);
+  await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
+  await expect(read(viewer)).rejects.toMatchObject({ code: 'not_found' });
+
+  await registerReleaseTarget(database.storage, { ...target, runtimeConfigSha256: sha256('new runtime config') });
+  await expect(read()).rejects.toMatchObject({ code: 'unsupported_state' });
 });
 
 it('settles one formal rollout and releases the environment only with a complete current proof', async () => {

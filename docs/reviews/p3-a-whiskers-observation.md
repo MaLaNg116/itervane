@@ -9,3 +9,5 @@
 本机 TypeScript 和 210 项单元测试通过。专用托管主机的 12 项原生检查通过，分别验证了旧的原生批准、单次重启与审计，及新增的运行、退出、目标不存在、超时恢复和资源清理。报告源码指纹 `e326244c67b202c49ea56490a332cb7336e5145fb55f27d672d5a8baed6e232d`。 [原生结果](https://github.com/MaLaNg116/itervane/actions/runs/44962888962/job/137025385622)
 
 P3-A2 负责项目授权、发布证据与持久化入口，P3-A3 负责诊断角色。适配器接受非健康运行状态作为观察事实，业务健康由后续独立证据判断。
+
+合入审查核对安装地址、完整容器 ID、三处授权位置、超时与响应限量、原生 Read 密钥和夹具归属。最终审查版本 `56a58fa2734d296eb59fe53e0f2fb88c7236ef6b` 与原生验证的非文档内容一致。八组 KVM 及六项常规检查通过，已合入 `cfd5beba3f44b36a3bc5d3fcfb3abc22b265d208`。 [KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44962888797) · [PR CI](https://github.com/MaLaNg116/itervane/actions/runs/44963893722) · [push CI](https://github.com/MaLaNg116/itervane/actions/runs/44963889966)
