@@ -1,0 +1,16 @@
+{
+  "ActivePreset": "Itervane published observation",
+  "Presets": [
+    {
+      "Name": "Itervane published observation",
+      "Policy": {
+        "MaxAutonomousLevel": "read",
+        "RequireConfirmationForWrites": true,
+        "ToolMode": "allow",
+        "ToolAllowList": ["get_container_details"],
+        "ProtectedResources": ["whiskers*", "serverwatch*"],
+        "MaxActionsPerSession": 12
+      }
+    }
+  ]
+}

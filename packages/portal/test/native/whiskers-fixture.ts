@@ -55,22 +55,25 @@ export class WhiskersFixture {
   readonly primary = this.base + '-a';
   readonly other = this.base + '-b';
 
-  async start() {
+  async start(mode: 'isolated-probe' | 'published-read-only' = 'isolated-probe') {
     const platform = await docker(['version', '--format', '{{.Server.Os}}/{{.Server.Arch}}']);
     if (platform !== 'linux/amd64') throw new Error('Unexpected fixture daemon');
     this.temp = await mkdtemp(join(tmpdir(), 'itervane-native-'));
     const passwordPath = join(this.temp, 'admin-password');
     await writeFile(passwordPath, this.adminPassword, { mode: 0o600, flag: 'wx' });
-    await docker(['build', '--quiet', '--network', 'none', '--build-arg', 'FIXTURE_VERSION=a', '--tag', this.image, resolve('fixtures/komodo')]);
-    for (const name of [this.primary, this.other]) {
-      await this.create(name, ['--network', 'none', '--cap-drop', 'ALL', this.image]);
+    if (mode === 'isolated-probe') {
+      await docker(['build', '--quiet', '--network', 'none', '--build-arg', 'FIXTURE_VERSION=a', '--tag', this.image, resolve('fixtures/komodo')]);
+      for (const name of [this.primary, this.other]) {
+        await this.create(name, ['--network', 'none', '--cap-drop', 'ALL', this.image]);
+      }
     }
+    const guardrails = resolve('fixtures/whiskers', mode === 'published-read-only' ? 'read-only-guardrails.json' : 'guardrails.json');
     await this.create(this.base, [
       '--publish', '127.0.0.1:49220:8080',
       '--tmpfs', '/app/data:rw,nosuid,nodev,size=128m',
       '--mount', 'type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock',
       '--mount', 'type=bind,source=' + passwordPath + ',target=/run/secrets/probe-admin,readonly',
-      '--mount', 'type=bind,source=' + resolve('fixtures/whiskers/guardrails.json') + ',target=/app/data/guardrails.json,readonly',
+      '--mount', 'type=bind,source=' + guardrails + ',target=/app/data/guardrails.json,readonly',
       '--env', 'ASPNETCORE_URLS=http://+:8080',
       '--env', 'Auth__Disabled=false',
       '--env', 'WHISKERS_ADMIN_EMAIL=' + adminEmail,
