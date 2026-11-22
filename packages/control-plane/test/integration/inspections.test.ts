@@ -29,7 +29,8 @@ import { formalReleaseQueue, operationsExecutionQueue, queueName } from '../../s
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
   operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
-  operationsDiagnosisRuntime, operationsExecutions, operationsExecutionSchedules, operationsObservations, operationsProposals, operationsRequests,
+  operationsDiagnosisRuntime, operationsExecutionIntents, operationsExecutions, operationsExecutionSchedules, operationsObservations,
+  operationsProposals, operationsRequests,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskEvents, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
@@ -57,6 +58,7 @@ import { projectVerificationEvidence } from '../../src/runtime/verification-evid
 import { DurableWorker } from '../../src/runtime/worker.js';
 import { OperationsEvidenceStore } from '../../src/runtime/operations-evidence-store.js';
 import { runOperationsObservation } from '../../src/runtime/operations-execution.js';
+import { OperationsExecutionCoordinator } from '../../src/runtime/operations-execution-lease.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
 import { requireActor } from '../../src/service/access.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
@@ -2838,7 +2840,7 @@ async function restartExecutionCandidate(prepared?: Awaited<ReturnType<typeof in
   const decide = (action: 'confirm' | 'revoke', idempotencyKey = randomUUID()) => decisionService.decide(owner, proposal.id, {
     action, expectedVersion: action === 'confirm' ? 0 : 1, fingerprint: proposal.fingerprint, idempotencyKey,
   });
-  return { fixture, diagnosed, diagnosis, proposal, admission, input, decide,
+  return { fixture, installed, diagnosed, diagnosis, proposal, admission, input, decide,
     reserve: () => admission.reserve(input), enqueue: () => admission.enqueue(input) };
 }
 
@@ -2847,6 +2849,175 @@ async function competingPublication(fixture: Awaited<ReturnType<typeof installed
     purpose: 'Competing approved release', dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
   return preparedFormalRelease({ existingTarget: fixture.target });
 }
+
+async function queuedOperationsLease() {
+  const action = await restartExecutionCandidate();
+  await action.decide('confirm');
+  const { execution, schedule } = await action.enqueue();
+  const runtime = new OperationsExecutionCoordinator(coordinator, action.installed);
+  return { ...action, execution, schedule, runtime };
+}
+
+async function fetchOperationsWakeup() {
+  return vi.waitFor(async () => {
+    const [job] = await database.storage.boss.fetch(operationsExecutionQueue);
+    if (!job) throw new Error('Waiting for an operations execution wakeup');
+    return job;
+  }, { timeout: 8_000, interval: 50 });
+}
+
+it('uses the shared slot for operations and fences replaced wakeups', async () => {
+  const action = await queuedOperationsLease();
+  const devTask = (await action.fixture.taskService.admit(identity, { projectId: task.projectId, source: task.source,
+    purpose: 'Competing development run', dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
+  const devLease = await claim();
+  expect(devLease.taskId).toBe(devTask.id);
+  const job = await fetchOperationsWakeup();
+  await expect(action.runtime.claim(job, randomUUID())).resolves.toBeNull();
+  const [delayed] = await database.storage.db.select().from(operationsExecutionSchedules);
+  expect(delayed?.wakeupJobId).not.toBe(job.id);
+  await expect(action.runtime.claim(job, randomUUID())).resolves.toBeNull();
+  await action.fixture.taskService.cancel(identity, devTask.id, { expectedVersion: devTask.version + 1 });
+  await coordinator.stop(devLease, 'cancelled', true);
+
+  const replacement = await fetchOperationsWakeup();
+  expect(replacement.id).toBe(delayed?.wakeupJobId);
+  const [scope, replay] = await Promise.all([action.runtime.claim(replacement, randomUUID()), action.runtime.claim(job, randomUUID())]);
+  expect(replay).toBeNull();
+  expect(scope).toMatchObject({ mode: 'dispatch', executionId: action.execution.id, taskId: action.schedule.taskId,
+    runId: action.schedule.runId, generation: 1, fence: devLease.fence + 1 });
+  if (!scope) throw new Error('Expected an operations execution lease');
+  await expect(coordinator.heartbeat(scope)).rejects.toBeInstanceOf(ExecutionLost);
+  await action.runtime.heartbeat(scope);
+  expect((await database.storage.db.select().from(operationsExecutionSchedules))[0]?.wakeupJobId).toBeNull();
+});
+
+it('repairs an abandoned operations wakeup and defers a mismatched installed target', async () => {
+  const action = await queuedOperationsLease();
+  const lostJob = await fetchOperationsWakeup();
+  await action.runtime.reconcile(randomUUID());
+  expect((await database.storage.db.select().from(operationsExecutionSchedules))[0]?.wakeupJobId).toBe(lostJob.id);
+  await database.admin.query(`UPDATE itervane_queue.job SET started_on=clock_timestamp()-interval '90 seconds'
+    WHERE id=$1 AND name=$2`, [lostJob.id, operationsExecutionQueue]);
+  await action.runtime.reconcile(randomUUID());
+  const replacement = await fetchOperationsWakeup();
+  expect(replacement.id).not.toBe(lostJob.id);
+  expect((await database.storage.boss.findJobs(operationsExecutionQueue, { id: lostJob.id }))[0]?.state).toBe('cancelled');
+  const wrong = new OperationsExecutionCoordinator(coordinator, { ...action.installed, enrollmentSha256: sha256('old enrollment') });
+  await expect(wrong.claim(replacement, randomUUID())).resolves.toBeNull();
+  await expect(action.fixture.taskService.get(identity, action.schedule.taskId)).resolves.toMatchObject({ state: 'queued' });
+  await expect(action.runtime.claim(await fetchOperationsWakeup(), randomUUID())).resolves.toMatchObject({ mode: 'dispatch' });
+});
+
+it('reclaims a lease before dispatch and records exactly one fenced operations intent', async () => {
+  const action = await queuedOperationsLease();
+  const first = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!first) throw new Error('Expected the initial operations lease');
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  const untrustedIntent = { executionId: action.execution.id, proposalFingerprint: action.proposal.fingerprint,
+    decisionVersion: 1, generation: 1, workerId: first.workerId, fence: first.fence };
+  await expect(database.storage.db.insert(operationsExecutionIntents).values(untrustedIntent))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_execution_intent_authority_required' } });
+  await coordinator.reconcile(randomUUID());
+  const successor = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!successor) throw new Error('Expected the recovered operations lease');
+  expect(successor).toMatchObject({ mode: 'dispatch', fence: first.fence + 1 });
+  await expect(action.runtime.prepareDispatch(first)).rejects.toBeInstanceOf(ExecutionLost);
+  await database.admin.query(`ALTER TABLE itervane.task_events ADD CONSTRAINT injected_operations_intent_event_failure
+    CHECK (type <> 'task.operations_execution_dispatch_intended') NOT VALID`);
+  try {
+    await expect(action.runtime.prepareDispatch(successor))
+      .rejects.toMatchObject({ cause: { code: '23514', constraint: 'injected_operations_intent_event_failure' } });
+    expect(await database.storage.db.select().from(operationsExecutionIntents)).toEqual([]);
+  } finally { await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_operations_intent_event_failure'); }
+  const prepared = await Promise.allSettled([action.runtime.prepareDispatch(successor), action.runtime.prepareDispatch(successor)]);
+  expect(prepared.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+  expect(prepared.find(result => result.status === 'rejected')).toMatchObject({ reason: expect.any(ExecutionLost) });
+  const intents = await database.storage.db.select().from(operationsExecutionIntents);
+  expect(intents).toHaveLength(1);
+  expect(intents[0]).toMatchObject({ ...untrustedIntent, workerId: successor.workerId, fence: successor.fence });
+  await expect(database.storage.db.delete(operationsExecutionIntents))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_execution_intent_is_immutable' } });
+  for (const locale of ['en', 'zh-CN'] as const) {
+    const events = await action.fixture.taskService.events(identity, action.schedule.taskId, 10, locale);
+    expect(events.at(-1)).toMatchObject({ workerId: successor.workerId, type: 'task.operations_execution_dispatch_intended',
+      reason: 'operations_execution_dispatch_intended',
+      reasonMessage: translate(locale, 'reason.operations_execution_dispatch_intended') });
+  }
+});
+
+it('cancels a claimed operations lease on withdrawal before intent', async () => {
+  const action = await queuedOperationsLease();
+  const scope = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!scope) throw new Error('Expected a claimed operations execution');
+  await action.decide('revoke');
+  await expect(action.runtime.prepareDispatch(scope)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(action.runtime.heartbeat(scope)).rejects.toBeInstanceOf(ExecutionLost);
+  await coordinator.reconcile(randomUUID());
+  expect((await database.storage.pool.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
+  await expect(action.fixture.taskService.get(identity, action.schedule.taskId)).resolves.toMatchObject({ state: 'cancelled' });
+  expect(await database.storage.db.select().from(operationsExecutionIntents)).toEqual([]);
+});
+
+it('serializes operations intent and approval withdrawal under the same environment lock', async () => {
+  const action = await queuedOperationsLease();
+  const scope = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!scope) throw new Error('Expected a claimed operations execution');
+  const [intent, withdrawn] = await Promise.allSettled([action.runtime.prepareDispatch(scope), action.decide('revoke')]);
+  expect(withdrawn.status).toBe('fulfilled');
+  expect(await database.storage.db.select().from(operationsDecisions)).toHaveLength(2);
+  const [recorded] = await database.storage.db.select().from(operationsExecutions);
+  if (intent.status === 'fulfilled') {
+    expect(recorded?.state).toBe('reserved');
+    expect(await database.storage.db.select().from(operationsExecutionIntents)).toEqual([intent.value.intent]);
+  } else {
+    expect(intent.reason).toBeInstanceOf(ExecutionLost);
+    expect(recorded).toMatchObject({ state: 'blocked', blockedReason: 'approval_revoked' });
+    expect(await database.storage.db.select().from(operationsExecutionIntents)).toEqual([]);
+  }
+});
+
+it('recovers an operations intent for reconciliation only and retains the release hold after withdrawal', async () => {
+  const action = await queuedOperationsLease();
+  const competing = await competingPublication(action.fixture);
+  const scope = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!scope) throw new Error('Expected the initial operations execution');
+  const { intent } = await action.runtime.prepareDispatch(scope);
+  await action.decide('revoke');
+  await expect(database.storage.db.update(operationsExecutions).set({ state: 'blocked', blockedReason: 'approval_revoked',
+    closedAt: sql`(SELECT decided_at FROM itervane.operations_decisions WHERE proposal_id = ${action.proposal.id} AND version = 2)` })
+    .where(eq(operationsExecutions.id, action.execution.id)))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_execution_intent_requires_reconciliation' } });
+  await expect(competing.confirm()).rejects.toMatchObject({ code: 'conflict' });
+
+  await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+  await coordinator.reconcile(randomUUID());
+  expect((await database.storage.db.select().from(operationsExecutions))[0]?.state).toBe('reserved');
+  await expect(action.fixture.taskService.get(identity, action.schedule.taskId)).resolves.toMatchObject({ state: 'reconciling' });
+  const successor = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!successor) throw new Error('Expected the reconciliation lease');
+  expect(successor).toMatchObject({ mode: 'reconcile', fence: scope.fence + 1 });
+  await expect(action.runtime.prepareDispatch(scope)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(action.runtime.prepareDispatch(successor)).rejects.toBeInstanceOf(ExecutionLost);
+  await action.runtime.heartbeat(successor);
+  expect(await database.storage.db.select().from(operationsExecutionIntents)).toEqual([intent]);
+});
+
+it.each(['grant', 'target'] as const)('fences operations dispatch if the %s changes after claim', async changed => {
+  const action = await queuedOperationsLease();
+  const scope = await action.runtime.claim(await fetchOperationsWakeup(), randomUUID());
+  if (!scope) throw new Error('Expected an operations execution lease');
+  if (changed === 'grant') {
+    const [old] = await database.storage.db.delete(workspaceMembers).returning();
+    if (!old) throw new Error('Missing owner grant');
+    await database.storage.db.insert(workspaceMembers).values({ principalId: old.principalId, workspaceId: old.workspaceId });
+  } else {
+    const { registration } = action.fixture;
+    await registerOperationsTarget(database.storage, { ...registration, whiskers: { ...registration.whiskers, serverId: 'replacement-after-claim' } });
+  }
+  await expect(action.runtime.prepareDispatch(scope)).rejects.toMatchObject({ code: changed === 'grant' ? 'forbidden' : 'version_conflict' });
+  expect(await database.storage.db.select().from(operationsExecutionIntents)).toEqual([]);
+});
 
 it('atomically queues one approved operations execution without reusing the diagnosis run', async () => {
   const action = await restartExecutionCandidate();
@@ -3036,7 +3207,7 @@ it.each(['grant', 'target'] as const)('rejects an approved execution when its %s
   expect(await database.storage.db.select().from(operationsExecutions)).toEqual([]);
 });
 
-it.each(['reserved', 'queued'] as const)('reclaims an undispatched %s operations reservation at expiry and admits the waiting release', async mode => {
+it.each(['reserved', 'queued', 'claimed', 'intended'] as const)('reconciles a %s operations reservation at expiry', async mode => {
   const fixture = await installedOperationsFixture();
   const publication = await competingPublication(fixture);
   await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_results
@@ -3044,13 +3215,26 @@ it.each(['reserved', 'queued'] as const)('reclaims an undispatched %s operations
   const action = await restartExecutionCandidate(fixture).finally(() =>
     database.admin.query('ALTER TABLE itervane.operations_diagnosis_results ALTER COLUMN created_at SET DEFAULT now()'));
   await action.decide('confirm');
-  const scheduled = mode === 'queued' ? await action.enqueue() : undefined;
+  const scheduled = mode === 'reserved' ? undefined : await action.enqueue();
   if (!scheduled) await action.reserve();
+  const runtime = new OperationsExecutionCoordinator(coordinator, action.installed);
+  if (mode === 'claimed' || mode === 'intended') {
+    const scope = await runtime.claim(await fetchOperationsWakeup(), randomUUID());
+    if (!scope) throw new Error('Expected an operations execution lease');
+    if (mode === 'intended') await runtime.prepareDispatch(scope);
+  }
   await vi.waitFor(async () => {
     const expired = await database.storage.pool.query<{ value: boolean }>('SELECT clock_timestamp() >= $1 AS value', [action.proposal.validUntil]);
     expect(expired.rows[0]?.value).toBe(true);
   }, { timeout: 15_000, interval: 300 });
   await expect(action.reserve()).rejects.toMatchObject({ code: 'unsupported_state' });
+  if (mode === 'intended') {
+    await expect(publication.confirm()).rejects.toMatchObject({ code: 'conflict' });
+    await runtime.reconcile(randomUUID());
+    expect((await database.storage.db.select().from(operationsExecutions))[0]?.state).toBe('reserved');
+    expect(await database.storage.db.select().from(operationsExecutionIntents)).toHaveLength(1);
+    return;
+  }
   await publication.confirm();
   expect((await database.storage.db.select().from(operationsExecutions))[0]).toMatchObject({
     state: 'blocked', blockedReason: 'proposal_expired', closedAt: expect.any(Date),
