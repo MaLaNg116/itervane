@@ -95,9 +95,10 @@ const clearRepairHandoff = () => database.admin.query(
   + 'itervane.formal_repair_results, itervane.formal_repair_attempts, '
   + 'itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs',
 );
-beforeAll(async () => { database = await databaseFixture(); issuer = await identityFixture(); identity = await createIdentityVerifier(issuer.config)(await issuer.token()); });
+beforeAll(async () => { database = await databaseFixture(); issuer = await identityFixture(); });
 beforeEach(async () => {
   await database.reset(); await bootstrapOwner(database.storage, { issuer: issuer.config.issuer, subject: 'owner' });
+  identity = await createIdentityVerifier(issuer.config)(await issuer.token());
   const resources = new ResourceService(database.storage); const project = await resources.createProject(identity, { name: 'Inspection', slug: 'inspection' });
   const repository = await resources.registerRepository(identity, project.id, { name: 'Source', url: origin });
   task = (await new TaskService(database.storage).admit(identity, { projectId: project.id, source: { repositoryId: repository.id, commit: 'f'.repeat(40) },
