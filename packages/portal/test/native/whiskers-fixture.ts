@@ -6,11 +6,12 @@ import { join, resolve } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import { z } from 'zod';
+import { whiskersRestartImageDigest } from '@itervane/contracts';
 import { restartTool, whiskersOrigin } from '../../../verification/src/native/whiskers.js';
 
 const execute = promisify(execFile);
 const labelKey = 'io.itervane.whiskers-probe';
-const publishedWhiskers = 'ghcr.io/lupusmalusdeviant/whiskers:0.15.0@sha256:876510ea689a7cca7c6d36a8c1d60f5b5cf09549ece6d4ad2d54e29aa599148c';
+const publishedWhiskers = 'ghcr.io/lupusmalusdeviant/whiskers:0.15.0@' + whiskersRestartImageDigest;
 export const adminEmail = 'itervane-approver@example.test';
 export const operatorEmail = 'itervane-restart-operator@example.test';
 const identifiedState = z.object({
@@ -46,6 +47,10 @@ async function awaitWhiskers() {
   throw new Error('Native fixture never became ready');
 }
 
+function writerKeys() {
+  return { primary: randomBytes(32).toString('hex'), alternate: randomBytes(32).toString('hex'), broad: randomBytes(32).toString('hex') };
+}
+
 export class WhiskersFixture {
   private readonly runId = randomUUID();
   private readonly base = 'itervane-ops-' + this.runId;
@@ -53,14 +58,13 @@ export class WhiskersFixture {
   private readonly image = this.base + ':probe';
   private readonly provisionedFiles = new Set<string>();
   private temp?: string;
+  private writerPasswordPath?: string;
   readonly adminPassword = 'Iv!' + randomBytes(24).toString('hex') + 'A1';
   readonly operatorPassword = 'Iv!' + randomBytes(24).toString('hex') + 'A1';
   readonly primary = this.base + '-a';
   readonly other = this.base + '-b';
   readonly primaryWriter = 'itervane-probe-primary';
-  readonly writers = {
-    primary: randomBytes(32).toString('hex'), alternate: randomBytes(32).toString('hex'), broad: randomBytes(32).toString('hex'),
-  };
+  readonly writers = writerKeys();
   readonly readKey = randomBytes(32).toString('hex');
 
   async start(mode: 'isolated-probe' | 'published-read-only' = 'isolated-probe') {
@@ -70,14 +74,29 @@ export class WhiskersFixture {
     const writerProbe = mode === 'isolated-probe';
     const passwordPath = await this.provision('bootstrap-password', writerProbe ? this.operatorPassword : this.adminPassword);
     if (writerProbe) {
+      this.writerPasswordPath = passwordPath;
       await docker(['build', '--quiet', '--network', 'none', '--build-arg', 'FIXTURE_VERSION=a', '--tag', this.image, resolve('fixtures/komodo')]);
       const isolated = ['--network', 'none', '--cap-drop', 'ALL', this.image];
       await this.create(this.primary, isolated);
       await this.create(this.other, [...isolated, '/bin/busybox', 'sh', '-c',
         "printf '%s\\n' 'WARNING diagnostic fixture' 'ERROR diagnostic fixture'; exec /bin/busybox httpd -f -p 8080 -h /www"]);
     }
-    const sealed = writerProbe ? await this.sealWriterPolicy() : [];
-    const guardrails = resolve('fixtures/whiskers', mode === 'published-read-only' ? 'read-only-guardrails.json' : 'guardrails.json');
+    await this.bootWhiskers(passwordPath, writerProbe ? this.writers : undefined);
+  }
+
+  async rotateWriter() {
+    if (!this.writerPasswordPath) throw new Error('Expected a scoped writer fixture');
+    const previous = await this.inspectOwned(this.base);
+    await docker(['container', 'rm', '--force', previous.Id]);
+    this.owned.delete(this.base);
+    const keys = writerKeys();
+    await this.bootWhiskers(this.writerPasswordPath, keys);
+    return keys.primary;
+  }
+
+  private async bootWhiskers(passwordPath: string, keys?: ReturnType<typeof writerKeys>) {
+    const sealed = keys ? await this.sealWriterPolicy(keys) : [];
+    const guardrails = resolve('fixtures/whiskers', keys ? 'guardrails.json' : 'read-only-guardrails.json');
     await this.create(this.base, [
       '--publish', '127.0.0.1:49220:8080',
       '--tmpfs', '/app/data:rw,nosuid,nodev,size=128m',
@@ -86,12 +105,12 @@ export class WhiskersFixture {
       '--mount', 'type=bind,source=' + guardrails + ',target=/app/data/guardrails.json,readonly',
       '--env', 'ASPNETCORE_URLS=http://+:8080',
       '--env', 'Auth__Disabled=false',
-      '--env', 'WHISKERS_ADMIN_EMAIL=' + (writerProbe ? operatorEmail : adminEmail),
+      '--env', 'WHISKERS_ADMIN_EMAIL=' + (keys ? operatorEmail : adminEmail),
       '--env', 'WHISKERS_ADMIN_PASSWORD_FILE=/run/secrets/probe-admin',
       '--env', 'Features__agent__Enabled=true',
       '--env', 'VPN_PROVIDER=none',
       ...sealed, publishedWhiskers,
-      ...(writerProbe ? ['-ec', 'cp /run/itervane/mcp-permissions.json /app/data/mcp-permissions.json\nexec /app/entrypoint.sh'] : []),
+      ...(keys ? ['-ec', 'cp /run/itervane/mcp-permissions.json /app/data/mcp-permissions.json\nexec /app/entrypoint.sh'] : []),
     ]);
     await awaitWhiskers();
   }
@@ -104,20 +123,21 @@ export class WhiskersFixture {
     return path;
   }
 
-  private async sealWriterPolicy() {
+  private async sealWriterPolicy(writers: ReturnType<typeof writerKeys>) {
     // The required setup Admin is an offline role entry without a login.
     // The only local account seeded into this fresh data volume is the Operator.
-    const roles = await this.provision('roles.json', JSON.stringify({
+    const generation = randomUUID();
+    const roles = await this.provision(generation + '-roles.json', JSON.stringify({
       Roles: [{ Email: 'offline-admin@example.invalid', Role: 2 }, { Email: operatorEmail, Role: 1 }], DefaultRole: 0,
     }));
     const keys = [
-      { name: this.primaryWriter, key: this.writers.primary, level: 'write', tools: [restartTool] },
-      { name: 'itervane-probe-alternate', key: this.writers.alternate, level: 'write', tools: [restartTool] },
-      { name: 'itervane-probe-broad-negative', key: this.writers.broad, level: 'write', tools: null },
+      { name: this.primaryWriter, key: writers.primary, level: 'write', tools: [restartTool] },
+      { name: 'itervane-probe-alternate', key: writers.alternate, level: 'write', tools: [restartTool] },
+      { name: 'itervane-probe-broad-negative', key: writers.broad, level: 'write', tools: null },
       { name: 'itervane-probe-observe', key: this.readKey, level: 'read',
         tools: ['get_container_details', 'get_container_logs', 'get_container_metrics'] },
     ];
-    const permissions = await this.provision('mcp-permissions.json', JSON.stringify({
+    const permissions = await this.provision(generation + '-mcp-permissions.json', JSON.stringify({
       ApiKeys: keys.map(({ name, key, level, tools }) => ({
         Id: randomBytes(4).toString('hex'), Name: name, KeyHash: createHash('sha256').update(key).digest('hex'),
         Enabled: true, PermissionLevel: level, AllowedTools: tools,

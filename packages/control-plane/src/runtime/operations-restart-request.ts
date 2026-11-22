@@ -10,10 +10,10 @@ import { appendEvent } from './authority.js';
 import { replaceOperationsExecutionWakeup } from './operations-execution-queue.js';
 import { blockQueuedRestartResume } from './operations-restart-resume.js';
 
-export async function prepareOperationsRestartRequest(tx: Transaction, executionId: string, raw: unknown) {
+export async function prepareOperationsRestartRequest(tx: Transaction, executionId: string, writerInstallationId: string, raw: unknown) {
   const document = operationsRestartRequestSchema.parse(raw);
   const callSha256 = sha256(JSON.stringify(document));
-  const [request] = await tx.insert(operationsRestartRequests).values({ executionId, callSha256, document }).returning();
+  const [request] = await tx.insert(operationsRestartRequests).values({ executionId, writerInstallationId, callSha256, document }).returning();
   if (!request) throw new DomainError('unavailable');
   return request;
 }
@@ -33,24 +33,26 @@ export async function attachOperationsRestartApproval(tx: Transaction, execution
   const [recorded] = await tx.update(operationsRestartRequests).set({ approvalId: approval.approvalId })
     .where(and(eq(operationsRestartRequests.executionId, executionId), isNull(operationsRestartRequests.approvalId))).returning();
   if (!recorded?.receivedAt) throw new DomainError('unavailable');
-  return recorded;
+  return { ...recorded, document: request.document };
 }
 
-// Approval decisions already hold the environment lock used by the execution coordinator.
-export async function reconcileWithdrawnRestart(tx: Transaction, database: Database, proposalId: string, actorId: string) {
-  const [paused] = await tx.select({ schedule: operationsExecutionSchedules, task: tasks }).from(operationsExecutions)
+// Call with the environment locked. A paused request retains its original receipt and environment hold.
+export async function reconcileUnavailableRestart(tx: Transaction, database: Database,
+  disabled: { proposalId: string; actorId: string } | { writerInstallationId: string }) {
+  const [paused] = await tx.select({ schedule: operationsExecutionSchedules, task: tasks, proposalId: operationsExecutions.proposalId }).from(operationsExecutions)
     .innerJoin(operationsExecutionSchedules, eq(operationsExecutionSchedules.executionId, operationsExecutions.id))
     .innerJoin(operationsRestartRequests, eq(operationsRestartRequests.executionId, operationsExecutions.id))
     .innerJoin(tasks, eq(tasks.id, operationsExecutionSchedules.taskId))
     .innerJoin(runRuntime, and(eq(runRuntime.runId, operationsExecutionSchedules.runId), eq(runRuntime.taskId, tasks.id)))
-    .where(and(eq(operationsExecutions.proposalId, proposalId), eq(operationsExecutions.state, 'reserved'),
+    .where(and('proposalId' in disabled ? eq(operationsExecutions.proposalId, disabled.proposalId)
+      : eq(operationsRestartRequests.writerInstallationId, disabled.writerInstallationId), eq(operationsExecutions.state, 'reserved'),
       or(
         and(eq(tasks.state, 'waiting_approval'), eq(runRuntime.reason, 'operations_execution_native_approval'), isNull(operationsExecutionSchedules.wakeupJobId)),
         and(eq(tasks.state, 'queued'), eq(runRuntime.reason, 'operations_restart_resume_queued'), isNotNull(operationsExecutionSchedules.wakeupJobId)),
       ),
       isNotNull(operationsRestartRequests.approvalId)));
   if (!paused) return;
-  const { schedule, task } = paused;
+  const { schedule, task, proposalId } = paused;
   if (task.state === 'queued') {
     if (!schedule.wakeupJobId) throw new DomainError('unavailable');
     await blockQueuedRestartResume(tx, schedule.executionId);
@@ -59,7 +61,7 @@ export async function reconcileWithdrawnRestart(tx: Transaction, database: Datab
   const reason = 'operations_execution_reconciling';
   await tx.update(runRuntime).set({ reason }).where(eq(runRuntime.runId, schedule.runId));
   await appendEvent(tx, task, 'task.operations_execution_recovered', 'reconciling', {
-    actorId, reason, operationsExecution: { executionId: schedule.executionId, proposalId },
+    ...('actorId' in disabled ? { actorId: disabled.actorId } : {}), reason, operationsExecution: { executionId: schedule.executionId, proposalId },
   });
   await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation);
 }

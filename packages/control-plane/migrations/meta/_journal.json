@@ -372,6 +372,13 @@
       "when": 1795329549019,
       "tag": "0052_operations_restart_resumes",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1795333382805,
+      "tag": "0053_operations_restart_installations",
+      "breakpoints": true
     }
   ]
 }

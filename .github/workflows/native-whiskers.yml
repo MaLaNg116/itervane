@@ -49,7 +49,7 @@ jobs:
             ([.checks[] | select(.status == "passed") | .id] |
               contains(["operator-policy", "scoped-writer", "pending", "approved", "binding", "applied", "consumed", "audit",
                 "bound-observe-running", "bound-observe-stopped", "bound-observe-unknown", "bound-observe-timeout",
-                "bound-log-signals", "bound-metrics-present", "bound-metrics-unavailable", "clean"]))' \
+                "bound-log-signals", "bound-metrics-present", "bound-metrics-unavailable", "writer-rotation", "clean"]))' \
               .reports/p0/whiskers-native.json >/dev/null
       - name: Retain sanitized Whiskers evidence
         if: always()

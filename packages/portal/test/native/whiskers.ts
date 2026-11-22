@@ -27,6 +27,7 @@ const messages = {
   'bound-log-signals': ['The native log tail for the stopped container was projected to signal counts.', '已停止容器的原生日志经投影后只保留信号计数。'],
   'bound-metrics-present': ['The installed metrics collector recorded samples for the running container.', '原生指标采集器已为运行中的绑定容器记录样本。'],
   'bound-metrics-unavailable': ['An ID without history returned explicit missing coverage.', '没有指标历史的容器 ID 返回明确的未覆盖状态。'],
+  'writer-rotation': ['The new installation rejected the previous writer at the same endpoint. The new writer had one-tool scope and the target stayed healthy.', '同一入口的新安装拒绝旧写凭证，新凭证仍只有单工具权限，目标应用保持健康。'],
   stopped: ['Verification stopped at', '验证中止于'],
   clean: ['Temporary containers and password file were removed.', '已清理临时容器和口令文件。'],
 } as const;
@@ -209,6 +210,17 @@ async function run() {
     requireProof(metrics.containerId === a.id && metrics.serverId === 'local' && metrics.status === 'observed'
       && metrics.dataPoints >= 1 && metrics.period === '1h' && await fixture.healthy(fixture.primary));
     record('bound-metrics-present');
+
+    step = 'writer-rotation';
+    const newKey = await fixture.rotateWriter();
+    const newScope = await (await connect(newKey)).restartScopeFacts();
+    requireProof(newScope.uriMatches && newScope.namedKey && newScope.explicitScope && newScope.oneTool && newScope.restartListed);
+    await expect(connect(key)).rejects.toThrow();
+    const current = await observer.observe(authorized);
+    const snapshot = await fixture.snapshot(fixture.primary);
+    requireProof(current.containerId === a.id && current.state === 'running' && snapshot.id === a.id
+      && snapshot.started === restarted.started && await fixture.healthy(fixture.primary));
+    record('writer-rotation');
   } catch (error) {
     if (step === 'approved-dispatch') {
       const actual = await fixture.snapshot(fixture.primary).catch(() => undefined);

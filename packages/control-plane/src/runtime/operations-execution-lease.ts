@@ -1,6 +1,7 @@
 import {
   idSchema, maxOperationsRestartResumes, operationsRestartApprovalInputSchema, operationsRestartContinueInputSchema,
-  operationsRestartResumeBindingSchema, operationsRestartResumeOutcomeSchema, sha256Schema,
+  operationsRestartResumeBindingSchema, operationsRestartResumeOutcomeSchema, operationsRestartWriterProofSchema,
+  type OperationsRestartInstallation,
 } from '@itervane/contracts';
 import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
@@ -15,6 +16,7 @@ import { expireUndispatchedOperations, lockEnvironmentForEffect } from '../servi
 import { DomainError, parseInput } from '../service/errors.js';
 import { lockOperationsDiagnosisTask, requireOperationsExecutionApproval } from '../service/operations-execution-admission.js';
 import { readOperationsProposal } from '../service/operations-proposals.js';
+import { requireOperationsRestartWriter } from '../service/operations-restart-installations.js';
 import { databaseNow } from '../service/releases.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope } from './authority.js';
@@ -47,6 +49,14 @@ async function lockOperationsExecution(tx: Transaction, executionId: string) {
 }
 
 type BoundExecution = NonNullable<Awaited<ReturnType<typeof lockOperationsExecution>>>;
+
+async function requireSavedRestartWriter(tx: Transaction, target: OperationsEnrollmentScope, whiskers: OperationsRestartInstallation['whiskers'],
+  request: Awaited<ReturnType<typeof readOperationsRestartRequest>>) {
+  if (!request.writerInstallationId) throw new DomainError('unsupported_state');
+  await requireOperationsRestartWriter(tx, target, whiskers, {
+    installationId: request.writerInstallationId, credentialSha256: request.document.credentialSha256,
+  });
+}
 
 function wakeupMode({ execution, task, reason, intent }: BoundExecution): OperationsExecutionLease['mode'] | undefined {
   if (execution.state !== 'reserved') return;
@@ -124,7 +134,12 @@ export class OperationsExecutionCoordinator {
         && target.enrollmentSha256 === this.installation.enrollmentSha256;
       let authorized = true;
       if (eligible && mode !== 'reconcile') {
-        try { await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion); }
+        try {
+          const { frozen, whiskers } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
+          if (mode === 'restart_resume') {
+            await requireSavedRestartWriter(tx, frozen.target, whiskers, await readOperationsRestartRequest(tx, execution.id));
+          }
+        }
         catch (error) {
           if (!(error instanceof DomainError)) throw error;
           authorized = false;
@@ -155,26 +170,30 @@ export class OperationsExecutionCoordinator {
   async heartbeat(scope: OperationsExecutionLease) {
     await this.withLease(scope, async (tx, { diagnosis, proposal, execution, intent, reason }) => {
       if (!intent || reason === 'operations_restart_resume_claimed') {
-        await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
+        const { frozen, whiskers } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
+        if (reason === 'operations_restart_resume_claimed') {
+          await requireSavedRestartWriter(tx, frozen.target, whiskers, await readOperationsRestartRequest(tx, execution.id));
+        }
       }
       await renewSlot(tx, this.coordinator.leaseSeconds);
     });
   }
 
-  async prepareDispatch(scope: OperationsExecutionLease, restart?: { credentialSha256: string }) {
-    const credentialSha256 = restart && parseInput(sha256Schema, restart.credentialSha256);
+  async prepareDispatch(scope: OperationsExecutionLease, rawRestartProof?: unknown) {
+    const restart = rawRestartProof === undefined ? undefined : parseInput(operationsRestartWriterProofSchema, rawRestartProof);
     return this.withLease(scope, async (tx, { execution, task, proposal, diagnosis, reason }) => {
       if (scope.mode !== 'dispatch' || reason !== 'operations_execution_claimed') throw new ExecutionLost();
       const { frozen, whiskers } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
-      if (credentialSha256 && frozen.action.kind !== 'restart') throw new DomainError('unsupported_state');
+      if (restart && frozen.action.kind !== 'restart') throw new DomainError('unsupported_state');
+      if (restart) await requireOperationsRestartWriter(tx, frozen.target, whiskers, restart);
       const [intent] = await tx.insert(operationsExecutionIntents).values({ executionId: execution.id,
         decisionVersion: execution.decisionVersion, proposalFingerprint: execution.proposalFingerprint,
         generation: scope.generation, workerId: scope.workerId, fence: scope.fence }).returning();
       if (!intent) throw new DomainError('unavailable');
       const dispatchReason = 'operations_execution_dispatch_intended';
       await tx.update(runRuntime).set({ reason: dispatchReason }).where(eq(runRuntime.runId, scope.runId));
-      const restartRequest = credentialSha256 ? await prepareOperationsRestartRequest(tx, execution.id, {
-        version: 1, tool: 'restart_container', target: { ...whiskers, containerId: frozen.target.containerId }, credentialSha256,
+      const restartRequest = restart ? await prepareOperationsRestartRequest(tx, execution.id, restart.installationId, {
+        version: 1, tool: 'restart_container', target: { ...whiskers, containerId: frozen.target.containerId }, credentialSha256: restart.credentialSha256,
       }) : undefined;
       await appendEvent(tx, task, 'task.operations_execution_dispatch_intended', 'running', {
         workerId: scope.workerId, reason: dispatchReason,
@@ -188,13 +207,16 @@ export class OperationsExecutionCoordinator {
     const approval = parseInput(operationsRestartApprovalInputSchema, raw);
     return this.withLease(scope, async (tx, { execution, schedule, task, reason, diagnosis, proposal }) => {
       if (scope.mode !== 'dispatch' || reason !== 'operations_execution_dispatch_intended') throw new ExecutionLost();
+      const recorded = await attachOperationsRestartApproval(tx, execution.id, approval);
       let canAwaitApproval = true;
-      try { await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion); }
+      try {
+        const { frozen, whiskers } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
+        await requireSavedRestartWriter(tx, frozen.target, whiskers, recorded);
+      }
       catch (error) {
         if (!(error instanceof DomainError)) throw error;
         canAwaitApproval = false;
       }
-      const recorded = await attachOperationsRestartApproval(tx, execution.id, approval);
       const pauseReason = canAwaitApproval ? 'operations_execution_native_approval' : 'operations_execution_reconciling';
       const pauseState = canAwaitApproval ? 'waiting_approval' : 'reconciling';
       await tx.update(runRuntime).set({ reason: pauseReason }).where(eq(runRuntime.runId, scope.runId));
@@ -222,11 +244,12 @@ export class OperationsExecutionCoordinator {
       const { project } = await requireProjectAccess(tx, actor, task.projectId, true);
       if (!isHumanWorkspaceOwner(identity, actor, project.workspaceId, this.humanClientId)) throw new DomainError('forbidden');
 
-      const { decision, now } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
+      const { frozen, whiskers, decision, now } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
       if (identity.expiresAt * 1_000 <= now.getTime()) throw new DomainError('unauthenticated');
       if (actor.principalId !== decision.actorId || actor.workspaceGrantId !== decision.grantId) throw new DomainError('forbidden');
       const request = await readOperationsRestartRequest(tx, executionId);
       if (request.approvalId !== input.approvalId || request.callSha256 !== input.callSha256) throw new DomainError('version_conflict');
+      await requireSavedRestartWriter(tx, frozen.target, whiskers, request);
 
       const [duplicate] = await tx.select().from(operationsRestartResumes)
         .where(and(eq(operationsRestartResumes.executionId, executionId), eq(operationsRestartResumes.idempotencyKey, input.idempotencyKey)));
@@ -260,10 +283,12 @@ export class OperationsExecutionCoordinator {
       const { frozen, whiskers, decision } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
       const request = await readOperationsRestartRequest(tx, execution.id);
       if (request.approvalId !== binding.approvalId || request.callSha256 !== binding.callSha256
+          || request.writerInstallationId !== binding.installationId
           || request.document.credentialSha256 !== binding.credentialSha256 || request.document.target.containerId !== frozen.target.containerId
           || request.document.target.origin !== whiskers.origin || request.document.target.serverId !== whiskers.serverId) {
         throw new DomainError('version_conflict');
       }
+      await requireOperationsRestartWriter(tx, frozen.target, whiskers, binding);
       const checked = await latestRestartResume(tx, execution.id);
       if (checked?.state !== 'queued' || checked.approvalId !== binding.approvalId || checked.callSha256 !== binding.callSha256
           || checked.actorId !== decision.actorId || checked.grantId !== decision.grantId) throw new ExecutionLost();
@@ -297,7 +322,10 @@ export class OperationsExecutionCoordinator {
           || current.approvalId !== result.approvalId || current.callSha256 !== result.callSha256) throw new ExecutionLost();
       let wait = result.outcome === 'pending' && current.attempt < maxOperationsRestartResumes;
       if (wait) {
-        try { await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion); }
+        try {
+          const { frozen, whiskers } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
+          await requireSavedRestartWriter(tx, frozen.target, whiskers, await readOperationsRestartRequest(tx, execution.id));
+        }
         catch (error) {
           if (!(error instanceof DomainError)) throw error;
           wait = false;
