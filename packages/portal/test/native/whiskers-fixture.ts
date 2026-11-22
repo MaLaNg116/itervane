@@ -70,13 +70,13 @@ export class WhiskersFixture {
   readonly writers = writerKeys();
   readonly readKey = randomBytes(32).toString('hex');
 
-  async start(mode: 'isolated-probe' | 'published-read-only' = 'isolated-probe') {
+  async start(mode: 'isolated-probe' | 'published-read-only' | 'published-restart' = 'isolated-probe') {
     const platform = await docker(['version', '--format', '{{.Server.Os}}/{{.Server.Arch}}']);
     if (platform !== 'linux/amd64') throw new Error('Unexpected fixture daemon');
     this.temp = await mkdtemp(join(tmpdir(), 'itervane-native-'));
-    const writerProbe = mode === 'isolated-probe';
+    const writerProbe = mode !== 'published-read-only';
     const passwordPath = await this.provision('bootstrap-password', writerProbe ? this.operatorPassword : this.adminPassword);
-    if (writerProbe) {
+    if (mode === 'isolated-probe') {
       this.writerPasswordPath = passwordPath;
       await docker(['build', '--quiet', '--network', 'none', '--build-arg', 'FIXTURE_VERSION=a', '--tag', this.image, resolve('fixtures/komodo')]);
       const isolated = ['--network', 'none', '--cap-drop', 'ALL', this.image];
@@ -119,12 +119,13 @@ export class WhiskersFixture {
     this.writerMounts = sealed && { guardrails, roles: sealed.roles };
   }
 
-  async restartInstallationFiles(key: string) {
+  async restartInstallationFiles(key: string, scope: { environmentId: string; enrollmentSha256: string } =
+    { environmentId: this.runId, enrollmentSha256: hash(this.runId) }) {
     if (!this.writerMounts) throw new Error('Expected mounted writer policy and roles');
     const { guardrails, roles } = this.writerMounts;
     const [policyContent, rolesContent] = await Promise.all([readFile(guardrails), readFile(roles)]);
     const document: OperationsRestartInstallation = {
-      version: 1, installationId: randomUUID(), environmentId: this.runId, enrollmentSha256: hash(this.runId),
+      version: 1, installationId: randomUUID(), environmentId: scope.environmentId, enrollmentSha256: scope.enrollmentSha256,
       whiskers: { origin: whiskersOrigin, serverId: 'local' }, imageDigest: whiskersRestartImageDigest,
       policySha256: hash(policyContent), rolesSha256: hash(rolesContent), credentialSha256: hash(key),
     };

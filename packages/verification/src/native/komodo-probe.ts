@@ -404,6 +404,7 @@ export async function openNativeReleaseKomodo(env: NodeJS.ProcessEnv = process.e
         endpoint: { network: target.network, container: target.name },
         credentials: { ...credentials, actorId: target.actor },
         allowContainerInspection: setup.allowBoundContainerInspection,
+        provisionRestartReader: setup.provisionReader,
         async assertUnchanged() {
           await readTarget(client, target, '');
           const ownedContainer = await docker('FindTargetFixture', [

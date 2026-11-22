@@ -44,12 +44,15 @@ function selectTool(observations: AgentEvidence[]) {
 
 function selectOperations(observations: AgentEvidence[]) {
   const readings = observations.flatMap(({ id, data }) => data.kind === 'operations_section' ? [{ id, data }] : []);
-  for (const section of ['container', 'release', 'logs', 'metrics'] as const) {
+  const runtime = readings.find(item => item.data.section === 'container')?.data;
+  const stopped = runtime?.section === 'container' && (runtime.result.state === 'exited' || runtime.result.state === 'dead');
+  const sections = stopped ? ['container', 'release'] as const : ['container', 'release', 'logs', 'metrics'] as const;
+  for (const section of sections) {
     const observed = readings.find(item => item.data.section === section);
     if (!observed) return { name: 'read_operations', input: { section } };
     if ('containerId' in observed.data.result || 'serverId' in observed.data.result) throw new Error('operations_fixture_private_target');
   }
-  return { name: 'finish_role', input: { hypotheses: [], recommendation: { code: 'continue_observation',
+  return { name: 'finish_role', input: { hypotheses: [], recommendation: { code: stopped ? 'review_restart' : 'continue_observation',
     evidenceIds: readings.filter(item => item.data.section === 'container' || item.data.section === 'release').map(item => item.id) } } };
 }
 
