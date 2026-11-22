@@ -161,6 +161,17 @@ export function restoreWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
   return { ...worker, installed, writer, reader, probeSecret };
 }
 
+export function healthWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
+  const installed = operationsEffectTarget(env);
+  const reader = komodoReader.parse({
+    actorId: env.ITERVANE_HEALTH_KOMODO_READER_ID, key: env.ITERVANE_HEALTH_KOMODO_READER_KEY,
+    secret: env.ITERVANE_HEALTH_KOMODO_READER_SECRET,
+  });
+  return { installed, reader, databaseUrl: databaseUrl.parse(env.DATABASE_URL),
+    probeSecret: z.string().min(1).max(1024).parse(env.ITERVANE_HEALTH_PROBE_SECRET),
+    pollMs: z.coerce.number().int().min(5_000).max(300_000).parse(env.ITERVANE_HEALTH_POLL_MS ?? 30_000) };
+}
+
 export function migrationConfig(env: NodeJS.ProcessEnv = process.env) {
   // 不回退到运行账号，防止把生产启动变成自动 DDL。
   return databaseUrl.parse(env.ITERVANE_MIGRATION_DATABASE_URL);
