@@ -284,6 +284,19 @@ async function verifyFormalAdapter(setup: Awaited<ReturnType<typeof bootstrap>>,
   if (runtime.containerId !== observed.Id || '/' + runtime.containerName !== observed.Name || runtime.configDigest !== observed.Image) {
     throw new KomodoError('FormalAdapterRunningImage', 'binding');
   }
+  // This checked ID belongs to the dedicated, label-verified fixture created by this run.
+  await docker('StopOwnedFixture', ['container', 'stop', '--time', '2', observed.Id]);
+  const stopped = await adapter.inspectStoppedRuntime(binding, runningImage, target.network, authorize);
+  if (stopped.containerId !== observed.Id || stopped.configDigest !== observed.Image || stopped.startedAt !== runtime.startedAt || stopped.state !== 'exited') {
+    throw new KomodoError('FormalAdapterStoppedImage', 'binding');
+  }
+  await docker('StartOwnedFixture', ['container', 'start', stopped.containerId]);
+  await waitFor('FormalAdapterRecoveredHealth', () => observeFixture(target, mark, approved), 12_000);
+  const recovered = await adapter.inspectRuntime(binding, runningImage, target.network, authorize);
+  if (recovered.containerId !== stopped.containerId || recovered.configDigest !== stopped.configDigest ||
+      !recovered.startedAt || recovered.startedAt <= stopped.startedAt) {
+    throw new KomodoError('FormalAdapterNewStart', 'binding');
+  }
   return { updateId, runtimeConfigSha256: binding.runtimeConfigSha256, observed };
 }
 
@@ -293,6 +306,8 @@ const text = {
   match: ['Native update, OCI manifest, running image and HTTP health matched.', '原生操作、OCI manifest、实际运行镜像和 HTTP 健康响应一致。'],
   formal: ['The release adapter enforced target and update bindings and verified the fixture.',
     '正式发布适配器校验了目标与更新绑定，并核对了实际样例。'],
+  restartReadback: ['Read-only Komodo checks saw the stopped fixture and a newer healthy start on the same container and image.',
+    'Komodo 只读检查观测到同一容器的停止态和健康的新启动，镜像保持一致。'],
   cleaned: ['Removed the owned fixture and temporary Compose resources.', '本轮样例和临时 Compose 资源已清理。'],
   privateNetwork: ['The running target only joined its internal bridge and published no host ports.',
     '实际运行目标只加入自己的内部桥接网络，未发布宿主端口。'],
@@ -377,6 +392,14 @@ export async function openNativeReleaseKomodo(env: NodeJS.ProcessEnv = process.e
           if (ownedContainer) throw new KomodoError('UnexpectedFixtureDeployment', 'binding');
         },
         observeContainer,
+        async setOwnedContainerRunning(running: boolean, expected: { containerId: string; reference: string; configDigest: string }) {
+          const current = await inspect(target);
+          if (current.Id !== expected.containerId || current.State.Running === running || current.Config.Labels[labelKey] !== mark
+              || current.Config.Image !== expected.reference || current.Image !== expected.configDigest) {
+            throw new KomodoError('FixtureRestartContainerIdentity', 'binding');
+          }
+          await docker('FixtureRuntimeTransition', ['container', ...(running ? ['start'] : ['stop', '--time', '2']), current.Id]);
+        },
         async exerciseFixtureHealth(reference: string, configDigest: string, port: number, failHealth: boolean) {
           if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new KomodoError('FixtureHealthPort', 'binding');
           const before = await observeContainer(reference, configDigest);
@@ -445,6 +468,7 @@ export async function probeKomodoNative(env: NodeJS.ProcessEnv = process.env) {
     if (seen.has(release.updateId)) throw new KomodoError('FormalAdapterDistinctUpdate', 'binding');
     checks.push({ id: 'formal-komodo-adapter', status: 'passed', detail: text.formal[lang] + ' Update=' + release.updateId
       + ' OCI=' + b.digest + ' Image=' + release.observed.Image + ' Runtime=' + release.runtimeConfigSha256 + '.' });
+    checks.push({ id: 'restart-runtime-readback', status: 'passed', detail: text.restartReadback[lang] });
     await confirmAppNetwork(network);
     checks.push({ id: 'protected-container-network', status: 'passed', detail: text.privateNetwork[lang] });
   } catch (error) {

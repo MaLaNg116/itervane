@@ -215,7 +215,10 @@ jobs:
               .operations.diagnosis.releaseOperationId == .release.operationId and
               .operations.diagnosis.sections == ["container", "release", "logs", "metrics"] and
               .operations.diagnosis.matchedPublishedTarget and .operations.diagnosis.httpMcpAgreement and
-              .operations.diagnosis.model == "scripted_anthropic_fixture"' "$report" >/dev/null
+              .operations.diagnosis.model == "scripted_anthropic_fixture" and .operations.restartReadback.sameContainer and
+              .operations.restartReadback.recoveredStart > .operations.restartReadback.stoppedStart and
+              (.operations.restartReadback.protectedStatus == 401 or .operations.restartReadback.protectedStatus == 403) and
+              .operations.restartReadback.healthStatus == 200' "$report" >/dev/null
           fi
       - name: Retain independent KVM evidence
         if: always()

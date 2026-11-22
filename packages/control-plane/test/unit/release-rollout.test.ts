@@ -1,4 +1,4 @@
-import { releaseRolloutCheckSchema, type ReleaseRolloutCheck } from '@itervane/contracts';
+import { releaseRolloutCheckSchema, type OperationsRestartBaseline, type ReleaseRolloutCheck } from '@itervane/contracts';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { ReleaseRolloutVerifier } from '../../src/runtime/release-rollout.js';
 import { fingerprintRolloutCheck } from '../../src/service/release-targets.js';
@@ -17,6 +17,11 @@ const input = { check: profile, rolloutCheckSha256: fingerprintRolloutCheck(prof
     komodo: { origin: 'https://komodo.example.invalid', actorId: 'f'.repeat(24) } } };
 const runtime = { ...input.target, containerName: 'demo-runtime', containerId: '1'.repeat(64), configDigest,
   imageReference: 'registry.example.invalid/demo@' + manifestDigest, network: profile.network };
+const { containerId, imageReference, runtimeConfigSha256, network } = runtime;
+const restartInput = { ...input, containerId, version: 'v2' };
+const stopped = { containerId, imageReference, runtimeConfigSha256, network, configDigest,
+  state: 'exited', startedAt: '2026-11-22T08:18:15.123456789Z' } satisfies OperationsRestartBaseline;
+const restarted = { ...runtime, startedAt: '2026-11-22T08:18:15.123456790Z' };
 const route = { name: 'demo@file', provider: 'file', status: 'enabled', tls: {}, using: ['websecure'],
   rule: 'Host(`demo.example.invalid`)', service: 'demo', middlewares: ['demo-auth', 'demo-strip'] };
 const login = { ...route, name: 'demo-login@file', rule: route.rule + ' && PathPrefix(`/oauth2/`)',
@@ -40,9 +45,10 @@ const fixtures = {
 
 const token = 'test.token.value';
 const tokenSource = vi.fn(async () => token);
-const inspectRuntime = vi.fn(async () => runtime);
+const inspectRuntime = vi.fn<() => Promise<typeof runtime & { startedAt?: string }>>();
+const inspectStoppedRuntime = vi.fn<() => Promise<OperationsRestartBaseline>>();
 const authenticate = vi.fn(async () => {});
-const verifier = new ReleaseRolloutVerifier({ inspectRuntime }, tokenSource);
+const verifier = new ReleaseRolloutVerifier({ inspectRuntime, inspectStoppedRuntime }, tokenSource);
 const request = vi.fn<typeof fetch>();
 
 function emulateIngress(changes: Record<string, unknown> = {}, health: (hasToken: boolean) => Response = allowed =>
@@ -62,6 +68,8 @@ function emulateIngress(changes: Record<string, unknown> = {}, health: (hasToken
 
 beforeEach(() => {
   vi.clearAllMocks();
+  inspectRuntime.mockReset().mockResolvedValue(runtime);
+  inspectStoppedRuntime.mockReset().mockResolvedValue(stopped);
   vi.stubGlobal('fetch', request);
   emulateIngress();
 });
@@ -77,6 +85,45 @@ it('requires two stable runtime reads and sends a credential to the single appro
   expect(credentialRequests.map(([url]) => url)).toEqual([profile.origin + '/health']);
   expect(request.mock.calls.every(([, init]) => init?.redirect === 'manual')).toBe(true);
   expect(JSON.stringify(result)).not.toContain(token);
+});
+
+it('captures the stopped baseline and confirms its exact container with a new stable start and protected health', async () => {
+  const before = await verifier.captureRestartBaseline(restartInput, authenticate);
+  expect(before).toEqual(stopped);
+  expect(inspectStoppedRuntime).toHaveBeenCalledWith(input.target, input.image, profile.network, authenticate, undefined);
+  expect(request).not.toHaveBeenCalled();
+  inspectRuntime.mockResolvedValue(restarted);
+  await expect(verifier.observeRestart(restartInput, before, authenticate)).resolves.toMatchObject({
+    startedAt: restarted.startedAt, runtime: { containerId, configDigest, version: 'v2', anonymousStatus: 401, healthStatus: 200 },
+  });
+  expect(inspectRuntime).toHaveBeenCalledTimes(2);
+  expect(tokenSource).toHaveBeenCalledOnce();
+});
+
+it.each([
+  runtime,
+  { ...runtime, startedAt: stopped.startedAt },
+  { ...runtime, startedAt: '2026-11-22T08:18:15.123456788Z' },
+  { ...restarted, containerId: '2'.repeat(64) },
+  { ...restarted, configDigest: 'sha256:' + '0'.repeat(64) },
+])('requires a newer start on the same frozen runtime before requesting health credentials', async observed => {
+  inspectRuntime.mockResolvedValue(observed);
+  await expect(verifier.observeRestart(restartInput, stopped, authenticate)).rejects.toMatchObject({ reason: 'runtime_changed' });
+  expect(request).not.toHaveBeenCalled();
+  expect(tokenSource).not.toHaveBeenCalled();
+});
+
+it('refuses a baseline from another container, a restart during health verification and a stale health version', async () => {
+  inspectStoppedRuntime.mockResolvedValueOnce({ ...stopped, containerId: '2'.repeat(64) });
+  await expect(verifier.captureRestartBaseline(restartInput, authenticate)).rejects.toMatchObject({ reason: 'runtime_changed' });
+  await expect(verifier.observeRestart(restartInput, { ...stopped, imageReference: stopped.imageReference.replace('/demo@', '/other@') }, authenticate))
+    .rejects.toMatchObject({ reason: 'runtime_changed' });
+  expect(inspectRuntime).not.toHaveBeenCalled();
+  expect(request).not.toHaveBeenCalled();
+  inspectRuntime.mockResolvedValueOnce(restarted).mockResolvedValueOnce({ ...restarted, startedAt: '2026-11-22T08:18:15.123456791Z' });
+  await expect(verifier.observeRestart(restartInput, stopped, authenticate)).rejects.toMatchObject({ reason: 'runtime_changed' });
+  inspectRuntime.mockResolvedValue(restarted);
+  await expect(verifier.observeRestart({ ...restartInput, version: 'v1' }, stopped, authenticate)).rejects.toMatchObject({ reason: 'health_failed' });
 });
 
 it.each([
