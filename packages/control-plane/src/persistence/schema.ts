@@ -645,6 +645,35 @@ export const operationsRestartRequests = domain.table('operations_restart_reques
     OR (${t.approvalId} ~ '^[a-f0-9]{32}$' AND ${t.receivedAt} >= ${t.createdAt})) IS TRUE`),
 ]);
 
+export const operationsRestartResumes = domain.table('operations_restart_resumes', {
+  executionId: uuid('execution_id').notNull().references(() => operationsRestartRequests.executionId),
+  attempt: integer('attempt').notNull(),
+  actorId: uuid('actor_id').notNull().references(() => principals.id),
+  grantId: uuid('grant_id').notNull(),
+  approvalId: text('approval_id').notNull(),
+  callSha256: text('call_sha256').notNull(),
+  expectedVersion: integer('expected_version').notNull(),
+  idempotencyKey: uuid('idempotency_key').notNull(),
+  state: text('state').$type<'queued' | 'prepared' | 'pending' | 'acknowledged' | 'unknown' | 'blocked'>().notNull().default('queued'),
+  workerId: uuid('worker_id'),
+  fence: integer('fence'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().default(sql`clock_timestamp()`),
+  preparedAt: timestamp('prepared_at', { withTimezone: true }),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }),
+}, t => [
+  primaryKey({ columns: [t.executionId, t.attempt] }),
+  unique('operations_restart_resume_key').on(t.executionId, t.idempotencyKey),
+  check('operations_restart_resume_identity', sql`${t.attempt} BETWEEN 1 AND 3 AND ${t.expectedVersion} > 0
+    AND ${t.approvalId} ~ '^[a-f0-9]{32}$' AND ${t.callSha256} ~ '^[a-f0-9]{64}$'`),
+  check('operations_restart_resume_stage', sql`(
+    (${t.state} IN ('queued', 'blocked') AND ${t.workerId} IS NULL AND ${t.fence} IS NULL AND ${t.preparedAt} IS NULL
+      AND ((${t.state} = 'queued' AND ${t.recordedAt} IS NULL) OR (${t.state} = 'blocked' AND ${t.recordedAt} >= ${t.createdAt})))
+    OR (${t.fence} > 0 AND ${t.workerId} IS NOT NULL AND ${t.preparedAt} >= ${t.createdAt}
+      AND ((${t.state} = 'prepared' AND ${t.recordedAt} IS NULL)
+        OR (${t.state} IN ('pending', 'acknowledged', 'unknown') AND ${t.recordedAt} >= ${t.preparedAt})))
+  ) IS TRUE`),
+]);
+
 export const formalReleaseSteps = domain.table('formal_release_steps', {
   operationId: uuid('operation_id').notNull().references(() => releaseOperations.id),
   kind: text('kind').$type<'archive' | 'registry' | 'komodo_config' | 'komodo_dispatch'>().notNull(),

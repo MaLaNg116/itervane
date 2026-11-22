@@ -29,6 +29,16 @@ export const operationsRestartApprovalInputSchema = z.strictObject({
   approvalId: whiskersNativeApprovalIdSchema,
 });
 
+export const maxOperationsRestartResumes = 3;
+export const operationsRestartContinueInputSchema = operationsRestartApprovalInputSchema.extend({
+  expectedVersion: revision,
+  idempotencyKey: idSchema,
+});
+export const operationsRestartResumeBindingSchema = operationsRestartApprovalInputSchema.extend({ credentialSha256: sha256Schema });
+export const operationsRestartResumeOutcomeSchema = operationsRestartApprovalInputSchema.extend({
+  outcome: z.enum(['pending', 'acknowledged', 'unknown']),
+});
+
 export const operationsTargetInputSchema = z.strictObject({
   environmentId: idSchema,
   releaseTargetRevision: revision,
