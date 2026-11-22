@@ -568,19 +568,44 @@ async function probe() {
       };
       const buildFixture = async (revision: string, outcome: 'built' | 'profile_mismatch' | 'offline_install',
         baselineOutcome?: 'passed' | 'failed') => {
-        phase = `standard_build_audit_${outcome}`;
+        phase = `standard_build_audit_${outcome}_worker`;
         const profile = baselineOutcome ? automaticProfile : undefined;
         const failed = baselineOutcome === 'failed';
         worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, audit.baseURL, profile);
+        phase = `standard_build_audit_${outcome}_admission`;
         const task = await start('Verify the standard build from this fixed source', revision,
           build.oci && baselineOutcome === 'passed' ? 'en' : 'zh-CN');
-        await reached(task.id, profile && failed ? 'needs_human' : 'waiting_input', profile ? 380_000 : undefined);
-        const reviewed = formalAuditDtoSchema.parse(await request(`/v1/tasks/${task.id}/audit`));
-        if (reviewed.status !== 'recorded' || reviewed.result.status !== 'completed') throw new Error('standard_build_audit');
-        if (reviewed.result.checklist?.findings.length !== 0) {
-          phase = 'standard_build_initial_findings';
-          throw new Error('standard_build_findings');
+        let snapshotSha256: string;
+        let auditStatus: string | null = null;
+        try {
+          phase = `standard_build_audit_${outcome}_waiting`;
+          await reached(task.id, profile && failed ? 'needs_human' : 'waiting_input', profile ? 380_000 : undefined);
+          phase = `standard_build_audit_${outcome}_receipt`;
+          const reviewed = formalAuditDtoSchema.parse(await request(`/v1/tasks/${task.id}/audit`));
+          auditStatus = reviewed.status === 'recorded' ? reviewed.result.status : reviewed.status;
+          if (reviewed.status !== 'recorded' || reviewed.result.status !== 'completed') throw new Error('standard_build_audit');
+          if (reviewed.result.checklist?.findings.length !== 0) {
+            phase = 'standard_build_initial_findings';
+            throw new Error('standard_build_findings');
+          }
+          snapshotSha256 = reviewed.result.snapshotSha256;
+        } catch (error) {
+          const observed = await db.admin.query<{ state: string; reason: string | null; recorded: boolean }>(`
+            SELECT task.state, runtime.reason, EXISTS (
+              SELECT 1 FROM itervane.formal_audit_results audit WHERE audit.run_id = run.id
+            ) AS recorded
+            FROM itervane.tasks task
+            LEFT JOIN itervane.task_runs run ON run.task_id = task.id AND run.generation = task.generation
+            LEFT JOIN itervane.run_runtime runtime ON runtime.run_id = run.id
+            WHERE task.id = $1`, [task.id]).then(({ rows }) => rows[0]).catch(() => undefined);
+          const state = taskDtoSchema.shape.state.safeParse(observed?.state);
+          const reason = taskEventReasonSchema.safeParse(observed?.reason);
+          const errorKind = error instanceof Error && ['TimeoutError', 'ZodError', 'AssertionError'].includes(error.name) ? error.name : null;
+          console.error(JSON.stringify({ phase, state: state.success ? state.data : null, reason: reason.success ? reason.data : null,
+            auditStatus, recorded: observed?.recorded ?? null, errorKind }));
+          throw error;
         }
+        phase = `standard_build_audit_${outcome}_worker_stop`;
         await worker.stop('TERM'); worker = undefined;
         phase = baselineOutcome ? `standard_baseline_${baselineOutcome}` : `standard_build_execution_${outcome}`;
         const fact: Record<string, unknown> = profile ? await recordedVerification(task, failed)
@@ -588,7 +613,7 @@ async function probe() {
             ...(baselineOutcome ? [baselineOutcome, ...(build.oci ? [build.oci] : [])] : [])]);
         const evidence = qualifiedStandardBuildProofSchema.parse(fact.build);
         equal(evidence.baselineSha256, build.baseline);
-        equal(evidence.subjectManifestSha256, reviewed.result.snapshotSha256);
+        equal(evidence.subjectManifestSha256, snapshotSha256);
         equal(evidence.verificationInputSha256, fact.inputSha256);
         equal(evidence.runId, fact.domainId);
         return { ...fact, build: evidence, taskId: task.id };

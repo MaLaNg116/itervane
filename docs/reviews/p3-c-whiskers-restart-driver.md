@@ -21,3 +21,5 @@
 托管检验按 PR 检查记录归档。当前分开验证派发事务与原生挂载材料。将持久化处置、原生批准后派发及独立健康结算接入同一标准应用的工作由后续批次完成。 [托管检查](https://github.com/MaLaNg116/itervane/pull/96/checks)
 
 原生 Whiskers `1075ebe` 的 19 项通过，含真实挂载策略装载和一次审批重启。初版 KVM 在既有诊断的日志读取处失败。分支仍携带只允许容器详情的旧夹具，`c75388a` 同步主线 `9f9d327` 已验收的三项只读名单，重新启动受影响的场景。 [原生报告](https://github.com/MaLaNg116/itervane/actions/runs/45002323151) · [日志失败作业](https://github.com/MaLaNg116/itervane/actions/runs/45002323209/job/137146348881) · [主线夹具修复](https://github.com/MaLaNg116/itervane/commit/9f9d3278a5451a95a6463aa23f9c18a3cf57181d)
+
+合入前复核了实际发送前的策略、写安装和租约复核，首次未发送的结算，以及原生回执未知时的只读接管。浏览器首轮在下载固定中文字体时连接重置，同一版本复跑通过。固定复核版本 `19689b88ed9904fe97b892fa8ddc4cdfa6f96ea0` 的 17 项有效检查通过，已合入 `0a7f7558edad0330389efe743a86cfc2fe5470d5`。 [浏览器复跑](https://github.com/MaLaNg116/itervane/actions/runs/45029883147/attempts/2) · [推送检查](https://github.com/MaLaNg116/itervane/actions/runs/45029877828) · [九项托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45029877838) · [原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/45032129467) · [OCI 输入](https://github.com/MaLaNg116/itervane/actions/runs/45029877855)
