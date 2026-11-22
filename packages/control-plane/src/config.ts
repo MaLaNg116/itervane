@@ -21,6 +21,7 @@ const operationsEnrollmentScopeSchema = z.strictObject({ environmentId: idSchema
 const operationsInstallationSchema = operationsEnrollmentScopeSchema.extend({ readKey: whiskersReadKeySchema });
 export type OperationsEnrollmentScope = Readonly<z.infer<typeof operationsEnrollmentScopeSchema>>;
 export type OperationsInstallation = Readonly<z.infer<typeof operationsInstallationSchema>>;
+export type OperationsWorkflowScope = OperationsEnrollmentScope & Readonly<{ diagnosisProviderSha256?: string }>;
 
 function operationsEnvironment(env: NodeJS.ProcessEnv) {
   return { environmentId: env.ITERVANE_OPERATIONS_ENVIRONMENT_ID, enrollmentSha256: env.ITERVANE_OPERATIONS_ENROLLMENT_SHA256 };

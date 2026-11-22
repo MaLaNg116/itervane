@@ -2,16 +2,16 @@ import { createHash, randomUUID } from 'node:crypto';
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { fromDrizzle } from 'pg-boss';
 import { cancelTaskSchema, resumeTaskSchema, idSchema, listQuerySchema, startOperationsTaskSchema, startTaskSchema, taskDtoSchema, taskEventDtoSchema, translate,
-  eventReasonMessages, retrySourceInspectionReasonSchema, taskEventReasonSchema, type Locale, type MessageKey } from '@itervane/contracts';
+  eventReasonMessages, operationsDiagnosisSections, retrySourceInspectionReasonSchema, sha256Schema, taskEventReasonSchema, type Locale, type MessageKey } from '@itervane/contracts';
 import type { VerifiedIdentity } from '../auth/identity.js';
-import type { OperationsEnrollmentScope } from '../config.js';
+import type { OperationsWorkflowScope } from '../config.js';
 import { queueName, type Database } from '../persistence/database.js';
-import { formalAuditInputs, formalAuditResults, operationsRequests, releaseCandidates, releaseOperations, repositories,
+import { formalAuditInputs, formalAuditResults, operationsDiagnosisInputs, operationsRequests, releaseCandidates, releaseOperations, repositories,
   runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
 import { requireActor, requireProject, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 import { isRepairableAudit } from './formal-repair.js';
-import { freezeOperationsRequest } from './operations-requests.js';
+import { freezeOperationsDiagnosis, freezeOperationsRequest } from './operations-requests.js';
 import { readOperationsObservationTarget } from './operations-targets.js';
 import { appendEvent, enqueue, lockSlot } from '../runtime/authority.js';
 import { blockQueuedRelease } from '../runtime/release-queue.js';
@@ -33,6 +33,7 @@ async function taskView(tx: Transaction, taskId: string) {
 
 type TaskAdmission = Pick<typeof tasks.$inferInsert,
   'projectId' | 'requestedBy' | 'repositoryId' | 'commit' | 'purpose' | 'dataClass' | 'locale' | 'requestKey' | 'requestHash'>;
+type OperationsAdmission = { request: ReturnType<typeof freezeOperationsRequest>; providerSha256: string | undefined };
 
 async function replayAdmission(tx: Transaction, scope: Pick<TaskAdmission, 'projectId' | 'requestedBy' | 'requestKey' | 'requestHash'>) {
   const [existing] = await tx.select({ id: tasks.id, requestHash: tasks.requestHash }).from(tasks)
@@ -45,7 +46,7 @@ async function replayAdmission(tx: Transaction, scope: Pick<TaskAdmission, 'proj
 export class TaskService {
   constructor(private readonly database: Database) {}
 
-  private async insertTask(tx: Transaction, values: TaskAdmission, operations?: ReturnType<typeof freezeOperationsRequest>) {
+  private async insertTask(tx: Transaction, values: TaskAdmission, operations?: OperationsAdmission) {
     const taskId = randomUUID(); const runId = randomUUID();
     const [task] = await tx.insert(tasks).values({ ...values, id: taskId })
       .onConflictDoNothing({ target: [tasks.projectId, tasks.requestedBy, tasks.requestKey] }).returning();
@@ -56,10 +57,17 @@ export class TaskService {
     }
     const run = { id: runId, role: operations ? 'operations' : 'audit' } as const;
     await tx.insert(taskRuns).values({ ...run, taskId, generation: 1 });
-    await tx.insert(runRuntime).values({ runId, taskId, ...(operations ? { maxTools: 2 } : {}) });
+    await tx.insert(runRuntime).values({ runId, taskId, ...(operations ? {
+      maxTools: operations.providerSha256 ? operationsDiagnosisSections.length : 2,
+    } : {}) });
     if (operations) {
-      const { projectId, applicationId, environmentId, releaseOperationId } = operations.document;
-      await tx.insert(operationsRequests).values({ runId, taskId, projectId, applicationId, environmentId, releaseOperationId, ...operations });
+      const { request, providerSha256 } = operations;
+      const { projectId, applicationId, environmentId, releaseOperationId } = request.document;
+      await tx.insert(operationsRequests).values({ runId, taskId, projectId, applicationId, environmentId, releaseOperationId, ...request });
+      if (providerSha256) {
+        const input = freezeOperationsDiagnosis(task, runId, request);
+        await tx.insert(operationsDiagnosisInputs).values({ runId, inputSha256: input.sha256, providerSha256 });
+      }
     }
     await enqueue(tx, this.database, task, runId);
     await tx.insert(taskEvents).values({ taskId, sequence: 1, type: 'task.accepted', state: 'queued', actorId: task.requestedBy });
@@ -85,8 +93,9 @@ export class TaskService {
     });
   }
 
-  async admitOperations(identity: VerifiedIdentity, raw: unknown, installation?: OperationsEnrollmentScope) {
+  async admitOperations(identity: VerifiedIdentity, raw: unknown, installation?: OperationsWorkflowScope) {
     const input = parseInput(startOperationsTaskSchema, raw);
+    const providerSha256 = parseInput(sha256Schema.optional(), installation?.diagnosisProviderSha256);
     const { projectId, environmentId, idempotencyKey, locale, expectedReleaseOperationId } = input;
     // An omitted expectation keeps the request fingerprint of earlier MCP and HTTP submissions.
     const requestHash = createHash('sha256').update(JSON.stringify({
@@ -103,7 +112,8 @@ export class TaskService {
       if (installation && installation.enrollmentSha256 !== target.enrollmentSha256) throw new DomainError('unavailable');
       if (expectedReleaseOperationId && expectedReleaseOperationId !== target.releaseOperationId) throw new DomainError('version_conflict');
       return this.insertTask(tx, { ...scope, repositoryId: target.source.repositoryId, commit: target.source.commit,
-        purpose: translate(locale, 'operations.task.purpose'), dataClass: target.dataClass, locale }, freezeOperationsRequest(target));
+        purpose: translate(locale, 'operations.task.purpose'), dataClass: target.dataClass, locale },
+      { request: freezeOperationsRequest(target), providerSha256 });
     });
   }
 
