@@ -76,7 +76,7 @@
 | 070 | P3-A2-B2-B 持租约执行并记录只读观察 | [#70](https://github.com/MaLaNg116/itervane/pull/70)，基于已合入 #69 的 main | [观察执行导读](p3-a-observation-execution.md) | TypeScript、210 项单元、本机 PostgreSQL 17.12 八项专项、[托管 CI](https://github.com/MaLaNg116/itervane/actions/runs/44967527210)和[原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/44967521367)通过，托管 KVM 运行中 |
 | 071 | P3-A2-B2-C 同一发布容器的原生 Whiskers 观察 | [#71](https://github.com/MaLaNg116/itervane/pull/71)，依赖 #70 | [已发布容器验收导读](p3-a-published-observation-native.md) | TypeScript、210 项单元、宿主脚本语法、[原生 Whiskers 回归](https://github.com/MaLaNg116/itervane/actions/runs/44968006870)及[发布容器接续验收](https://github.com/MaLaNg116/itervane/actions/runs/44968006971/job/137041290751)通过 |
 | 072 | P3-A2-C1/C2 双语诊断回执及 HTTP/MCP 接入 | [#72](https://github.com/MaLaNg116/itervane/pull/72)，依赖 #71 | [接入导读](p3-a-observation-interfaces.md) | TypeScript、211 项单元和四项本机 PostgreSQL 17.12 专项通过 |
-| 待合入 | P3-A2-C3 双语容器观察门户 | 依赖 #72 | [门户导读](p3-a-observation-portal.md) | TypeScript、211 项单元、三项真实 PostgreSQL 专项和 Chrome/Keycloak 浏览器用例通过 |
+| 073 | P3-A2-C3 双语容器观察门户 | [#73](https://github.com/MaLaNg116/itervane/pull/73)，依赖 #72 | [门户导读](p3-a-observation-portal.md) | TypeScript、211 项单元、三项真实 PostgreSQL 专项和 Chrome/Keycloak 浏览器用例通过 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
