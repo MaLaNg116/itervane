@@ -119,7 +119,8 @@ export class OperationsEvidenceStore {
       }
       if (row.fence !== scope.fence || row.workerId !== scope.workerId) throw new ExecutionLost();
       await tx.update(operationsDiagnosisReads).set({
-        state: 'recorded', document: evidence, sha256: fingerprint, recordedAt: sql`clock_timestamp()`,
+        state: 'recorded', document: evidence, sha256: fingerprint,
+        recordedAt: sql`greatest(clock_timestamp(), ${operationsDiagnosisReads.createdAt})`,
       }).where(key);
       return evidence;
     }, signal);
