@@ -9,3 +9,5 @@
 本机 TypeScript、223 项单元、PostgreSQL 17.12 专项十项及迁移一致性通过。专项使用可信脚本模型与固定 Whiskers 协议响应。状态原因提供中英文。 [托管检查](https://github.com/MaLaNg116/itervane/actions/runs/44978105151) · [KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/44978105152)
 
 B3d 接续安装配置、HTTP/MCP 与门户诊断详情，以及原生 Whiskers 和托管容器的端到端验收。P3-C 接续人工确认、处置和恢复验证。
+
+首轮的发布变更场景在启动前遇到 Docker Hub 匿名限流。该任务复跑一直等待托管调度。合并 `2e4b1f6258b57115cc1828d1114f7a0c5c4a0d84` 同步 #86 的固定摘要下载恢复，源码差异只涉及输入下载脚本，随后在同一诊断实现上复跑托管矩阵。 [首轮限流](https://github.com/MaLaNg116/itervane/actions/runs/44978105152/job/137072414244) · [镜像恢复](runner-pinned-base-mirror.md)
