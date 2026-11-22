@@ -9,6 +9,12 @@ export type Actor = { principalId: string } & (
   { workspaceId: string; workspaceGrantId: string } | { workspaceId: null; workspaceGrantId: null }
 );
 
+export function isHumanWorkspaceOwner(identity: VerifiedIdentity, actor: Actor, workspaceId: string, clientId?: string):
+  actor is Actor & { workspaceGrantId: string } {
+  return !!clientId && clientId !== 'signed-access-token' && identity.clientId === clientId
+    && actor.workspaceId === workspaceId && actor.workspaceGrantId !== null;
+}
+
 export async function requireActor(tx: Transaction, identity: VerifiedIdentity): Promise<Actor> {
   assertVerifiedIdentity(identity);
   const [principal] = await tx.select().from(principals)
