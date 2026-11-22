@@ -11,7 +11,7 @@ export class NativeBrowserFailure extends Error {
   }
 }
 
-export async function signIn(page: Page, password: string) {
+export async function signIn(page: Page, password: string, email = adminEmail) {
   let verification: string;
   try {
     await page.goto(whiskersOrigin + '/set-culture?culture=en&redirect=/login', { waitUntil: 'domcontentloaded' });
@@ -22,11 +22,11 @@ export async function signIn(page: Page, password: string) {
   try {
     response = await page.request.post(whiskersOrigin + '/login-local', {
       maxRedirects: 0,
-      form: { email: adminEmail, password, __RequestVerificationToken: verification },
+      form: { email, password, __RequestVerificationToken: verification },
     });
   } catch { throw new NativeBrowserFailure('login-submit'); }
-  // The native form request shares the browser's cookie jar. The Admin-only
-  // settings panel below is the positive proof that login was accepted.
+  // The native form request shares the browser's cookie jar. The caller
+  // verifies the effective role on a protected page after the redirect.
   if (response.status() === 200) return;
   const location = response.headers().location;
   const destination = location ? new URL(location, whiskersOrigin) : undefined;
@@ -70,7 +70,7 @@ export async function createMcpKey(page: Page, name: string, access: KeyLevel) {
   return key;
 }
 
-export async function approveRestart(page: Page, containerId: string) {
+export async function approveRestart(page: Page, containerId: string, email = adminEmail) {
   await page.goto(whiskersOrigin + '/approvals', { waitUntil: 'domcontentloaded' });
   const card = page.locator('.mud-paper.pa-4').filter({ hasText: 'local / ' + containerId }).filter({
     has: page.getByRole('button', { name: 'Approve', exact: true }),
@@ -86,7 +86,7 @@ export async function approveRestart(page: Page, containerId: string) {
     throw new Error('Native approval does not match the fixed request');
   }
   await card.getByRole('button', { name: 'Approve', exact: true }).click();
-  const decided = page.getByRole('row').filter({ hasText: restartTool }).filter({ hasText: adminEmail });
+  const decided = page.getByRole('row').filter({ hasText: restartTool }).filter({ hasText: email });
   await expect(decided.getByText('Approved', { exact: true })).toBeVisible();
 }
 

@@ -6,6 +6,9 @@ const key = 'b'.repeat(64);
 const id = 'c'.repeat(32);
 const server = { name: 'whiskers', version: '0.15.0' };
 const tool = { name: 'restart_container', arguments: { containerId: binding.containerId, serverId: binding.serverId } };
+const scopeUri = 'whiskers://me/permissions';
+const oneToolScope = '# My Whiskers permissions\n- Caller: API key "worker"\n- Scope: explicit tool list\n'
+  + '- Native guardrails also apply.\n\n## Tools I may call (1)\n\n- `restart_container`\n';
 const text = (value: string, isError = false) => ({ isError, content: [{ type: 'text', text: value }] });
 const raised = (approval: string) => text("Human approval required: 'restart_container' (write) requires confirmation. Approval "
   + approval + ' was raised (Whiskers → Approvals). After it is approved, repeat this exact call within 10 minutes; it then runs once.', true);
@@ -14,6 +17,7 @@ const acknowledged = text('Container demo restarted.');
 const authority = vi.fn(async () => {});
 const calls: unknown[] = [];
 let remote: typeof server;
+let scope: string;
 let toolResponse: () => unknown;
 
 const fetchMcp = vi.fn<typeof fetch>(async (input, init) => {
@@ -25,7 +29,11 @@ const fetchMcp = vi.fn<typeof fetch>(async (input, init) => {
   const message = JSON.parse(String(init?.body));
   if (message.method === 'notifications/initialized') return new Response(null, { status: 202 });
   if (message.method === 'initialize') return Response.json({ jsonrpc: '2.0', id: message.id,
-    result: { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: remote } });
+    result: { protocolVersion: message.params.protocolVersion, capabilities: { tools: {}, resources: {} }, serverInfo: remote } });
+  if (message.method === 'resources/read') {
+    expect(message.params.uri).toBe(scopeUri);
+    return Response.json({ jsonrpc: '2.0', id: message.id, result: { contents: [{ uri: scopeUri, text: scope }] } });
+  }
   expect(message.method).toBe('tools/call');
   calls.push(message.params);
   return Response.json({ jsonrpc: '2.0', id: message.id, result: toolResponse() });
@@ -36,6 +44,7 @@ beforeEach(() => {
   authority.mockReset().mockResolvedValue(undefined);
   calls.length = 0;
   remote = server;
+  scope = oneToolScope;
   toolResponse = () => raised(id);
   vi.stubGlobal('fetch', fetchMcp);
 });
@@ -83,6 +92,17 @@ it('fails before sending if identity changes on handshake or authorization is wi
   remote = server;
   authority.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('revoked'));
   await expect(restart.resume(id, authority)).rejects.toThrow('revoked');
+  expect(calls).toHaveLength(0);
+});
+
+it.each([
+  'The presented API key is not valid.',
+  oneToolScope.replace('(1)', '(2)') + '- `get_container_details`\n',
+  oneToolScope.replace('explicit tool list', 'write'),
+])('refuses missing or broader write credentials before authorizing a tool call', async response => {
+  scope = response;
+  await expect(new WhiskersRestartClient(binding, key).requestApproval(authority)).rejects.toMatchObject({ reason: 'binding' });
+  expect(authority.mock.calls).toEqual([['connect', { kind: 'request' }, binding]]);
   expect(calls).toHaveLength(0);
 });
 

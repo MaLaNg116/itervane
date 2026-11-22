@@ -1,17 +1,19 @@
 import { randomBytes } from 'node:crypto';
 import { setTimeout as wait } from 'node:timers/promises';
-import { chromium, type Browser } from '@playwright/test';
+import { chromium, expect, type Browser } from '@playwright/test';
 import { localeSchema, type Check } from '@itervane/contracts';
 import { WhiskersObservationClient, WhiskersObservationError } from '../../../control-plane/src/runtime/whiskers-observation.js';
-import { WhiskersRestartClient } from '../../../control-plane/src/runtime/whiskers-restart.js';
+import { WhiskersRestartClient, WhiskersRestartError } from '../../../control-plane/src/runtime/whiskers-restart.js';
 import { confirmationId, toolText, WhiskersProbeClient, whiskersOrigin, whiskersVersion } from '../../../verification/src/native/whiskers.js';
 import { executeProbe, report } from '../../../verification/src/report.js';
-import { eligibleHost, WhiskersFixture } from './whiskers-fixture.js';
-import { approveRestart, createMcpKey, NativeBrowserFailure, observeRestartAudit, openPermissions, selectKeyLevel, signIn } from './whiskers-ui.js';
+import { eligibleHost, operatorEmail, WhiskersFixture } from './whiskers-fixture.js';
+import { approveRestart, NativeBrowserFailure, observeRestartAudit, signIn } from './whiskers-ui.js';
 
 const messages = {
   host: ['Use an isolated GitHub-hosted Linux test machine.', '需要独立的 GitHub 托管 Linux 测试机。'],
   observe: ['The authenticated MCP observation matched the running fixture.', '已认证的 MCP 观察与实际样例一致。'],
+  'operator-policy': ['The native Operator could open Approvals. Guardrail management required an Admin.', '原生 Operator 可进入审批界面，护栏配置仅对管理员开放。'],
+  'scoped-writer': ['The restart adapter rejected the broader Write key before requesting an action.', '重启适配器在申请操作前拒绝了超出单工具范围的写凭证。'],
   pending: ['The first restart request entered native approval and left the actual fixture unchanged.', '首次重启请求进入原生审批，样例运行状态未变化。'],
   approved: ['The browser approver confirmed the exact request. The fixture still awaited execution.', '浏览器身份确认了原请求，样例仍等待执行。'],
   binding: ['Changing either the caller or the target required a separate native approval.', '更换调用身份或目标均要求新的原生审批。'],
@@ -85,37 +87,40 @@ async function run() {
     page.setDefaultTimeout(14_000);
     await page.route('**/*', route => new URL(route.request().url()).origin === whiskersOrigin ? route.continue() : route.abort());
     step = 'browser-login';
-    await signIn(page, fixture.adminPassword);
+    await signIn(page, fixture.operatorPassword, operatorEmail);
 
-    step = 'native-key-settings';
-    await openPermissions(page);
-    step = 'native-key-level';
-    await selectKeyLevel(page, 'Write');
-    step = 'primary-key';
-    const primaryKey = 'itervane-probe-primary';
-    const key = await createMcpKey(page, primaryKey, 'Write');
-    step = 'alternate-key';
-    const alternateKey = await createMcpKey(page, 'itervane-probe-alternate', 'Write');
-    step = 'observer-key';
-    await selectKeyLevel(page, 'Read');
-    const readKey = await createMcpKey(page, 'itervane-probe-observe', 'Read');
-    requireProof(new Set([key, alternateKey, readKey]).size === 3);
+    step = 'operator-policy';
+    await page.goto(whiskersOrigin + '/guardrails', { waitUntil: 'domcontentloaded' });
+    await expect(page.getByText('Only admins can change the guardrails.', { exact: true })).toBeVisible();
+    await page.goto(whiskersOrigin + '/approvals', { waitUntil: 'domcontentloaded' });
+    await expect(page.getByRole('heading', { name: 'Approvals', exact: true })).toBeVisible();
+    record('operator-policy');
 
+    const { primary: key, alternate: alternateKey, broad } = fixture.writers;
+    const { readKey } = fixture;
     step = 'native-mcp-connect';
     const client = await connect(key);
     const alternateClient = await connect(alternateKey);
+    step = 'native-permissions-resource';
+    console.log('Whiskers scope metadata ' + JSON.stringify(await client.restartScopeFacts()));
     step = 'mcp-observe';
-    const observed = await client.observe(a.id);
+    const observed = await (await connect(readKey)).observe(a.id);
     const observedText = toolText(observed);
     requireProof(!observed.isError && observedText?.includes('ID: ' + a.id) && observedText.includes('State: running'));
     record('observe', ' Whiskers ' + whiskersVersion + '.');
 
-    const restart = new WhiskersRestartClient({ origin: whiskersOrigin, serverId: 'local', containerId: a.id }, key);
+    const target = { origin: whiskersOrigin, serverId: 'local', containerId: a.id };
+    const restart = new WhiskersRestartClient(target, key);
     let allowedApproval: string | undefined;
     const authorizeRestart: Parameters<WhiskersRestartClient['requestApproval']>[0] = async (_phase, attempt, target) => {
       requireProof(target.origin === whiskersOrigin && target.serverId === 'local' && target.containerId === a.id
         && (attempt.kind !== 'resume' || attempt.approvalId === allowedApproval));
     };
+    step = 'scoped-writer';
+    await expect(new WhiskersRestartClient(target, broad).requestApproval(authorizeRestart)).rejects.toMatchObject({ reason: 'binding' });
+    requireProof(await unchanged());
+    record('scoped-writer');
+
     step = 'pending-confirmation';
     const request = await restart.requestApproval(authorizeRestart);
     requireProof(request.status === 'awaiting_approval' && await unchanged());
@@ -125,7 +130,7 @@ async function run() {
     record('pending', ' Approval=' + id + '.');
 
     step = 'browser-approval';
-    await approveRestart(page, a.id);
+    await approveRestart(page, a.id, operatorEmail);
     requireProof(await unchanged());
     record('approved', ' Approval=' + id + '.');
 
@@ -155,7 +160,7 @@ async function run() {
     record('consumed', ' Approval=' + replay.approvalId + '.');
 
     step = 'native-restart-audit';
-    await observeRestartAudit(page, fixture.primary, primaryKey);
+    await observeRestartAudit(page, fixture.primary, fixture.primaryWriter);
     record('audit');
 
     const nativeObserver = (containerId: string) => new WhiskersObservationClient({ origin: whiskersOrigin, serverId: 'local', containerId }, readKey);
@@ -211,7 +216,7 @@ async function run() {
     }
     const location = error instanceof NativeBrowserFailure
       ? step + ' (' + error.reason + (error.outcome ? ', ' + error.outcome : '') + ')'
-      : error instanceof WhiskersObservationError ? step + ' (' + error.reason + ')' : step;
+      : error instanceof WhiskersObservationError || error instanceof WhiskersRestartError ? step + ' (' + error.reason + ')' : step;
     checks.push({ id: 'native-verification', status: 'failed', detail: messages.stopped[language] + ' ' + location + '.' });
   } finally {
     await Promise.allSettled([...clients].map(client => client.close()));
