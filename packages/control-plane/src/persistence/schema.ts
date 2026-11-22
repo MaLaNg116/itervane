@@ -5,7 +5,7 @@ import {
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairInput, type FormalRepairResult, type FormalRepairRetry,
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
   type OperationsDiagnosisObservation, type OperationsDiagnosisReceipt, type OperationsDiagnosisSection,
-  type OperationsObservationReceipt, type OperationsRequestBinding,
+  type OperationsObservationReceipt, type OperationsProposal, type OperationsRequestBinding,
   type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt,
   type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
@@ -551,6 +551,22 @@ export const operationsDiagnosisResults = domain.table('operations_diagnosis_res
   AND ${t.document}->>'version' = '1' AND ${t.document}->>'runId' = ${t.runId}::text AND ${t.document}->>'fence' = ${t.fence}::text
   AND ${t.document}->>'checkpointId' = ${t.checkpointId} AND ${t.document}->>'observationSha256' ~ '^[a-f0-9]{64}$'
   AND octet_length(${t.document}::text) <= 8192) IS TRUE`)]);
+
+export const operationsProposals = domain.table('operations_proposals', {
+  id: uuid('id').primaryKey(), diagnosisRunId: uuid('diagnosis_run_id').notNull().references(() => operationsDiagnosisResults.runId),
+  environmentId: uuid('environment_id').notNull().references(() => environments.id),
+  proposedBy: uuid('proposed_by').notNull().references(() => principals.id), grantId: uuid('grant_id').notNull(),
+  fingerprint: text('fingerprint').notNull(), document: jsonb('document').$type<OperationsProposal>().notNull(),
+  createdAt: createdAt(), validUntil: timestamp('valid_until', { withTimezone: true }).notNull(),
+}, t => [
+  unique('operations_proposal_per_diagnosis').on(t.diagnosisRunId),
+  check('operations_proposal_binding', sql`(${t.createdAt} < ${t.validUntil} AND ${t.fingerprint} ~ '^[a-f0-9]{64}$'
+    AND ${t.document}->>'version' = '1' AND ${t.document}#>>'{diagnosis,runId}' = ${t.diagnosisRunId}::text
+    AND ${t.document}#>>'{target,environmentId}' = ${t.environmentId}::text
+    AND ${t.document}->>'proposedBy' = ${t.proposedBy}::text AND ${t.document}->>'grantId' = ${t.grantId}::text
+    AND ${t.document}#>>'{action,kind}' IN ('restart', 'rollback')
+    AND ${t.document}->>'targetProofSha256' ~ '^[a-f0-9]{64}$' AND octet_length(${t.document}::text) <= 8192) IS TRUE`),
+]);
 
 export const formalReleaseSteps = domain.table('formal_release_steps', {
   operationId: uuid('operation_id').notNull().references(() => releaseOperations.id),
