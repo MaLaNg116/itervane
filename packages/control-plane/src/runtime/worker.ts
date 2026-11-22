@@ -85,7 +85,7 @@ export class DurableWorker {
     if (this.closing) return false;
     const [job] = await this.database.boss.fetch(queueName);
     if (!job) return false;
-    const scope = await this.coordinator.claim(job, this.id, this.#operations?.environmentId ?? null);
+    const scope = await this.coordinator.claim(job, this.id, this.#operations);
     if (scope && !this.closing) await this.execute(scope);
     return true;
   }

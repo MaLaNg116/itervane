@@ -288,6 +288,13 @@
       "when": 1795307571453,
       "tag": "0040_operations_observations",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1795313922737,
+      "tag": "0041_operations_diagnosis",
+      "breakpoints": true
     }
   ]
 }

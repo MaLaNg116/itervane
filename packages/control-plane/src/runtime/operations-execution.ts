@@ -1,7 +1,7 @@
 import { operationsObservationReceiptSchema, type TaskEventReason } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { eq } from 'drizzle-orm';
-import type { OperationsInstallation } from '../config.js';
+import type { OperationsEnrollmentScope, OperationsInstallation } from '../config.js';
 import { operationsObservations, runRuntime } from '../persistence/schema.js';
 import { requireStoredActor, type Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
@@ -17,8 +17,8 @@ export class OperationsExecutionError extends Error {
   constructor(readonly reason: Failure) { super(reason); this.name = 'OperationsExecutionError'; }
 }
 
-async function requireCurrentTarget(tx: Transaction, task: TaskRow,
-  request: Awaited<ReturnType<typeof readOperationsRequest>> | undefined, installed: OperationsInstallation) {
+export async function requireCurrentOperationsTarget(tx: Transaction, task: TaskRow,
+  request: Awaited<ReturnType<typeof readOperationsRequest>> | undefined, installed: OperationsEnrollmentScope) {
   if (!request) throw new OperationsExecutionError('operations_unavailable');
   const { document } = request;
   if (document.environmentId !== installed.environmentId || document.enrollmentSha256 !== installed.enrollmentSha256) {
@@ -40,13 +40,13 @@ export async function runOperationsObservation(coordinator: ExecutionCoordinator
   installed: OperationsInstallation, signal: AbortSignal) {
   signal.throwIfAborted();
   const target = await coordinator.withLease(scope, async (tx, current) => {
-    const target = await requireCurrentTarget(tx, current.task, current.operationsRequest, installed);
+    const target = await requireCurrentOperationsTarget(tx, current.task, current.operationsRequest, installed);
     if (current.runtime.toolsUsed >= current.runtime.maxTools) throw new BudgetExhausted();
     await tx.update(runRuntime).set({ toolsUsed: current.runtime.toolsUsed + 1 }).where(eq(runRuntime.runId, scope.runId));
     return target;
   });
   const authorize = async () => {
-    await coordinator.withLease(scope, (tx, current) => requireCurrentTarget(tx, current.task, current.operationsRequest, installed));
+    await coordinator.withLease(scope, (tx, current) => requireCurrentOperationsTarget(tx, current.task, current.operationsRequest, installed));
   };
   const observer = new WhiskersObservationClient({ ...target.whiskers, containerId: target.containerId }, installed.readKey);
   const observation = await observer.observe(authorize, signal).catch(error => {
@@ -57,7 +57,7 @@ export async function runOperationsObservation(coordinator: ExecutionCoordinator
   });
   signal.throwIfAborted();
   await coordinator.withLease(scope, async (tx, current) => {
-    const checked = await requireCurrentTarget(tx, current.task, current.operationsRequest, installed);
+    const checked = await requireCurrentOperationsTarget(tx, current.task, current.operationsRequest, installed);
     signal.throwIfAborted();
     if (observation.containerId !== checked.containerId || observation.serverId !== checked.whiskers.serverId) {
       throw new OperationsExecutionError('operations_invalid_observation');

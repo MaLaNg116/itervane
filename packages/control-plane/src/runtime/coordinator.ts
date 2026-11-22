@@ -1,29 +1,31 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { fromDrizzle, type Job } from 'pg-boss';
 import { idSchema, komodoReleasePhases, wakeupSchema, type SourceInspectionPauseReason, type TaskEventReason } from '@itervane/contracts';
+import type { OperationsWorkflowScope } from '../config.js';
 import { queueName, type Database } from '../persistence/database.js';
 import { formalRepairRetries, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { requireProjectAccess, requireStoredActor, type Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
-import { readOperationsRequest } from '../service/operations-requests.js';
+import { readOperationsDiagnosis, readOperationsRequest } from '../service/operations-requests.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, enqueue, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope, type TaskRow } from './authority.js';
 import { recoverClaimedRelease, recoverKomodoLease, recoverRegistryLease } from './release-queue.js';
 
 type Current = { task: TaskRow; run: typeof taskRuns.$inferSelect; runtime: typeof runRuntime.$inferSelect;
-  operationsRequest: Awaited<ReturnType<typeof readOperationsRequest>> | undefined };
+  operationsRequest: Awaited<ReturnType<typeof readOperationsRequest>> | undefined;
+  operationsDiagnosis: Awaited<ReturnType<typeof readOperationsDiagnosis>> };
 
 export async function authorizeRun(tx: Transaction, task: TaskRow, runId: string, role?: Current['run']['role']) {
   const access = await requireProjectAccess(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
   if (role === 'operations') {
     const operationsRequest = await readOperationsRequest(tx, task, runId);
     if (operationsRequest.document.grantId !== access.grantId) throw new DomainError('forbidden');
-    return { ...access, operationsRequest };
+    return { ...access, operationsRequest, operationsDiagnosis: await readOperationsDiagnosis(tx, task, runId, operationsRequest) };
   } else if (task.generation !== 1) {
     const [retry] = await tx.select({ grantId: formalRepairRetries.grantId }).from(formalRepairRetries).where(eq(formalRepairRetries.runId, runId));
     if (retry && retry.grantId !== access.grantId) throw new DomainError('forbidden');
   }
-  return { ...access, operationsRequest: undefined };
+  return { ...access, operationsRequest: undefined, operationsDiagnosis: undefined };
 }
 
 export class ExecutionCoordinator {
@@ -38,7 +40,8 @@ export class ExecutionCoordinator {
       const { slot, task, run, runtime } = await lockExecution(tx, scope, options.allowCancel);
       if (runtime.reason?.startsWith('release_')) throw new ExecutionLost();
       const access = options.authorize === false ? undefined : await authorizeRun(tx, task, scope.runId, run.role);
-      const result = await action(tx, { task, run, runtime, operationsRequest: access?.operationsRequest });
+      const result = await action(tx, { task, run, runtime, operationsRequest: access?.operationsRequest,
+        operationsDiagnosis: access?.operationsDiagnosis });
       await assertLeaseLive(tx, slot.leaseUntil);
       return result;
     });
@@ -66,7 +69,7 @@ export class ExecutionCoordinator {
     await clearSlot(tx);
   }
 
-  async claim(job: Job<unknown>, workerId: string, operationsEnvironmentId: string | null = null): Promise<ExecutionScope | null> {
+  async claim(job: Job<unknown>, workerId: string, operations?: OperationsWorkflowScope): Promise<ExecutionScope | null> {
     idSchema.parse(workerId);
     const parsed = wakeupSchema.safeParse(job.data);
     return this.database.db.transaction(async tx => {
@@ -92,7 +95,9 @@ export class ExecutionCoordinator {
           reason: error.code === 'unsupported_state' && run.role === 'operations' ? 'operations_unavailable' : 'permission_revoked' });
         await settle(); return null;
       }
-      if (access.operationsRequest && access.operationsRequest.document.environmentId !== operationsEnvironmentId) {
+      if (access.operationsRequest && (access.operationsRequest.document.environmentId !== operations?.environmentId
+        || (access.operationsDiagnosis && (access.operationsDiagnosis.providerSha256 !== operations.diagnosisProviderSha256
+          || access.operationsRequest.document.enrollmentSha256 !== operations.enrollmentSha256)))) {
         await settle(); await enqueue(tx, this.database, task, run.id, true); return null;
       }
       const completed = await settle();
