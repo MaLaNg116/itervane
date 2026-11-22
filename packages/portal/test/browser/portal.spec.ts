@@ -499,7 +499,7 @@ async function expectMotionCsp(page: Page) {
   expect((await motionProbe(page)).csp).toEqual([]);
 }
 
-test('observes the visible release with bilingual evidence, scoped retry and live project permissions', async ({ page, stack }) => {
+test('diagnoses the visible release with bilingual evidence, scoped retry and live project permissions', async ({ page, stack }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await observeMotion(page, stack.origin);
   const project = await seedProject(stack, true);
@@ -519,7 +519,14 @@ test('observes the visible release with bilingual evidence, scoped retry and liv
   const queued = taskDtoSchema.parse({ ...persisted, workflow: 'operations', state: 'queued', purpose: 'Diagnose the published application' });
   const { candidate, target } = frozenReleaseFixture(delivery);
   const releaseOperationId = randomUUID();
-  const receiptSha256 = createHash('sha256').update('recorded container state').digest('hex');
+  const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+  const receiptSha256 = hash('recorded container state');
+  const diagnosisDigest = hash('recorded operations diagnosis');
+  const containerEvidenceId = hash('diagnostic container fact');
+  const releaseEvidenceId = hash('diagnostic release fact');
+  const logsEvidenceId = hash('diagnostic log fact');
+  const metricsEvidenceId = hash('diagnostic metrics fact');
+  const logDigest = hash('normalized log evidence');
   const observedAt = new Date().toISOString();
   let observed = false;
   let availableOperation = randomUUID();
@@ -558,7 +565,25 @@ test('observes the visible release with bilingual evidence, scoped retry and liv
       version: 1, taskId: current.id, runId: current.runId, taskVersion: current.version, state: current.state,
       applicationId: target.applicationId, environmentId: target.environmentId, releaseOperationId,
       observation: observed ? { state: 'exited', stateLabel: translate(locale, 'operations.container.exited'), observedAt, receiptSha256 } : null,
-      locale, message: translate(locale, observed ? 'task.operations_observed' : 'state.queued'), reason: null, reasonMessage: null,
+      ...(observed ? { diagnosis: {
+        receiptSha256: diagnosisDigest, previousReleaseOperationId: null,
+        hypotheses: [{ code: 'application_error', evidenceIds: [logsEvidenceId],
+          message: locale === 'zh-CN' ? '采样日志包含应用错误。' : 'The sampled logs contain application errors.' }],
+        recommendation: { code: 'investigate_code', evidenceIds: [logsEvidenceId, releaseEvidenceId],
+          message: locale === 'zh-CN' ? '调查相关代码。' : 'Investigate the associated code.' },
+        facts: [
+          { section: 'container', evidenceId: containerEvidenceId, proofSha256: hash('normalized state'), result: { state: 'exited', observedAt } },
+          { section: 'release', evidenceId: releaseEvidenceId, proofSha256: hash('verified release history'),
+            result: { current: { operationId: releaseOperationId, manifestDigest: candidate.manifest.image.manifestDigest, verifiedAt: observedAt }, previous: null } },
+          { section: 'logs', evidenceId: logsEvidenceId, proofSha256: logDigest,
+            result: { observedAt, tailLines: 40, lines: 8, warningLines: 1, errorLines: 2 } },
+          { section: 'metrics', evidenceId: metricsEvidenceId, proofSha256: hash('collected metrics'),
+            result: { observedAt, period: '1h', status: 'observed', dataPoints: 3,
+              cpu: { minimum: 1, average: 10, maximum: 25 }, memory: { minimum: 45, average: 92, maximum: 98 } } },
+        ],
+      } } : {}),
+      locale, message: translate(locale, observed ? 'task.operations_observed' : 'state.queued'), reason: observed ? 'operations_diagnosed' : null,
+      reasonMessage: observed ? translate(locale, 'reason.operations_diagnosed') : null,
     }) });
   });
   const submissions: unknown[] = [];
@@ -595,13 +620,22 @@ test('observes the visible release with bilingual evidence, scoped retry and liv
   await expect(panel.getByText('已退出', { exact: true })).toBeVisible();
   await expect.poll(async () => (await motionProbe(page)).state).toBeGreaterThan(inProgressMotion.state);
   await expect(panel.locator('time')).toHaveAttribute('datetime', observedAt);
+  const diagnosis = panel.getByTestId('operations-diagnosis');
+  await expect(panel.getByRole('heading', { name: '运维诊断' })).toBeVisible();
+  await expect(diagnosis.getByText('调查相关代码。', { exact: true })).toBeVisible();
+  await expect(diagnosis.getByRole('list', { name: '引用证据' }).first().getByRole('listitem')).toHaveText(['日志信号', '已核验发布']);
+  await expect(diagnosis.getByText(logDigest, { exact: true })).toBeHidden();
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const beforeDisclosure = await motionProbe(page);
-  await panel.locator('summary').filter({ hasText: '观察证据' }).press('Enter');
+  await diagnosis.locator('summary').filter({ hasText: '诊断证据' }).press('Enter');
   await expect(panel.getByText(receiptSha256, { exact: true })).toBeVisible();
+  await expect(diagnosis.getByText(diagnosisDigest, { exact: true })).toBeVisible();
+  await expect(diagnosis.getByText(logDigest, { exact: true })).toBeVisible();
+  await expect(diagnosis.getByText('92%', { exact: true })).toBeVisible();
   expect((await motionProbe(page)).disclosures).toBe(beforeDisclosure.disclosures);
   await language(page, 'en');
   await expect(panel.getByText('Exited', { exact: true })).toBeVisible();
+  await expect(diagnosis.getByText('Investigate the associated code.', { exact: true })).toBeVisible();
 
   await page.goto(sourcePage);
   try {
