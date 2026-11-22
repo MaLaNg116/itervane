@@ -582,6 +582,26 @@ export const operationsDecisions = domain.table('operations_decisions', {
   check('operations_decision_self_confirmed', sql`NOT ${t.selfConfirmed} OR ${t.action} = 'confirm'`),
 ]);
 
+export const operationsExecutions = domain.table('operations_executions', {
+  id: uuid('id').primaryKey(),
+  proposalId: uuid('proposal_id').notNull().references(() => operationsProposals.id),
+  proposalFingerprint: text('proposal_fingerprint').notNull(),
+  environmentId: uuid('environment_id').notNull().references(() => environments.id),
+  decisionVersion: integer('decision_version').notNull(),
+  state: text('state').$type<'reserved' | 'blocked'>().notNull(),
+  createdAt: createdAt(),
+  closedAt: timestamp('closed_at', { withTimezone: true }),
+  blockedReason: text('blocked_reason').$type<'approval_revoked' | 'proposal_expired'>(),
+}, t => [
+  unique('operations_execution_per_proposal').on(t.proposalId),
+  uniqueIndex('operations_execution_environment_hold').on(t.environmentId).where(sql`${t.state} = 'reserved'`),
+  foreignKey({ name: 'operations_execution_decision_fk', columns: [t.proposalId, t.decisionVersion],
+    foreignColumns: [operationsDecisions.proposalId, operationsDecisions.version] }),
+  check('operations_execution_binding', sql`${t.decisionVersion} = 1 AND ${t.proposalFingerprint} ~ '^[a-f0-9]{64}$'`),
+  check('operations_execution_lifecycle', sql`((${t.state} = 'reserved' AND ${t.closedAt} IS NULL AND ${t.blockedReason} IS NULL)
+    OR (${t.state} = 'blocked' AND ${t.closedAt} >= ${t.createdAt} AND ${t.blockedReason} IN ('approval_revoked', 'proposal_expired'))) IS TRUE`),
+]);
+
 export const formalReleaseSteps = domain.table('formal_release_steps', {
   operationId: uuid('operation_id').notNull().references(() => releaseOperations.id),
   kind: text('kind').$type<'archive' | 'registry' | 'komodo_config' | 'komodo_dispatch'>().notNull(),

@@ -29,7 +29,7 @@ import { formalReleaseQueue, queueName } from '../../src/persistence/database.js
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
   operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
-  operationsDiagnosisRuntime, operationsObservations, operationsProposals, operationsRequests,
+  operationsDiagnosisRuntime, operationsExecutions, operationsObservations, operationsProposals, operationsRequests,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskEvents, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
@@ -66,6 +66,7 @@ import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { FormalReleaseService } from '../../src/service/formal-release.js';
 import { readOperationsDeployment } from '../../src/service/operations-deployment.js';
 import { OperationsDecisionService } from '../../src/service/operations-decisions.js';
+import { OperationsExecutionAdmission } from '../../src/service/operations-execution-admission.js';
 import { OperationsObservationViewService } from '../../src/service/operations-observation-view.js';
 import { OperationsProposalService, readOperationsProposal } from '../../src/service/operations-proposals.js';
 import { freezeOperationsRequest, readOperationsDiagnosis, readOperationsRequest } from '../../src/service/operations-requests.js';
@@ -94,9 +95,10 @@ const clearRepairHandoff = () => database.admin.query(
   + 'itervane.formal_repair_results, itervane.formal_repair_attempts, '
   + 'itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs',
 );
-beforeAll(async () => { database = await databaseFixture(); issuer = await identityFixture(); identity = await createIdentityVerifier(issuer.config)(await issuer.token()); });
+beforeAll(async () => { database = await databaseFixture(); issuer = await identityFixture(); });
 beforeEach(async () => {
   await database.reset(); await bootstrapOwner(database.storage, { issuer: issuer.config.issuer, subject: 'owner' });
+  identity = await createIdentityVerifier(issuer.config)(await issuer.token());
   const resources = new ResourceService(database.storage); const project = await resources.createProject(identity, { name: 'Inspection', slug: 'inspection' });
   const repository = await resources.registerRepository(identity, project.id, { name: 'Source', url: origin });
   task = (await new TaskService(database.storage).admit(identity, { projectId: project.id, source: { repositoryId: repository.id, commit: 'f'.repeat(40) },
@@ -1313,7 +1315,7 @@ const rolloutCheckFixture = {
     clientId: 'demo-probe', subject: 'expected-probe-service-account' },
 } as const;
 
-async function queuedFormalRelease(options: {
+async function preparedFormalRelease(options: {
   separateRequester?: boolean; expiring?: boolean; komodo?: boolean; rolloutCheck?: boolean; existingTarget?: FormalReleaseTarget;
   imageVariant?: string;
 } = {}) {
@@ -1373,11 +1375,19 @@ async function queuedFormalRelease(options: {
     await adjustFixtureVerification("UPDATE itervane.formal_verification_results SET created_at=clock_timestamp()-interval '57 seconds'");
   }
   const frozen = (await service.freeze(requester, task.id, { environmentId: target.environmentId, expectedVersion: verified.version }, 'zh-CN')).candidate;
-  const approval = (await service.decide(owner, frozen.id, {
-    action: 'confirm', fingerprint: frozen.fingerprint, expectedVersion: 0, idempotencyKey: randomUUID(),
-  }, 'zh-CN')).candidate;
-  if (!approval.operationId) throw new Error('Expected formal release operation');
-  return { approval, operationId: approval.operationId, target, owner, service, taskService };
+  const releaseTarget = target;
+  async function confirm() {
+    const approval = (await service.decide(owner, frozen.id, {
+      action: 'confirm', fingerprint: frozen.fingerprint, expectedVersion: 0, idempotencyKey: randomUUID(),
+    }, 'zh-CN')).candidate;
+    if (!approval.operationId) throw new Error('Expected formal release operation');
+    return { approval, operationId: approval.operationId, target: releaseTarget, owner, service, taskService };
+  }
+  return { confirm, candidateId: frozen.id };
+}
+
+async function queuedFormalRelease(options?: Parameters<typeof preparedFormalRelease>[0]) {
+  return (await preparedFormalRelease(options)).confirm();
 }
 
 async function fetchFormalWakeup() {
@@ -2769,7 +2779,7 @@ it('freezes only the exact previously verified image cited by a rollback diagnos
     dataClass: 'synthetic', locale: 'zh-CN', idempotencyKey: randomUUID() })).task;
   const next = await queuedFormalRelease({ existingTarget: first.target, imageVariant: 'second verified release' });
   const { runtime, image } = await finishTestRollout(await parkForRollout(next, true, 'd'.repeat(24)));
-  const { diagnosis, task: diagnosed, service } = await settleProposalDiagnosis('rollback', { ...first, ...next, runtime, image });
+  const { diagnosis, installed, task: diagnosed, service } = await settleProposalDiagnosis('rollback', { ...first, ...next, runtime, image });
   const input = { diagnosisSha256: diagnosis.sha256 };
   const { proposal } = await service.freeze(identity, diagnosed.id, input);
   expect(readOperationsProposal(proposal)).toMatchObject({
@@ -2778,6 +2788,13 @@ it('freezes only the exact previously verified image cited by a rollback diagnos
       configDigest: first.image.configDigest, proofSha256: expect.stringMatching(/^[a-f0-9]{64}$/) } },
   });
   expect(first.image.manifestDigest).not.toBe(image.manifestDigest);
+  await new OperationsDecisionService(database.storage, installed, operationsPortal).decide(await decisionIdentity(), proposal.id, {
+    action: 'confirm', expectedVersion: 0, fingerprint: proposal.fingerprint, idempotencyKey: randomUUID(),
+  });
+  const { execution } = await new OperationsExecutionAdmission(database.storage, installed).reserve({
+    proposalId: proposal.id, fingerprint: proposal.fingerprint, decisionVersion: 1,
+  });
+  expect(execution).toMatchObject({ proposalId: proposal.id, proposalFingerprint: proposal.fingerprint, state: 'reserved' });
   expect(await database.storage.db.select().from(releaseOperations)).toHaveLength(2);
 });
 
@@ -2807,6 +2824,136 @@ it.each(['wait', 'expired', 'replaced', 'publishing', 'revoked'] as const)('limi
 
 const operationsPortal = 'itervane-operations-decision-portal';
 const decisionIdentity = (subject = 'owner') => issuer.token(subject, { azp: operationsPortal }).then(createIdentityVerifier(issuer.config));
+
+async function restartExecutionCandidate(prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  const { fixture, installed, diagnosis, task: diagnosed, service } = await settleProposalDiagnosis('restart', prepared);
+  const { proposal } = await service.freeze(identity, diagnosed.id, { diagnosisSha256: diagnosis.sha256 });
+  const owner = await decisionIdentity();
+  const decisionService = new OperationsDecisionService(database.storage, installed, operationsPortal);
+  const admission = new OperationsExecutionAdmission(database.storage, installed);
+  const input = { proposalId: proposal.id, fingerprint: proposal.fingerprint, decisionVersion: 1 };
+  const decide = (action: 'confirm' | 'revoke', idempotencyKey = randomUUID()) => decisionService.decide(owner, proposal.id, {
+    action, expectedVersion: action === 'confirm' ? 0 : 1, fingerprint: proposal.fingerprint, idempotencyKey,
+  });
+  return { fixture, diagnosed, diagnosis, proposal, admission, input, decide, reserve: () => admission.reserve(input) };
+}
+
+async function competingPublication(fixture: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  task = (await fixture.taskService.admit(identity, { projectId: fixture.scope.projectId, source: task.source,
+    purpose: 'Competing approved release', dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
+  return preparedFormalRelease({ existingTarget: fixture.target });
+}
+
+it('reserves an approved operations execution only once and closes it atomically on revocation', async () => {
+  const action = await restartExecutionCandidate();
+  const { proposal, input, reserve, decide } = action;
+  const injected = () => database.storage.db.insert(operationsExecutions).values({
+    id: randomUUID(), proposalId: proposal.id, environmentId: proposal.environmentId,
+    proposalFingerprint: proposal.fingerprint, decisionVersion: 1, state: 'reserved', createdAt: sql`clock_timestamp()`,
+  });
+  await expect(reserve()).rejects.toMatchObject({ code: 'unsupported_state' });
+  await expect(injected()).rejects.toMatchObject({ cause: { code: '23514', message: 'operations_execution_authority_required' } });
+  await decide('confirm');
+  await expect(action.admission.reserve({ ...input, fingerprint: sha256('different proposal') })).rejects.toMatchObject({ code: 'version_conflict' });
+  await expect(action.admission.reserve({ ...input, containerId: 'f'.repeat(64) })).rejects.toMatchObject({ code: 'invalid_input' });
+  const results = await Promise.all([reserve(), reserve()]);
+  expect(results.map(result => result.replayed).sort()).toEqual([false, true]);
+  const execution = results[0]!.execution;
+  expect(results[1]?.execution).toEqual(execution);
+  expect(execution).toMatchObject({ proposalId: proposal.id, proposalFingerprint: proposal.fingerprint,
+    environmentId: proposal.environmentId, decisionVersion: 1, state: 'reserved' });
+  await expect(database.storage.db.update(operationsExecutions).set({ state: 'blocked', blockedReason: 'proposal_expired',
+    closedAt: sql`clock_timestamp()` })).rejects.toMatchObject({ cause: { code: '23514', message: 'operations_execution_invalid_closure' } });
+  await expect(database.storage.db.delete(operationsExecutions)).rejects
+    .toMatchObject({ cause: { code: '23514', message: 'operations_execution_is_retained' } });
+
+  const revocationKey = randomUUID();
+  await database.admin.query(`ALTER TABLE itervane.operations_executions ADD CONSTRAINT injected_operations_close_failure
+    CHECK (state = 'reserved') NOT VALID`);
+  try {
+    await expect(decide('revoke', revocationKey)).rejects.toMatchObject({ cause: { code: '23514', constraint: 'injected_operations_close_failure' } });
+    expect(await database.storage.db.select().from(operationsDecisions)).toHaveLength(1);
+    expect((await database.storage.db.select().from(operationsExecutions))[0]).toMatchObject({ state: 'reserved' });
+  } finally {
+    await database.admin.query('ALTER TABLE itervane.operations_executions DROP CONSTRAINT injected_operations_close_failure');
+  }
+  const revoked = await decide('revoke', revocationKey);
+  expect((await database.storage.db.select().from(operationsExecutions))[0]).toMatchObject({
+    id: execution.id, state: 'blocked', blockedReason: 'approval_revoked', closedAt: revoked.decision.decidedAt,
+  });
+  expect(await decide('revoke', revocationKey)).toMatchObject({ replayed: true });
+  await expect(reserve()).rejects.toMatchObject({ code: 'unsupported_state' });
+  expect((await action.fixture.taskService.get(identity, action.diagnosed.id)).state).toBe('succeeded');
+  expect(await database.storage.db.select().from(operationsDiagnosisResults)).toHaveLength(1);
+});
+
+it.each(['operations', 'release', 'concurrent'] as const)('serializes a real queue and an operations execution with %s admission', async first => {
+  const action = await restartExecutionCandidate();
+  const publication = await competingPublication(action.fixture);
+  await action.decide('confirm');
+  if (first === 'operations') {
+    await action.reserve();
+    await expect(publication.confirm()).rejects.toMatchObject({ code: 'conflict' });
+    // Include a valid decision so the database reaches the environment guard after its approval checks.
+    await expect(database.storage.db.transaction(async tx => {
+      const [owner] = await tx.select().from(workspaceMembers);
+      if (!owner) throw new Error('Missing fixture owner');
+      await tx.insert(releaseDecisions).values({ candidateId: publication.candidateId, version: 1, action: 'confirm',
+        actorId: owner.principalId, grantId: owner.grantId, idempotencyKey: randomUUID(), selfConfirmed: true, decidedAt: new Date() });
+      await tx.insert(releaseOperations).values({ id: randomUUID(), candidateId: publication.candidateId,
+        environmentId: action.proposal.environmentId, approvalVersion: 1 });
+    })).rejects.toMatchObject({ cause: { code: '23514', message: 'release_environment_reserved_by_operations' } });
+    expect(await database.storage.db.select().from(releaseDecisions).where(eq(releaseDecisions.candidateId, publication.candidateId))).toEqual([]);
+    await action.decide('revoke');
+    expect(await publication.confirm()).toMatchObject({ operationId: expect.any(String) });
+  } else if (first === 'release') {
+    await publication.confirm();
+    await expect(action.reserve()).rejects.toMatchObject({ code: 'conflict' });
+    expect(await database.storage.db.select().from(operationsExecutions)).toEqual([]);
+  } else {
+    const outcomes = await Promise.allSettled([action.reserve(), publication.confirm()]);
+    expect(outcomes.filter(item => item.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.find(item => item.status === 'rejected')).toMatchObject({ reason: { code: 'conflict' } });
+    const held = await database.storage.db.select().from(operationsExecutions);
+    const queued = await database.storage.db.select().from(releaseOperations).where(eq(releaseOperations.candidateId, publication.candidateId));
+    expect(held.length + queued.length).toBe(1);
+  }
+});
+
+it.each(['grant', 'target'] as const)('rejects an approved execution when its %s changes before admission', async scope => {
+  const action = await restartExecutionCandidate();
+  await action.decide('confirm');
+  if (scope === 'grant') {
+    const [old] = await database.storage.db.delete(workspaceMembers).returning();
+    if (!old) throw new Error('Missing owner grant');
+    await database.storage.db.insert(workspaceMembers).values({ principalId: old.principalId, workspaceId: old.workspaceId });
+  } else {
+    const { registration } = action.fixture;
+    await registerOperationsTarget(database.storage, { ...registration, whiskers: { ...registration.whiskers, serverId: 'changed-after-approval' } });
+  }
+  await expect(action.reserve()).rejects.toMatchObject({ code: scope === 'grant' ? 'forbidden' : 'version_conflict' });
+  expect(await database.storage.db.select().from(operationsExecutions)).toEqual([]);
+});
+
+it('reclaims an undispatched operations reservation at expiry and admits the waiting release', async () => {
+  const fixture = await installedOperationsFixture();
+  const publication = await competingPublication(fixture);
+  await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_results
+    ALTER COLUMN created_at SET DEFAULT (now() - interval '1788 seconds')`);
+  const action = await restartExecutionCandidate(fixture).finally(() =>
+    database.admin.query('ALTER TABLE itervane.operations_diagnosis_results ALTER COLUMN created_at SET DEFAULT now()'));
+  await action.decide('confirm');
+  await action.reserve();
+  await vi.waitFor(async () => {
+    const expired = await database.storage.pool.query<{ value: boolean }>('SELECT clock_timestamp() >= $1 AS value', [action.proposal.validUntil]);
+    expect(expired.rows[0]?.value).toBe(true);
+  }, { timeout: 15_000, interval: 300 });
+  await expect(action.reserve()).rejects.toMatchObject({ code: 'unsupported_state' });
+  await publication.confirm();
+  expect((await database.storage.db.select().from(operationsExecutions))[0]).toMatchObject({
+    state: 'blocked', blockedReason: 'proposal_expired', closedAt: expect.any(Date),
+  });
+});
 
 it('records an owner portal confirmation once and retains its revocation alongside the diagnosis', async () => {
   const { fixture, installed, diagnosis, task, service } = await settleProposalDiagnosis('restart');

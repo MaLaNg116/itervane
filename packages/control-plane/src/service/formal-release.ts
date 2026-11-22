@@ -123,7 +123,8 @@ function present(row: Candidate, manifest: FormalReleaseManifest, status: Candid
   });
 }
 
-async function assessCandidate(tx: Transaction, task: TaskRow, row: Candidate, manifest: FormalReleaseManifest) {
+async function assessCandidate(tx: Transaction, task: TaskRow, row: Candidate, manifest: FormalReleaseManifest,
+  environmentLock: 'share' | 'update' = 'share') {
   const history = await tx.select().from(releaseDecisions).where(eq(releaseDecisions.candidateId, row.id)).orderBy(asc(releaseDecisions.version));
   const last = history.at(-1);
   const [operation] = await tx.select().from(releaseOperations).where(eq(releaseOperations.candidateId, row.id));
@@ -148,7 +149,7 @@ async function assessCandidate(tx: Transaction, task: TaskRow, row: Candidate, m
   else if (!active) status = 'task_changed';
   else if ((await latestReleaseCandidate(tx, task.id))?.id !== row.id) status = 'superseded';
   else {
-    await tx.select({ id: environments.id }).from(environments).where(eq(environments.id, row.environmentId)).for('share');
+    await tx.select({ id: environments.id }).from(environments).where(eq(environments.id, row.environmentId)).for(environmentLock);
     const [target] = await tx.select().from(formalReleaseTargets).where(eq(formalReleaseTargets.environmentId, row.environmentId)).for('share');
     if (target) readReleaseTarget(target);
     if (target?.sha256 !== manifest.target.mappingSha256 || target.revision !== manifest.target.revision) status = 'evidence_changed';
@@ -309,7 +310,7 @@ export class FormalReleaseService {
       if (!isHumanWorkspaceOwner(identity, actor, project.workspaceId, this.humanClientId)) throw new DomainError('forbidden');
       if (row.fingerprint !== input.fingerprint) throw new DomainError('version_conflict');
       const manifest = readReleaseManifest(row);
-      const assessment = await assessCandidate(tx, task, row, manifest);
+      const assessment = await assessCandidate(tx, task, row, manifest, 'update');
       const { status, history, operation, progress, now } = assessment;
       if (identity.expiresAt * 1000 <= now.getTime()) throw new DomainError('unauthenticated');
       const duplicate = history.find(item => item.actorId === actor.principalId && item.idempotencyKey === input.idempotencyKey);

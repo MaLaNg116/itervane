@@ -8,6 +8,7 @@ import type { VerifiedIdentity } from '../auth/identity.js';
 import { releaseFixtureQueue, type Database } from '../persistence/database.js';
 import { environments, projects, releaseCandidates, releaseDecisions, releaseOperations, taskRuns, tasks, workspaceMembers } from '../persistence/schema.js';
 import { enqueueReleaseOperation } from '../runtime/release-queue.js';
+import { lockEnvironmentForEffect } from './environment-effects.js';
 import { requireActor, requireProject, requireStoredActor, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 
@@ -145,6 +146,7 @@ export class ReleaseCandidateService {
       const { actor, candidate, project, task, grantId } = await this.visibleCandidate(tx, identity, candidateId, 'update');
       if (!grantId) throw new DomainError('forbidden');
       if (candidate.fingerprint !== input.fingerprint) throw new DomainError('version_conflict');
+      if (input.action === 'confirm') await lockEnvironmentForEffect(tx, candidate.environmentId);
       const { manifest, history, status, now } = await this.assess(tx, candidate, project.workspaceId, task);
       if (identity.expiresAt * 1_000 <= now.getTime()) throw new DomainError('unauthenticated');
 
