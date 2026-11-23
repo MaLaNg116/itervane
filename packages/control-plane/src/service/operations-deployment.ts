@@ -1,6 +1,6 @@
 import { releaseKomodoCompletionSchema, releaseRegistryHost, releaseRolloutProofSchema, taskDtoSchema } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import { environments, formalReleaseRolloutAttempts, formalReleaseSteps, formalReleaseTargets,
   releaseCandidates, releaseOperations, tasks } from '../persistence/schema.js';
 import { requireProjectAccess, type Actor, type Transaction } from './access.js';
@@ -74,8 +74,7 @@ export async function readPublishedOperationsDeployment(tx: Transaction, scope: 
   ).limit(1);
   if (pending) throw new DomainError('conflict');
 
-  // Pick the latest settled formal release before validating its receipt. Broken evidence cannot fall back to an older version.
-  const [latest, earlier] = await tx.select({ operation: releaseOperations, candidate: releaseCandidates, sourceTask: tasks,
+  const findPublished = (filter?: SQL) => tx.select({ operation: releaseOperations, candidate: releaseCandidates, sourceTask: tasks,
     receipt: formalReleaseRolloutAttempts, dispatch: formalReleaseSteps })
     .from(releaseOperations).innerJoin(releaseCandidates, and(eq(releaseCandidates.id, releaseOperations.candidateId),
       eq(releaseCandidates.environmentId, environment.id), eq(releaseCandidates.projectId, projectId),
@@ -85,13 +84,22 @@ export async function readPublishedOperationsDeployment(tx: Transaction, scope: 
       eq(formalReleaseRolloutAttempts.state, 'verified')))
     .leftJoin(formalReleaseSteps, and(eq(formalReleaseSteps.operationId, releaseOperations.id),
       eq(formalReleaseSteps.kind, 'komodo_dispatch'), eq(formalReleaseSteps.state, 'confirmed')))
-    .where(and(eq(releaseOperations.environmentId, environment.id), eq(releaseOperations.state, 'verified_formal')))
-    .orderBy(desc(releaseOperations.updatedAt), desc(releaseOperations.id)).limit(options.includePrevious ? 2 : 1);
+    .where(and(eq(releaseOperations.environmentId, environment.id), eq(releaseOperations.state, 'verified_formal'), filter))
+    .orderBy(desc(releaseOperations.updatedAt), desc(releaseOperations.id)).limit(1);
+
+  // Select the latest release before checking evidence, including when its mapping is no longer current.
+  const [latest] = await findPublished();
   if (!latest) throw new DomainError('unsupported_state');
   const current = checkedRelease(latest, mapping, target);
   if (!current) throw new DomainError('unsupported_state');
+
+  // An identical redeployment offers no recovery image. The candidate must have run under the current target revision.
+  const [earlier] = options.includePrevious ? await findPublished(and(
+    sql`${releaseCandidates.document}#>>'{target,revision}' = ${String(mapping.revision)}`,
+    sql`${releaseCandidates.document}#>>'{target,mappingSha256}' = ${mapping.sha256}`,
+    sql`${releaseCandidates.document}#>>'{image,manifestDigest}' <> ${current.manifestDigest}`,
+  )) : [];
   const previous = earlier ? checkedRelease(earlier, mapping, target) : null;
-  if (earlier?.operation.id === current.releaseOperationId) throw new Error('operations_deployment_evidence_integrity');
   return { projectId, environmentId, applicationId: environment.applicationId,
     targetRevision: mapping.revision, mappingSha256: mapping.sha256, deploymentId: target.deploymentId,
     approvalTtlSeconds: target.approvalTtlSeconds, ...current, previous };
