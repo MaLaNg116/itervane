@@ -11,7 +11,7 @@ import {
   environments, operationsHealthSamples, operationsIncidentDiagnoses, operationsIncidents,
   operationsRepairAdmissions, operationsRepairProposals, operationsTargets, tasks,
 } from '../persistence/schema.js';
-import { requireActor, requireProject, type Transaction } from './access.js';
+import { isHumanWorkspaceOwner, requireActor, requireProject, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 import { readOperationsEnrollment } from './operations-targets.js';
 
@@ -89,7 +89,8 @@ export async function readInstalledIncidentEnvironment(tx: Transaction, installa
 }
 
 export class OperationsIncidentsViewService {
-  constructor(private readonly database: Database, private readonly installation: OperationsWorkflowScope) {}
+  constructor(private readonly database: Database, private readonly installation: OperationsWorkflowScope,
+    private readonly portalClientId?: string) {}
 
   async list(identity: VerifiedIdentity, rawScope: unknown, rawQuery: unknown, locale: Locale) {
     const scope = parseInput(operationsIncidentScopeSchema, rawScope);
@@ -112,7 +113,7 @@ export class OperationsIncidentsViewService {
       const actor = await requireActor(tx, identity);
       const [task] = await tx.select({ projectId: tasks.projectId }).from(tasks).where(eq(tasks.id, taskId));
       if (!task) throw new DomainError('not_found');
-      await requireProject(tx, actor, task.projectId);
+      const project = await requireProject(tx, actor, task.projectId);
       const [diagnosis] = await tx.select({
         incidentId: operationsIncidentDiagnoses.incidentId, environmentId: operationsIncidentDiagnoses.environmentId,
       }).from(operationsIncidentDiagnoses).where(eq(operationsIncidentDiagnoses.taskId, taskId));
@@ -132,7 +133,9 @@ export class OperationsIncidentsViewService {
         eq(operationsIncidents.id, link.incidentId), eq(operationsIncidents.environmentId, scope.environmentId)));
       const [incident] = await presentIncidents(tx, rows, scope, locale);
       if (!incident) throw new Error('operations_incident_view_link');
-      return taskIncidentViewSchema.parse({ ...base, relatedAs: diagnosis ? 'diagnosis' : 'linked_repair', incident });
+      const stopDiagnosis = !incident.closedAt && !incident.diagnosisStop
+        && isHumanWorkspaceOwner(identity, actor, project.workspaceId, this.portalClientId) ? scope : null;
+      return taskIncidentViewSchema.parse({ ...base, relatedAs: diagnosis ? 'diagnosis' : 'linked_repair', incident, stopDiagnosis });
     }, { isolationLevel: 'repeatable read' });
   }
 }

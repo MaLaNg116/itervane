@@ -38,7 +38,9 @@ export const operationsIncidentsViewSchema = operationsIncidentScopeSchema.exten
 export const taskIncidentViewSchema = z.strictObject({
   version: z.literal(1), taskId: idSchema, locale: localeSchema,
   relatedAs: z.enum(['diagnosis', 'linked_repair']).nullable(), incident: operationsIncidentSummarySchema.nullable(),
-}).refine(({ relatedAs, incident }) => (relatedAs === null) === (incident === null));
+  stopDiagnosis: operationsIncidentScopeSchema.nullable().default(null),
+}).refine(({ relatedAs, incident, stopDiagnosis }) => (relatedAs === null) === (incident === null)
+  && (!stopDiagnosis || Boolean(incident && !incident.closedAt && !incident.diagnosisStop)));
 
 export const stopOperationsIncidentDiagnosisSchema = z.strictObject({
   expectedReleaseOperationId: idSchema,

@@ -3548,10 +3548,15 @@ it.each(['queued', 'running'] as const)('stops automatic diagnosis while retaini
   const { scope } = application;
   const list = `/v1/projects/${scope.projectId}/environments/${scope.environmentId}/operations-incidents`;
   const stop = list + `/${sample.incidentId}/stop-diagnosis`;
+  const lookup = `/v1/tasks/${admission.taskId}/operations-incident`;
+  const get = (url: string, authorization = owner) => api.inject({ url,
+    headers: { authorization: `Bearer ${authorization}`, 'Accept-Language': 'zh-CN' } });
   const body = { expectedReleaseOperationId: application.operationId, expectedRestoreExecutionId: null };
   const post = (authorization: string, payload = body) => api.inject({ method: 'POST', url: stop, payload,
     headers: { authorization: `Bearer ${authorization}`, 'Accept-Language': 'zh-CN' } });
   try {
+    expect(taskIncidentViewSchema.parse((await get(lookup)).json()).stopDiagnosis).toBeNull();
+    expect(taskIncidentViewSchema.parse((await get(lookup, portal)).json()).stopDiagnosis).toEqual(scope);
     expect((await post(owner)).statusCode).toBe(403);
     expect((await post(portal, { ...body, expectedReleaseOperationId: randomUUID() })).statusCode).toBe(409);
     const concurrent = await Promise.all([post(portal), post(portal)]);
@@ -3582,14 +3587,14 @@ it.each(['queued', 'running'] as const)('stops automatic diagnosis while retaini
     const incidentTools = (await mcp.listTools()).tools.filter(tool => tool.name === 'list_operations_incidents' || tool.name === 'get_task_incident');
     expect(incidentTools).toHaveLength(2);
     expect(incidentTools.every(tool => tool.annotations?.readOnlyHint)).toBe(true);
-    const get = (url: string) => api.inject({ url, headers: { authorization: `Bearer ${owner}`, 'Accept-Language': 'zh-CN' } });
     const history = operationsIncidentsViewSchema.parse((await get(list)).json());
     const visible = (await mcp.callTool({ name: 'list_operations_incidents', arguments: scope })).structuredContent;
     expect(operationsIncidentsViewSchema.parse(visible)).toEqual(history);
     expect(history.items[0]?.diagnosisStop).toMatchObject({ at: stops[0]?.stoppedAt, reason: 'operator_stopped' });
     const detail = (await mcp.callTool({ name: 'get_task_incident', arguments: { taskId: admission.taskId } })).structuredContent;
-    const projected = (await get(`/v1/tasks/${admission.taskId}/operations-incident`)).json();
-    expect(taskIncidentViewSchema.parse(detail)).toEqual(taskIncidentViewSchema.parse(projected));
+    const projected = taskIncidentViewSchema.parse((await get(lookup, portal)).json());
+    expect(projected.stopDiagnosis).toBeNull();
+    expect(taskIncidentViewSchema.parse(detail)).toEqual(projected);
     const outside = await mcp.callTool({ name: 'list_operations_incidents', arguments: { ...scope, environmentId: randomUUID() } });
     expect(apiErrorSchema.parse(outside.structuredContent).error.code).toBe('not_found');
   } finally { await mcp.close(); await api.close(); }
