@@ -21,6 +21,10 @@ type NativeRestoreInput = DiagnosisReaders & {
   previous: PublishedInstance;
   startWorker: () => Promise<void>;
 };
+type RestoreInterruption = {
+  stopSender: () => Promise<void>;
+  observeApplied: () => Promise<{ containerId: string; configDigest: string; reference: string }>;
+};
 type Receipt = NonNullable<OperationsRestoreExecutionView['execution']>;
 const receiptPath = (diagnosis: TaskDto) => `/v1/tasks/${diagnosis.id}/operations-restore`;
 const summary = (release: PublishedInstance) => ({ operationId: release.operationId, manifestDigest: release.manifestDigest });
@@ -59,11 +63,11 @@ async function submitRestore({ db, diagnosis, diagnosisSha256, current, previous
   const { executionId } = submitted;
   deepStrictEqual(await request(proposalPath + '/restore', { portal: true, payload, status: 200 }), { executionId, replayed: true });
   const queued = operationsRestoreExecutionViewSchema.parse(await request(resultPath, { portal: true }));
-  equal(queued.execution?.id, executionId);
-  equal(queued.execution?.state, 'queued');
-  equal(queued.execution?.environmentHeld, true);
-  equal(queued.execution?.nativeUpdateId, null);
-  return { executionId, approvedBy };
+  ok(queued.execution?.id === executionId);
+  equal(queued.execution.state, 'queued');
+  equal(queued.execution.environmentHeld, true);
+  equal(queued.execution.nativeUpdateId, null);
+  return { executionId, approvedBy, proposal, runId: queued.execution.runId };
 }
 
 async function waitForRestore({ diagnosis, request }: NativeRestoreInput, executionId: string, expected: 'succeeded' | 'needs_human') {
@@ -99,9 +103,50 @@ async function compareLocalizedReceipts({ diagnosis, request, mcp, withEnglishRe
   deepStrictEqual(english.execution.recovery, view.execution.recovery);
 }
 
-export async function proveNativeRestore(input: NativeRestoreInput) {
+async function interruptRestoreSender(input: NativeRestoreInput, interruption: RestoreInterruption,
+  boundary: 'restore' | 'restore_reconcile', recordId: string) {
   const { db, current, previous, startWorker } = input;
-  const { executionId, approvedBy } = await submitRestore(input);
+  const barrier = await holdOperationsAcknowledgement(db, boundary, recordId);
+  try {
+    await startWorker();
+    const backend = await barrier.waitForWorker();
+    const applied = await interruption.observeApplied();
+    notEqual(applied.containerId, current.runtime.containerId);
+    equal(applied.reference, previous.runtime.imageReference);
+    equal(applied.configDigest, previous.runtime.configDigest);
+    await interruption.stopSender();
+    await barrier.release();
+    await awaitOperationsWorkerDisconnect(db, backend);
+    return applied;
+  } finally { await barrier.close(); }
+}
+
+async function interruptBeforeReconciliation(input: NativeRestoreInput, queued: Awaited<ReturnType<typeof submitRestore>>,
+  interruption: RestoreInterruption) {
+  const { db, request } = input;
+  const { executionId, proposal, runId } = queued;
+  const applied = await interruptRestoreSender(input, interruption, 'restore_reconcile', runId);
+  const [dispatch] = (await db.admin.query<{ receipt: unknown; worker_id: string; fence: number }>(`
+    SELECT receipt, worker_id, fence FROM itervane.operations_restore_steps
+    WHERE execution_id=$1 AND kind='deploy' AND recorded_at IS NOT NULL`, [executionId])).rows;
+  ok(dispatch);
+  const { updateId } = releaseKomodoUpdateSchema.parse(dispatch.receipt);
+  const decisionPath = `/v1/operations/proposals/${proposal.id}/decisions`;
+  const revoked = operationsProposalViewSchema.parse(await request(decisionPath, { portal: true, payload: {
+    action: 'revoke', expectedVersion: 1, fingerprint: proposal.fingerprint, idempotencyKey: randomUUID(),
+  } }));
+  equal(revoked.proposal?.status, 'revoked');
+  equal(revoked.proposal?.decisions.at(-1)?.action, 'revoke');
+  await request(`/v1/operations/proposals/${proposal.id}/restore`, { portal: true,
+    payload: { fingerprint: proposal.fingerprint, decisionVersion: 1 }, status: 409 });
+  return { applied, updateId, sender: dispatch.worker_id, sendFence: dispatch.fence };
+}
+
+export async function proveNativeRestore(input: NativeRestoreInput, interruption?: RestoreInterruption) {
+  const { db, current, previous, startWorker } = input;
+  const submitted = await submitRestore(input);
+  const { executionId, approvedBy } = submitted;
+  const sentBeforeCrash = interruption && await interruptBeforeReconciliation(input, submitted, interruption);
   await startWorker();
   const verified = await waitForRestore(input, executionId, 'succeeded');
   const { execution } = verified;
@@ -112,10 +157,10 @@ export async function proveNativeRestore(input: NativeRestoreInput) {
   equal(execution.recovery?.state, 'verified');
   const { rows: records } = await db.admin.query<{
     proof: unknown; proof_sha256: string; completed_at: Date; state: string; wakeup_job_id: string | null; slot_task: string | null;
-    plan: unknown; plan_sha256: string;
+    plan: unknown; plan_sha256: string; observer: string;
   }>(`
     SELECT recovery.proof, recovery.proof_sha256, recovery.completed_at, effect.state, schedule.wakeup_job_id,
-      intent.restore_plan AS plan, intent.restore_plan_sha256 AS plan_sha256,
+      intent.restore_plan AS plan, intent.restore_plan_sha256 AS plan_sha256, recovery.worker_id AS observer,
       (SELECT task_id FROM itervane.execution_slot WHERE id=1) AS slot_task
     FROM itervane.operations_restore_recoveries recovery
     JOIN itervane.operations_executions effect ON effect.id=recovery.execution_id
@@ -154,8 +199,8 @@ export async function proveNativeRestore(input: NativeRestoreInput) {
   deepStrictEqual(execution.recovery?.proof, { proofSha256: record.proof_sha256, version: previous.runtime.version,
     verifiedAt: record.completed_at.toISOString() });
 
-  const { rows: sent } = await db.admin.query<{ kind: string; receipt: unknown; fence: number; plan_sha256: string; recorded_at: Date }>(
-    'SELECT kind, receipt, fence, plan_sha256, recorded_at FROM itervane.operations_restore_steps WHERE execution_id=$1 ORDER BY kind', [executionId]);
+  const { rows: sent } = await db.admin.query<{ kind: string; receipt: unknown; fence: number; plan_sha256: string; recorded_at: Date; worker_id: string }>(
+    'SELECT kind, receipt, fence, plan_sha256, recorded_at, worker_id FROM itervane.operations_restore_steps WHERE execution_id=$1 ORDER BY kind', [executionId]);
   deepStrictEqual(sent.map(item => item.kind), ['configure', 'deploy']);
   const [configured, deployed] = [sent[0]!, sent[1]!];
   ok(sent.every(item => item.plan_sha256 === proof.planSha256 && item.recorded_at instanceof Date));
@@ -164,6 +209,14 @@ export async function proveNativeRestore(input: NativeRestoreInput) {
   equal(releaseKomodoConfigurationSchema.parse(configured.receipt).imageReference, previous.runtime.imageReference);
   equal(releaseKomodoUpdateSchema.parse(deployed.receipt).updateId, updateId);
 
+  if (sentBeforeCrash && interruption) {
+    equal(updateId, sentBeforeCrash.updateId);
+    equal(deployed.fence, sentBeforeCrash.sendFence);
+    equal(deployed.worker_id, sentBeforeCrash.sender);
+    notEqual(record.observer, deployed.worker_id);
+    equal(proof.runtime.containerId, sentBeforeCrash.applied.containerId);
+    deepStrictEqual(await interruption.observeApplied(), sentBeforeCrash.applied);
+  }
   await compareLocalizedReceipts(input, verified);
   return { proof, report: { executionId, approvedBy, updateId, proofSha256: record.proof_sha256,
     currentOperationId: current.operationId, restoredOperationId: previous.operationId, restoredVersion: proof.runtime.version,
@@ -171,31 +224,14 @@ export async function proveNativeRestore(input: NativeRestoreInput) {
     stoppedContainerId: current.runtime.containerId, restoredContainerId: proof.runtime.containerId, sendFence: deployed.fence, readFence: proof.fence,
     healthStatus: proof.runtime.healthStatus, anonymousStatus: proof.runtime.anonymousStatus,
     blockedBeforeApproval: true, portalIdentityRequired: true, idempotent: true, environmentReleased: true, slotReleased: true,
-    configureReceipts: 1, deployReceipts: 1, httpMcpAgreement: true } };
+    configureReceipts: 1, deployReceipts: 1, httpMcpAgreement: true,
+    ...(sentBeforeCrash ? { takeover: { durableUpdateId: sentBeforeCrash.updateId, approvalRevoked: true,
+      changedWorker: true, matchingRuntimeBeforeAndAfter: true } } : {}) } };
 }
-
-type NativeRestoreInterruption = NativeRestoreInput & {
-  environmentId: string;
-  stopSender: () => Promise<void>;
-  observeApplied: () => Promise<{ containerId: string; configDigest: string; reference: string }>;
-};
-
-export async function proveInterruptedNativeRestore(input: NativeRestoreInterruption) {
-  const { db, current, previous, environmentId, startWorker, stopSender, observeApplied } = input;
+export async function proveInterruptedNativeRestore(input: NativeRestoreInput & RestoreInterruption & { environmentId: string }) {
+  const { db, current, previous, environmentId, startWorker, observeApplied } = input;
   const { executionId, approvedBy } = await submitRestore(input);
-  const acknowledgement = await holdOperationsAcknowledgement(db, 'restore', executionId);
-  let applied: Awaited<ReturnType<typeof observeApplied>>;
-  try {
-    await startWorker();
-    const backend = await acknowledgement.waitForWorker();
-    applied = await observeApplied();
-    notEqual(applied.containerId, current.runtime.containerId);
-    equal(applied.reference, previous.runtime.imageReference);
-    equal(applied.configDigest, previous.runtime.configDigest);
-    await stopSender();
-    await acknowledgement.release();
-    await awaitOperationsWorkerDisconnect(db, backend);
-  } finally { await acknowledgement.close(); }
+  const applied = await interruptRestoreSender(input, input, 'restore', executionId);
 
   await startWorker();
   const view = await waitForRestore(input, executionId, 'needs_human');

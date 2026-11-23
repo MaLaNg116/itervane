@@ -236,17 +236,28 @@ jobs:
               $restored.postRestoreDiagnosis.restoreExecutionId == $restored.executionId and
               ([$restored.stoppedDiagnosis, $restored.postRestoreDiagnosis] |
                 all(.httpMcpAgreement and .matchedPublishedTarget and .model == "scripted_anthropic_fixture"))' "$report" >/dev/null
-            jq -e '.restoration as $restored | $restored.interruption as $interrupted |
-              $interrupted.executionId != $restored.executionId and
-              $interrupted.diagnosisRestoreExecutionId == $restored.executionId and
-              $interrupted.currentOperationId == $restored.restoredOperationId and
-              $interrupted.attemptedOperationId == $restored.currentOperationId and
-              $interrupted.observedConfigDigest == .dualVersion.second.release.configDigest and
-              $interrupted.observedContainerId != $restored.restoredContainerId and
+            jq -e '.restoration as $restored | $restored.recordedTakeover as $settled | .dualVersion.second.release as $second |
+              $settled.executionId != $restored.executionId and
+              $settled.diagnosisRestoreExecutionId == $restored.executionId and
+              $settled.currentOperationId == $restored.restoredOperationId and $settled.restoredOperationId == $second.operationId and
+              $settled.restoredConfigDigest == $second.configDigest and $settled.restoredManifestDigest == $second.manifestDigest and
+              $settled.updateId == $settled.takeover.durableUpdateId and $settled.updateId != $restored.updateId and
+              $settled.takeover.approvalRevoked and $settled.takeover.changedWorker and $settled.takeover.matchingRuntimeBeforeAndAfter and
+              $settled.readFence > $settled.sendFence and $settled.sendFence > $restored.readFence and
+              $settled.configureReceipts == 1 and $settled.deployReceipts == 1 and
+              $settled.healthStatus == 200 and ($settled.anonymousStatus == 401 or $settled.anonymousStatus == 403) and
+              $settled.environmentReleased and $settled.slotReleased and $settled.httpMcpAgreement' "$report" >/dev/null
+            jq -e '.restoration as $restored | $restored.recordedTakeover as $settled | $restored.interruption as $interrupted |
+              $interrupted.executionId != $settled.executionId and
+              $interrupted.diagnosisRestoreExecutionId == $settled.executionId and
+              $interrupted.currentOperationId == $settled.restoredOperationId and
+              $interrupted.attemptedOperationId == $settled.currentOperationId and
+              $interrupted.observedConfigDigest == .dualVersion.first.release.configDigest and
+              $interrupted.observedContainerId != $settled.restoredContainerId and
               $interrupted.reason == "missing_update" and
               $interrupted.acknowledgementMissing and $interrupted.changedWorker and
               $interrupted.sendSteps == 2 and $interrupted.readFence > $interrupted.sendFence and
-              $interrupted.sendFence > $restored.readFence and
+              $interrupted.sendFence > $settled.readFence and
               $interrupted.matchingRuntimeBeforeAndAfter and $interrupted.environmentHeld and
               $interrupted.publicationBlocked and $interrupted.slotReleased and $interrupted.httpMcpAgreement' "$report" >/dev/null
           fi

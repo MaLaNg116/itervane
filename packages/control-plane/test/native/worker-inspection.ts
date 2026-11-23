@@ -1111,11 +1111,22 @@ async function probe() {
               await worker.stop(signal);
               worker = undefined;
             };
+            const authorizeRead = async () => {};
+            const stopFixture = (instance: typeof proof.runtime) => target.setOwnedContainerRunning(false, {
+              containerId: instance.containerId, reference: instance.imageReference, configDigest: instance.configDigest,
+            });
+            const observeApplied = async (expected: typeof proof) => {
+              const { imageReference, configDigest } = expected.runtime;
+              const observed = await target.observeContainer(imageReference, configDigest);
+              const independent = await reader.inspectRuntime(boundTarget, { manifestDigest: expected.manifestDigest, configDigest },
+                target.endpoint.network, authorizeRead);
+              equal(independent.containerId, observed.containerId);
+              equal(independent.imageReference, observed.reference);
+              return observed;
+            };
             const stopped = second.proof.runtime;
             phase = 'operations_native_restore_stop_bound_fixture';
-            await target.setOwnedContainerRunning(false, { containerId: stopped.containerId, reference: stopped.imageReference,
-              configDigest: stopped.configDigest });
-            const authorizeRead = async () => {};
+            await stopFixture(stopped);
             const baseline = await reader.inspectStoppedRuntime(boundTarget, second.report, target.endpoint.network, authorizeRead);
             equal(baseline.state, 'exited');
             equal(baseline.containerId, stopped.containerId);
@@ -1149,31 +1160,48 @@ async function probe() {
             const postRestoreDiagnosis = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, restoredPublication);
             notEqual(postRestoreDiagnosis.runId, stoppedDiagnosis.runId);
 
-            phase = 'operations_native_restore_stop_restored_fixture';
-            await target.setOwnedContainerRunning(false, { containerId: runtime.containerId, reference: runtime.imageReference,
-              configDigest: runtime.configDigest });
-            const interrupted = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, restoredPublication, {
+            phase = 'operations_native_restore_stop_before_takeover';
+            await stopFixture(runtime);
+            const recorded = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, restoredPublication, {
               kind: 'rollback', previousOperationId: second.report.operationId,
+              verify(diagnosis, diagnosisSha256, readers) {
+                phase = 'operations_native_restore_recorded_takeover';
+                return proveNativeRestore({ db, diagnosis, diagnosisSha256, current: { ...first.proof, runtime, update },
+                  previous: second.proof, ...readers, startWorker: () => startRestoreProcess(18) }, {
+                  stopSender: () => stopRestoreProcess('KILL'),
+                  observeApplied: () => observeApplied(second.proof),
+                });
+              },
+            });
+            const settled = recorded.accepted;
+            ok(settled?.report.takeover);
+            await stopRestoreProcess('TERM');
+            deepStrictEqual(await reader.observeUpdate(boundTarget, settled.proof.update.updateId, authorizeRead), settled.proof.update);
+
+            const latestRuntime = settled.proof.runtime;
+            const latestPublication = {
+              taskId: second.report.taskId, operationId: second.report.operationId, containerId: latestRuntime.containerId,
+              restoreExecutionId: settled.proof.executionId,
+            };
+            phase = 'operations_native_restore_stop_before_missing_acknowledgement';
+            await stopFixture(latestRuntime);
+            const interrupted = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, latestPublication, {
+              kind: 'rollback', previousOperationId: first.report.operationId,
               verify(diagnosis, diagnosisSha256, readers) {
                 phase = 'operations_native_restore_lost_acknowledgement';
                 return proveInterruptedNativeRestore({ db, diagnosis, diagnosisSha256, environmentId: environment.id,
-                  current: { ...first.proof, runtime, update }, previous: second.proof, ...readers,
+                  current: { ...second.proof, runtime: latestRuntime, update: settled.proof.update }, previous: first.proof, ...readers,
                   startWorker: () => startRestoreProcess(18),
                   stopSender: () => stopRestoreProcess('KILL'),
-                  async observeApplied() {
-                    const observed = await target.observeContainer(second.proof.runtime.imageReference, second.proof.runtime.configDigest);
-                    const independent = await reader.inspectRuntime(boundTarget, second.report, target.endpoint.network, authorizeRead);
-                    equal(independent.containerId, observed.containerId);
-                    equal(independent.imageReference, observed.reference);
-                    return observed;
-                  },
+                  observeApplied: () => observeApplied(first.proof),
                 });
               },
             });
             ok(interrupted.accepted);
             await stopRestoreProcess('TERM');
-            notEqual(interrupted.runId, postRestoreDiagnosis.runId);
+            notEqual(interrupted.runId, recorded.runId);
             return { ...accepted.report, distinctKomodoReader: true, stoppedState: baseline.state, stoppedDiagnosis, postRestoreDiagnosis,
+              recordedTakeover: { ...settled.report, diagnosisRunId: recorded.runId, diagnosisRestoreExecutionId: recorded.restoreExecutionId },
               interruption: { ...interrupted.accepted, diagnosisRunId: interrupted.runId, diagnosisRestoreExecutionId: interrupted.restoreExecutionId } };
           } finally {
             try { await worker?.stop('TERM'); worker = undefined; }
@@ -1213,12 +1241,12 @@ async function probe() {
 
           const restoration = await verifyNativeRestore(second);
           const restored = await history();
-          equal(restored.releaseOperationId, first.report.operationId);
+          equal(restored.releaseOperationId, second.report.operationId);
           ok('restoreExecutionId' in restored);
-          equal(restored.restoreExecutionId, restoration.executionId);
-          equal(restored.containerId, restoration.restoredContainerId);
-          equal(restored.updateId, restoration.updateId);
-          equal(restored.previous?.releaseOperationId, second.report.operationId);
+          equal(restored.restoreExecutionId, restoration.recordedTakeover.executionId);
+          equal(restored.containerId, restoration.recordedTakeover.restoredContainerId);
+          equal(restored.updateId, restoration.recordedTakeover.updateId);
+          equal(restored.previous?.releaseOperationId, first.report.operationId);
           await assertDrained(controllerUid, staging);
           return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, release: first.report,
             dualVersion: { first: { release: first.report, build: after }, second: { release: second.report, build: next.after },
