@@ -4,7 +4,7 @@ import { sha256Schema } from './inspection.js';
 import { operationsRequestBindingSchema } from './operations.js';
 import { idSchema } from './primitives.js';
 import { ociDigestSchema } from './qualified-standard-image.js';
-import { releaseDecisionDtoSchema, releaseDecisionSchema } from './release.js';
+import { komodoReleaseTargetSchema, releaseDecisionDtoSchema, releaseDecisionSchema, releaseRuntimeObservationSchema } from './release.js';
 
 const rollbackRelease = z.strictObject({
   operationId: idSchema, manifestDigest: ociDigestSchema, configDigest: ociDigestSchema, proofSha256: sha256Schema,
@@ -28,6 +28,16 @@ export const operationsProposalSchema = z.strictObject({
 'Rollback requires a different verified release');
 
 export type OperationsProposal = z.infer<typeof operationsProposalSchema>;
+
+export const operationsRestorePlanSchema = z.strictObject({
+  version: z.literal(1), environmentId: idSchema,
+  targetRevision: operationsRequestBindingSchema.shape.targetRevision, mappingSha256: sha256Schema, rolloutCheckSha256: sha256Schema,
+  target: komodoReleaseTargetSchema,
+  current: rollbackRelease.extend({ containerId: sha256Schema }),
+  restore: rollbackRelease.extend({ publishedVersion: releaseRuntimeObservationSchema.shape.version }),
+}).refine(plan => plan.current.operationId !== plan.restore.operationId && plan.current.manifestDigest !== plan.restore.manifestDigest,
+'Recovery requires a different verified release');
+export type OperationsRestorePlan = z.infer<typeof operationsRestorePlanSchema>;
 
 const proposalStatus = z.enum(['pending', 'confirmed', 'rejected', 'revoked', 'expired', 'stale']);
 const operationKind = z.enum(['restart', 'rollback']);
