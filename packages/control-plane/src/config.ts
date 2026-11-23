@@ -169,6 +169,7 @@ export function healthWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
   });
   return { installed, reader, databaseUrl: databaseUrl.parse(env.DATABASE_URL),
     probeSecret: z.string().min(1).max(1024).parse(env.ITERVANE_HEALTH_PROBE_SECRET),
+    incidentMonitorId: idSchema.optional().parse(env.ITERVANE_HEALTH_INCIDENT_MONITOR_ID),
     pollMs: z.coerce.number().int().min(5_000).max(300_000).parse(env.ITERVANE_HEALTH_POLL_MS ?? 30_000) };
 }
 
