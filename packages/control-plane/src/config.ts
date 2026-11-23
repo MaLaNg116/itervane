@@ -22,6 +22,8 @@ export function canonicalPublicUrl(value: string): string {
 const operationsEnrollmentScopeSchema = z.strictObject({ environmentId: idSchema, enrollmentSha256: sha256Schema });
 const operationsWorkflowScopeSchema = operationsEnrollmentScopeSchema.extend({ diagnosisProviderSha256: sha256Schema.optional() });
 const operationsInstallationSchema = operationsWorkflowScopeSchema.extend({ readKey: whiskersReadKeySchema });
+const komodoCredential = z.string().min(1).max(512).regex(/^[!-~]+$/);
+const komodoReader = z.strictObject({ actorId: komodoResourceIdSchema, key: komodoCredential, secret: komodoCredential });
 export type OperationsEnrollmentScope = Readonly<z.infer<typeof operationsEnrollmentScopeSchema>>;
 export type OperationsInstallation = Readonly<z.infer<typeof operationsInstallationSchema>>;
 export type OperationsWorkflowScope = Readonly<z.infer<typeof operationsWorkflowScopeSchema>>;
@@ -119,22 +121,40 @@ export function releaseWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
   return { ...worker, runner, installed, tools, credentials };
 }
 
-export function restartWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
-  const worker = sharedWorkerConfig(env);
-  const installed = operationsEnrollmentScopeSchema.extend({ mappingSha256: sha256Schema }).parse({
+function operationsEffectTarget(env: NodeJS.ProcessEnv) {
+  return operationsEnrollmentScopeSchema.extend({ mappingSha256: sha256Schema }).parse({
     environmentId: env.ITERVANE_OPERATIONS_ENVIRONMENT_ID, enrollmentSha256: env.ITERVANE_OPERATIONS_ENROLLMENT_SHA256,
     mappingSha256: env.ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256,
   });
+}
+
+export function restartWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
+  const worker = sharedWorkerConfig(env);
+  const installed = operationsEffectTarget(env);
   const files = z.strictObject({ installation: installationFile, guardrails: installationFile, roles: installationFile }).parse({
     installation: env.ITERVANE_RESTART_INSTALLATION_FILE, guardrails: env.ITERVANE_RESTART_GUARDRAILS_FILE, roles: env.ITERVANE_RESTART_ROLES_FILE,
   });
   const writeKey = whiskersMcpKeySchema.parse(env.ITERVANE_RESTART_WHISKERS_WRITE_KEY);
-  const credential = z.string().min(1).max(512).regex(/^[!-~]+$/);
-  const komodo = z.strictObject({ actorId: komodoResourceIdSchema, key: credential, secret: credential }).parse({
+  const komodo = komodoReader.parse({
     actorId: env.ITERVANE_RESTART_KOMODO_READER_ID, key: env.ITERVANE_RESTART_KOMODO_READER_KEY, secret: env.ITERVANE_RESTART_KOMODO_READER_SECRET,
   });
   const probeSecret = z.string().min(1).max(1024).parse(env.ITERVANE_RESTART_PROBE_SECRET);
   return { ...worker, installed, files, writeKey, komodo, probeSecret };
+}
+
+export function restoreWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
+  const worker = sharedWorkerConfig(env);
+  const installed = operationsEffectTarget(env);
+  const writer = z.strictObject({ key: komodoCredential, secret: komodoCredential }).parse({
+    key: env.ITERVANE_RESTORE_KOMODO_WRITER_KEY, secret: env.ITERVANE_RESTORE_KOMODO_WRITER_SECRET,
+  });
+  const reader = komodoReader.parse({
+    actorId: env.ITERVANE_RESTORE_KOMODO_READER_ID, key: env.ITERVANE_RESTORE_KOMODO_READER_KEY,
+    secret: env.ITERVANE_RESTORE_KOMODO_READER_SECRET,
+  });
+  if (writer.key === reader.key) throw new Error('operations_restore_distinct_credentials_required');
+  const probeSecret = z.string().min(1).max(1024).parse(env.ITERVANE_RESTORE_PROBE_SECRET);
+  return { ...worker, installed, writer, reader, probeSecret };
 }
 
 export function migrationConfig(env: NodeJS.ProcessEnv = process.env) {

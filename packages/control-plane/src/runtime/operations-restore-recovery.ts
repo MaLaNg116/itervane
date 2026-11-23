@@ -110,7 +110,7 @@ export async function finishRestoreRecovery(tx: Transaction, database: Database,
     workerId, reason, operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: attempt.fence,
       recoveryAttempt: attempt.attempt, ...(proofSha256 ? { recoverySha256: proofSha256 } : {}) },
   });
-  if (retry) await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation, 4);
+  if (retry) await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation, 'rollback', 4);
   await clearSlot(tx);
   return state;
 }

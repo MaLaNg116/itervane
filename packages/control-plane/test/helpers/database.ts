@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
-import { formalReleaseQueue, openDatabase, operationsExecutionQueue, queueName, releaseFixtureQueue } from '../../src/persistence/database.js';
+import { formalReleaseQueue, openDatabase, operationsExecutionQueue, operationsRestoreQueue, queueName, releaseFixtureQueue } from '../../src/persistence/database.js';
 import { migrateDatabase } from '../../src/persistence/migrate.js';
 
 export async function databaseFixture(base = process.env.DATABASE_URL) {
@@ -61,6 +61,7 @@ export async function databaseFixture(base = process.env.DATABASE_URL) {
         await runtime.boss.deleteAllJobs(releaseFixtureQueue);
         await runtime.boss.deleteAllJobs(formalReleaseQueue);
         await runtime.boss.deleteAllJobs(operationsExecutionQueue);
+        await runtime.boss.deleteAllJobs(operationsRestoreQueue);
         await control.query(`TRUNCATE itervane.operations_restore_recoveries, itervane.operations_restore_steps, itervane.operations_restart_recoveries, itervane.operations_restart_resumes, itervane.operations_restart_requests, itervane.operations_restart_installations, itervane.operations_execution_intents, itervane.operations_execution_schedules, itervane.operations_executions, itervane.operations_decisions, itervane.operations_proposals, itervane.operations_diagnosis_results, itervane.operations_diagnosis_runtime, itervane.operations_diagnosis_reads, itervane.operations_diagnosis_inputs, itervane.operations_observations,
           itervane.operations_requests, itervane.operations_targets, itervane.formal_release_rollout_attempts, itervane.formal_release_steps, itervane.release_operations, itervane.release_decisions, itervane.release_candidates, itervane.formal_release_targets, itervane.preaudits, itervane.execution_slot, itervane.formal_repair_retries, itervane.formal_verification_results, itervane.formal_verification_runtime, itervane.formal_rescan_attempts, itervane.formal_verification_inputs, itervane.formal_repair_results, itervane.formal_repair_attempts, itervane.formal_repair_operations, itervane.formal_repair_runtime, itervane.formal_repair_inputs, itervane.formal_audit_results, itervane.formal_audit_runtime, itervane.formal_audit_inputs, itervane.inspection_attempts, itervane.inspection_plans, itervane.checkpoint_write_receipts, itervane.tool_calls, itervane.run_runtime, itervane.task_events, itervane.task_runs, itervane.tasks,
           itervane.environments, itervane.applications, itervane.repositories, itervane.project_members,
