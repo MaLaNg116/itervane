@@ -20,11 +20,13 @@ const scope = qualifiedInspectionScopeSchema.omit({ planSha256: true }).extend({
   runnerImageSha256: sha256Schema, scannerInputsSha256: sha256Schema,
   buildProfileSha256: sha256Schema.optional(),
   runStandardBaseline: z.literal(true).optional(),
+  healthFollowup: z.literal(true).optional(),
   ociInputsSha256: sha256Schema.optional(),
   retainStandardImage: z.literal(true).optional(),
   commandSha256: sha256Schema, commandBytes: z.int().positive().max(verificationCommandByteLimit),
 });
-export const qualifiedVerificationRequestSchema = scope.extend({ origin: z.string().min(1).max(768) });
+export const qualifiedVerificationRequestSchema = scope.extend({ origin: z.string().min(1).max(768) })
+  .refine(request => !request.healthFollowup || request.runStandardBaseline === true);
 export type QualifiedVerificationRequest = z.infer<typeof qualifiedVerificationRequestSchema>;
 
 export const qualifiedGuestVerificationProofSchema = qualifiedInspectionSnapshotSchema.extend({

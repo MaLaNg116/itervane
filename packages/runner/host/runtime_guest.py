@@ -62,6 +62,8 @@ def materialize(request, profile):
     os.chmod(project, 0o2750)
     inputs = {"subjectManifestSha256": request["subjectManifestSha256"], "lockSha256": profile["lockSha256"],
               "packageSha256": profile["packageSha256"], "backendSha256": backend["sha256"], "distSha256": output["sha256"]}
+    if request.get("healthFollowup") is True:
+        inputs["healthFollowup"] = True
     plan = {**inputs, "baselineSha256": request["baselineSha256"], "runtimeInputsSha256": hashlib.sha256(canonical(inputs)).hexdigest(),
             "port": PORT, "version": "candidate-" + request["subjectManifestSha256"][:16]}
     write_once(GATE / "plan.json", canonical(plan), 0o444)
@@ -134,7 +136,13 @@ def observe_and_stop(plan):
         report = json.loads(read_bytes(PROBE_RESULT, 4096))
         if report["runtimeInputsSha256"] != plan["runtimeInputsSha256"] or report["status"] not in ("passed", "failed"):
             raise ValueError("baseline report binding")
+        if ("healthFollowup" in report) != (plan.get("healthFollowup") is True):
+            raise ValueError("health follow-up binding")
         outcome = {"status": report["status"], "runtimeInputsSha256": plan["runtimeInputsSha256"], "checks": report["checks"]}
+        if "healthFollowup" in report:
+            if not isinstance(report["healthFollowup"], dict) or report["healthFollowup"].get("status") not in ("passed", "unhealthy", "unavailable"):
+                raise ValueError("invalid health follow-up outcome")
+            outcome["healthFollowup"] = report["healthFollowup"]
     except (OSError, ValueError, KeyError, subprocess.SubprocessError):
         pass
     stopped = False
@@ -188,6 +196,8 @@ def supervise():
     if build.get("status") != "built" or any(build.get(key) != value for key, value in binding.items()):
         raise ValueError("runtime build binding")
     request = {**binding, "distSha256": build["dist"]["sha256"]}
+    if launch.get("healthFollowup") is True:
+        request["healthFollowup"] = True
     if "ociInputsSha256" in launch:
         request.update({name: launch[name] for name in ("ociInputsSha256", "scannerInputsSha256")})
         if launch.get("retainStandardImage") is True:
@@ -204,7 +214,8 @@ def supervise():
             plan = materialize(request, profile)
             if systemctl("start", PREP, timeout=32).returncode == 0:
                 outcome = observe_and_stop(plan)
-                if outcome["status"] == "passed" and "ociInputsSha256" in request:
+                followup = outcome.get("healthFollowup")
+                if outcome["status"] == "passed" and "ociInputsSha256" in request and (not followup or followup["status"] == "passed"):
                     outcome["image"] = observe_image(plan, request, profile)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError):
         pass

@@ -95,11 +95,12 @@ export function finishFormalVerification(evidence: readonly AgentEvidence[], raw
   const unverified: VerificationSection[] = [];
   if (source.result.status !== 'compared') unverified.push('source');
   if (build.result.status !== 'built' && build.result.status !== 'failed') unverified.push('build');
-  if (baseline.result.status !== 'passed' && baseline.result.status !== 'failed') unverified.push('baseline');
+  const followup = 'healthFollowup' in baseline.result ? baseline.result.healthFollowup : undefined;
+  if ((baseline.result.status !== 'passed' && baseline.result.status !== 'failed') || followup?.status === 'unavailable') unverified.push('baseline');
   if (image?.result.status !== 'scanned' || !image.result.archive) unverified.push('image');
 
   let outcome: 'observed' | 'checks_failed' | 'source_findings' | 'incomplete' = 'observed';
-  if (build.result.status === 'failed' || baseline.result.status === 'failed') outcome = 'checks_failed';
+  if (build.result.status === 'failed' || baseline.result.status === 'failed' || followup?.status === 'unhealthy') outcome = 'checks_failed';
   else if (source.result.status === 'compared' && (source.result.introduced > 0 || source.result.remaining > 0)) outcome = 'source_findings';
   else if (unverified.length) outcome = 'incomplete';
 

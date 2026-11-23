@@ -35,10 +35,16 @@ const subjectSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 
+const healthRegressionSchema = z.strictObject({
+  proposalId: idSchema, diagnosisSha256: sha256Schema, publicationProofSha256: sha256Schema,
+  incidentId: idSchema, sampleSequence: z.int().positive(), sampleEvidenceSha256: sha256Schema,
+});
+
 export const formalVerificationInputSchema = formalRepairInputSchema.omit({ findingIds: true }).extend({
   profile: verificationProfileSchema,
   subject: subjectSchema,
-}).refine(({ subject, inspection }) => subject.kind === 'original'
-  ? subject.manifestSha256 === inspection.snapshotSha256
-  : subject.manifestSha256 !== inspection.snapshotSha256);
+  healthRegression: healthRegressionSchema.optional(),
+}).refine(({ subject, inspection, profile, healthRegression }) =>
+  (subject.kind === 'original') === (subject.manifestSha256 === inspection.snapshotSha256)
+  && (!healthRegression || profile.runStandardBaseline === true));
 export type FormalVerificationInput = z.infer<typeof formalVerificationInputSchema>;

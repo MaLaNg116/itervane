@@ -338,6 +338,29 @@ class ControllerTest(unittest.TestCase):
         self.assertFalse(controller.build_proof_matches({key: val for key, val in request.items() if key != controller.RUN_BASELINE},
                                                        {"runId": domain, "build": scoped}))
 
+    def test_health_followup_requires_bound_provenance_and_a_standard_baseline(self):
+        data, frozen = verification_request()
+        flags = {controller.BUILD_PROFILE: "1" * 64, controller.RUN_BASELINE: True}
+        frozen["profile"].update(flags)
+        frozen["healthRegression"] = {
+            "proposalId": str(uuid.uuid4()), "incidentId": str(uuid.uuid4()), "sampleSequence": 1,
+            "diagnosisSha256": "2" * 64, "publicationProofSha256": "3" * 64, "sampleEvidenceSha256": "4" * 64,
+        }
+        command = {"input": frozen, "repair": None}
+        encoded = json.dumps(command).encode()
+        data.update(flags, healthFollowup=True, verificationInputSha256=controller.json_digest(frozen),
+                    commandSha256=hashlib.sha256(encoded).hexdigest(), commandBytes=len(encoded))
+        parsed = controller.parse_request(json.dumps(data).encode() + b"\n")
+        self.assertEqual(parsed, data)
+        controller.require_verification_command(command, data)
+        for field in (controller.HEALTH_FOLLOWUP, controller.RUN_BASELINE):
+            missing = {key: value for key, value in data.items() if key != field}
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                if field == controller.HEALTH_FOLLOWUP:
+                    controller.require_verification_command(command, missing)
+                else:
+                    controller.parse_request(json.dumps(missing).encode() + b"\n")
+
     def test_oci_requires_its_own_flag_and_a_passing_bound_baseline(self):
         request, frozen = verification_request()
         flags = {controller.BUILD_PROFILE: "1" * 64, controller.RUN_BASELINE: True, controller.OCI_INPUTS: "2" * 64}

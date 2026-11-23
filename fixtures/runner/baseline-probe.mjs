@@ -26,7 +26,7 @@ try {
   }
   await waitForApplication(plan.port);
   const { checkStandardWebApp } = await import('./baseline.mjs');
-  const result = await checkStandardWebApp({ port: plan.port, expectedVersion: plan.version });
+  const result = await checkStandardWebApp({ port: plan.port, expectedVersion: plan.version, healthFollowup: plan.healthFollowup === true });
   const pending = output + '/checks.pending';
   writeFileSync(pending, JSON.stringify({ ...result, runtimeInputsSha256: plan.runtimeInputsSha256 }), { flag: 'wx', mode: 0o440 });
   renameSync(pending, output + '/checks.json');

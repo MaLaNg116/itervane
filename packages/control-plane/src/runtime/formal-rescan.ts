@@ -10,10 +10,10 @@ import {
 } from '@itervane/runner';
 import { formalRescanAttempts, repositories } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
-import { ExecutionLost, type ExecutionScope } from './authority.js';
+import { ExecutionLost, type ExecutionScope, type TaskRow } from './authority.js';
 import type { ExecutionCoordinator } from './coordinator.js';
 import { projectVerificationEvidence } from './verification-evidence.js';
-import { prepareFormalVerificationInput } from './verification-input.js';
+import { prepareFormalVerificationInput, readLinkedHealthRegression } from './verification-input.js';
 
 export type RescanRunner = Pick<QualifiedInspectionClient, 'observe' | 'verify'>;
 type Attempt = typeof formalRescanAttempts.$inferSelect;
@@ -97,12 +97,14 @@ async function reserve(tx: Transaction, scope: ExecutionScope, basis: Basis, sta
   return { plan: dispatch(basis, attempt) };
 }
 
-async function requireReservation(tx: Transaction, { request, attempt }: ReturnType<typeof dispatch>) {
+async function requireReservation(tx: Transaction, task: TaskRow, { request, attempt, basis }: ReturnType<typeof dispatch>) {
   const [active] = await tx.select({ state: formalRescanAttempts.state }).from(formalRescanAttempts)
     .where(eq(formalRescanAttempts.requestId, attempt.requestId));
   const [repo] = await tx.select({ origin: repositories.url }).from(repositories)
     .where(and(eq(repositories.id, request.repositoryId), eq(repositories.projectId, request.projectId))).for('share');
   if (active?.state !== 'reserved' || repo?.origin !== request.origin) throw new ExecutionLost();
+  const regression = basis.document.healthRegression;
+  if (regression && JSON.stringify(await readLinkedHealthRegression(tx, task)) !== JSON.stringify(regression)) throw new ExecutionLost();
 }
 
 /** Reserve before dispatch and publish only a receipt bound to the current authorized execution. */
@@ -123,7 +125,7 @@ export async function runFormalRescan(coordinator: ExecutionCoordinator, scope: 
   const authorize = async () => {
     try {
       signal?.throwIfAborted();
-      await coordinator.withLease(scope, tx => requireReservation(tx, plan));
+      await coordinator.withLease(scope, (tx, { task }) => requireReservation(tx, task, plan));
       pulsed = true;
     } catch (error) {
       denied = { error };
@@ -140,9 +142,9 @@ export async function runFormalRescan(coordinator: ExecutionCoordinator, scope: 
   try {
     if (denied) throw denied.error;
     signal?.throwIfAborted();
-    return await coordinator.withLease(scope, async tx => {
+    return await coordinator.withLease(scope, async (tx, { task }) => {
       signal?.throwIfAborted();
-      await requireReservation(tx, plan);
+      await requireReservation(tx, task, plan);
       await settle(tx, scope, attempt, outcome.kind === 'scanned' ? 'recorded' : cleanup,
         outcome.kind === 'scanned' ? outcome.receipt : undefined);
       signal?.throwIfAborted();

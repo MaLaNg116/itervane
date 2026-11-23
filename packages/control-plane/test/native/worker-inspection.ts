@@ -75,6 +75,7 @@ const cleanVerificationCommit = '49799e18f4f63cf22767a9cd8054cab979b9b6d2';
 const standardBuildCommit = '3a719ca44f306d30cdf2d27e9a6d3b954ed656f0';
 const standardLockDriftCommit = '03e5d18a27d23960f040c0d5d70afefac15ec46e';
 const standardHealthRegressionCommit = '1eac5c8776c6e81613cfb5adf6edd2cd6b163ba3';
+const standardHealthFollowupDefectCommit = 'bd2d14e3485d30429740d4403ac0bd36fc40420d';
 const repairRetryCommit = '39e9b7f34fdd01ec55fe4dda5358ffce5d68cbf8';
 const dependencyReleaseCommit = '37ac62431fd9bf7b2a6c0f4b3f15d5d5f1f030b8';
 const runtimeFaultCommit = '5b9db1015069be891233231a7b947831ac46fe39';
@@ -586,7 +587,7 @@ async function probe() {
         return { current, after, generation: repair.result.generation, dependencyPatchSha256: repair.result.candidate.patchSha256 };
       };
       const buildFixture = async (revision: string, outcome: 'built' | 'profile_mismatch' | 'offline_install',
-        baselineOutcome?: 'passed' | 'failed') => {
+        baselineOutcome?: 'passed' | 'failed', followup?: 'passed' | 'unhealthy') => {
         phase = `standard_build_audit_${outcome}_worker`;
         const profile = baselineOutcome ? automaticProfile : undefined;
         const failed = baselineOutcome === 'failed';
@@ -629,7 +630,7 @@ async function probe() {
         phase = baselineOutcome ? `standard_baseline_${baselineOutcome}` : `standard_build_execution_${outcome}`;
         const fact: Record<string, unknown> = profile ? await recordedVerification(task, failed)
           : await rescanFixture(task, null, [build.profile, build.baseline, outcome,
-            ...(baselineOutcome ? [baselineOutcome, ...(build.oci ? [build.oci] : [])] : [])]);
+            ...(baselineOutcome ? [baselineOutcome, ...(followup ? [`followup-${followup}`] : build.oci ? [build.oci] : [])] : [])]);
         const evidence = qualifiedStandardBuildProofSchema.parse(fact.build);
         equal(evidence.baselineSha256, build.baseline);
         equal(evidence.subjectManifestSha256, snapshotSha256);
@@ -1617,6 +1618,18 @@ async function probe() {
       ok(failed.checks.slice(1).every(check => check.status === 'passed'));
       const drift = await buildFixture(standardLockDriftCommit, 'profile_mismatch');
       equal(drift.build.status, 'blocked');
+      let healthFollowup;
+      if (buildMode === 'standard-build') {
+        const healthy = await buildFixture(standardBuildCommit, 'built', 'passed', 'passed');
+        const reproduced = await buildFixture(standardHealthFollowupDefectCommit, 'built', 'passed', 'unhealthy');
+        ok(healthy.build.status === 'built' && healthy.build.baseline?.status === 'passed');
+        ok(reproduced.build.status === 'built' && reproduced.build.baseline?.status === 'passed');
+        equal(healthy.build.baseline.healthFollowup?.status, 'passed');
+        equal(reproduced.build.baseline.healthFollowup?.status, 'unhealthy');
+        notEqual(healthy.build.runId, reproduced.build.runId);
+        notEqual(healthy.build.baseline.runtimeInputsSha256, reproduced.build.baseline.runtimeInputsSha256);
+        healthFollowup = { healthy, reproduced };
+      }
       let retry;
       if (automaticProfile) {
         const { current, before, after, retrySha256, generation } = await repairRetryFixture(automaticProfile);
@@ -1769,7 +1782,7 @@ async function probe() {
           approval: { operationId, decisionVersion: confirmed.decisionVersion } };
       }
       return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
-        built, healthRegression, drift, ...(retry ? { retry } : {}), stagedFilesRemaining: false };
+        built, healthRegression, drift, ...(healthFollowup ? { healthFollowup } : {}), ...(retry ? { retry } : {}), stagedFilesRemaining: false };
     }
 
     phase = 'scan_and_shared_reads';

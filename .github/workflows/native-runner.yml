@@ -182,6 +182,19 @@ jobs:
             bash fixtures/ingress/prepare-proxies.sh "$ITERVANE_NATIVE_RELEASE_PROXIES"
           fi
           bash fixtures/runner/run-native-session.sh "$PROBE_DIRECTORY" "$NATIVE_SCENARIO"
+      - name: Require native healthy and unhealthy follow-up receipts
+        if: matrix.scenario == 'standard-build'
+        env:
+          KVM_AVAILABLE: ${{ steps.capability.outputs.available }}
+        run: |
+          test "$KVM_AVAILABLE" = true
+          jq -e '.healthFollowup as $proof |
+            $proof.healthy.build.baseline.healthFollowup.status == "passed" and
+            $proof.reproduced.build.baseline.healthFollowup == {"status":"unhealthy", "code":"application_unhealthy", "statusCode":503} and
+            $proof.healthy.build.runId != $proof.reproduced.build.runId and
+            ([$proof.healthy, $proof.reproduced] | all(.cleanupConfirmed and .build.baseline.appExited and
+              .build.baseline.status == "passed" and (.build.baseline.checks | length) == 5 and .build.baseline.checks[0].statusCode == 200))' \
+            .reports/p0/runner-worker-build.json >/dev/null
       - name: Require the verified protected release on the dedicated scenario
         if: startsWith(matrix.scenario, 'protected-release')
         env:

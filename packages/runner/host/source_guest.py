@@ -199,10 +199,12 @@ def read_inspection(receipt, command):
     return proof
 
 
-def observe_standard_baseline(build, profile, wire):
+def observe_standard_baseline(build, profile, wire, health_followup=False):
     names = ("runId", "verificationInputSha256", "subjectManifestSha256", "buildProfileSha256", "baselineSha256", "projectionSha256")
     request = {name: build[name] for name in names}
     request["distSha256"] = build["dist"]["sha256"]
+    if health_followup:
+        request["healthFollowup"] = True
     if "ociInputsSha256" in profile:
         request.update({name: profile[name] for name in ("ociInputsSha256", "scannerInputsSha256")})
         if profile.get("retainStandardImage") is True:
@@ -251,7 +253,7 @@ def with_standard_build(receipt, proof, command, wire):
         or outcome.get("runId") != proof["runId"] or outcome.get("subjectManifestSha256") != target):
         raise GuestFailure("scan-integrity")
     if profile.get("runStandardBaseline") is True and outcome.get("status") == "built":
-        outcome["baseline"] = observe_standard_baseline(outcome, profile, wire)
+        outcome["baseline"] = observe_standard_baseline(outcome, profile, wire, "healthRegression" in frozen["input"])
     proof["build"] = outcome
     serialized = json.dumps(proof, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(serialized) > MAX_VERIFICATION_RECEIPT:
