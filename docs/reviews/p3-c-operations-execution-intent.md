@@ -8,3 +8,5 @@
 4. `bf11e12` 覆盖共用执行槽、丢失唤醒、无效旧代次、意图事件写入失败、重复登记、并发撤销、换绑与授权变化。期限用例比较了预留、排队、领取和已有意图四种状态下的发布互斥。 [领取与接管真库用例](https://github.com/MaLaNg116/itervane/blob/bf11e12898948a5fe2a53e558c40fff8360133d4/packages/control-plane/test/integration/inspections.test.ts#L2869) · [期限用例](https://github.com/MaLaNg116/itervane/blob/bf11e12898948a5fe2a53e558c40fff8360133d4/packages/control-plane/test/integration/inspections.test.ts#L3210)
 
 本机 TypeScript、229 项单元测试、18 项 PostgreSQL 17.12 专项及 Drizzle 迁移一致性通过。领取和接管八项在同一组运行通过。入队、互斥和到期十项中，排队到期用例初次遇到发布夹具的数据库时钟回拨，单项复跑通过，时序问题另行修订。实际 Whiskers 写入、下游人工批准回执及独立健康核验由 C2c 接入。 [托管检查](https://github.com/MaLaNg116/itervane/pull/90/checks)
+
+#90 合入前复核版本为 `1792d0cd7a6d787f7d589e14b0e07401be57f851`。17 项托管检查通过。真实受保护应用记录的指纹为 `d98e5cd155541dbe4f2c6bbc1364e8f6e55c9e745711061d1868e1d30463ea66`，回执覆盖同一发布目标、四类诊断证据、一次发布派发和执行槽释放。合入提交为 `014e39da9b7e01f3d571babfaa6dcb7df1b26a72`。 [KVM 实证](https://github.com/MaLaNg116/itervane/actions/runs/45009360624) · [合入记录](https://github.com/MaLaNg116/itervane/pull/90)

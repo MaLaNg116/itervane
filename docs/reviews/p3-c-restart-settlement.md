@@ -10,4 +10,6 @@
 
 TypeScript、244 项单元、PostgreSQL 17.12 九项专项和 Drizzle 迁移一致性通过。真库使用限定的外部证据夹具，验证审批、围栏、持久化和队列行为。中英文任务结算事件使用同一真库记录。 [托管检查](https://github.com/MaLaNg116/itervane/pull/99/checks) · [KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/45006369277)
 
+同步已合入 #98 的主线后，复核 `4a95c14e106e2afde53764396bb137082676f038` 的独立核对权限、失败保留与结算事务。16 项托管检查通过，包含九项原生 KVM；最终合入 `fbc8fc1e0518eb7e1c0dfa9a97f324ce3c480c8c`。 [固定提交检查](https://github.com/MaLaNg116/itervane/pull/99/checks) · [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45042655365) · [合入记录](https://github.com/MaLaNg116/itervane/commit/fbc8fc1e0518eb7e1c0dfa9a97f324ce3c480c8c)
+
 C2c3c 将专用 Writer、只读健康身份、平台人审与原生 Operator 接入实际安装，交付有授权的回执查询，并在同一个已发布标准应用完成真实审批、一次重启及独立恢复验收。

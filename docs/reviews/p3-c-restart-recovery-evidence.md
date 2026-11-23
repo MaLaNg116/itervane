@@ -15,3 +15,5 @@ TypeScript 和 244 项单元通过。原生 Komodo 八项检查通过，含 `res
 初轮 KVM 在恢复核验之前的日志调查停止。`829f944` 同步 #96 对主线只读工具名单的恢复，继续验证同一标准应用，包括 Traefik、Keycloak 与新启动的容器。 [首轮失败作业](https://github.com/MaLaNg116/itervane/actions/runs/45003300535/job/137149313859) · [复验检查](https://github.com/MaLaNg116/itervane/pull/97/checks)
 
 前置 #96 的 19 项原生检验也已通过，其中 `sealed-writer` 验证了正式装载器读取实际挂载的 Confirm 策略和角色文件。C2c3b 将停止锚点同发送意图持久化并提交恢复结算。C2c3c 在同一标准应用接通真实 Whiskers 人审、写派发、查询和恢复验证。 [Whiskers 报告](https://github.com/MaLaNg116/itervane/actions/runs/45002323151)
+
+合入前复核了同一容器的停止和启动证据、纳秒精度、镜像与网络绑定，以及访问保护和健康核验前后的实例一致性。固定复核版本 `be55e5e22472c3bd0887449d1bc3ecf24d2c7048` 通过全部 17 项检查，已合入 `60cd1aff0756032c838afa230c7d20dc99550e3a`。 [常规 PR](https://github.com/MaLaNg116/itervane/actions/runs/45033679152) · [推送检查](https://github.com/MaLaNg116/itervane/actions/runs/45033674806) · [九项托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45033674814) · [原生 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/45035506932) · [OCI 输入](https://github.com/MaLaNg116/itervane/actions/runs/45033674824)
