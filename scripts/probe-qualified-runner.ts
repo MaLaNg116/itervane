@@ -5,6 +5,8 @@ import { createInspectionPlan, QualifiedInspectionClient, sha256 } from '@iterva
 import { qualifiedInspectionScopeSchema, sha256Schema, type QualifiedInspectionRequest } from '@itervane/contracts';
 
 const commit = '9167604c888416d7b6518e1c76485d7308cffb5c';
+const materializedCommit = 'fbfef7c887323132fac193a4c0b538cc97f60995';
+const differentMaterializedCommit = '93ce12b8bcba237ffd98412a188584b225bb0854';
 const origin = 'https://github.com/MaLaNg116/itervane.git';
 const example = 'fixtures/runner/inspection-input';
 
@@ -65,10 +67,27 @@ async function probeRepair(client: QualifiedInspectionClient, workspaceSha256: s
       || change.beforeSha256 !== before || change.afterSha256 !== after
       || change.beforeBytes !== 391 || change.afterBytes !== 436 || snapshot.files !== 305
       || snapshot.tree !== '8eef89792444aea73d0aa90b87e552bbfc2d25d9') throw new Error('controller_probe_repair_bytes');
+  const readMaterialized = async (revision: string) => {
+    const taskId = randomUUID(); const runId = randomUUID();
+    const requestedSource = { repositoryId: source.repositoryId, commit: revision };
+    const plan = createInspectionPlan({ taskId, runId, requestedSource });
+    const measured = await client.inspect({ version: 1, taskId, runId, projectId: source.projectId, requestId: randomUUID(),
+      ...requestedSource, origin, planSha256: plan.sha256, generation: 1, fence: 1, workspaceSha256,
+      materializedFrom: { commit, baseSnapshotSha256 },
+    }, async () => {});
+    if (measured.kind !== 'receipt' || !measured.snapshot.materializedCandidateSha256 || !measured.cleanupConfirmed
+        || measured.snapshot.reports.some(report => report.status !== 'completed')) throw new Error('controller_probe_materialized_receipt');
+    return { commit: revision, domainId: measured.domainId, candidateSha256: measured.snapshot.materializedCandidateSha256,
+      cleanupConfirmed: measured.cleanupConfirmed };
+  };
+  const matched = await readMaterialized(materializedCommit);
+  const different = await readMaterialized(differentMaterializedCommit);
+  if (matched.candidateSha256 !== snapshot.candidate.candidateManifestSha256 || different.candidateSha256 === matched.candidateSha256
+      || new Set([matched.domainId, different.domainId, domainId]).size !== 3) throw new Error('controller_probe_materialized_content');
   console.log(JSON.stringify({
     kind: 'qualified-repair', scope: result.scope, domainId, cleanupConfirmed, readOnly: snapshot.readOnly, offline: snapshot.offline,
     candidate: snapshot.candidate, stale: { domainId: stale.domainId, issue: stale.issue, cleanup: stale.cleanup },
-    noLease: { cleanup: denied.cleanup, code: denied.code }, pulses,
+    noLease: { cleanup: denied.cleanup, code: denied.code }, pulses, materialized: { matched, different },
     en: 'The authorized Worker received exact repair evidence after VM cleanup.',
     zh: '已授权的 Worker 在虚拟机回收后收到精确的修复回执。',
   }));

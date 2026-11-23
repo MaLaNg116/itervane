@@ -3276,6 +3276,86 @@ it('requires the diagnosed publication to remain current when confirming a linke
   expect(await database.storage.db.select().from(operationsRepairAdmissions)).toHaveLength(0);
 }, 45_000);
 
+it('rejects confirmation of a linked repair after the frozen proposal expires', async () => {
+  await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_results
+    ALTER COLUMN created_at SET DEFAULT clock_timestamp() - interval '1796 seconds'`);
+  const fixture = await proposedLinkedRepair().finally(() =>
+    database.admin.query('ALTER TABLE itervane.operations_diagnosis_results ALTER COLUMN created_at SET DEFAULT now()'));
+  await database.admin.query("SELECT pg_sleep_until($1::timestamptz + interval '20 milliseconds')", [fixture.proposal.validUntil]);
+  await expect(fixture.confirm()).rejects.toMatchObject({ code: 'unsupported_state' });
+  expect(await database.storage.db.select().from(operationsRepairAdmissions)).toHaveLength(0);
+}, 45_000);
+
+it.each(['matched', 'different content', 'changed origin'] as const)('gates linked repair audit on the deployed source (%s)', async variant => {
+  const fixture = await proposedLinkedRepair();
+  const { task: linked } = await fixture.confirm();
+  if (variant === 'changed origin') await database.storage.db.update(repositories).set({ url: 'https://source.example.invalid/replaced.git' })
+    .where(eq(repositories.id, linked.source.repositoryId));
+  const inspect = vi.fn<InspectionRunner['inspect']>(async (request, authorize) => {
+    await authorize();
+    const receipt = testReceipt(request);
+    if (variant === 'different content') {
+      receipt.snapshot.manifestSha256 = sha256('different inspected files');
+      for (const report of receipt.snapshot.reports) report.snapshotSha256 = receipt.snapshot.manifestSha256;
+    }
+    return receipt;
+  });
+  const audit = vi.fn(concludeAudit);
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { runner: inspectionRunner(inspect), auditModel: auditModel(audit) });
+  try { await processAdmittedTestTask(worker); } finally { await worker.close(); }
+  const event = (await fixture.fixture.taskService.events(identity, linked.id, 20)).at(-1);
+  expect(inspect).toHaveBeenCalledTimes(variant === 'changed origin' ? 0 : 1);
+  const stored = await database.storage.db.select().from(formalAuditResults).where(eq(formalAuditResults.runId, linked.runId));
+  if (variant === 'matched') {
+    expect(audit).toHaveBeenCalled();
+    expect(stored).toHaveLength(1);
+    expect(event).toMatchObject({ type: 'task.audit_recorded', reason: 'audit_ready' });
+  } else {
+    expect(audit).not.toHaveBeenCalled();
+    expect(stored).toHaveLength(0);
+    expect(event).toMatchObject({ type: 'task.inspection_paused', reason: 'inspection_source_mismatch', state: 'waiting_input' });
+    const inspection = await new InspectionService(database.storage).get(identity, linked.id);
+    expect(inspection).toMatchObject({ status: 'blocked', reason: 'inspection_source_mismatch', scanCompleted: false });
+  }
+}, 45_000);
+
+it('rechecks the linked repair environment and original publication before release approval', async () => {
+  const fixture = await proposedLinkedRepair();
+  const { task: linked } = await fixture.confirm();
+  const reviewing = scriptedVerification('zh-CN');
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, {
+    runner: inspectionRunner(async (request, authorize) => { await authorize(); return testReceipt(request); }),
+    auditModel: auditModel(request => {
+      const context = request.conversation[0];
+      return context?.kind === 'user' && JSON.parse(context.text).role === 'verify' ? reviewing.complete(request) : concludeAudit(request);
+    }),
+    verification: { profile: standardVerificationProfile, runner: {
+      observe: async () => idleRepairRunner(),
+      verify: async (coordinates, input, repair, authorize) => {
+        await authorize();
+        const [stored] = await database.storage.db.select().from(inspectionAttempts).where(eq(inspectionAttempts.runId, linked.runId));
+        const original = qualifiedInspectionResponseSchema.parse(stored?.receipt);
+        if (original.kind !== 'receipt') throw new Error('Missing verified linked source');
+        const request = prepareQualifiedVerificationRequest(coordinates, canonicalVerificationCommand({ input, repair }));
+        return standardVerificationReceipt(original, request, input);
+      },
+      verifyArchive: async archive => ({ kind: 'archive_verified', version: 1, runnerImageSha256: imageSha256, archive }),
+    } },
+  });
+  try { await processAdmittedTestTask(worker); } finally { await worker.close(); }
+  const current = await fixture.fixture.taskService.get(identity, linked.id);
+  const release = new FormalReleaseService(database.storage, fixture.approver.clientId);
+  const input = { environmentId: fixture.fixture.scope.environmentId, expectedVersion: current.version };
+  await expect(release.freeze(identity, linked.id, { ...input, environmentId: randomUUID() }, 'zh-CN'))
+    .rejects.toMatchObject({ code: 'version_conflict' });
+  const { candidate } = await release.freeze(identity, linked.id, input, 'zh-CN');
+  const replacement = await (await competingPublication(fixture.fixture)).confirm();
+  await finishTestRollout(await parkForRollout(replacement, true, 'd'.repeat(24)), 'standard-v3');
+  await expect(release.decide(fixture.approver, candidate.id, { action: 'confirm', fingerprint: candidate.fingerprint,
+    expectedVersion: 0, idempotencyKey: randomUUID() }, 'zh-CN')).rejects.toMatchObject({ code: 'version_conflict' });
+  expect(await database.storage.db.select().from(releaseDecisions).where(eq(releaseDecisions.candidateId, candidate.id))).toEqual([]);
+}, 45_000);
+
 it('freezes one immutable restart proposal from the settled diagnosis under concurrent requests', async () => {
   const current = await settleProposalDiagnosis('restart');
   const { fixture, diagnosis, task, service } = current;
