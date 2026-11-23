@@ -1,10 +1,13 @@
 import { eq } from 'drizzle-orm';
-import { formalRepairResultSchema, formalVerificationInputSchema, type FormalVerificationInput, type VerificationProfile } from '@itervane/contracts';
+import { formalRepairResultSchema, formalVerificationInputSchema, operationsHealthBindingSchema, operationsHealthSignalSchema,
+  type FormalVerificationInput, type VerificationProfile } from '@itervane/contracts';
 import { sha256, type canonicalVerificationCommand } from '@itervane/runner';
-import { formalRepairResults, formalRepairRuntime, formalVerificationInputs } from '../persistence/schema.js';
+import { formalRepairResults, formalRepairRuntime, formalVerificationInputs, operationsHealthSamples } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
 import { inspectionCoverage } from '../service/inspection-evidence.js';
+import { readHealthProbeTarget } from '../service/operations-health.js';
+import { readLinkedOperationsRepair } from '../service/operations-repair-proposals.js';
 import { readPublishedRepairCommand } from '../service/repair-result.js';
 import { verificationProfileFingerprint } from '../service/repair-retry.js';
 import type { ExecutionScope, TaskRow } from './authority.js';
@@ -13,6 +16,25 @@ import { repairBasis } from './repair-execution.js';
 type Basis = Awaited<ReturnType<typeof repairBasis>>;
 
 type Material = { subject: FormalVerificationInput['subject']; repair: ReturnType<typeof canonicalVerificationCommand>['repair'] };
+
+export async function readLinkedHealthRegression(tx: Transaction, task: TaskRow) {
+  const linked = await readLinkedOperationsRepair(tx, task);
+  const incident = linked?.frozen.incident;
+  if (!linked || !incident) return;
+  const [sample] = await tx.select().from(operationsHealthSamples).where(eq(operationsHealthSamples.sequence, incident.sampleSequence));
+  const { target, diagnosis } = linked.frozen;
+  const bindingSha256 = sha256(JSON.stringify(target));
+  if (!sample || sample.incidentId !== incident.id || sample.environmentId !== target.environmentId
+      || sample.bindingSha256 !== bindingSha256
+      || sha256(JSON.stringify(operationsHealthBindingSchema.parse(sample.binding))) !== bindingSha256) throw new DomainError('version_conflict');
+  const signal = operationsHealthSignalSchema.parse(sample.signal);
+  if (signal.status !== 'unhealthy' || signal.reason !== 'application_unhealthy') return;
+  const { binding } = await readHealthProbeTarget(tx, target);
+  if (sha256(JSON.stringify(binding)) !== bindingSha256) throw new DomainError('version_conflict');
+  return { proposalId: linked.admission.proposalId, diagnosisSha256: diagnosis.sha256,
+    publicationProofSha256: target.publicationProofSha256, incidentId: incident.id, sampleSequence: incident.sampleSequence,
+    sampleEvidenceSha256: signal.evidenceSha256 };
+}
 
 async function verificationMaterial(tx: Transaction, { input, scan }: Basis): Promise<Material> {
   const { runId, taskId, projectId, generation, locale, source, inspection, audit, findingIds } = input.document;
@@ -56,7 +78,13 @@ export async function prepareFormalVerificationInput(tx: Transaction, task: Task
   if (basis.input.retry && basis.input.retry.verificationProfileSha256 !== verificationProfileFingerprint(profile)) throw new DomainError('conflict');
   const { subject, repair } = await verificationMaterial(tx, basis);
   const { findingIds: _findingIds, ...base } = basis.input.document;
-  const document = formalVerificationInputSchema.parse({ ...base, profile, subject });
+  const healthRegression = await readLinkedHealthRegression(tx, task);
+  if (healthRegression && !profile.runStandardBaseline) throw new DomainError('unavailable');
+  const { ociInputsSha256: _oci, retainStandardImage: _retain, ...reproductionProfile } = profile;
+  const document = formalVerificationInputSchema.parse({ ...base, subject,
+    profile: healthRegression && subject.kind === 'original' ? reproductionProfile : profile,
+    ...(healthRegression ? { healthRegression } : {}),
+  });
   const hash = sha256(JSON.stringify(document));
   const [stored] = await tx.select().from(formalVerificationInputs).where(eq(formalVerificationInputs.runId, scope.runId));
   if (stored) {

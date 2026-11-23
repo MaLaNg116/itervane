@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { sha256Schema } from './inspection.js';
 import { idSchema, sourceRefSchema } from './primitives.js';
+import { healthFollowupObservationSchema } from './qualified-standard-baseline.js';
 import { ociDigestSchema, qualifiedImageArchiveSchema } from './qualified-standard-image.js';
 
 const count = z.int().min(0).max(4_000);
@@ -38,6 +39,7 @@ export const formalVerificationEvidenceSchema = z.strictObject({
     z.strictObject({
       status: z.enum(['passed', 'failed']), baselineSha256: sha256Schema, runtimeInputsSha256: sha256Schema,
       failures: verificationBaselineFailuresSchema,
+      healthFollowup: healthFollowupObservationSchema.optional(),
     }).refine(baseline => (baseline.status === 'passed') === (baseline.failures.length === 0)),
   ]),
   image: z.discriminatedUnion('status', [
@@ -51,7 +53,8 @@ export const formalVerificationEvidenceSchema = z.strictObject({
       archive: qualifiedImageArchiveSchema.nullable(),
     }),
   ]),
-}).refine(({ baseline, image }) => (image.status !== 'scanned' && image.status !== 'blocked') || baseline.status === 'passed');
+}).refine(({ baseline, image }) => (image.status !== 'scanned' && image.status !== 'blocked')
+  || (baseline.status === 'passed' && (!baseline.healthFollowup || baseline.healthFollowup.status === 'passed')));
 export type FormalVerificationEvidence = z.infer<typeof formalVerificationEvidenceSchema>;
 
 export const verificationSections = ['source', 'build', 'baseline', 'image'] as const;

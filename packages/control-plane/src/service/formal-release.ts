@@ -69,6 +69,7 @@ async function requesterCanWrite(tx: Transaction, task: TaskRow) {
 export function describeVerifiedRelease(verification: NonNullable<Awaited<ReturnType<typeof readPublishedVerification>>>,
   target: typeof formalReleaseTargets.$inferSelect, mapping: FormalReleaseTarget) {
   const { row, input, result } = verification;
+  if (input.healthRegression) return null;
   const evidence = releaseEvidence(result, input.profile, mapping);
   if (!evidence) return null;
   const { source, build, baseline, image, archiveVerification } = evidence;

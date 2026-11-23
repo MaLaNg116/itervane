@@ -8,6 +8,7 @@ import { formalRescanAttempts, formalVerificationInputs, formalVerificationResul
   from '../persistence/schema.js';
 import { appendEvent, clearSlot, ExecutionLost, type ExecutionScope, type TaskRow } from '../runtime/authority.js';
 import { recordedVerificationEvidence } from '../runtime/verification-evidence.js';
+import { readLinkedHealthRegression } from '../runtime/verification-input.js';
 import type { Transaction } from './access.js';
 import { DomainError } from './errors.js';
 import { enqueueRepairRetry, prepareRepairRetry, readRepairRetry } from './repair-retry.js';
@@ -36,6 +37,7 @@ export async function readPublishedVerification(tx: Transaction, task: TaskRow, 
       || input.taskId !== task.id || input.projectId !== task.projectId || input.runId !== run.runId || input.generation !== run.generation
       || input.source.repositoryId !== task.repositoryId || input.source.commit !== task.commit || input.locale !== task.locale
       || storedInput.sha256 !== row.inputSha256 || sha256(JSON.stringify(input)) !== row.inputSha256
+      || Boolean(input.healthRegression) !== Boolean(receipt.scope.healthFollowup)
       || input.subject.manifestSha256 !== evidence.binding.subjectManifestSha256
       || evidence.binding.source.repositoryId !== task.repositoryId || evidence.binding.source.commit !== task.commit
       || (result.archiveVerification && result.archiveVerification.runnerImageSha256 !== receipt.imageSha256)
@@ -75,6 +77,15 @@ export async function publishFormalVerification(tx: Transaction, task: TaskRow, 
       || report.origin !== 'formal_verification') throw new ExecutionLost();
   const { receipt, evidence } = recordedVerificationEvidence(entry.attempt.receipt, entry.pointer.receiptSha256);
   if (JSON.stringify(evidence) !== JSON.stringify(result.evidence)) throw new Error('formal_verification_projection_binding');
+  if (receipt.scope.healthFollowup) {
+    const [frozen] = await tx.select().from(formalVerificationInputs).where(eq(formalVerificationInputs.runId, scope.runId));
+    const input = formalVerificationInputSchema.parse(frozen?.document);
+    if (frozen?.sha256 !== receipt.scope.verificationInputSha256 || !input.healthRegression
+        || sha256(JSON.stringify(input)) !== frozen.sha256
+        || JSON.stringify(await readLinkedHealthRegression(tx, task)) !== JSON.stringify(input.healthRegression)) {
+      throw new DomainError('version_conflict');
+    }
+  }
   if (archiveVerification && archiveVerification.runnerImageSha256 !== receipt.imageSha256) {
     throw new Error('formal_verification_archive_runner');
   }
@@ -101,11 +112,16 @@ export async function publishFormalVerification(tx: Transaction, task: TaskRow, 
   await tx.insert(formalVerificationResults).values({ runId, inputSha256, receiptSha256, checkpointId, requestId, finalizedFence, workerId,
     sha256: hash, document });
 
-  const observed = review?.outcome === 'observed';
+  const reproduction = receipt.scope.healthFollowup && receipt.snapshot.target === null;
+  const followup = evidence.baseline.status === 'passed' ? evidence.baseline.healthFollowup : undefined;
+  const reproductionReason = followup?.status === 'unhealthy' ? 'operations_reproduction_observed'
+    : followup?.status === 'passed' ? 'operations_reproduction_not_observed' : 'operations_reproduction_unavailable';
+  const observed = !reproduction && review?.outcome === 'observed';
   const failed = review?.outcome === 'checks_failed' || review?.outcome === 'source_findings';
-  const retry = failed && retryConfig ? await prepareRepairRetry(tx, task, scope, document, hash, retryConfig.repairPolicySha256) : undefined;
-  const exhausted = failed && Boolean(await readRepairRetry(tx, task, scope));
-  const reason = observed ? 'verification_observed' : exhausted ? 'repair_retry_limit'
+  const retry = !reproduction && failed && retryConfig
+    ? await prepareRepairRetry(tx, task, scope, document, hash, retryConfig.repairPolicySha256) : undefined;
+  const exhausted = !reproduction && failed && Boolean(await readRepairRetry(tx, task, scope));
+  const reason = reproduction ? reproductionReason : observed ? 'verification_observed' : exhausted ? 'repair_retry_limit'
     : failed ? 'verification_checks_failed' : 'verification_needs_human';
   await tx.update(runRuntime).set({ reason, resumePending: false, waitingForTaskId: null }).where(eq(runRuntime.runId, runId));
   const recordedTask = await appendEvent(tx, task, 'task.verification_recorded', retry ? 'running' : observed ? 'waiting_input' : 'needs_human', {

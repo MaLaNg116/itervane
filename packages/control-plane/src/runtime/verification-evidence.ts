@@ -19,7 +19,8 @@ function summarizeBaseline(baseline: Baseline, requested: boolean) {
   if (!baseline) return pending(requested);
   if (baseline.status === 'blocked') return { status: baseline.status, code: baseline.code };
   return { status: baseline.status, baselineSha256: baseline.baselineSha256, runtimeInputsSha256: baseline.runtimeInputsSha256,
-    failures: baseline.checks.filter(check => check.status !== 'passed').map(({ id, code, statusCode }) => ({ id, code, statusCode })) };
+    failures: baseline.checks.filter(check => check.status !== 'passed').map(({ id, code, statusCode }) => ({ id, code, statusCode })),
+    ...(baseline.healthFollowup ? { healthFollowup: baseline.healthFollowup } : {}) };
 }
 
 function summarizeImage(image: Image, requested: boolean): FormalVerificationEvidence['image'] {
