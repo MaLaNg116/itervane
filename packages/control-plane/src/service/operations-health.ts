@@ -19,7 +19,7 @@ const healthProbeSchema = z.strictObject({
   binding: operationsHealthBindingSchema,
 });
 type HealthProbe = z.infer<typeof healthProbeSchema>;
-type OperationsHealthInstallation = OperationsEnrollmentScope & InstalledReleaseTarget;
+export type OperationsHealthInstallation = OperationsEnrollmentScope & InstalledReleaseTarget;
 
 export class OperationsHealthJournal {
   constructor(private readonly database: Database, private readonly installation: OperationsHealthInstallation) {}
@@ -27,7 +27,7 @@ export class OperationsHealthJournal {
   // Capture the published target before the network read. No locks span a probe request.
   prepareProbe() {
     return this.database.db.transaction(async tx => {
-      const current = await this.readCurrentTarget(tx);
+      const current = await readHealthProbeTarget(tx, this.installation);
       const { rows: [ordinal] } = await tx.execute<{ sequence: string }>(sql`
         SELECT nextval('itervane.operations_health_probe_sequence'::regclass)::text AS sequence
       `);
@@ -77,35 +77,35 @@ export class OperationsHealthJournal {
   }
 
   private async requireCurrentBinding(tx: Transaction, bindingSha256: string) {
-    const current = await this.readCurrentTarget(tx);
+    const current = await readHealthProbeTarget(tx, this.installation);
     if (bindingSha256 !== sha256(JSON.stringify(current.binding))) throw new DomainError('version_conflict');
   }
+}
 
-  private async readCurrentTarget(tx: Transaction) {
-    const { environmentId, enrollmentSha256, mappingSha256 } = this.installation;
-    await lockEnvironmentForEffect(tx, environmentId);
-    const [enrollment] = await tx.select().from(operationsTargets)
-      .where(and(eq(operationsTargets.environmentId, environmentId), eq(operationsTargets.sha256, enrollmentSha256))).for('share');
-    if (!enrollment) throw new DomainError('unavailable');
-    const registered = readOperationsEnrollment(enrollment);
-    const [hold] = await tx.select({ id: operationsExecutions.id }).from(operationsExecutions)
-      .where(and(eq(operationsExecutions.environmentId, environmentId), eq(operationsExecutions.state, 'reserved'))).limit(1);
-    if (hold) throw new DomainError('conflict');
+// Keep the environment locked through the caller's eligibility checks and commit.
+export async function readHealthProbeTarget(tx: Transaction, { environmentId, enrollmentSha256, mappingSha256 }: OperationsHealthInstallation) {
+  await lockEnvironmentForEffect(tx, environmentId);
+  const [enrollment] = await tx.select().from(operationsTargets)
+    .where(and(eq(operationsTargets.environmentId, environmentId), eq(operationsTargets.sha256, enrollmentSha256))).for('share');
+  if (!enrollment) throw new DomainError('unavailable');
+  const registered = readOperationsEnrollment(enrollment);
+  const [hold] = await tx.select({ id: operationsExecutions.id }).from(operationsExecutions)
+    .where(and(eq(operationsExecutions.environmentId, environmentId), eq(operationsExecutions.state, 'reserved'))).limit(1);
+  if (hold) throw new DomainError('conflict');
 
-    const current = await readPublishedOperationsDeployment(tx, { environmentId, projectId: enrollment.projectId });
-    if (current.applicationId !== enrollment.applicationId || current.mappingSha256 !== mappingSha256 ||
-        current.mappingSha256 !== registered.releaseTargetSha256 || current.targetRevision !== registered.releaseTargetRevision) {
-      throw new DomainError('version_conflict');
-    }
-    const binding = operationsHealthBindingSchema.parse({
-      version: 1, environmentId, projectId: current.projectId, applicationId: current.applicationId,
-      targetRevision: current.targetRevision, mappingSha256, enrollmentRevision: enrollment.revision, enrollmentSha256,
-      releaseOperationId: current.releaseOperationId, restoreExecutionId: 'restoreExecutionId' in current ? current.restoreExecutionId : null,
-      publicationProofSha256: current.proofSha256, containerId: current.containerId, manifestDigest: current.manifestDigest,
-      configDigest: current.configDigest,
-    });
-    return { binding, target: current.releaseTarget, version: current.version };
+  const current = await readPublishedOperationsDeployment(tx, { environmentId, projectId: enrollment.projectId });
+  if (current.applicationId !== enrollment.applicationId || current.mappingSha256 !== mappingSha256 ||
+      current.mappingSha256 !== registered.releaseTargetSha256 || current.targetRevision !== registered.releaseTargetRevision) {
+    throw new DomainError('version_conflict');
   }
+  const binding = operationsHealthBindingSchema.parse({
+    version: 1, environmentId, projectId: current.projectId, applicationId: current.applicationId,
+    targetRevision: current.targetRevision, mappingSha256, enrollmentRevision: enrollment.revision, enrollmentSha256,
+    releaseOperationId: current.releaseOperationId, restoreExecutionId: 'restoreExecutionId' in current ? current.restoreExecutionId : null,
+    publicationProofSha256: current.proofSha256, containerId: current.containerId, manifestDigest: current.manifestDigest,
+    configDigest: current.configDigest,
+  });
+  return { binding, target: current.releaseTarget, version: current.version };
 }
 
 async function recordIncidentSignal(tx: Transaction, binding: HealthProbe['binding'], bindingSha256: string,
