@@ -116,6 +116,7 @@ export const releaseKomodoUpdateSchema = z.strictObject({
   updateId: komodoResourceIdSchema, deploymentId: komodoResourceIdSchema, actorId: komodoResourceIdSchema,
   status: z.enum(['Queued', 'InProgress', 'Complete']), success: z.boolean(),
 });
+export type ReleaseKomodoUpdate = z.infer<typeof releaseKomodoUpdateSchema>;
 export const releaseKomodoCompletionSchema = releaseKomodoUpdateSchema.extend({ status: z.literal('Complete') });
 export const releaseKomodoIntentSchema = z.strictObject({
   ...releaseKomodoConfigurationSchema.omit({ imageReference: true }).shape,

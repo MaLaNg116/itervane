@@ -36,7 +36,8 @@ import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, fo
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
   operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
   operationsDiagnosisRuntime, operationsExecutionIntents, operationsExecutions, operationsExecutionSchedules, operationsObservations,
-  operationsProposals, operationsRequests, operationsRestartInstallations, operationsRestartRecoveries, operationsRestartRequests, operationsRestartResumes, operationsTargets,
+  operationsProposals, operationsRequests, operationsRestartInstallations, operationsRestartRecoveries, operationsRestartRequests, operationsRestartResumes,
+  operationsRestoreSteps, operationsTargets,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskEvents, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
@@ -48,6 +49,7 @@ import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim
 import { FormalReleaseSteps } from '../../src/runtime/formal-release-steps.js';
 import { FormalReleaseWorker } from '../../src/runtime/formal-release-worker.js';
 import { FormalRolloutCoordinator } from '../../src/runtime/formal-rollout-claim.js';
+import { OperationsRestoreWorker } from '../../src/runtime/operations-restore-worker.js';
 import { FormalRolloutWorker } from '../../src/runtime/formal-rollout-worker.js';
 import { createInstalledApi } from '../../src/runtime/installed-api.js';
 import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-rescan.js';
@@ -2846,6 +2848,10 @@ it('binds a rollback intent and read-only takeover to the approved image after a
   });
   const intentBinding = { executionId: execution.id, proposalFingerprint: proposal.fingerprint, decisionVersion: 1,
     generation: scope.generation, workerId: scope.workerId, fence: scope.fence };
+  const releaseInstallation = { environmentId: first.scope.environmentId, mappingSha256: frozen.target.mappingSha256 };
+  await expect(executor.prepareDispatch(scope)).rejects.toMatchObject({ code: 'unsupported_state' });
+  await expect(executor.prepareRestoreDispatch(scope, { ...releaseInstallation, mappingSha256: sha256('wrong installation') }))
+    .rejects.toMatchObject({ code: 'version_conflict' });
   await expect(database.storage.db.insert(operationsExecutionIntents).values(intentBinding))
     .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restore_plan_authority_required' } });
   const alteredPlans = [
@@ -2861,13 +2867,24 @@ it('binds a rollback intent and read-only takeover to the approved image after a
   await database.admin.query(`ALTER TABLE itervane.task_events ADD CONSTRAINT injected_restore_intent_event_failure
     CHECK (type <> 'task.operations_execution_dispatch_intended') NOT VALID`);
   try {
-    await expect(executor.prepareDispatch(scope))
+    await expect(executor.prepareRestoreDispatch(scope, releaseInstallation))
       .rejects.toMatchObject({ cause: { code: '23514', constraint: 'injected_restore_intent_event_failure' } });
     expect(await database.storage.db.select().from(operationsExecutionIntents)).toEqual([]);
   } finally { await database.admin.query('ALTER TABLE itervane.task_events DROP CONSTRAINT injected_restore_intent_event_failure'); }
-  const { intent } = await executor.prepareDispatch(scope);
+  const { intent } = await executor.prepareRestoreDispatch(scope, releaseInstallation);
   expect(intent).toMatchObject({ ...intentBinding, restorePlan: plan, restorePlanSha256: sha256(JSON.stringify(plan)) });
+  const fingerprint = sha256(JSON.stringify(plan));
+  await expect(executor.beginRestoreStep(scope, 'deploy', fingerprint))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restore_step_send_authority_required' } });
+  const configAttempts = await Promise.allSettled([
+    executor.beginRestoreStep(scope, 'configure', fingerprint), executor.beginRestoreStep(scope, 'configure', fingerprint),
+  ]);
+  expect(configAttempts.filter(attempt => attempt.status === 'fulfilled')).toHaveLength(1);
+  expect(configAttempts.find(attempt => attempt.status === 'rejected')).toMatchObject({ reason: { code: 'conflict' } });
   await approvals.decide(owner, proposal.id, { fingerprint: coordinates.fingerprint, action: 'revoke', expectedVersion: 1, idempotencyKey: randomUUID() });
+  await expect(database.storage.db.insert(operationsRestoreSteps).values({
+    executionId: execution.id, kind: 'deploy', planSha256: fingerprint, workerId: scope.workerId, fence: scope.fence,
+  })).rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restore_step_send_authority_required' } });
   await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
   await coordinator.reconcile(randomUUID());
   const reader = await executor.claim(await fetchOperationsWakeup(), randomUUID());
@@ -2878,6 +2895,83 @@ it('binds a rollback intent and read-only takeover to the approved image after a
   await expect(executor.readRestoreIntent(reader)).resolves.toEqual({ plan, sha256: intent.restorePlanSha256 });
   expect(await database.storage.db.select().from(operationsExecutionIntents)).toEqual([intent]);
   expect(await database.storage.db.select({ state: operationsExecutions.state }).from(operationsExecutions)).toEqual([{ state: 'reserved' }]);
+});
+
+it.each(['acknowledged', 'reply_lost', 'prior_receipt', 'approval_revoked'] as const)('keeps a fenced restore dispatch accountable when %s', async outcome => {
+  const earlier = await installedOperationsFixture();
+  task = (await earlier.taskService.admit(identity, { projectId: earlier.scope.projectId, source: task.source, purpose: 'Publish a newer image',
+    dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
+  const next = await queuedFormalRelease({ existingTarget: earlier.target, imageVariant: 'newer rollback fixture' });
+  const current = await finishTestRollout(await parkForRollout(next, true, 'd'.repeat(24)), 'standard-v3');
+  const { diagnosis, installed, task: diagnosed, service } = await settleProposalDiagnosis('rollback', { ...earlier, ...next, ...current });
+  const { proposal } = await service.freeze(identity, diagnosed.id, { diagnosisSha256: diagnosis.sha256 });
+  const owner = await decisionIdentity();
+  const decisions = new OperationsDecisionService(database.storage, installed, operationsPortal);
+  const decision = { fingerprint: proposal.fingerprint };
+  await decisions.decide(owner, proposal.id, { ...decision, action: 'confirm', expectedVersion: 0, idempotencyKey: randomUUID() });
+  const { execution, schedule } = await new OperationsExecutionAdmission(database.storage, installed)
+    .enqueue({ ...decision, proposalId: proposal.id, decisionVersion: 1 });
+  const executor = new OperationsExecutionCoordinator(coordinator, installed);
+  const scope = await executor.claim(await fetchOperationsWakeup(), randomUUID(), 'rollback');
+  if (!scope) throw new Error('Expected a restore lease');
+  const { deploymentId, serverId, runtimeConfigSha256 } = next.target;
+  const config = { deploymentId, serverId, runtimeConfigSha256, imageReference: earlier.runtime.imageReference };
+  const ack = { deploymentId, actorId: current.update.actorId, updateId: '8'.repeat(24), status: 'InProgress' as const, success: false };
+  const sends: string[] = [];
+  const worker = new OperationsRestoreWorker(executor, {
+    ...earlier.scope, mappingSha256: current.binding.manifest.target.mappingSha256, network: current.runtime.network,
+  }, {
+    async configureImage(target, change, authorize, _signal, observe) {
+      await observe?.();
+      expect(target.deploymentId).toBe(deploymentId);
+      expect(change).toEqual({ previousImage: current.runtime.imageReference, manifestDigest: earlier.image.manifestDigest });
+      await authorize();
+      expect(await database.storage.db.select().from(operationsRestoreSteps)).toMatchObject([{ kind: 'configure', receipt: null }]);
+      sends.push('configure');
+      return config;
+    },
+    async dispatch(target, digest, authorize, _signal, observe) {
+      await observe?.();
+      expect(target.deploymentId).toBe(deploymentId);
+      expect(digest).toBe(earlier.image.manifestDigest);
+      await authorize();
+      expect(await database.storage.db.select().from(operationsRestoreSteps).orderBy(operationsRestoreSteps.kind))
+        .toMatchObject([{ kind: 'configure', receipt: config }, { kind: 'deploy', receipt: null }]);
+      sends.push('deploy');
+      if (outcome === 'reply_lost') throw new Error('Native deploy response lost');
+      if (outcome === 'prior_receipt') return { ...ack, updateId: current.update.updateId };
+      return ack;
+    },
+  }, {
+    async inspectStoppedRuntime(_target, image, network, authorize) {
+      await authorize();
+      expect(image.manifestDigest).toBe(current.image.manifestDigest);
+      expect(network).toBe(current.runtime.network);
+      return stoppedBaseline({ ...earlier, ...current });
+    },
+    async inspectTarget(_target, authorize) {
+      await authorize();
+      if (outcome === 'approval_revoked') {
+        await decisions.decide(owner, proposal.id, { ...decision, action: 'revoke', expectedVersion: 1, idempotencyKey: randomUUID() });
+      }
+      return config;
+    },
+  });
+  await expect(worker.dispatch(scope)).resolves.toBe('reconciling');
+  expect(sends).toEqual(outcome === 'approval_revoked' ? ['configure'] : ['configure', 'deploy']);
+  expect((await database.storage.pool.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
+  await expect(earlier.taskService.get(identity, schedule.taskId)).resolves.toMatchObject({ state: 'reconciling' });
+  expect((await database.storage.db.select().from(operationsExecutions).where(eq(operationsExecutions.id, execution.id)))[0]?.state)
+    .toBe('reserved');
+  const successor = await executor.claim(await fetchOperationsWakeup(), randomUUID(), 'rollback');
+  if (!successor) throw new Error('Expected a read-only restore lease');
+  expect(successor).toMatchObject({ mode: 'reconcile', fence: scope.fence + 1 });
+  const progress = await executor.readRestoreProgress(successor);
+  expect(progress.steps).toMatchObject(outcome === 'approval_revoked' ? [{ kind: 'configure', receipt: config }] : [
+    { kind: 'configure', receipt: config }, { kind: 'deploy', receipt: outcome === 'acknowledged' ? ack : null },
+  ]);
+  await expect(executor.beginRestoreStep(successor, 'deploy', progress.sha256)).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(executor.recordRestoreStep(successor, 'deploy', progress.sha256, ack)).rejects.toBeInstanceOf(ExecutionLost);
 });
 
 it.each(['wait', 'expired', 'replaced', 'publishing', 'revoked'] as const)('limits proposal admission after %s', async mode => {

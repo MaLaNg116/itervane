@@ -4,13 +4,13 @@ import {
   type OperationsRestartInstallation, type OperationsRestartWriterProof,
 } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
-import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { fromDrizzle, type Job } from 'pg-boss';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import type { OperationsEnrollmentScope } from '../config.js';
 import { operationsExecutionQueue, type Database } from '../persistence/database.js';
-import { operationsExecutionIntents, operationsExecutionSchedules, operationsExecutions, operationsProposals, operationsRestartResumes,
+import { operationsExecutionIntents, operationsExecutionSchedules, operationsExecutions, operationsProposals, operationsRestartResumes, operationsRestoreSteps,
   runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { isHumanWorkspaceOwner, requireActor, requireProjectAccess, type Transaction } from '../service/access.js';
 import { expireUndispatchedOperations, lockEnvironmentForEffect } from '../service/environment-effects.js';
@@ -18,6 +18,7 @@ import { DomainError, parseInput } from '../service/errors.js';
 import { lockOperationsDiagnosisTask, requireOperationsExecutionApproval } from '../service/operations-execution-admission.js';
 import { readOperationsProposal } from '../service/operations-proposals.js';
 import { requireOperationsRestartWriter } from '../service/operations-restart-installations.js';
+import type { InstalledReleaseTarget } from '../service/release-targets.js';
 import { databaseNow } from '../service/releases.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope } from './authority.js';
@@ -28,6 +29,7 @@ import { attachOperationsRestartApproval, prepareOperationsRestartRequest, readO
 import { findActiveRestartRecovery, finishRestartRecovery, proveRestartRecovery, readRestartRecoveryBinding, startRestartRecovery,
   type RecoveryFailure } from './operations-restart-recovery.js';
 import { blockQueuedRestartResume, latestRestartResume } from './operations-restart-resume.js';
+import { parseRestoreStepReceipt, type OperationsRestoreStep } from './operations-restore-steps.js';
 import { matchRestartBaseline } from './release-rollout.js';
 
 export type OperationsExecutionLease = ExecutionScope & Readonly<{ executionId: string; mode: 'dispatch' | 'restart_resume' | 'reconcile' }>;
@@ -55,6 +57,8 @@ async function lockOperationsExecution(tx: Transaction, executionId: string) {
 
 type BoundExecution = NonNullable<Awaited<ReturnType<typeof lockOperationsExecution>>>;
 type ApprovedExecution = Awaited<ReturnType<typeof requireOperationsExecutionApproval>>;
+type DispatchPreparation = { kind: 'restart'; proof: OperationsRestartWriterProof; baseline: unknown }
+  | { kind: 'rollback'; installation: InstalledReleaseTarget };
 
 async function requireRestartRecoveryAttempt(tx: Transaction, scope: OperationsExecutionLease) {
   if (scope.mode !== 'reconcile') throw new ExecutionLost();
@@ -150,7 +154,7 @@ export class OperationsExecutionCoordinator {
 
   get leaseSeconds() { return this.coordinator.leaseSeconds; }
 
-  async claim(job: Job<unknown>, workerId: string, supportedAction?: 'restart'): Promise<OperationsExecutionLease | null> {
+  async claim(job: Job<unknown>, workerId: string, supportedAction?: 'restart' | 'rollback'): Promise<OperationsExecutionLease | null> {
     idSchema.parse(workerId);
     const database = this.coordinator.database;
     const request = operationsExecutionWakeupSchema.safeParse(job.data);
@@ -240,13 +244,27 @@ export class OperationsExecutionCoordinator {
 
   async prepareDispatch(scope: OperationsExecutionLease, rawRestartProof?: unknown, observedBaseline?: unknown) {
     const restart = rawRestartProof === undefined ? undefined : parseInput(operationsRestartWriterProofSchema, rawRestartProof);
+    return this.prepareIntent(scope, restart ? { kind: 'restart', proof: restart, baseline: observedBaseline } : undefined);
+  }
+
+  async prepareRestoreDispatch(scope: OperationsExecutionLease, installation: InstalledReleaseTarget) {
+    return this.prepareIntent(scope, { kind: 'rollback', installation });
+  }
+
+  private async prepareIntent(scope: OperationsExecutionLease, preparation?: DispatchPreparation) {
     return this.withLease(scope, async (tx, { execution, task, proposal, diagnosis, reason }) => {
       if (scope.mode !== 'dispatch' || reason !== 'operations_execution_claimed') throw new ExecutionLost();
       const { frozen, whiskers, publishedVersion, restorePlan } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation,
         execution.decisionVersion);
-      if (restart && frozen.action.kind !== 'restart') throw new DomainError('unsupported_state');
-      if (restart) await requireOperationsRestartWriter(tx, frozen.target, whiskers, restart);
-      const baseline = restart ? matchRestartBaseline(await readOperationsRestartSubject(tx, frozen.target, publishedVersion), observedBaseline) : undefined;
+      if ((preparation && frozen.action.kind !== preparation.kind) || (restorePlan && preparation?.kind !== 'rollback')) {
+        throw new DomainError('unsupported_state');
+      }
+      if (preparation?.kind === 'rollback' && (!restorePlan || restorePlan.environmentId !== preparation.installation.environmentId
+          || restorePlan.mappingSha256 !== preparation.installation.mappingSha256)) throw new DomainError('version_conflict');
+      const restart = preparation?.kind === 'restart' ? preparation.proof : undefined;
+      if (preparation?.kind === 'restart') await requireOperationsRestartWriter(tx, frozen.target, whiskers, preparation.proof);
+      const baseline = preparation?.kind === 'restart'
+        ? matchRestartBaseline(await readOperationsRestartSubject(tx, frozen.target, publishedVersion), preparation.baseline) : undefined;
       const [intent] = await tx.insert(operationsExecutionIntents).values({ executionId: execution.id,
         decisionVersion: execution.decisionVersion, proposalFingerprint: execution.proposalFingerprint,
         generation: scope.generation, workerId: scope.workerId, fence: scope.fence,
@@ -266,15 +284,64 @@ export class OperationsExecutionCoordinator {
   }
 
   async readRestoreIntent(scope: OperationsExecutionLease) {
-    return this.withLease(scope, async (_tx, { intent, proposal }) => {
-      const { action, target } = readOperationsProposal(proposal);
-      if (scope.mode !== 'reconcile' || action.kind !== 'rollback' || !intent?.restorePlan
-          || target.environmentId !== this.installation.environmentId
-          || target.enrollmentSha256 !== this.installation.enrollmentSha256) throw new ExecutionLost();
-      const plan = operationsRestorePlanSchema.parse(intent.restorePlan);
-      const fingerprint = sha256(JSON.stringify(plan));
-      if (fingerprint !== intent.restorePlanSha256) throw new Error('operations_restore_plan_integrity');
-      return { plan, sha256: fingerprint };
+    return this.withLease(scope, async (_tx, bound) => {
+      if (scope.mode === 'restart_resume') throw new ExecutionLost();
+      return this.requireRestoreIntent(bound);
+    });
+  }
+
+  async beginRestoreStep(scope: OperationsExecutionLease, kind: OperationsRestoreStep, planSha256: string) {
+    await this.withLease(scope, async (tx, bound) => {
+      if (scope.mode !== 'dispatch') throw new ExecutionLost();
+      if (this.requireRestoreIntent(bound).sha256 !== planSha256) throw new DomainError('version_conflict');
+      const { diagnosis, proposal, execution } = bound;
+      const { restorePlan } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
+      if (!restorePlan || sha256(JSON.stringify(restorePlan)) !== planSha256) throw new DomainError('version_conflict');
+      const [step] = await tx.insert(operationsRestoreSteps).values({
+        executionId: execution.id, kind, planSha256, workerId: scope.workerId, fence: scope.fence,
+      }).onConflictDoNothing().returning({ kind: operationsRestoreSteps.kind });
+      if (!step) throw new DomainError('conflict');
+    });
+  }
+
+  async recordRestoreStep(scope: OperationsExecutionLease, kind: OperationsRestoreStep, planSha256: string, raw: unknown) {
+    await this.withLease(scope, async (tx, bound) => {
+      if (scope.mode !== 'dispatch') throw new ExecutionLost();
+      const authorized = this.requireRestoreIntent(bound);
+      if (authorized.sha256 !== planSha256) throw new DomainError('version_conflict');
+      const receipt = parseRestoreStepReceipt(authorized.plan, kind, raw);
+      const [recorded] = await tx.update(operationsRestoreSteps).set({ receipt }).where(and(
+        eq(operationsRestoreSteps.executionId, scope.executionId), eq(operationsRestoreSteps.kind, kind),
+        eq(operationsRestoreSteps.workerId, scope.workerId), eq(operationsRestoreSteps.fence, scope.fence),
+        isNull(operationsRestoreSteps.receipt),
+      )).returning({ kind: operationsRestoreSteps.kind });
+      if (!recorded) throw new DomainError('unsupported_state');
+    });
+  }
+
+  async deferRestore(scope: OperationsExecutionLease) {
+    return this.withLease(scope, async (tx, bound) => {
+      if (scope.mode !== 'dispatch') throw new ExecutionLost();
+      this.requireRestoreIntent(bound);
+      const { schedule, task, proposal } = bound;
+      const reason = 'operations_execution_reconciling';
+      await tx.update(runRuntime).set({ reason }).where(eq(runRuntime.runId, schedule.runId));
+      await appendEvent(tx, task, 'task.operations_execution_recovered', 'reconciling', {
+        workerId: scope.workerId, reason, operationsExecution: { executionId: scope.executionId, proposalId: proposal.id, fence: scope.fence },
+      });
+      await replaceOperationsExecutionWakeup(tx, this.coordinator.database, schedule, task.generation);
+      await clearSlot(tx);
+      return 'reconciling' as const;
+    });
+  }
+
+  async readRestoreProgress(scope: OperationsExecutionLease) {
+    return this.withLease(scope, async (tx, bound) => {
+      if (scope.mode !== 'reconcile') throw new ExecutionLost();
+      const intent = this.requireRestoreIntent(bound);
+      const steps = await tx.select().from(operationsRestoreSteps).where(eq(operationsRestoreSteps.executionId, scope.executionId))
+        .orderBy(operationsRestoreSteps.kind);
+      return { ...intent, steps };
     });
   }
 
@@ -536,6 +603,16 @@ export class OperationsExecutionCoordinator {
       await assertLeaseLive(tx, slot.leaseUntil);
       return result;
     });
+  }
+
+  private requireRestoreIntent({ intent, proposal }: BoundExecution) {
+    const { action, target } = readOperationsProposal(proposal);
+    if (action.kind !== 'rollback' || !intent?.restorePlan || target.environmentId !== this.installation.environmentId
+        || target.enrollmentSha256 !== this.installation.enrollmentSha256) throw new ExecutionLost();
+    const plan = operationsRestorePlanSchema.parse(intent.restorePlan);
+    const fingerprint = sha256(JSON.stringify(plan));
+    if (fingerprint !== intent.restorePlanSha256) throw new Error('operations_restore_plan_integrity');
+    return { plan, sha256: fingerprint };
   }
 }
 
