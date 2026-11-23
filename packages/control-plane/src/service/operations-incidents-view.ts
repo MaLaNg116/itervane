@@ -19,7 +19,7 @@ type Incident = typeof operationsIncidents.$inferSelect;
 type HealthSample = typeof operationsHealthSamples.$inferSelect;
 type Scope = ReturnType<typeof operationsIncidentScopeSchema.parse>;
 
-function verifiedBinding(row: Incident | HealthSample, scope: Scope) {
+export function verifiedIncidentBinding(row: Incident | HealthSample, scope: Scope) {
   const binding = operationsHealthBindingSchema.parse(row.binding);
   if (binding.projectId !== scope.projectId || binding.environmentId !== scope.environmentId
       || sha256(JSON.stringify(binding)) !== row.bindingSha256) throw new Error('operations_incident_view_scope');
@@ -27,7 +27,7 @@ function verifiedBinding(row: Incident | HealthSample, scope: Scope) {
 }
 
 function presentSample(sample: HealthSample, scope: Scope, locale: Locale) {
-  const { releaseOperationId, restoreExecutionId } = verifiedBinding(sample, scope);
+  const { releaseOperationId, restoreExecutionId } = verifiedIncidentBinding(sample, scope);
   const signal = operationsHealthSignalSchema.parse(sample.signal);
   const label = signal.status === 'healthy' ? 'healthy' : signal.reason;
   return { sequence: sample.sequence, recordedAt: sample.recordedAt.toISOString(), releaseOperationId, restoreExecutionId,
@@ -58,7 +58,7 @@ async function presentIncidents(tx: Transaction, rows: Incident[], scope: Scope,
 
   const sampleByIncident = new Map(latest.map(sample => [sample.incidentId, sample]));
   return rows.map(row => {
-    const binding = verifiedBinding(row, scope);
+    const binding = verifiedIncidentBinding(row, scope);
     const latestSample = sampleByIncident.get(row.id);
     if (!latestSample || latestSample.bindingSha256 !== row.bindingSha256) throw new Error('operations_incident_view_sample');
     const { id, openedAt, lastUnhealthyAt, unhealthySamples, closedAt, closedReason, diagnosisStoppedAt, diagnosisStopReason } = row;
@@ -77,6 +77,17 @@ async function presentIncidents(tx: Transaction, rows: Incident[], scope: Scope,
   });
 }
 
+export async function readInstalledIncidentEnvironment(tx: Transaction, installation: OperationsWorkflowScope, scope: Scope) {
+  if (scope.environmentId !== installation.environmentId) throw new DomainError('not_found');
+  const [enrollment] = await tx.select({ row: operationsTargets }).from(operationsTargets)
+    .innerJoin(environments, and(eq(environments.id, operationsTargets.environmentId), eq(environments.access, 'protected'),
+      eq(environments.projectId, operationsTargets.projectId), eq(environments.applicationId, operationsTargets.applicationId)))
+    .where(and(eq(operationsTargets.environmentId, scope.environmentId), eq(operationsTargets.projectId, scope.projectId),
+      eq(operationsTargets.sha256, installation.enrollmentSha256)));
+  if (!enrollment) throw new DomainError('not_found');
+  return readOperationsEnrollment(enrollment.row);
+}
+
 export class OperationsIncidentsViewService {
   constructor(private readonly database: Database, private readonly installation: OperationsWorkflowScope) {}
 
@@ -85,7 +96,7 @@ export class OperationsIncidentsViewService {
     const { limit } = parseInput(listQuerySchema, rawQuery);
     return this.database.db.transaction(async tx => {
       await requireProject(tx, await requireActor(tx, identity), scope.projectId);
-      await this.requireEnvironment(tx, scope);
+      await readInstalledIncidentEnvironment(tx, this.installation, scope);
       const [latest] = await tx.select().from(operationsHealthSamples).where(eq(operationsHealthSamples.environmentId, scope.environmentId))
         .orderBy(desc(operationsHealthSamples.sequence)).limit(1);
       const rows = await tx.select().from(operationsIncidents).where(eq(operationsIncidents.environmentId, scope.environmentId))
@@ -116,23 +127,12 @@ export class OperationsIncidentsViewService {
         return taskIncidentViewSchema.parse({ ...base, relatedAs: null, incident: null });
       }
       const scope = { projectId: task.projectId, environmentId: link.environmentId };
-      await this.requireEnvironment(tx, scope);
+      await readInstalledIncidentEnvironment(tx, this.installation, scope);
       const rows = await tx.select().from(operationsIncidents).where(and(
         eq(operationsIncidents.id, link.incidentId), eq(operationsIncidents.environmentId, scope.environmentId)));
       const [incident] = await presentIncidents(tx, rows, scope, locale);
       if (!incident) throw new Error('operations_incident_view_link');
       return taskIncidentViewSchema.parse({ ...base, relatedAs: diagnosis ? 'diagnosis' : 'linked_repair', incident });
     }, { isolationLevel: 'repeatable read' });
-  }
-
-  private async requireEnvironment(tx: Transaction, scope: Scope) {
-    if (scope.environmentId !== this.installation.environmentId) throw new DomainError('not_found');
-    const [enrollment] = await tx.select({ row: operationsTargets }).from(operationsTargets)
-      .innerJoin(environments, and(eq(environments.id, operationsTargets.environmentId), eq(environments.access, 'protected'),
-        eq(environments.projectId, operationsTargets.projectId), eq(environments.applicationId, operationsTargets.applicationId)))
-      .where(and(eq(operationsTargets.environmentId, scope.environmentId), eq(operationsTargets.projectId, scope.projectId),
-        eq(operationsTargets.sha256, this.installation.enrollmentSha256)));
-    if (!enrollment) throw new DomainError('not_found');
-    readOperationsEnrollment(enrollment.row);
   }
 }
