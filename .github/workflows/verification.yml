@@ -31,6 +31,8 @@ jobs:
         run: pnpm check
       - name: Runner lifecycle sequencing and failure-path tests
         run: python3 -B -m unittest discover -s packages/runner/host
+      - name: Protected health probe contract tests
+        run: node --test fixtures/runner/standard-web-baseline.test.mjs
       - name: Real PostgreSQL 17 domain, Worker recovery and external MCP
         run: pnpm test:integration
       - name: Authenticated MCP protocol smoke

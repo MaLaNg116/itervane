@@ -2,7 +2,8 @@ import { deepStrictEqual, equal, ok } from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { formalVerificationInputSchema, idSchema, qualifiedInspectionResponseSchema, sha256Schema } from '@itervane/contracts';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
-import { QualifiedInspectionClient, scannerProfiles, sha256 } from '@itervane/runner';
+import { canonicalVerificationCommand, compareVerificationScans, prepareQualifiedVerificationRequest, QualifiedInspectionClient,
+  scannerProfiles, sha256 } from '@itervane/runner';
 import { eq } from 'drizzle-orm';
 import { workerConfig } from '../../src/config.js';
 import { openDatabase, queueName } from '../../src/persistence/database.js';
@@ -11,6 +12,7 @@ import { clearSlot } from '../../src/runtime/authority.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-rescan.js';
 import { runFormalVerification } from '../../src/runtime/formal-verification.js';
+import { prepareFormalVerificationInput } from '../../src/runtime/verification-input.js';
 import { currentInspectionAttempt } from '../../src/service/inspection-evidence.js';
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
 import { runKomodoReleaseFixture } from './komodo-release-worker.js';
@@ -31,7 +33,9 @@ async function verify() {
   const config = fixtureConfig();
   const target = { taskId: idSchema.parse(taskId), runId: idSchema.parse(runId) };
   const findingId = expected === 'original' ? null : sha256Schema.parse(expected);
-  const [profileSha, baselineSha, expectedBuild, expectedBaseline, ociInputsSha] = buildArgs;
+  const [profileSha, baselineSha, expectedBuild, expectedBaseline, optionalProbe] = buildArgs;
+  const followupTrial = optionalProbe === 'followup-passed' ? 'passed' : optionalProbe === 'followup-unhealthy' ? 'unhealthy' : undefined;
+  const ociInputsSha = followupTrial ? undefined : optionalProbe;
   if (buildArgs.length !== 0 && (buildArgs.length < 3 || buildArgs.length > 5 || findingId !== null
       || (expectedBuild !== 'built' && expectedBuild !== 'profile_mismatch' && expectedBuild !== 'offline_install')
       || (expectedBaseline !== undefined && (expectedBuild !== 'built' || (expectedBaseline !== 'passed' && expectedBaseline !== 'failed'))))) {
@@ -74,6 +78,53 @@ async function verify() {
       ...buildProfile,
     };
     const runner = new QualifiedInspectionClient(config.runner);
+    if (followupTrial) {
+      phase = 'health_followup_preflight';
+      equal(expectedBaseline, 'passed');
+      const prepared = await coordinator.withLease(scope, (tx, { task }) => prepareFormalVerificationInput(tx, task, scope, profile));
+      const command = canonicalVerificationCommand({ input: { ...prepared.document, healthRegression: {
+        proposalId: randomUUID(), diagnosisSha256: sha256('test diagnosis'), publicationProofSha256: sha256('test publication'),
+        incidentId: randomUUID(), sampleSequence: 1, sampleEvidenceSha256: sha256('test protected response'),
+      } }, repair: null });
+      const status = await runner.observe(abort.signal);
+      equal(status?.state, 'idle');
+      const request = prepareQualifiedVerificationRequest({ requestId: randomUUID(), fence: scope.fence,
+        workspaceSha256: status!.workspaceSha256, origin: prepared.origin }, command);
+      phase = 'health_followup_dispatch';
+      let pulses = 0;
+      const response = await runner.verify(request, command.input, null, async () => {
+        await coordinator.withLease(scope, async () => undefined);
+        pulses++;
+      }, abort.signal);
+      if (response.kind !== 'verification_receipt') {
+        phase = `health_followup_${response.code}`;
+        throw new Error('verification_fixture_health_followup');
+      }
+      phase = 'health_followup_observed';
+      const { snapshot } = response;
+      equal(response.cleanupConfirmed, true);
+      equal(response.scope.healthFollowup, true);
+      equal(response.commitSha256, original.commitSha256);
+      equal(snapshot.tree, original.snapshot.tree);
+      equal(snapshot.manifestSha256, original.snapshot.manifestSha256);
+      const comparison = compareVerificationScans(snapshot, snapshot);
+      ok(comparison.status === 'compared');
+      deepStrictEqual(comparison.totals, { introduced: 0, resolved: 0, remaining: 0 });
+      ok(pulses >= 2 && response.domainId !== original.domainId);
+      ok(snapshot.build?.status === 'built' && snapshot.build.baseline?.status === 'passed');
+      const baseline = snapshot.build.baseline;
+      equal(baseline.appExited, true);
+      deepStrictEqual(baseline.checks[0], { id: 'health', status: 'passed', code: null, statusCode: 200 });
+      deepStrictEqual(baseline.healthFollowup, followupTrial === 'passed' ? { status: 'passed', code: null, statusCode: 200 }
+        : { status: 'unhealthy', code: 'application_unhealthy', statusCode: 503 });
+      clearInterval(heartbeat);
+      await coordinator.withLease(scope, tx => clearSlot(tx));
+      return { domainId: response.domainId, commit: response.scope.commit, inputSha256: response.scope.verificationInputSha256,
+        receiptSha256: sha256(JSON.stringify(response)), commandSha256: response.scope.commandSha256,
+        baseSnapshotSha256: snapshot.manifestSha256, targetManifestSha256: response.scope.targetManifestSha256, patchSha256: null,
+        originalReportsSha256: sha256(JSON.stringify(snapshot.reports)), targetReportsSha256: null, dispatches: 1, newFindingGroups: 0,
+        cleanupConfirmed: true, build: snapshot.build, pulses };
+    }
     let dispatches = 0;
     const observedRunner: RescanRunner = {
       observe: signal => runner.observe(signal),

@@ -3356,6 +3356,86 @@ it('rechecks the linked repair environment and original publication before relea
   expect(await database.storage.db.select().from(releaseDecisions).where(eq(releaseDecisions.candidateId, candidate.id))).toEqual([]);
 }, 45_000);
 
+async function confirmIncidentReproduction() {
+  const monitor = await incidentMonitorFixture();
+  const { application, installation } = monitor;
+  const evidenceSha256 = sha256('protected health sample for reproduction');
+  const sample = await monitor.sample({ status: 'unhealthy', reason: 'application_unhealthy', evidenceSha256 });
+  const queued = await monitor.makeScheduler().tick();
+  if (queued.status !== 'queued') throw new Error('Expected scheduled diagnosis');
+  const lease = await claimOperations(monitor.worker);
+  if (!lease) throw new Error('Expected scheduled lease');
+  const diagnosis = await settleProposalRun('investigate', application, monitor.worker, lease);
+  const { proposal } = await new OperationsRepairProposalService(database.storage, installation)
+    .freeze(identity, queued.taskId, { diagnosisSha256: diagnosis.sha256 });
+  const portal = 'itervane-reproduction-portal';
+  const approver = await createIdentityVerifier(issuer.config)(await issuer.token('owner', { azp: portal }));
+  const { task: linked } = await new OperationsRepairAdmission(database.storage, installation, portal).confirm(approver, proposal.id,
+    { fingerprint: proposal.fingerprint, locale: 'zh-CN' });
+  return { application, diagnosis, proposal, sample, evidenceSha256, linked, portal };
+}
+
+it.each(['unhealthy', 'passed', 'unavailable', 'missing', 'revoked'] as const)
+  ('settles a verified linked health reproduction (%s) with bounded evidence', async outcome => {
+    const { application, diagnosis, proposal, sample, evidenceSha256, linked, portal } = await confirmIncidentReproduction();
+    const reviewing = scriptedVerification('zh-CN');
+    const verify = vi.fn<RescanRunner['verify']>(async (coordinates, input, repair, authorize) => {
+      await authorize();
+      expect(input.healthRegression).toEqual({ proposalId: proposal.id, diagnosisSha256: diagnosis.sha256,
+        publicationProofSha256: readOperationsRepairProposal(proposal).target.publicationProofSha256,
+        incidentId: sample.incidentId, sampleSequence: sample.sequence, sampleEvidenceSha256: evidenceSha256 });
+      expect(input.subject.kind).toBe('original');
+      expect(input.profile.ociInputsSha256).toBeUndefined();
+      expect(input.profile.retainStandardImage).toBeUndefined();
+      const [stored] = await database.storage.db.select().from(inspectionAttempts).where(eq(inspectionAttempts.runId, linked.runId));
+      const original = qualifiedInspectionResponseSchema.parse(stored?.receipt);
+      if (original.kind !== 'receipt') throw new Error('Missing verified linked source');
+      const request = prepareQualifiedVerificationRequest(coordinates, canonicalVerificationCommand({ input, repair }));
+      expect(request.healthFollowup).toBe(true);
+      const receipt = standardVerificationReceipt(original, request, input);
+      const baseline = receipt.snapshot.build?.status === 'built' ? receipt.snapshot.build.baseline : undefined;
+      if (baseline?.status !== 'passed') throw new Error('Missing standard baseline');
+      if (outcome === 'revoked') {
+        await database.storage.db.delete(workspaceMembers).where(eq(workspaceMembers.principalId, linked.requestedBy));
+        await authorize();
+      }
+      if (outcome !== 'missing') baseline.healthFollowup = outcome === 'unhealthy'
+        ? { status: 'unhealthy', code: 'application_unhealthy', statusCode: 503 }
+        : outcome === 'passed' ? { status: 'passed', code: null, statusCode: 200 }
+        : { status: 'unavailable', code: 'unexpected_content', statusCode: 503 };
+      return receipt;
+    });
+    const worker = new DurableWorker(database.storage, database.runtimeUrl, {
+      runner: inspectionRunner(async (request, authorize) => { await authorize(); return testReceipt(request); }),
+      auditModel: auditModel(request => {
+        const context = request.conversation[0];
+        return context?.kind === 'user' && JSON.parse(context.text).role === 'verify' ? reviewing.complete(request) : concludeAudit(request);
+      }),
+      verification: { profile: standardVerificationProfile, runner: { observe: async () => idleRepairRunner(), verify } },
+    });
+    try { await processAdmittedTestTask(worker); } finally { await worker.close(); }
+    expect(verify).toHaveBeenCalledTimes(1);
+    const [current] = await database.storage.db.select().from(taskRecords).where(eq(taskRecords.id, linked.id));
+    const [attempt] = await database.storage.db.select().from(formalRescanAttempts).where(eq(formalRescanAttempts.runId, linked.runId));
+    const [result] = await database.storage.db.select().from(formalVerificationResults).where(eq(formalVerificationResults.runId, linked.runId));
+    if (outcome === 'missing' || outcome === 'revoked') {
+      expect(attempt?.state).toBe('uncertain');
+      expect(result).toBeUndefined();
+      expect(current?.state).toBe(outcome === 'missing' ? 'reconciling' : 'needs_human');
+      return;
+    }
+    const events = await application.taskService.events(identity, linked.id, 30, 'zh-CN');
+    expect(events.at(-1)).toMatchObject({ type: 'task.verification_recorded', state: 'needs_human',
+      reason: outcome === 'unhealthy' ? 'operations_reproduction_observed'
+        : outcome === 'passed' ? 'operations_reproduction_not_observed' : 'operations_reproduction_unavailable' });
+    expect(attempt).toMatchObject({ state: 'recorded', receiptSha256: result?.receiptSha256 });
+    expect(result?.document).toMatchObject({ evidence: { baseline: { status: 'passed', failures: [], healthFollowup: { status: outcome } },
+      image: { status: 'not_requested' } }, review: { outcome: outcome === 'unhealthy' ? 'checks_failed' : 'incomplete' } });
+    await expect(new FormalReleaseService(database.storage, portal).freeze(identity, linked.id,
+      { environmentId: application.scope.environmentId, expectedVersion: current!.version }, 'zh-CN'))
+      .rejects.toMatchObject({ code: 'unsupported_state' });
+  }, 45_000);
+
 it('freezes one immutable restart proposal from the settled diagnosis under concurrent requests', async () => {
   const current = await settleProposalDiagnosis('restart');
   const { fixture, diagnosis, task, service } = current;
