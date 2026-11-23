@@ -185,9 +185,12 @@ it('requires a fixed enrollment, dedicated health credentials and bounded pollin
     reader: { actorId: 'c'.repeat(24), key: 'reader-key' }, pollMs: 30_000,
   });
   expect(healthWorkerConfig({ ...environment, ITERVANE_HEALTH_POLL_MS: '5000' }).pollMs).toBe(5_000);
+  expect(healthWorkerConfig(environment).incidentMonitorId).toBeUndefined();
+  const monitorId = '21190e4d-5f6e-4a36-aa73-d618dc703519';
+  expect(healthWorkerConfig({ ...environment, ITERVANE_HEALTH_INCIDENT_MONITOR_ID: monitorId }).incidentMonitorId).toBe(monitorId);
   for (const overrides of [{ ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: undefined }, { ITERVANE_HEALTH_KOMODO_READER_SECRET: undefined },
     { ITERVANE_HEALTH_PROBE_SECRET: undefined, ITERVANE_RESTORE_PROBE_SECRET: 'unrelated-secret' },
-    { ITERVANE_HEALTH_POLL_MS: '4999' }, { ITERVANE_HEALTH_POLL_MS: '300001' }]) {
+    { ITERVANE_HEALTH_POLL_MS: '4999' }, { ITERVANE_HEALTH_POLL_MS: '300001' }, { ITERVANE_HEALTH_INCIDENT_MONITOR_ID: 'invalid' }]) {
     expect(() => healthWorkerConfig({ ...environment, ...overrides })).toThrow();
   }
 });

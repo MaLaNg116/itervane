@@ -5,6 +5,7 @@ import type { Database } from '../persistence/database.js';
 import { lockEnvironmentForEffect } from '../service/environment-effects.js';
 import { DomainError } from '../service/errors.js';
 import { OperationsHealthJournal } from '../service/operations-health.js';
+import { OperationsIncidentScheduler } from '../service/operations-incident-scheduler.js';
 import { readInstalledOperationsEnrollment } from '../service/operations-targets.js';
 import { readInstalledReleaseTarget } from '../service/release-targets.js';
 import { targetForKomodo } from './formal-komodo-steps.js';
@@ -25,7 +26,8 @@ function unavailableHealthReason(error: unknown): UnavailableHealthReason | unde
 
 export class OperationsHealthWorker {
   constructor(private readonly journal: OperationsHealthJournal,
-    private readonly verifier: Pick<ReleaseRolloutVerifier, 'observeApplicationHealth'>) {}
+    private readonly verifier: Pick<ReleaseRolloutVerifier, 'observeApplicationHealth'>,
+    private readonly scheduler?: OperationsIncidentScheduler) {}
 
   async tick(signal?: AbortSignal) {
     try {
@@ -47,7 +49,10 @@ export class OperationsHealthWorker {
         outcome = { status: 'unavailable', reason, evidenceSha256: sha256(JSON.stringify({ version: 1, reason, binding: probe.binding })) };
       }
       signal?.throwIfAborted();
-      return { status: 'recorded' as const, outcome, ...await this.journal.recordProbe(probe, outcome) };
+      const sample = await this.journal.recordProbe(probe, outcome);
+      signal?.throwIfAborted();
+      const diagnosis = await this.scheduler?.tick();
+      return { status: 'recorded' as const, outcome, ...sample, ...(diagnosis ? { diagnosis } : {}) };
     } catch (error) {
       if (error instanceof DomainError && ['not_found', 'unsupported_state', 'unavailable', 'version_conflict', 'conflict'].includes(error.code)) {
         return { status: 'skipped' as const, reason: error.code };
@@ -59,7 +64,7 @@ export class OperationsHealthWorker {
 
 export async function createInstalledHealthWorker(database: Database, config: ReturnType<typeof healthWorkerConfig>, signal?: AbortSignal) {
   signal?.throwIfAborted();
-  const { installed } = config;
+  const { installed, incidentMonitorId } = config;
   const release = await readInstalledReleaseTarget(database, installed);
   await database.db.transaction(async tx => {
     await lockEnvironmentForEffect(tx, installed.environmentId);
@@ -67,6 +72,7 @@ export async function createInstalledHealthWorker(database: Database, config: Re
   });
   const reader = KomodoReleaseClient.readOnly(targetForKomodo(release), config.reader);
   await reader.verifyInstallation(signal);
+  const scheduler = incidentMonitorId ? new OperationsIncidentScheduler(database, { ...installed, monitorId: incidentMonitorId }) : undefined;
   return new OperationsHealthWorker(new OperationsHealthJournal(database, installed),
-    new ReleaseRolloutVerifier(reader, createKeycloakRolloutTokenSource(release.rolloutCheck.probeIdentity, config.probeSecret)));
+    new ReleaseRolloutVerifier(reader, createKeycloakRolloutTokenSource(release.rolloutCheck.probeIdentity, config.probeSecret)), scheduler);
 }
