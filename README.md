@@ -76,6 +76,7 @@ The complete design documents are maintained in Chinese:
 - [P1-A control plane](docs/control-plane-p1-a.md): identity, least-privilege database setup, API commands, and verification limits.
 - [P1-B durable runtime and MCP](docs/control-plane-p1-b.md): worker startup, checkpoint publication, cancellation/resume, MCP auth, and localization.
 - [P1-C portal and login](docs/control-plane-p1-c.md): trusted same-origin build, public OIDC client, memory-only tokens, bilingual workflows, and real browser verification.
+- [Approved restart setup](docs/control-plane-restart.md): current installation binding, scoped credentials, operator approvals, and recovery receipts.
 - [P1-D1 source-inspection foundations](docs/control-plane-p1-d.md): immutable preparation, content verification, real trusted scanner checks, and the remaining KVM acceptance gates.
 - [P1-E rules and text preaudit](docs/control-plane-p1-e.md): advisory rules/Skill, finite non-executing text checks, immutable redacted reports, current project authorization, and the P2-A/P4 boundaries.
 - [P2-A Agent harness](docs/agent-harness-p2-a.md) covers fixture runs, bilingual tool decisions, and checkpoint recovery boundaries.

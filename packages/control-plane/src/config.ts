@@ -9,6 +9,7 @@ import { validateIdentityConfig } from './auth/identity.js';
 const databaseUrl = z.string().min(1).refine(value => {
   try { return ['postgres:', 'postgresql:'].includes(new URL(value).protocol); } catch { return false; }
 }, 'PostgreSQL URL required');
+const installationFile = z.string().max(4096).refine(path => isAbsolute(path) && !path.includes('\0'), 'Expected an absolute local installation file');
 
 export function canonicalPublicUrl(value: string): string {
   const url = new URL(value);
@@ -41,8 +42,13 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env) {
   const portalClientId = env.ITERVANE_PORTAL_CLIENT_ID ? z.string().trim().min(1).max(255).parse(env.ITERVANE_PORTAL_CLIENT_ID) : undefined;
   const operationsApi = z.enum(['0', '1']).parse(env.ITERVANE_OPERATIONS_API_ENABLED ?? '0') === '1'
     ? operationsWorkflowScopeSchema.parse(operationsEnvironment(env)) : undefined;
+  const restartApiInstallationFile = installationFile.optional().parse(env.ITERVANE_RESTART_API_INSTALLATION_FILE);
+  if (restartApiInstallationFile && (!operationsApi?.diagnosisProviderSha256 || !portalClientId || portalClientId === 'signed-access-token')) {
+    throw new Error('operations_restart_api_requires_formal_diagnosis_and_portal');
+  }
   return { ...config, publicUrl: canonicalPublicUrl(env.ITERVANE_PUBLIC_URL ?? `http://127.0.0.1:${config.port}`),
-    ...(portalClientId ? { portalClientId } : {}), ...(operationsApi ? { operationsApi } : {}) };
+    ...(portalClientId ? { portalClientId } : {}), ...(operationsApi ? { operationsApi } : {}),
+    ...(restartApiInstallationFile ? { restartApiInstallationFile } : {}) };
 }
 
 function sharedWorkerConfig(env: NodeJS.ProcessEnv) {
@@ -119,8 +125,7 @@ export function restartWorkerConfig(env: NodeJS.ProcessEnv = process.env) {
     environmentId: env.ITERVANE_OPERATIONS_ENVIRONMENT_ID, enrollmentSha256: env.ITERVANE_OPERATIONS_ENROLLMENT_SHA256,
     mappingSha256: env.ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256,
   });
-  const localFile = z.string().max(4096).refine(path => isAbsolute(path) && !path.includes('\0'), 'Expected an absolute local installation file');
-  const files = z.strictObject({ installation: localFile, guardrails: localFile, roles: localFile }).parse({
+  const files = z.strictObject({ installation: installationFile, guardrails: installationFile, roles: installationFile }).parse({
     installation: env.ITERVANE_RESTART_INSTALLATION_FILE, guardrails: env.ITERVANE_RESTART_GUARDRAILS_FILE, roles: env.ITERVANE_RESTART_ROLES_FILE,
   });
   const writeKey = whiskersMcpKeySchema.parse(env.ITERVANE_RESTART_WHISKERS_WRITE_KEY);

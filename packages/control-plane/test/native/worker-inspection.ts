@@ -18,7 +18,7 @@ import {
   repositoryDtoSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sha256Schema, sourceInspectionDtoSchema,
   qualifiedImageArchiveSchema, qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
   taskDtoSchema, taskEventDtoSchema, taskEventReasonSchema, translate,
-  type FormalAuditResult, type Locale, type NpmUpgradeApproval, type OperationsRestartWriterProof, type StandardVerificationProfile, type TaskDto,
+  type FormalAuditResult, type Locale, type NpmUpgradeApproval, type StandardVerificationProfile, type TaskDto,
 } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
@@ -28,10 +28,10 @@ import { formalReleaseQueue } from '../../src/persistence/database.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
 import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
+import { createInstalledApi } from '../../src/runtime/installed-api.js';
 import { createKomodoRestartReader, KomodoReleaseClient } from '../../src/runtime/release-komodo.js';
 import { createKeycloakRolloutTokenSource, ReleaseRolloutVerifier } from '../../src/runtime/release-rollout.js';
 import { ReleaseIngressError } from '../../src/runtime/release-traefik.js';
-import { loadWhiskersWriter } from '../../src/runtime/whiskers-writer-installation.js';
 import { changeOperationsRestartInstallation } from '../../src/service/operations-restart-installations.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
 import { registerOperationsTarget } from '../../src/service/operations-targets.js';
@@ -56,7 +56,7 @@ import { openProtectedIngress } from './protected-ingress.js';
 import { proveNativeRestart, type DiagnosisHttp } from './restart-proof.js';
 
 type NativeRestartAcceptance = {
-  writer: OperationsRestartWriterProof;
+  installationFile: string;
   verify: (diagnosis: TaskDto, diagnosisSha256: string, request: DiagnosisHttp, mcp: Client) => ReturnType<typeof proveNativeRestart>;
 };
 
@@ -948,10 +948,11 @@ async function probe() {
           const { providerSha256 } = configuredAuditModel(configuration);
           const installed = { ITERVANE_OPERATIONS_ENVIRONMENT_ID: environment.id, ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollmentSha256,
             ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: providerSha256 };
-          const diagnosisApi = createApi(db.storage, runtimeConfig({
+          const { app: diagnosisApi } = await createInstalledApi(db.storage, runtimeConfig({
             DATABASE_URL: db.runtimeUrl, ITERVANE_OIDC_ISSUER: oidc.config.issuer, ITERVANE_OIDC_AUDIENCE: oidc.config.audience,
             ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_OPERATIONS_API_ENABLED: '1', ITERVANE_PORTAL_CLIENT_ID: portalClientId, ...installed,
-          }), { logger: false, ...(restart ? { operationsRestartWriter: restart.writer } : {}) });
+            ITERVANE_RESTART_API_INSTALLATION_FILE: restart?.installationFile,
+          }), { logger: false });
           const reader = new Client({ name: 'itervane-native-diagnosis', version: '0.0.0' });
           try {
             const endpoint = await diagnosisApi.listen({ host: '127.0.0.1', port: 0 });
@@ -1169,8 +1170,7 @@ async function probe() {
             const fixtureFiles = await native.installationFiles({ environmentId: environment.id, enrollmentSha256: enrollment.fingerprint });
             const installation = operationsRestartInstallationSchema.parse(JSON.parse(readFileSync(fixtureFiles.installation, 'utf8')));
             const registered = await changeOperationsRestartInstallation(db.storage, { action: 'register', expectedActiveId: null, installation });
-            const { proof: writer } = await loadWhiskersWriter(fixtureFiles, native.writeKey);
-            equal(registered.installationSha256, writer.installationSha256);
+            equal(registered.installationSha256, sha256(JSON.stringify(installation)));
             const files = { installation: join(shared, 'restart-installation.json'), guardrails: join(shared, 'restart-guardrails.json'),
               roles: join(shared, 'restart-roles.json') };
             for (const name of ['installation', 'guardrails', 'roles'] as const) {
@@ -1202,7 +1202,7 @@ async function probe() {
                   ITERVANE_RESTART_PROBE_SECRET: ingress.probeSecret });
               };
               const result = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, {
-                writer,
+                installationFile: files.installation,
                 async verify(diagnosis, diagnosisSha256, request, mcp) {
                   await startRestartProcess();
                   phase = interrupted ? 'operations_native_restart_interruption' : 'operations_native_restart_application';
