@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { formalRepairInputSchema } from './formal-repair.js';
 import { sha256Schema } from './inspection.js';
+import { operationsHealthRegressionSchema } from './operations-repair.js';
 import { idSchema } from './primitives.js';
 
 export const verificationProfileSchema = z.strictObject({
@@ -35,16 +36,14 @@ const subjectSchema = z.discriminatedUnion('kind', [
   }),
 ]);
 
-const healthRegressionSchema = z.strictObject({
-  proposalId: idSchema, diagnosisSha256: sha256Schema, publicationProofSha256: sha256Schema,
-  incidentId: idSchema, sampleSequence: z.int().positive(), sampleEvidenceSha256: sha256Schema,
-});
-
 export const formalVerificationInputSchema = formalRepairInputSchema.omit({ findingIds: true }).extend({
   profile: verificationProfileSchema,
   subject: subjectSchema,
-  healthRegression: healthRegressionSchema.optional(),
-}).refine(({ subject, inspection, profile, healthRegression }) =>
+  healthRegression: operationsHealthRegressionSchema.optional(),
+}).refine(({ subject, inspection, profile, healthRegression, healthReproduction, generation, runId }) =>
   (subject.kind === 'original') === (subject.manifestSha256 === inspection.snapshotSha256)
-  && (!healthRegression || profile.runStandardBaseline === true));
+  && (!healthRegression || profile.runStandardBaseline === true)
+  && (!healthReproduction || (subject.kind === 'repair' && generation === 2 && runId !== healthReproduction.previousRunId
+    && inspection.snapshotSha256 === healthReproduction.subjectManifestSha256
+    && JSON.stringify(healthRegression) === JSON.stringify(healthReproduction.regression))));
 export type FormalVerificationInput = z.infer<typeof formalVerificationInputSchema>;

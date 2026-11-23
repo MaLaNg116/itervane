@@ -1,7 +1,8 @@
 import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
-  qualifiedGuestRepairProofSchema, repairCandidateManifestSchema, repairCandidateReceiptSchema, repairCommandByteLimit, repairCommandSchema,
+  healthRepairSourceBytes, qualifiedGuestRepairProofSchema, repairCandidateManifestSchema, repairCandidateReceiptSchema,
+  repairCommandByteLimit, repairCommandSchema,
   type RepairPatch,
 } from '@itervane/contracts';
 import { isNpmLock, readBoundedFile, readGuestSnapshotData, readPublishedWorktree } from './guest-snapshot.js';
@@ -50,6 +51,8 @@ function prepareCandidate({ manifest: base, files }: ReturnType<typeof readGuest
     const original = contents.get(path);
     if (!before || !original || before.sha256 !== beforeSha256) throw new Error('repair-precondition');
     const updated = editText(original, edits);
+    if (workspace.healthReproductionSha256 && (!original.length || !updated.length
+        || original.length > healthRepairSourceBytes || updated.length > healthRepairSourceBytes)) throw new Error('repair-scope');
     const afterSha256 = sha256(updated);
     if (afterSha256 === beforeSha256) throw new Error('repair-no-change');
     totalBytes += updated.length - original.length;

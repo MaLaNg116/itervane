@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { qualifiedRepairObservationRequestSchema, qualifiedRepairObservationResponseSchema,
+import { healthRepairSourceBytes, qualifiedRepairObservationRequestSchema, qualifiedRepairObservationResponseSchema, standardHealthRepairPath,
   type QualifiedRepairObservationReceipt, type RepairTarget } from '@itervane/contracts';
 import { describe, expect, it } from 'vitest';
 import { observeQualifiedRepairTargets } from '../../src/guest-repair-observation.js';
 import { publishGuestSnapshot } from '../../src/guest-snapshot.js';
 import { sha256 } from '../../src/profiles.js';
 import { verifyQualifiedRepairObservation } from '../../src/qualified-client.js';
-import { canonicalRepairObservation } from '../../src/repair-command.js';
+import { canonicalRepairCommand, canonicalRepairObservation } from '../../src/repair-command.js';
 import { trustedGitFixture } from '../helpers/trusted-git.js';
 
 describe.runIf(process.platform === 'linux')('repair observations in the sealed guest', () => {
@@ -58,9 +58,56 @@ describe.runIf(process.platform === 'linux')('repair observations in the sealed 
         originSha256: sha256(origin), commitSha256: sha256(sample.commitObject), cleanupConfirmed: true, sessionVerified: true, snapshot: proof };
       expect(qualifiedRepairObservationResponseSchema.safeParse(receipt).success).toBe(true);
       expect(() => verifyQualifiedRepairObservation(receipt, request, command, imageSha256)).not.toThrow();
-      const changed = { ...proof.observation, targets: proof.observation.targets.map(value => ({ ...value, line: 42 })) };
+      const changed = { ...proof.observation, targets: proof.observation.targets.map(value => 'kind' in value ? value : { ...value, line: 42 }) };
       expect(() => verifyQualifiedRepairObservation({ ...receipt, snapshot: { ...proof, observation: changed } }, request, command, imageSha256))
         .toThrow('runner_repair_observation_binding');
+    } finally { await sample.close(); }
+  });
+
+  it.each(['bounded', 'oversized'] as const)('read-seals the %s application module under its health receipt', async scenario => {
+    const path = standardHealthRepairPath;
+    const original = Buffer.from(scenario === 'bounded' ? 'export const status = 503;\n' : 'a'.repeat(healthRepairSourceBytes + 1));
+    const sample = await trustedGitFixture('sha1', { [path]: original, 'baseline/other.mjs': Buffer.from('unrelated sample') });
+    try {
+      const source = join(sample.root, 'source');
+      await mkdir(source);
+      const domain = randomUUID();
+      publishGuestSnapshot(source, sample.root, domain, sample.source, 'repair-observation');
+      const healthReproductionSha256 = sha256('old healthy-then-unhealthy receipt');
+      const workspace = { version: 1, operationId: randomUUID(), repairInputSha256: sha256('linked repair input'),
+        source: sample.source, baseSnapshotSha256: sample.manifest.sha256, protectedPaths: ['baseline'], healthReproductionSha256 };
+      const target = { findingId: healthReproductionSha256, path, kind: 'health_reproduction', line: null } as const;
+      const command = canonicalRepairObservation({ workspace, targets: [target] });
+      expect(() => canonicalRepairObservation({ workspace, targets: [{ ...target, findingId: sha256('different receipt') }] })).toThrow('repair-scope');
+      const apply = { ...workspace, editablePaths: [path, 'baseline/other.mjs'] };
+      const otherFile = { path: 'baseline/other.mjs', beforeSha256: sha256('unrelated sample'),
+        edits: [{ startByte: 0, endByte: 1, replacement: 'a' }] };
+      expect(() => canonicalRepairCommand(apply, { version: 1, baseSnapshotSha256: workspace.baseSnapshotSha256, files: [otherFile] }))
+        .toThrow('repair-scope');
+      await writeFile(join(source, 'repair-observation.json'), command.bytes);
+      const proof = observeQualifiedRepairTargets(source);
+      const [observed] = proof.observation.targets;
+      const file = { sha256: sha256(original), bytes: original.length };
+      expect(observed).toMatchObject(scenario === 'bounded'
+        ? { ...target, status: 'text', file, range: { startByte: 0, endByte: original.length, sha256: file.sha256 }, sourceText: original.toString() }
+        : { ...target, status: 'oversized', file, range: null });
+      expect(JSON.stringify(proof)).not.toContain('unrelated sample');
+      if (scenario === 'oversized') expect(observed).not.toHaveProperty('sourceText');
+      const request = qualifiedRepairObservationRequestSchema.parse({
+        version: 1, operation: 'observe_repair', operationId: workspace.operationId, repairInputSha256: workspace.repairInputSha256,
+        baseSnapshotSha256: workspace.baseSnapshotSha256, commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
+        requestId: randomUUID(), taskId: randomUUID(), projectId: randomUUID(), runId: randomUUID(),
+        generation: 2, fence: 3, workspaceSha256: sha256('runner workspace'), ...sample.source, origin: 'https://example.invalid/source.git',
+      });
+      const { origin, ...scope } = request;
+      const imageSha256 = sha256('runner image');
+      const receipt: QualifiedRepairObservationReceipt = { kind: 'repair_observation', scope, domainId: domain, imageSha256,
+        originSha256: sha256(origin), commitSha256: sha256(sample.commitObject), cleanupConfirmed: true, sessionVerified: true, snapshot: proof };
+      expect(() => verifyQualifiedRepairObservation(receipt, request, command, imageSha256)).not.toThrow();
+      if (observed && 'kind' in observed && observed.sourceText) {
+        observed.sourceText = observed.sourceText.replace('503', '200');
+        expect(() => verifyQualifiedRepairObservation(receipt, request, command, imageSha256)).toThrow('runner_repair_observation_binding');
+      }
     } finally { await sample.close(); }
   });
 });

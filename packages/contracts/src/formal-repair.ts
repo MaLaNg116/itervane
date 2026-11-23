@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { auditFindingsPerScan, auditModelProtocolSchema, formalAuditInputSchema } from './formal-audit.js';
+import { linkedHealthRepairContextSchema } from './formal-repair-retry.js';
 import { localeSchema } from './i18n.js';
 import { sha256Schema, sourceContentLimits } from './inspection.js';
 import { npmRepairScopesSchema } from './npm-repair.js';
@@ -13,10 +14,13 @@ export const formalRepairInputSchema = formalAuditInputSchema.pick({
   audit: z.strictObject({ inputSha256: sha256Schema, resultSha256: sha256Schema, checkpointId: idSchema }),
   catalogSha256: sha256Schema,
   findingIds: z.array(sha256Schema).max(2 * auditFindingsPerScan).refine(ids => new Set(ids).size === ids.length),
+  healthReproduction: linkedHealthRepairContextSchema.optional(),
 });
 export type FormalRepairInput = z.infer<typeof formalRepairInputSchema>;
 
 export const repairPatchLimits = Object.freeze({ files: 8, editsPerFile: 16, replacementBytes: 128 * 1024, documentBytes: 512 * 1024 });
+export const standardHealthRepairPath = 'server/app.mjs';
+export const healthRepairSourceBytes = 4096;
 const utf8 = new TextEncoder();
 const bytes = (value: string) => utf8.encode(value).byteLength;
 const pathSchema = z.string().min(1).max(240).refine(path => path.isWellFormed());
@@ -30,6 +34,7 @@ export const repairWorkspaceSchema = z.strictObject({
   editablePaths: z.array(pathSchema).min(1).max(repairPatchLimits.files).refine(uniquePaths),
   protectedPaths: z.array(pathSchema).max(sourceContentLimits.maxFiles).refine(uniquePaths),
   npmRepairs: npmRepairScopesSchema.optional(),
+  healthReproductionSha256: sha256Schema.optional(),
 });
 export type RepairWorkspace = z.infer<typeof repairWorkspaceSchema>;
 
@@ -60,9 +65,14 @@ export const repairCommandByteLimit = 2 * 1024 * 1024;
 export const repairCommandSchema = z.strictObject({ workspace: repairWorkspaceSchema, patch: repairPatchSchema });
 
 export const repairObservationWorkspaceSchema = repairWorkspaceSchema.omit({ editablePaths: true });
-export const repairTargetSchema = z.strictObject({
+const scanRepairTarget = z.strictObject({
   findingId: sha256Schema, path: pathSchema, scanner: z.enum(['gitleaks', 'trivy']), line: z.int().min(1).max(100000000).nullable(),
 });
+const healthRepairTarget = z.strictObject({
+  findingId: sha256Schema, path: z.literal(standardHealthRepairPath), kind: z.literal('health_reproduction'), line: z.null(),
+  scanner: z.never().optional(),
+});
+export const repairTargetSchema = z.union([scanRepairTarget, healthRepairTarget]);
 const uniqueTargets = (targets: Array<{ findingId: string; path: string }>) =>
   new Set(targets.map(target => target.findingId + ':' + target.path.toLowerCase())).size === targets.length;
 export const repairTargetsSchema = z.array(repairTargetSchema).min(1).max(repairPatchLimits.files).refine(uniqueTargets);
@@ -71,10 +81,12 @@ export const repairTemplateIdSchema = z.enum(['remove-env-entry-v1']);
 const observedRangeSchema = z.strictObject({ startByte: offset, endByte: offset, sha256: sha256Schema })
   .refine(range => range.startByte < range.endByte);
 const observedFileSchema = z.strictObject({ sha256: sha256Schema, bytes: offset });
-const repairTargetObservationSchema = repairTargetSchema.extend({
-  status: z.enum(['text', 'binary', 'protected', 'missing']),
+const observationFields = {
   file: observedFileSchema.nullable(), range: observedRangeSchema.nullable(),
   templates: z.array(repairTemplateIdSchema).max(1),
+};
+const scanRepairTargetObservation = scanRepairTarget.extend({
+  status: z.enum(['text', 'binary', 'protected', 'missing']), ...observationFields,
   npm: z.strictObject({
     name: npmPackageNameSchema, installedVersion: npmStableVersionSchema, fixedVersion: npmStableVersionSchema,
     edits: z.array(repairEditSchema).min(1).max(4).refine(orderedEdits),
@@ -87,6 +99,18 @@ const repairTargetObservationSchema = repairTargetSchema.extend({
   if (target.range && (target.status !== 'text' || target.line === null || target.range.endByte > target.file.bytes)) return false;
   return target.templates.length === 0 || (target.range !== null && target.scanner === 'gitleaks');
 });
+const healthRepairTargetObservation = healthRepairTarget.extend({
+  status: z.enum(['text', 'binary', 'protected', 'missing', 'oversized']), ...observationFields,
+  npm: z.never().optional(),
+  sourceText: z.string().min(1).max(healthRepairSourceBytes).refine(value =>
+    value.isWellFormed() && bytes(value) <= healthRepairSourceBytes && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)).optional(),
+}).refine(({ status, file, range, templates, sourceText }) => {
+  if (templates.length) return false;
+  if (status === 'text') return sourceText !== undefined && file && range
+    && range.startByte === 0 && range.endByte === file.bytes && bytes(sourceText) === file.bytes && range.sha256 === file.sha256;
+  return !range && sourceText === undefined && ((status === 'protected' || status === 'missing') === (file === null));
+});
+const repairTargetObservationSchema = z.union([scanRepairTargetObservation, healthRepairTargetObservation]);
 export const repairObservationSchema = z.strictObject({
   version: z.literal(1), operationId: idSchema, repairInputSha256: sha256Schema, baseSnapshotSha256: sha256Schema,
   targets: z.array(repairTargetObservationSchema).min(1).max(repairPatchLimits.files).refine(uniqueTargets),

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { auditFindingsPerScan, auditScannerSchema, idSchema, localeSchema, operationsDiagnosisObservationSchema, sourceRefSchema } from '@itervane/contracts';
+import { auditFindingsPerScan, auditScannerSchema, idSchema, linkedHealthRepairContextSchema, localeSchema, operationsDiagnosisObservationSchema,
+  sourceRefSchema } from '@itervane/contracts';
 import { z } from 'zod';
 import { repairEvidenceDataSchema } from './repair-contracts.js';
 import { verificationObservationSchema } from './verification-contracts.js';
@@ -89,7 +90,12 @@ export const receiptSchema = z.strictObject({ origin: z.literal('trusted_fixture
 export type AgentReceipt = z.infer<typeof receiptSchema>;
 export type EvidenceData = AgentReceipt['data'];
 export const formalReceiptSchema = z.strictObject({
-  origin: z.literal('formal_audit'), ...receiptBinding, data: z.discriminatedUnion('kind', [ruleEvidenceSchema, scanEvidenceSchema]),
+  origin: z.literal('formal_audit'), ...receiptBinding, data: z.discriminatedUnion('kind', [
+    ruleEvidenceSchema, scanEvidenceSchema, z.strictObject({
+      kind: z.literal('health_reproduction'), reproduction: linkedHealthRepairContextSchema,
+      check: z.literal('second_health_request'), statusCode: z.literal(503),
+    }),
+  ]),
 });
 export type FormalAuditReceipt = z.infer<typeof formalReceiptSchema>;
 export const formalRepairReceiptSchema = z.strictObject({

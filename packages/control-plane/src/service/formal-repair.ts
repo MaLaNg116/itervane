@@ -5,6 +5,7 @@ import { formalAuditInputs, formalAuditResults, formalRepairInputs } from '../pe
 import type { ExecutionScope, TaskRow } from '../runtime/authority.js';
 import type { Transaction } from './access.js';
 import { DomainError } from './errors.js';
+import { requireCurrentLinkedHealthRepair } from './operations-repair-proposals.js';
 import { readRepairRetry } from './repair-retry.js';
 
 export function isRepairableAudit(document: unknown) {
@@ -33,13 +34,21 @@ export async function prepareFormalRepairInput(tx: Transaction, task: TaskRow, s
     || audit.inspectionSha256 !== input.inspection.receiptSha256 || audit.snapshotSha256 !== input.inspection.snapshotSha256
     || audit.catalogSha256 !== input.catalog.sha256) throw new Error('formal_repair_audit_integrity');
 
+  const retry = await readRepairRetry(tx, task, scope);
+  const linked = retry && 'kind' in retry ? retry : undefined;
+  if (linked) {
+    if (checklist.findings.length || JSON.stringify(linked.previous) !== JSON.stringify(input.healthReproduction)
+        || !audit.evidence.some(entry => entry.kind === 'health_reproduction' && checklist.evidenceIds.includes(entry.id)
+          && JSON.stringify(entry.reproduction) === JSON.stringify(linked.previous))) throw new DomainError('conflict');
+    await requireCurrentLinkedHealthRepair(tx, task, linked);
+  }
   const document = formalRepairInputSchema.parse({
     version: 1, taskId: task.id, runId: scope.runId, projectId: task.projectId, generation: scope.generation,
     source: input.source, dataClass: input.dataClass, locale: input.locale, inspection: input.inspection,
     audit: { inputSha256: current.input.sha256, resultSha256: current.audit.sha256, checkpointId: audit.checkpointId },
-    catalogSha256: audit.catalogSha256, findingIds: checklist.findings.map(item => item.id),
+    catalogSha256: audit.catalogSha256, findingIds: linked ? [linked.previous.receiptSha256] : checklist.findings.map(item => item.id),
+    ...(linked ? { healthReproduction: linked.previous } : {}),
   });
-  const retry = await readRepairRetry(tx, task, scope);
   if (retry && (retry.baseSnapshotSha256 !== document.inspection.snapshotSha256 || retry.catalogSha256 !== document.catalogSha256)) {
     throw new DomainError('conflict');
   }

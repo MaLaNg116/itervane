@@ -125,6 +125,7 @@ const en = {
   auditScopedCoverage: 'Both scanner observations reviewed', auditPartialCoverage: 'Some findings remain outside this checklist',
   auditNoFindings: 'The two scanner observations contain zero findings.', auditHypotheses: 'Questions for review',
   auditEvidence: 'Evidence references', auditSuspected: 'Suspected', auditConfirmed: 'Confirmed scanner match',
+  auditHealthReproduction: 'Reproduced application health failure',
   auditImpact: 'Potential impact', auditSuggestion: 'Recommended action',
   auditSeverityUnknown: 'Severity unknown', auditSeverityLow: 'Low', auditSeverityMedium: 'Medium', auditSeverityHigh: 'High', auditSeverityCritical: 'Critical',
 } as const;
@@ -252,6 +253,7 @@ const zh: Record<UiKey, string> = {
   auditScopedCoverage: '已审阅两种扫描结果', auditPartialCoverage: '部分发现超出此清单范围',
   auditNoFindings: '两种扫描的结果均为零项发现。', auditHypotheses: '待核对的问题',
   auditEvidence: '证据引用', auditSuspected: '疑似', auditConfirmed: '已确认的扫描命中',
+  auditHealthReproduction: '已复现的应用健康故障',
   auditImpact: '潜在影响', auditSuggestion: '处理建议',
   auditSeverityUnknown: '严重度未知', auditSeverityLow: '低', auditSeverityMedium: '中', auditSeverityHigh: '高', auditSeverityCritical: '严重',
 };

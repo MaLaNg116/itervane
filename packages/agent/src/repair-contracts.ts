@@ -13,6 +13,7 @@ type RepairTarget = RepairObservation['targets'][number];
 
 export function editableRepairTarget(target?: RepairTarget): target is RepairTarget & { file: NonNullable<RepairTarget['file']> } {
   if (target?.status !== 'text' || !target.file) return false;
+  if ('kind' in target) return target.range !== null && target.sourceText !== undefined;
   if (target.scanner === 'trivy') return target.npm !== undefined;
   return !isNpmRepairArtifact(target.path) && (target.line === null || target.range !== null);
 }

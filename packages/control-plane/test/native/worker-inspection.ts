@@ -220,7 +220,8 @@ async function runScopedFixtureWorker(bundle: string, socket: string, controller
     if (size > limit) child.kill();
     else output.push(chunk);
   });
-  const status = await boundedExit(child, exit, probe === 'repair' ? 385_000 : 205_000);
+  const repeatedHealth = args.some(value => value.startsWith('followup-repaired:'));
+  const status = await boundedExit(child, exit, probe === 'repair' || repeatedHealth ? 385_000 : 205_000);
   if (status !== 0 || size > limit) throw new Error(/\bverification_fixture_phase_[a-z_]{1,56}\b/.exec(diagnostic)?.[0] ?? 'scoped_fixture_worker_failed');
   return JSON.parse(Buffer.concat(output).toString('utf8'));
 }
@@ -587,7 +588,7 @@ async function probe() {
         return { current, after, generation: repair.result.generation, dependencyPatchSha256: repair.result.candidate.patchSha256 };
       };
       const buildFixture = async (revision: string, outcome: 'built' | 'profile_mismatch' | 'offline_install',
-        baselineOutcome?: 'passed' | 'failed', followup?: 'passed' | 'unhealthy') => {
+        baselineOutcome?: 'passed' | 'failed', followup?: 'passed' | 'unhealthy' | { previousReceiptSha256: string }) => {
         phase = `standard_build_audit_${outcome}_worker`;
         const profile = baselineOutcome ? automaticProfile : undefined;
         const failed = baselineOutcome === 'failed';
@@ -628,15 +629,18 @@ async function probe() {
         phase = `standard_build_audit_${outcome}_worker_stop`;
         await worker.stop('TERM'); worker = undefined;
         phase = baselineOutcome ? `standard_baseline_${baselineOutcome}` : `standard_build_execution_${outcome}`;
+        const followupFlag = followup && (typeof followup === 'string' ? `followup-${followup}` : `followup-repaired:${followup.previousReceiptSha256}`);
         const fact: Record<string, unknown> = profile ? await recordedVerification(task, failed)
           : await rescanFixture(task, null, [build.profile, build.baseline, outcome,
-            ...(baselineOutcome ? [baselineOutcome, ...(followup ? [`followup-${followup}`] : build.oci ? [build.oci] : [])] : [])]);
+            ...(baselineOutcome ? [baselineOutcome, ...(followupFlag ? [followupFlag] : build.oci ? [build.oci] : [])] : [])]);
         const evidence = qualifiedStandardBuildProofSchema.parse(fact.build);
         equal(evidence.baselineSha256, build.baseline);
-        equal(evidence.subjectManifestSha256, snapshotSha256);
+        equal(evidence.subjectManifestSha256, typeof followup === 'object' ? fact.targetManifestSha256 : snapshotSha256);
+        equal(fact.baseSnapshotSha256, snapshotSha256);
         equal(evidence.verificationInputSha256, fact.inputSha256);
         equal(evidence.runId, fact.domainId);
-        return { ...fact, build: evidence, taskId: task.id };
+        return { ...fact, build: evidence, taskId: task.id, receiptSha256: sha256Schema.parse(fact.receiptSha256),
+          baseSnapshotSha256: sha256Schema.parse(fact.baseSnapshotSha256), targetManifestSha256: sha256Schema.parse(fact.targetManifestSha256) };
       };
       const runProtectedCase = async (fault?: 'health' | 'identity') => {
         ok(automaticProfile);
@@ -1628,7 +1632,14 @@ async function probe() {
         equal(reproduced.build.baseline.healthFollowup?.status, 'unhealthy');
         notEqual(healthy.build.runId, reproduced.build.runId);
         notEqual(healthy.build.baseline.runtimeInputsSha256, reproduced.build.baseline.runtimeInputsSha256);
-        healthFollowup = { healthy, reproduced };
+        const repaired = await buildFixture(standardHealthFollowupDefectCommit, 'built', 'passed',
+          { previousReceiptSha256: reproduced.receiptSha256 });
+        ok(repaired.build.status === 'built' && repaired.build.baseline?.status === 'passed');
+        equal(repaired.build.baseline.healthFollowup?.status, 'passed');
+        equal(repaired.baseSnapshotSha256, reproduced.baseSnapshotSha256);
+        notEqual(repaired.targetManifestSha256, repaired.baseSnapshotSha256);
+        notEqual(repaired.build.baseline.runtimeInputsSha256, reproduced.build.baseline.runtimeInputsSha256);
+        healthFollowup = { healthy, reproduced, repaired };
       }
       let retry;
       if (automaticProfile) {

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { formalRepairRetrySchema, formalVerificationInputSchema, repairCommandSchema, standardVerificationProfileSchema, type FormalRepairRetry,
+import { formalRepairContinuationSchema, formalRepairRetrySchema, formalVerificationInputSchema, linkedHealthRepairSchema, repairCommandSchema,
+  standardVerificationProfileSchema, type FormalRepairContinuation, type FormalRepairRetry, type FormalVerificationInput,
   type FormalVerificationResult } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { and, eq } from 'drizzle-orm';
@@ -64,7 +65,26 @@ export async function prepareRepairRetry(tx: Transaction, task: TaskRow, scope: 
   return { document, grantId, sha256: sha256(JSON.stringify(document)) };
 }
 
-type PreparedRetry = NonNullable<Awaited<ReturnType<typeof prepareRepairRetry>>>;
+type PreparedRetry = { document: FormalRepairContinuation; grantId: string; sha256: string };
+
+export function prepareLinkedHealthRepair(task: TaskRow, scope: ExecutionScope, input: FormalVerificationInput,
+  result: FormalVerificationResult, resultSha256: string, authorization: {
+    grantId: string; verificationProfileSha256: string; repairPolicySha256: string;
+  }): PreparedRetry | undefined {
+  const { source, build, baseline } = result.evidence;
+  if (scope.generation !== 1 || task.generation !== 1 || input.subject.kind !== 'original' || !input.healthRegression
+      || result.review?.outcome !== 'checks_failed' || source.status !== 'compared' || source.introduced || source.remaining || source.resolved
+      || build.status !== 'built' || baseline.status !== 'passed' || baseline.healthFollowup?.status !== 'unhealthy') return;
+  const { grantId, verificationProfileSha256, repairPolicySha256 } = authorization;
+  const document = linkedHealthRepairSchema.parse({
+    version: 1, kind: 'linked_health', taskId: task.id, projectId: task.projectId, runId: randomUUID(), generation: 2,
+    source: input.source, baseSnapshotSha256: input.inspection.snapshotSha256, catalogSha256: input.catalogSha256,
+    verificationProfileSha256, repairPolicySha256,
+    previous: { previousRunId: scope.runId, verificationResultSha256: resultSha256, receiptSha256: result.receiptSha256,
+      subjectManifestSha256: input.subject.manifestSha256, regression: input.healthRegression },
+  });
+  return { document, grantId, sha256: sha256(JSON.stringify(document)) };
+}
 
 export async function enqueueRepairRetry(tx: Transaction, database: Database, task: TaskRow, scope: ExecutionScope, retry: PreparedRetry) {
   const { document, grantId, sha256 } = retry;
@@ -85,11 +105,11 @@ export async function enqueueRepairRetry(tx: Transaction, database: Database, ta
   await enqueue(tx, database, next, runId);
 }
 
-export async function readRepairRetry(tx: Transaction, task: TaskRow, scope: Pick<ExecutionScope, 'runId' | 'generation'>): Promise<FormalRepairRetry | undefined> {
+export async function readRepairRetry(tx: Transaction, task: TaskRow, scope: Pick<ExecutionScope, 'runId' | 'generation'>) {
   if (task.generation === 1) return;
   const [stored] = await tx.select().from(formalRepairRetries).where(eq(formalRepairRetries.runId, scope.runId));
   if (!stored) return;
-  const retry = formalRepairRetrySchema.parse(stored.document);
+  const retry = formalRepairContinuationSchema.parse(stored.document);
   if (retry.taskId !== task.id || retry.projectId !== task.projectId || retry.runId !== scope.runId
       || retry.generation !== scope.generation || retry.generation !== task.generation
       || retry.source.repositoryId !== task.repositoryId || retry.source.commit !== task.commit

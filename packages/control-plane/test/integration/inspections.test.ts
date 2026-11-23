@@ -16,7 +16,7 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
   operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartExecutionViewSchema, operationsRestartRecoveryProofSchema,
   operationsRestartRequestSchema, operationsRestartSubmissionSchema, operationsRestoreExecutionViewSchema, operationsRestorePlanSchema, operationsRestoreRecoveryProofSchema,
-  operationsSubmissionSchema, taskDtoSchema, translate,
+  operationsSubmissionSchema, standardHealthRepairPath, taskDtoSchema, translate,
   verificationViewSchema,
   whiskersRestartImageDigest,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
@@ -325,6 +325,7 @@ function repairObservationReceipt(scan: QualifiedInspectionReceipt, raw: Paramet
       observation: { version: 1, operationId: workspace.operationId, repairInputSha256: workspace.repairInputSha256,
         baseSnapshotSha256: workspace.baseSnapshotSha256, targets: targets.map(target => ({
           ...target, status: 'text', file: { bytes: Buffer.byteLength(original), sha256: sha256(original) }, range, templates: [],
+          ...('kind' in target ? { sourceText: original } : {}),
         })) },
     },
   };
@@ -3435,6 +3436,137 @@ it.each(['unhealthy', 'passed', 'unavailable', 'missing', 'revoked'] as const)
       { environmentId: application.scope.environmentId, expectedVersion: current!.version }, 'zh-CN'))
       .rejects.toMatchObject({ code: 'unsupported_state' });
   }, 45_000);
+
+it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as const)
+  ('continues a reproduced health incident with at most one bounded repair (%s)', async outcome => {
+    const { application, linked, portal } = await confirmIncidentReproduction();
+    const original = 'export const secondHealth = 503;\n';
+    const repaired = 'export const secondHealth = 200;\n';
+    const range = { startByte: 0, endByte: Buffer.byteLength(original), sha256: sha256(original) };
+    let scan: QualifiedInspectionReceipt | undefined;
+    let candidate: QualifiedRepairReceipt['snapshot']['candidate'] | undefined;
+    const observeRepair = vi.fn<RepairObservationRunner['observeRepair']>(async (request, workspace, targets, authorize) => {
+      await authorize();
+      expect(targets).toEqual([{ kind: 'health_reproduction', findingId: workspace.healthReproductionSha256,
+        path: standardHealthRepairPath, line: null }]);
+      expect(request.generation).toBe(2);
+      return repairObservationReceipt(scan!, request, workspace, targets, original, range);
+    });
+    const repair = vi.fn<RepairRunner['repair']>(async (request, workspace, patch, authorize) => {
+      await authorize();
+      expect(workspace.editablePaths).toEqual([standardHealthRepairPath]);
+      expect(workspace.healthReproductionSha256).toBeTruthy();
+      expect(patch.files).toEqual([{ path: standardHealthRepairPath, beforeSha256: sha256(original),
+        edits: [{ startByte: 0, endByte: range.endByte, replacement: repaired }] }]);
+      const receipt = repairReceipt(scan!, request, workspace, patch, original);
+      candidate = receipt.snapshot.candidate;
+      return receipt;
+    });
+    const verify = vi.fn<RescanRunner['verify']>(async (coordinates, input, patch, authorize) => {
+      await authorize();
+      const request = prepareQualifiedVerificationRequest(coordinates, canonicalVerificationCommand({ input, repair: patch }));
+      expect(request.healthFollowup).toBe(true);
+      const fixed = input.subject.kind === 'repair';
+      if (fixed) {
+        expect(input.profile).toEqual(standardVerificationProfile);
+        expect(input.healthReproduction?.previousRunId).toBe(linked.runId);
+        expect(input.subject.manifestSha256).toBe(candidate?.candidateManifestSha256);
+        expect(patch?.workspace.healthReproductionSha256).toBe(input.healthReproduction?.receiptSha256);
+      } else expect(input.profile.ociInputsSha256).toBeUndefined();
+      const receipt = standardVerificationReceipt(scan!, request, input, false, fixed ? candidate : undefined, 'linked healthy');
+      const baseline = receipt.snapshot.build?.status === 'built' ? receipt.snapshot.build.baseline : undefined;
+      if (baseline?.status !== 'passed') throw new Error('Expected trusted baseline');
+      if (fixed && outcome === 'recovered') baseline.healthFollowup = { status: 'passed', code: null, statusCode: 200 };
+      else { delete baseline.image; baseline.healthFollowup = { status: 'unhealthy', code: 'application_unhealthy', statusCode: 503 }; }
+      return receipt;
+    });
+    const model = auditModel(async request => {
+      const context = request.conversation[0];
+      if (context?.kind !== 'user') throw new Error('Missing model context');
+      const { role, observations, handoff, completionNeeds } = JSON.parse(context.text) as {
+        role: string; observations: AgentEvidence[]; handoff: { healthReproduction?: { receiptSha256: string } }; completionNeeds: string[];
+      };
+      if (role === 'verify') return scriptedVerification('zh-CN').complete(request);
+      if (role === 'audit') {
+        if (completionNeeds.includes('health_reproduction')) return auditTurn('read_health_reproduction', {});
+        if (completionNeeds.length) return concludeAudit(request);
+        return auditTurn('finish_role', { summary: '已核对扫描与健康证据。', evidenceIds: observations.map(item => item.id), explanations: [] });
+      }
+      if (observations.some(item => item.data.kind === 'repair_failure')) return auditTurn('request_human', {});
+      const finished = observations.find(item => item.data.kind === 'repair_candidate');
+      if (finished) return auditTurn('finish_role', { evidenceId: finished.id, summary: '已更新第二次健康请求的处理。' });
+      const observation = observations.find(item => item.data.kind === 'repair_targets');
+      if (observation?.data.kind !== 'repair_targets') return auditTurn('read_repair_targets', { findingIds: [handoff.healthReproduction?.receiptSha256] });
+      const target = observation.data.observation.targets[0];
+      if (!target || !('kind' in target) || target.sourceText !== original || !target.range) throw new Error('Missing scoped source');
+      return auditTurn('apply_repair_patch', { observationId: observation.id, targets: [{ targetIndex: 0,
+        edits: [{ startByte: target.range.startByte, endByte: target.range.endByte, replacement: repaired }] }] });
+    });
+    const worker = () => new DurableWorker(database.storage, database.runtimeUrl, {
+      runner: inspectionRunner(async (request, authorize) => { await authorize(); scan = testReceipt(request); return scan; }),
+      auditModel: model, repair: { protectedPaths: [], runner: { observe: async () => idleRepairRunner(), observeRepair, repair } },
+      verification: { profile: standardVerificationProfile, runner: { observe: async () => idleRepairRunner(), verify,
+        verifyArchive: async archive => ({ kind: 'archive_verified', version: 1, runnerImageSha256: imageSha256, archive }),
+      } },
+    });
+    const failEnqueue = outcome === 'enqueue rollback' ? vi.spyOn(database.storage.boss, 'send').mockResolvedValueOnce(null) : undefined;
+    const initial = worker();
+    try { await processAdmittedTestTask(initial); } finally { await initial.close(); failEnqueue?.mockRestore(); }
+    const service = application.taskService;
+    const queued = await service.get(identity, linked.id);
+    const retries = () => database.storage.db.select().from(formalRepairRetries).where(eq(formalRepairRetries.taskId, linked.id));
+    const [continuation] = await retries();
+    if (outcome === 'enqueue rollback') {
+      expect(queued).toMatchObject({ runId: linked.runId, state: 'needs_human' });
+      expect(continuation).toBeUndefined();
+      expect(await database.storage.db.select().from(formalVerificationResults).where(eq(formalVerificationResults.runId, linked.runId))).toEqual([]);
+      return;
+    }
+    expect(queued).toMatchObject({ state: 'queued' });
+    expect(continuation).toMatchObject({ runId: queued.runId, previousRunId: linked.runId, document: { kind: 'linked_health', generation: 2 } });
+    expect((await service.events(identity, linked.id, 30, 'zh-CN')).at(-1)).toMatchObject({ type: 'task.repair_retry_queued' });
+    const before = await new VerificationViewService(database.storage).get(identity, linked.id, 'en');
+    expect(before.previous).toMatchObject({ outcome: 'checks_failed', baseline: { healthFollowup: { status: 'unhealthy' } } });
+    if (outcome === 'revoked grant') {
+      const [previous] = await database.storage.db.delete(workspaceMembers).where(eq(workspaceMembers.principalId, linked.requestedBy)).returning();
+      await database.storage.db.insert(workspaceMembers).values({ workspaceId: previous!.workspaceId, principalId: previous!.principalId });
+    }
+    const resumed = worker();
+    try { await processAdmittedTestTask(resumed); } finally { await resumed.close(); }
+    const changed = await service.get(identity, linked.id);
+    expect(await retries()).toHaveLength(1);
+    expect(await database.storage.db.select().from(taskRuns).where(eq(taskRuns.taskId, linked.id))).toHaveLength(2);
+    if (outcome === 'revoked grant') {
+      expect(changed.state).toBe('needs_human');
+      expect(observeRepair).not.toHaveBeenCalled();
+      expect(repair).not.toHaveBeenCalled();
+      expect(verify).toHaveBeenCalledTimes(1);
+      return;
+    }
+    expect(observeRepair).toHaveBeenCalledTimes(1);
+    expect(repair).toHaveBeenCalledTimes(1);
+    expect(verify).toHaveBeenCalledTimes(2);
+    const after = await new VerificationViewService(database.storage).get(identity, linked.id, 'zh-CN');
+    const passed = outcome === 'recovered';
+    expect(after.current).toMatchObject({ runId: queued.runId, outcome: passed ? 'observed' : 'checks_failed',
+      baseline: { healthFollowup: { status: passed ? 'passed' : 'unhealthy' } } });
+    const releases = new FormalReleaseService(database.storage, portal);
+    const freeze = releases.freeze(identity, linked.id, { environmentId: application.scope.environmentId, expectedVersion: changed.version }, 'zh-CN');
+    if (!passed) {
+      expect(changed.state).toBe('needs_human');
+      await expect(freeze).rejects.toMatchObject({ code: 'unsupported_state' });
+      return;
+    }
+    const { candidate: release } = await freeze;
+    expect(release.manifest.repairedSnapshotSha256).toBe(candidate?.candidateManifestSha256);
+    const approver = await createIdentityVerifier(issuer.config)(await issuer.token('owner', { azp: portal }));
+    const approved = await releases.decide(approver, release.id, { action: 'confirm', fingerprint: release.fingerprint,
+      expectedVersion: 0, idempotencyKey: randomUUID() }, 'zh-CN');
+    const [job] = await database.storage.boss.fetch(formalReleaseQueue, { includeMetadata: true });
+    expect(job).toBeTruthy();
+    const claim = await new FormalReleaseCoordinator(coordinator, releaseOrigin).claim(job!, randomUUID());
+    expect(claim).toMatchObject({ operationId: approved.candidate.operationId, candidateId: release.id, mode: 'import' });
+  }, 55_000);
 
 it('freezes one immutable restart proposal from the settled diagnosis under concurrent requests', async () => {
   const current = await settleProposalDiagnosis('restart');

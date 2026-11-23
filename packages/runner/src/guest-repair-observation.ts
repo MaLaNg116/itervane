@@ -1,5 +1,6 @@
 import { join } from 'node:path';
-import { npmRepairPaths, qualifiedGuestRepairObservationSchema, repairCommandByteLimit, type RepairTarget } from '@itervane/contracts';
+import { healthRepairSourceBytes, npmRepairPaths, qualifiedGuestRepairObservationSchema, repairCommandByteLimit, type RepairTarget }
+  from '@itervane/contracts';
 import { npmRepairPair } from './npm-repair.js';
 import { readRepairSource, repairText } from './guest-repair-source.js';
 import { readBoundedFile } from './guest-snapshot.js';
@@ -23,7 +24,7 @@ function observedLine(content: Buffer, line: number | null) {
 const simpleAssignment = /^[ \t]*(?:export[ \t]+)?[a-z_][a-z0-9_]*[ \t]*=[ \t]*(?:[a-z0-9_.@/:+%~=-]+|"[^"\\$`\r\n]+"|'[^'\r\n]+')[ \t]*(?:#[^\r\n]*)?\r?$/i;
 const blankOrComment = /^[ \t]*(?:#[^\r\n]*)?\r?$/;
 
-function templateHints(target: RepairTarget, text: string, range: NonNullable<ReturnType<typeof observedLine>>, line: Buffer) {
+function templateHints(target: Extract<RepairTarget, { scanner: string }>, text: string, range: NonNullable<ReturnType<typeof observedLine>>, line: Buffer) {
   // A hint describes syntax only. The original key and value remain inside the sealed guest.
   if (target.scanner !== 'gitleaks' || text.length > 65536 || range.endByte - range.startByte > 4096
       || !/(?:^|\/)\.env(?:\.[a-z0-9_-]+)?$/i.test(target.path)) return [];
@@ -47,7 +48,8 @@ export function observeQualifiedRepairTargets(source: string) {
   const npm = new Map((workspace.npmRepairs ?? []).flatMap(scope => {
     const paths = npmRepairPaths(scope.lockPath);
     if (!paths.every(path => !protectedRepairPath(path, workspace.protectedPaths)
-      && command.targets.some(target => target.findingId === scope.findingId && target.path === path && target.scanner === 'trivy'))) return [];
+      && command.targets.some(target => target.findingId === scope.findingId && target.path === path
+        && 'scanner' in target && target.scanner === 'trivy'))) return [];
     const pair = npmRepairPair(content, scope);
     return pair ? [[scope.findingId, { pair, approval: scope.approval }] as const] : [];
   }));
@@ -57,8 +59,11 @@ export function observeQualifiedRepairTargets(source: string) {
     const value = content.get(target.path);
     const file = metadata.get(target.path);
     if (!value || !file) return { ...base, status: 'missing' };
+    if ('kind' in target && file.bytes > healthRepairSourceBytes) return { ...base, file, status: 'oversized' };
     const text = repairText(value);
     if (text === null) return { ...base, file, status: 'binary' };
+    if ('kind' in target) return text ? { ...base, file, status: 'text', sourceText: text,
+      range: { startByte: 0, endByte: file.bytes, sha256: file.sha256 } } : { ...base, file, status: 'binary' };
     const range = observedLine(value, target.line);
     const templates = range ? templateHints(target, text, range, value.subarray(range.startByte, range.endByte)) : [];
     const dependency = npm.get(target.findingId);

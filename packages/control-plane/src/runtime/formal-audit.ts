@@ -6,7 +6,7 @@ import type { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import type { workerConfig } from '../config.js';
 import { DomainError } from '../service/errors.js';
 import { prepareFormalAuditInput, publishFormalAudit } from '../service/formal-audit.js';
-import { readRepairRetry } from '../service/repair-retry.js';
+import { requireCurrentLinkedHealthRepair } from '../service/operations-repair-proposals.js';
 import type { ExecutionScope } from './authority.js';
 import { GuardedCheckpointer } from './checkpointer.js';
 import type { ExecutionCoordinator } from './coordinator.js';
@@ -22,18 +22,14 @@ export function configuredAuditModel(config: NonNullable<ReturnType<typeof worke
 
 export async function runFormalAudit(coordinator: ExecutionCoordinator, scope: ExecutionScope, saver: PostgresSaver,
   model: AuditModel | undefined, signal: AbortSignal, allowRepair: boolean, verification?: StandardVerificationProfile) {
-  const prepared = await coordinator.withLease(scope, async (tx, { task }) => {
-    const input = await prepareFormalAuditInput(tx, task, scope);
-    const retry = await readRepairRetry(tx, task, scope);
-    if (retry && (retry.baseSnapshotSha256 !== input.document.inspection.snapshotSha256 || retry.catalogSha256 !== input.document.catalog.sha256)) {
-      throw new DomainError('conflict');
-    }
-    return input;
-  });
+  const prepared = await coordinator.withLease(scope, (tx, { task }) => prepareFormalAuditInput(tx, task, scope));
   if (!model) return 'unavailable' as const;
   const checkpointer = new GuardedCheckpointer(coordinator, scope, saver, { auditInputSha256: prepared.sha256, signal });
   const audit = createFormalAudit({ input: prepared, inspection: prepared.inspection, model: model.adapter, providerSha256: model.providerSha256,
-    checkpointer, authorize: (_scope, active) => coordinator.withLease(scope, async () => !active.aborted),
+    checkpointer, authorize: (_scope, active) => coordinator.withLease(scope, async (tx, { task }) => {
+      if (prepared.continuation) await requireCurrentLinkedHealthRepair(tx, task, prepared.continuation);
+      return !active.aborted;
+    }),
   });
   const report = await audit.run({ signal });
   signal.throwIfAborted();

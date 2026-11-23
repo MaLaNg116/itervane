@@ -5,7 +5,7 @@ import { auditFixture } from './formal-fixture.js';
 import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from './npm-repair-fixture.js';
 
 type Options = Parameters<typeof createFormalRepair>[0];
-type Target = RepairObservation['targets'][number];
+type Target = Extract<RepairObservation['targets'][number], { scanner: string }>;
 type SampleFile = Pick<Target, 'path' | 'range' | 'templates' | 'npm'> & { original: string; edits: RepairPatch['files'][number]['edits'] };
 export const updatedFixtureManifest = '{"name":"fixture","version":"1.1.0"}\n';
 export const fixtureAuditNarrative = 'fixture value omitted from the model';

@@ -46,7 +46,9 @@ export async function publishFormalRepair(tx: Transaction, task: TaskRow, scope:
       || report.runId !== scope.runId || report.origin !== 'formal_repair' || report.role !== 'repair'
       || (report.status !== 'completed' && report.status !== 'requires_human')) throw new DomainError('unavailable');
   const candidate = report.status === 'completed' ? await recordedCandidate(tx, scope.runId, input.sha256, report) : null;
-  const repeated = candidate && input.retry && candidate.candidate.manifestSha256 === input.retry.previous.candidateManifestSha256;
+  const previous = input.retry?.previous;
+  const repeated = candidate && previous && 'candidateManifestSha256' in previous
+    && candidate.candidate.manifestSha256 === previous.candidateManifestSha256;
   const result = repeated ? null : candidate;
   const document = formalRepairResultSchema.parse({
     version: 1, taskId: task.id, runId: scope.runId, projectId: task.projectId, generation: scope.generation, locale: task.locale,

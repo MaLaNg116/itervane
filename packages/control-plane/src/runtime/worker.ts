@@ -8,6 +8,7 @@ import { queueName, type Database } from '../persistence/database.js';
 import type { runRuntime } from '../persistence/schema.js';
 import type { OperationsInstallation } from '../config.js';
 import { DomainError } from '../service/errors.js';
+import { requireCurrentLinkedHealthRepair } from '../service/operations-repair-proposals.js';
 import { publishFormalRepair } from '../service/repair-result.js';
 import { readRepairRetry, verificationProfileFingerprint } from '../service/repair-retry.js';
 import { publishFormalVerification } from '../service/verification-result.js';
@@ -105,9 +106,11 @@ export class DurableWorker {
     timer.unref();
     let phase: 'preflight' | 'audit' | 'repair' | 'verification' | 'operations' = 'preflight';
     try {
-      const { runtime, retry, role, diagnosis } = await this.coordinator.withLease(scope, async (tx, current) => ({
-        runtime: current.runtime, retry: await readRepairRetry(tx, current.task, scope), role: current.run.role, diagnosis: current.operationsDiagnosis,
-      }));
+      const { runtime, retry, role, diagnosis } = await this.coordinator.withLease(scope, async (tx, current) => {
+        const continuation = await readRepairRetry(tx, current.task, scope);
+        if (continuation && 'kind' in continuation) await requireCurrentLinkedHealthRepair(tx, current.task, continuation);
+        return { runtime: current.runtime, retry: continuation, role: current.run.role, diagnosis: current.operationsDiagnosis };
+      });
       if (role === 'operations') {
         phase = 'operations';
         if (!this.#operations) return await this.coordinator.stop(scope, 'operations_unavailable');
@@ -218,7 +221,8 @@ export class DurableWorker {
     const image = result.evidence.image;
     const archiveVerification = result.report.formalVerification?.outcome === 'observed' && image.status === 'scanned' && image.archive
       ? await this.verification.runner.verifyArchive?.(image.archive, signal) : undefined;
-    const retry = this.repair ? { database: this.database, repairPolicySha256: repairPolicyFingerprint(this.repair) } : undefined;
+    const retry = this.repair ? { database: this.database, repairPolicySha256: repairPolicyFingerprint(this.repair),
+      profile: this.verification.profile } : undefined;
     const published = archiveVerification ? { ...result, archiveVerification } : result;
     await this.coordinator.withLease(scope, (tx, { task }) => publishFormalVerification(tx, task, scope, published, model.adapter.protocol, signal, retry));
   }

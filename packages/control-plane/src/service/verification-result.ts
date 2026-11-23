@@ -1,6 +1,6 @@
 import { finishFormalVerification, type FormalVerificationReport } from '@itervane/agent';
 import { formalVerificationInputSchema, formalVerificationResultSchema, type FormalVerificationEvidence,
-  type FormalVerificationResult, type QualifiedOciArchiveVerification } from '@itervane/contracts';
+  type FormalVerificationInput, type FormalVerificationResult, type QualifiedOciArchiveVerification, type StandardVerificationProfile } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { and, eq } from 'drizzle-orm';
 import type { Database } from '../persistence/database.js';
@@ -8,12 +8,16 @@ import { formalRescanAttempts, formalVerificationInputs, formalVerificationResul
   from '../persistence/schema.js';
 import { appendEvent, clearSlot, ExecutionLost, type ExecutionScope, type TaskRow } from '../runtime/authority.js';
 import { recordedVerificationEvidence } from '../runtime/verification-evidence.js';
-import { readLinkedHealthRegression } from '../runtime/verification-input.js';
 import type { Transaction } from './access.js';
 import { DomainError } from './errors.js';
-import { enqueueRepairRetry, prepareRepairRetry, readRepairRetry } from './repair-retry.js';
+import { readLinkedHealthBasis } from './operations-repair-proposals.js';
+import { enqueueRepairRetry, prepareLinkedHealthRepair, prepareRepairRetry, readRepairRetry, verificationProfileFingerprint } from './repair-retry.js';
 
-export async function readPublishedVerification(tx: Transaction, task: TaskRow, run: Pick<ExecutionScope, 'runId' | 'generation'>) {
+type PublishedVerification = { row: typeof formalVerificationResults.$inferSelect; input: FormalVerificationInput;
+  result: FormalVerificationResult; evidence: FormalVerificationEvidence; originSha256: string };
+
+export async function readPublishedVerification(tx: Transaction, task: TaskRow,
+  run: Pick<ExecutionScope, 'runId' | 'generation'>): Promise<PublishedVerification | null> {
   const [entry] = await tx.select({ row: formalVerificationResults, input: formalVerificationInputs, pointer: formalVerificationRuntime, attempt: formalRescanAttempts })
     .from(formalVerificationResults)
     .innerJoin(taskRuns, and(eq(taskRuns.id, formalVerificationResults.runId), eq(taskRuns.taskId, task.id), eq(taskRuns.generation, run.generation)))
@@ -44,6 +48,20 @@ export async function readPublishedVerification(tx: Transaction, task: TaskRow, 
       || JSON.stringify(evidence) !== JSON.stringify(result.evidence)) {
     throw new Error('formal_verification_result_integrity');
   }
+  if (input.healthReproduction) {
+    const continuation = await readRepairRetry(tx, task, run);
+    const previous = await readPublishedVerification(tx, task, { runId: input.healthReproduction.previousRunId, generation: 1 });
+    if (!continuation || !('kind' in continuation)
+        || JSON.stringify(continuation.previous) !== JSON.stringify(input.healthReproduction)
+        || continuation.verificationProfileSha256 !== verificationProfileFingerprint(input.profile)
+        || !previous || previous.input.subject.kind !== 'original' || !previous.input.healthRegression
+        || JSON.stringify(previous.input.healthRegression) !== JSON.stringify(continuation.previous.regression)
+        || previous.row.sha256 !== continuation.previous.verificationResultSha256 || previous.row.receiptSha256 !== continuation.previous.receiptSha256
+        || previous.input.subject.manifestSha256 !== continuation.baseSnapshotSha256
+        || previous.evidence.baseline.status !== 'passed' || previous.evidence.baseline.healthFollowup?.status !== 'unhealthy') {
+      throw new Error('formal_verification_health_repair_binding');
+    }
+  }
   return { row, input, result, evidence, originSha256: receipt.originSha256 };
 }
 
@@ -65,7 +83,7 @@ function recordedObservations(report: FormalVerificationReport, evidence: Formal
 export async function publishFormalVerification(tx: Transaction, task: TaskRow, scope: ExecutionScope,
   result: { report: FormalVerificationReport; evidence: FormalVerificationEvidence; archiveVerification?: QualifiedOciArchiveVerification },
   provider: FormalVerificationResult['provider'], signal: AbortSignal,
-  retryConfig?: { database: Database; repairPolicySha256: string }) {
+  retryConfig?: { database: Database; repairPolicySha256: string; profile: StandardVerificationProfile }) {
   signal.throwIfAborted();
   const { report, archiveVerification } = result;
   const [entry] = await tx.select({ pointer: formalVerificationRuntime, attempt: formalRescanAttempts })
@@ -77,14 +95,17 @@ export async function publishFormalVerification(tx: Transaction, task: TaskRow, 
       || report.origin !== 'formal_verification') throw new ExecutionLost();
   const { receipt, evidence } = recordedVerificationEvidence(entry.attempt.receipt, entry.pointer.receiptSha256);
   if (JSON.stringify(evidence) !== JSON.stringify(result.evidence)) throw new Error('formal_verification_projection_binding');
+  let linked: { input: FormalVerificationInput; basis: NonNullable<Awaited<ReturnType<typeof readLinkedHealthBasis>>> } | undefined;
   if (receipt.scope.healthFollowup) {
     const [frozen] = await tx.select().from(formalVerificationInputs).where(eq(formalVerificationInputs.runId, scope.runId));
     const input = formalVerificationInputSchema.parse(frozen?.document);
+    const basis = await readLinkedHealthBasis(tx, task);
     if (frozen?.sha256 !== receipt.scope.verificationInputSha256 || !input.healthRegression
         || sha256(JSON.stringify(input)) !== frozen.sha256
-        || JSON.stringify(await readLinkedHealthRegression(tx, task)) !== JSON.stringify(input.healthRegression)) {
+        || !basis || JSON.stringify(basis.regression) !== JSON.stringify(input.healthRegression)) {
       throw new DomainError('version_conflict');
     }
+    linked = { input, basis };
   }
   if (archiveVerification && archiveVerification.runnerImageSha256 !== receipt.imageSha256) {
     throw new Error('formal_verification_archive_runner');
@@ -112,14 +133,15 @@ export async function publishFormalVerification(tx: Transaction, task: TaskRow, 
   await tx.insert(formalVerificationResults).values({ runId, inputSha256, receiptSha256, checkpointId, requestId, finalizedFence, workerId,
     sha256: hash, document });
 
-  const reproduction = receipt.scope.healthFollowup && receipt.snapshot.target === null;
+  const reproduction = linked?.input.subject.kind === 'original';
   const followup = evidence.baseline.status === 'passed' ? evidence.baseline.healthFollowup : undefined;
   const reproductionReason = followup?.status === 'unhealthy' ? 'operations_reproduction_observed'
     : followup?.status === 'passed' ? 'operations_reproduction_not_observed' : 'operations_reproduction_unavailable';
   const observed = !reproduction && review?.outcome === 'observed';
   const failed = review?.outcome === 'checks_failed' || review?.outcome === 'source_findings';
-  const retry = !reproduction && failed && retryConfig
-    ? await prepareRepairRetry(tx, task, scope, document, hash, retryConfig.repairPolicySha256) : undefined;
+  const retry = linked && reproduction && retryConfig && linked.basis.verificationProfileSha256 === verificationProfileFingerprint(retryConfig.profile)
+    ? prepareLinkedHealthRepair(task, scope, linked.input, document, hash, { ...linked.basis, repairPolicySha256: retryConfig.repairPolicySha256 })
+    : !linked && failed && retryConfig ? await prepareRepairRetry(tx, task, scope, document, hash, retryConfig.repairPolicySha256) : undefined;
   const exhausted = !reproduction && failed && Boolean(await readRepairRetry(tx, task, scope));
   const reason = reproduction ? reproductionReason : observed ? 'verification_observed' : exhausted ? 'repair_retry_limit'
     : failed ? 'verification_checks_failed' : 'verification_needs_human';

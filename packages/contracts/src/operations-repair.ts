@@ -24,3 +24,8 @@ export const operationsRepairProposalSchema = z.strictObject({
 });
 
 export type OperationsRepairProposal = z.infer<typeof operationsRepairProposalSchema>;
+
+export const operationsHealthRegressionSchema = z.strictObject({
+  proposalId: idSchema, diagnosisSha256: sha256Schema, publicationProofSha256: sha256Schema,
+  incidentId: idSchema, sampleSequence: z.int().positive(), sampleEvidenceSha256: sha256Schema,
+});

@@ -3,8 +3,8 @@ import { and, eq, ne, sql } from 'drizzle-orm';
 import {
   isNpmRepairArtifact, npmRepairPaths, type NpmRepairScope, type NpmUpgradeApproval,
   qualifiedInspectionStatusSchema, qualifiedRepairRequestSchema, qualifiedRepairResponseSchema, repairPatchSchema, sha256Schema,
-  type QualifiedInspectionReceipt, type QualifiedInspectionStatus, type QualifiedRepairRequest, type QualifiedRepairResponse, type RepairPatch,
-  type RepairTarget,
+  standardHealthRepairPath, type LinkedHealthRepair, type LinkedHealthRepairContext, type QualifiedInspectionReceipt,
+  type QualifiedInspectionStatus, type QualifiedRepairRequest, type QualifiedRepairResponse, type RepairPatch, type RepairTarget,
 } from '@itervane/contracts';
 import { canonicalRepairCommand, protectedRepairPath, sha256, sourcePath, verifyQualifiedRepairReceipt, type QualifiedInspectionClient } from '@itervane/runner';
 import { formalRepairAttempts, formalRepairOperations, repositories } from '../persistence/schema.js';
@@ -13,6 +13,7 @@ import { DomainError, parseInput } from '../service/errors.js';
 import { prepareFormalRepairInput } from '../service/formal-repair.js';
 import { currentInspectionAttempt, readInspectionEvidence } from '../service/inspection-evidence.js';
 import { readInspectionPlan } from '../service/inspections.js';
+import { requireCurrentLinkedHealthRepair } from '../service/operations-repair-proposals.js';
 import { ExecutionLost, type ExecutionScope, type TaskRow } from './authority.js';
 import type { ExecutionCoordinator } from './coordinator.js';
 
@@ -30,7 +31,8 @@ type Command = ReturnType<typeof canonicalRepairCommand>;
 type Attempt = typeof formalRepairAttempts.$inferSelect;
 type Outcome = Extract<QualifiedRepairResponse, { kind: 'rejected' }>;
 type RepairProposal = { callKeySha256: string; findingIds: readonly string[]; patch: RepairPatch };
-type Dispatch = { request: QualifiedRepairRequest; command: Command; attempt: Attempt; scan: QualifiedInspectionReceipt };
+type Dispatch = { request: QualifiedRepairRequest; command: Command; attempt: Attempt; scan: QualifiedInspectionReceipt;
+  linked: LinkedHealthRepair | undefined };
 
 const unavailable = (requestId: string | null = null): Outcome =>
   ({ kind: 'rejected', requestId, domainId: null, code: 'not_ready', cleanup: 'not_started' });
@@ -72,7 +74,13 @@ export async function repairBasis(tx: Transaction, task: TaskRow, scope: Executi
   return { input, scan: scan.receipt, origin: repo.origin };
 }
 
-export function repairTargets(scan: QualifiedInspectionReceipt, findingIds: readonly string[], approvals: readonly NpmUpgradeApproval[] = []) {
+export function repairTargets(scan: QualifiedInspectionReceipt, findingIds: readonly string[], approvals: readonly NpmUpgradeApproval[] = [],
+  reproduction?: LinkedHealthRepairContext): { targets: RepairTarget[]; npmRepairs: NpmRepairScope[] } {
+  if (reproduction) {
+    if (findingIds.length !== 1 || findingIds[0] !== reproduction.receiptSha256) throw new DomainError('forbidden');
+    return { targets: [{ findingId: reproduction.receiptSha256, path: standardHealthRepairPath, kind: 'health_reproduction', line: null }],
+      npmRepairs: [] };
+  }
   const findings = new Map(scan.snapshot.reports.flatMap(report =>
     report.findings.map(finding => [finding.id, { ...finding, scanner: report.scanner }] as const)));
   const npmRepairs: NpmRepairScope[] = [];
@@ -103,7 +111,7 @@ function dispatchFor(basis: Awaited<ReturnType<typeof repairBasis>>, attempt: At
     repairInputSha256: input.sha256, baseSnapshotSha256: input.document.inspection.snapshotSha256,
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
   });
-  return { request, attempt, command, scan };
+  return { request, attempt, command, scan, linked: input.retry && 'kind' in input.retry ? input.retry : undefined };
 }
 
 function checkedOutcome(raw: unknown, dispatch: Dispatch) {
@@ -177,12 +185,15 @@ export class FormalRepairExecution {
     const { callKeySha256, findingIds, patch } = proposal;
     if (patch.baseSnapshotSha256 !== input.document.inspection.snapshotSha256) throw new DomainError('conflict');
     if (findingIds.some(id => !input.document.findingIds.includes(id))) throw new DomainError('forbidden');
-    const { targets, npmRepairs } = repairTargets(scan, findingIds, this.npmApprovals);
+    const { healthReproduction } = input.document;
+    const { targets, npmRepairs } = repairTargets(scan, findingIds, this.npmApprovals, healthReproduction);
     const allowed = new Set(targets.map(target => target.path));
     const paths = patch.files.map(file => file.path);
     if (paths.some(path => !allowed.has(path) || protectedRepairPath(path, this.protectedPaths))) throw new DomainError('forbidden');
     const approved = new Set(npmRepairs.map(entry => entry.findingId));
-    if (targets.some(target => target.scanner === 'trivy' && !approved.has(target.findingId))) throw new DomainError('forbidden');
+    if (targets.some(target => 'scanner' in target && target.scanner === 'trivy' && !approved.has(target.findingId))) {
+      throw new DomainError('forbidden');
+    }
     const pairPaths = new Set(npmRepairs.flatMap(entry => npmRepairPaths(entry.lockPath)));
     if (pairPaths.size !== npmRepairs.length * 2 || [...pairPaths].some(path => !paths.includes(path))
         || paths.some(path => isNpmRepairArtifact(path) && !pairPaths.has(path))) throw new DomainError('forbidden');
@@ -192,8 +203,11 @@ export class FormalRepairExecution {
       version: 1, operationId, repairInputSha256: input.sha256, source: input.document.source,
       baseSnapshotSha256: input.document.inspection.snapshotSha256, editablePaths: paths, protectedPaths: this.protectedPaths,
       ...(npmRepairs.length ? { npmRepairs } : {}),
+      ...(healthReproduction ? { healthReproductionSha256: healthReproduction.receiptSha256 } : {}),
     }, patch);
-    if (input.retry?.previous.patchSha256 === command.patchSha256) throw new DomainError('conflict');
+    if (input.retry && 'patchSha256' in input.retry.previous && input.retry.previous.patchSha256 === command.patchSha256) {
+      throw new DomainError('conflict');
+    }
     const serialized = command.bytes.toString('utf8');
     if (existing && (existing.inputSha256 !== input.sha256 || existing.command !== serialized
         || existing.commandSha256 !== sha256(command.bytes) || JSON.stringify(existing.findingIds) !== JSON.stringify(findingIds))) {
@@ -238,7 +252,10 @@ export class FormalRepairExecution {
     const authorize = async () => {
       try {
         signal?.throwIfAborted();
-        await this.coordinator.withLease(scope, tx => requireReservation(tx, request));
+        await this.coordinator.withLease(scope, async (tx, { task }) => {
+          if (dispatch.linked) await requireCurrentLinkedHealthRepair(tx, task, dispatch.linked);
+          await requireReservation(tx, request);
+        });
         authoritySeen = true;
       } catch (error) {
         denied = { error };
@@ -257,8 +274,9 @@ export class FormalRepairExecution {
     const cleaned = outcome.kind === 'repair_receipt' || outcome.cleanup !== 'unknown';
     try {
       if (denied) throw denied.error;
-      return await this.coordinator.withLease(scope, async tx => {
+      return await this.coordinator.withLease(scope, async (tx, { task }) => {
         signal?.throwIfAborted();
+        if (dispatch.linked) await requireCurrentLinkedHealthRepair(tx, task, dispatch.linked);
         await requireReservation(tx, request);
         const receipt = outcome.kind === 'repair_receipt' ? outcome : undefined;
         await settle(tx, scope, attempt, receipt ? 'recorded' : cleaned ? 'closed' : 'uncertain', receipt);

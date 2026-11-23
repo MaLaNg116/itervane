@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { linkedHealthRepairContextSchema } from './formal-repair-retry.js';
 import { localeSchema } from './i18n.js';
 import { sha256Schema } from './inspection.js';
 import { catalogSnapshotSchema } from './preaudit.js';
@@ -10,6 +11,7 @@ export const formalAuditInputSchema = z.strictObject({
   source: sourceRefSchema, dataClass: z.enum(['public', 'synthetic']), locale: localeSchema, purposeSha256: sha256Schema,
   inspection: z.strictObject({ requestId: idSchema, receiptSha256: sha256Schema, snapshotSha256: sha256Schema, planSha256: sha256Schema }),
   catalog: catalogSnapshotSchema,
+  healthReproduction: linkedHealthRepairContextSchema.optional(),
 });
 export type FormalAuditInput = z.infer<typeof formalAuditInputSchema>;
 
@@ -28,6 +30,7 @@ const evidence = z.discriminatedUnion('kind', [
     findingIds: z.array(sha256Schema).max(auditFindingsPerScan),
   }),
   z.strictObject({ kind: z.literal('rule'), id: sha256Schema, ruleId: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/), sha256: sha256Schema }),
+  z.strictObject({ kind: z.literal('health_reproduction'), id: sha256Schema, reproduction: linkedHealthRepairContextSchema }),
 ]);
 
 export const formalAuditResultSchema = z.strictObject({
@@ -36,7 +39,7 @@ export const formalAuditResultSchema = z.strictObject({
   status: z.enum(['completed', 'requires_human']), reason: formalAuditReasonSchema, provider: auditModelProtocolSchema,
   usage: z.strictObject({ turns: z.int().min(0).max(12), toolCalls: z.int().min(0).max(8), tokens: z.int().min(0) }),
   evidence: z.array(evidence).max(8),
-  trace: z.array(z.strictObject({ operationId: sha256Schema, tool: z.enum(['read_scan', 'read_rule']), evidenceId: sha256Schema })).max(8),
+  trace: z.array(z.strictObject({ operationId: sha256Schema, tool: z.enum(['read_scan', 'read_rule', 'read_health_reproduction']), evidenceId: sha256Schema })).max(8),
   checklist: z.strictObject({
     summary: auditText, coverage: z.enum(['complete', 'partial']), limits: z.array(auditText).min(1).max(6), evidenceIds: citations,
     hypotheses: z.array(z.strictObject({ description: auditText, evidenceIds: citations })).max(6),

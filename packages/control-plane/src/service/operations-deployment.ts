@@ -1,7 +1,7 @@
 import { operationsRestorePlanSchema, operationsRestoreRecoveryProofSchema, releaseKomodoCompletionSchema, releaseKomodoUpdateSchema,
   releaseRegistryHost, releaseRolloutProofSchema, taskDtoSchema } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
-import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, sql, type SQL } from 'drizzle-orm';
 import { environments, formalReleaseRolloutAttempts, formalReleaseSteps, formalReleaseTargets, operationsExecutionIntents,
   operationsRestoreRecoveries, operationsRestoreSteps, releaseCandidates, releaseOperations, tasks } from '../persistence/schema.js';
 import { requireProjectAccess, type Actor, type Transaction } from './access.js';
@@ -95,7 +95,7 @@ async function readRestoredDeployment(tx: Transaction, archived: NonNullable<Ret
 
 // Internal evidence lookup. Callers must authorize the project or bind a historical effect under its lease first.
 export async function readPublishedOperationsDeployment(tx: Transaction, scope: { projectId: string; environmentId: string },
-  options: { includePrevious?: boolean } = {}) {
+  options: { includePrevious?: boolean; ownReleaseOperationId?: string } = {}) {
   const { projectId, environmentId } = scope;
   const [environment] = await tx.select().from(environments).where(and(eq(environments.id, environmentId),
     eq(environments.projectId, projectId), eq(environments.access, 'protected'))).for('share');
@@ -107,7 +107,8 @@ export async function readPublishedOperationsDeployment(tx: Transaction, scope: 
   const target = installedTarget(mapping);
 
   const [pending] = await tx.select({ id: releaseOperations.id }).from(releaseOperations).where(
-    and(eq(releaseOperations.environmentId, environment.id), inArray(releaseOperations.state, ['queued', 'dispatching', 'reconciling'])),
+    and(eq(releaseOperations.environmentId, environment.id), inArray(releaseOperations.state, ['queued', 'dispatching', 'reconciling']),
+      options.ownReleaseOperationId ? ne(releaseOperations.id, options.ownReleaseOperationId) : undefined),
   ).limit(1);
   if (pending) throw new DomainError('conflict');
 
