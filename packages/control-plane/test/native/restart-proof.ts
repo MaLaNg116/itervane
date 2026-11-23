@@ -10,6 +10,9 @@ import type { databaseFixture } from '../helpers/database.js';
 import { awaitRestartWorkerDisconnect, holdRestartAcknowledgement } from './restart-crash-barrier.js';
 
 export type DiagnosisHttp = (path: string, options?: { locale?: Locale; portal?: boolean; payload?: object; status?: number }) => Promise<unknown>;
+export type DiagnosisReaders = {
+  request: DiagnosisHttp; mcp: Client; withEnglishReader: <T>(read: (lookup: Client) => Promise<T>) => Promise<T>;
+};
 type RestartInterruption = { environmentId: string; stopWorker: () => Promise<void>; startWorker: () => Promise<void> };
 
 type RestartProofInput = {

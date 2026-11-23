@@ -117,7 +117,8 @@
 | 112 | P3-C2d3b 恢复结算和当前运行实例 | [#112](https://github.com/MaLaNg116/itervane/pull/112)，依赖 #111 | [恢复结算导读](p3-c-restore-publication.md) | TypeScript、247 项单元、22 项 PostgreSQL 17.12 专项、迁移一致性及[九项托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45029329925)通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/112/checks) |
 | 113 | P3-C2d4a 恢复 Worker 装机与独立队列 | [#113](https://github.com/MaLaNg116/itervane/pull/113)，依赖 #112 | [恢复装机导读](p3-c-installed-restore-worker.md) | TypeScript、248 项单元、20 项 PostgreSQL 17.12 专项及[九项 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45032419249/attempts/2)通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/113/checks) |
 | 114 | P3-C2d4b 恢复确认与双语回执 | [#114](https://github.com/MaLaNg116/itervane/pull/114)，依赖 #113 | [人工恢复导读](p3-c-restore-operator.md) | TypeScript、248 项单元、六项 PostgreSQL 17.12 专项和两项 Chrome 门户用例通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/114/checks) |
-| 115 | P3-C2d4c1 同一目标双版本正式发布 | [#115](https://github.com/MaLaNg116/itervane/pull/115)，依赖 #114 | [双版本导读](p3-c-native-restore-release-history.md) | TypeScript、248 项单元和 Bash 语法通过，双版本原生发布由[托管检查](https://github.com/MaLaNg116/itervane/pull/115/checks)验收 |
+| 115 | P3-C2d4c1 同一目标双版本正式发布 | [#115](https://github.com/MaLaNg116/itervane/pull/115)，依赖 #114 | [双版本导读](p3-c-native-restore-release-history.md) | TypeScript、248 项单元和 Bash 语法通过，[托管双版本发布和归档核验](https://github.com/MaLaNg116/itervane/actions/runs/45040417026/job/137263382010)通过 |
+| 116 | P3-C2d4c2 同一应用原生版本恢复 | [#116](https://github.com/MaLaNg116/itervane/pull/116)，依赖 #115 | [指定版本原生恢复导读](p3-c-native-version-restore.md) | TypeScript、248 项单元、21 项 PostgreSQL 专项及[托管原生版本恢复](https://github.com/MaLaNg116/itervane/actions/runs/45042222516/job/137268978495)通过 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 

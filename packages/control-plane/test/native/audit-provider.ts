@@ -52,8 +52,12 @@ function selectOperations(observations: AgentEvidence[]) {
     if (!observed) return { name: 'read_operations', input: { section } };
     if ('containerId' in observed.data.result || 'serverId' in observed.data.result) throw new Error('operations_fixture_private_target');
   }
-  return { name: 'finish_role', input: { hypotheses: [], recommendation: { code: stopped ? 'review_restart' : 'continue_observation',
-    evidenceIds: readings.filter(item => item.data.section === 'container' || item.data.section === 'release').map(item => item.id) } } };
+  const release = readings.find(item => item.data.section === 'release')?.data;
+  const rollback = stopped && release?.section === 'release' && release.result.previous !== null;
+  const evidenceIds = readings.filter(item => item.data.section === 'container' || item.data.section === 'release').map(item => item.id);
+  const code = rollback ? 'review_rollback' : stopped ? 'review_restart' : 'continue_observation';
+  return { name: 'finish_role', input: { hypotheses: rollback ? [{ code: 'release_regression', evidenceIds }] : [],
+    recommendation: { code, evidenceIds } } };
 }
 
 function selectRetryRepair(observations: AgentEvidence[], handoff: Awaited<ReturnType<typeof auditContext>>['handoff']) {

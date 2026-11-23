@@ -7,3 +7,5 @@
 3. 主机在两次发布后重新读取 OCI 归档，测量大小、所有者权限、归档与清单摘要。独立托管场景校验版本和原生更新确实变化，持续验证授权健康、匿名拒绝及工作目录清理。 [归档脚本](https://github.com/MaLaNg116/itervane/blob/a6ba274ec7ab4a120615943c160dc925b9f3eee8/fixtures/runner/run-qualified-session.sh#L235) · [托管断言](https://github.com/MaLaNg116/itervane/blob/a6ba274ec7ab4a120615943c160dc925b9f3eee8/.github/workflows/native-runner.yml#L210)
 
 TypeScript、248 项单元、两个 Bash 脚本的语法检查与差异检查通过。实际 KVM 双版本证据以托管任务 `kvm-evidence (protected-release-restore)` 的结果和上传报告为准。C2d4c2 在两次发布的基础上验证故障诊断和指定版本恢复，C2d4c3 验证接管和参考安装。
+
+交付提交 `baaa6844838213af398f38e8354979e4b7f5e15f` 的独立托管任务通过。报告源码指纹为 `ec4af1375aea069adc92afbea5a829e4e84ec55c9eabf29608f81ba40b720225`。A、B 镜像摘要和容器不同，均返回授权 200、匿名 401。回读确认 B 是当前版本、A 是可恢复历史，主机分别保存两份归档核验。 [托管任务](https://github.com/MaLaNg116/itervane/actions/runs/45040417026/job/137263382010) · [报告](https://github.com/MaLaNg116/itervane/actions/runs/45040417026/artifacts/14762060435)

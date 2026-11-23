@@ -216,6 +216,26 @@ jobs:
               $first.configDigest != $second.configDigest and
               ([$first, $second] | all(.healthStatus == 200 and (.anonymousStatus == 401 or .anonymousStatus == 403) and
                 .httpMcpAgreement and .approvalDeniedWithoutPortal))' "$report" >/dev/null
+            jq -e '.dualVersion.first.release as $first | .dualVersion.second.release as $second | .restoration as $restored |
+              $restored.stoppedState == "exited" and $restored.currentOperationId == $second.operationId and
+              $restored.restoredOperationId == $first.operationId and $restored.restoredVersion == $first.version and
+              $restored.restoredManifestDigest == $first.manifestDigest and $restored.restoredConfigDigest == $first.configDigest and
+              $restored.updateId != $first.updateId and $restored.updateId != $second.updateId and
+              $restored.stoppedContainerId != $restored.restoredContainerId and $restored.readFence > $restored.sendFence and
+              ($restored.proofSha256 | test("^[a-f0-9]{64}$")) and
+              $restored.healthStatus == 200 and ($restored.anonymousStatus == 401 or $restored.anonymousStatus == 403) and
+              $restored.blockedBeforeApproval and $restored.portalIdentityRequired and $restored.idempotent and
+              $restored.configureReceipts == 1 and $restored.deployReceipts == 1 and
+              $restored.environmentReleased and $restored.slotReleased and $restored.distinctKomodoReader and
+              $restored.httpMcpAgreement and $restored.whiskersCleanup and
+              $restored.stoppedDiagnosis.recommendation == "review_rollback" and
+              $restored.stoppedDiagnosis.releaseOperationId == $second.operationId and
+              $restored.stoppedDiagnosis.previousReleaseOperationId == $first.operationId and
+              $restored.postRestoreDiagnosis.recommendation == "continue_observation" and
+              $restored.postRestoreDiagnosis.releaseOperationId == $first.operationId and
+              $restored.postRestoreDiagnosis.restoreExecutionId == $restored.executionId and
+              ([$restored.stoppedDiagnosis, $restored.postRestoreDiagnosis] |
+                all(.httpMcpAgreement and .matchedPublishedTarget and .model == "scripted_anthropic_fixture"))' "$report" >/dev/null
           fi
           if [[ "$NATIVE_SCENARIO" == protected-release-operations ]]; then
             jq -e '.operations.releaseOperationId == .release.operationId and .operations.state == "running" and

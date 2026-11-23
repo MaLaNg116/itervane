@@ -55,12 +55,15 @@ import type { KomodoInterruption, runKomodoReleaseFixture } from './komodo-relea
 import type { RegistryImportMarker } from './release-recovery.js';
 import { temporaryRegistry } from './registry-fixture.js';
 import { openProtectedIngress } from './protected-ingress.js';
-import { proveNativeRestart, type DiagnosisHttp } from './restart-proof.js';
+import { proveNativeRestore } from './restore-proof.js';
+import { proveNativeRestart, type DiagnosisHttp, type DiagnosisReaders } from './restart-proof.js';
 
-type NativeRestartAcceptance = {
-  installationFile: string;
-  verify: (diagnosis: TaskDto, diagnosisSha256: string, request: DiagnosisHttp, mcp: Client) => ReturnType<typeof proveNativeRestart>;
+type NativeDiagnosisPublication = {
+  taskId: string; operationId: string; containerId: string; restoreExecutionId?: string;
 };
+type NativeDiagnosisAcceptance<T> = (
+  { kind: 'restart'; installationFile: string } | { kind: 'rollback'; previousOperationId: string }
+) & { verify: (diagnosis: TaskDto, diagnosisSha256: string, readers: DiagnosisReaders) => Promise<T> };
 
 const execute = promisify(execFile);
 const commit = '9167604c888416d7b6518e1c76485d7308cffb5c';
@@ -956,6 +959,192 @@ async function probe() {
         };
         const first = await publish(current, decision);
         const { proof } = first;
+        const firstPublication = { taskId: current.id, operationId, containerId: proof.runtime.containerId };
+
+        const verifyInstalledDiagnosis = async <T>(enrollmentSha256: string, readKey: string, publication: NativeDiagnosisPublication,
+          acceptance?: NativeDiagnosisAcceptance<T>) => {
+          phase = 'operations_formal_installation';
+          const providerEnv = { ITERVANE_AUDIT_MODEL_PROVIDER: 'anthropic', ANTHROPIC_BASE_URL: audit.baseURL, ANTHROPIC_MODEL: auditFixtureModel };
+          const configuration = workerConfig({ DATABASE_URL: db.runtimeUrl, ...providerEnv, ANTHROPIC_API_KEY: auditFixtureKey }).auditModel;
+          ok(configuration);
+          const { providerSha256 } = configuredAuditModel(configuration);
+          const installed = { ITERVANE_OPERATIONS_ENVIRONMENT_ID: environment.id, ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollmentSha256,
+            ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: providerSha256 };
+          const config = runtimeConfig({
+            DATABASE_URL: db.runtimeUrl, ITERVANE_OIDC_ISSUER: oidc.config.issuer, ITERVANE_OIDC_AUDIENCE: oidc.config.audience,
+            ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_OPERATIONS_API_ENABLED: '1', ITERVANE_PORTAL_CLIENT_ID: portalClientId, ...installed,
+            ITERVANE_RESTART_API_INSTALLATION_FILE: acceptance?.kind === 'restart' ? acceptance.installationFile : undefined,
+          });
+          const { app: diagnosisApi } = acceptance?.kind === 'rollback'
+            ? { app: createApi(db.storage, config, { logger: false, operationsRestoreTarget: { environmentId: environment.id, mappingSha256: mapping.fingerprint } }) }
+            : await createInstalledApi(db.storage, config, { logger: false });
+          const reader = new Client({ name: 'itervane-native-diagnosis', version: '0.0.0' });
+          try {
+            const endpoint = await diagnosisApi.listen({ host: '127.0.0.1', port: 0 });
+            const http: DiagnosisHttp = async (path, { locale = 'zh-CN', payload, portal = false, status } = {}) => {
+              const token = portal ? `Bearer ${await oidc.token('owner', { azp: portalClientId })}` : await authorization();
+              const response = await fetch(endpoint + path, { headers: { Authorization: token, 'Accept-Language': locale,
+                ...(payload ? { 'content-type': 'application/json' } : {}) }, signal: AbortSignal.timeout(5_000),
+                ...(payload ? { method: 'POST', body: JSON.stringify(payload) } : {}) });
+              if (status !== undefined ? response.status !== status : !response.ok) {
+                await response.body?.cancel();
+                throw new Error(`fixture_diagnosis_http_${response.status}`);
+              }
+              if (!response.ok) { await response.body?.cancel(); return null; }
+              return response.json() as Promise<unknown>;
+            };
+            await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp', endpoint), {
+              requestInit: { headers: { Authorization: `Bearer ${mcpToken}`, 'Accept-Language': 'zh-CN' } },
+            }));
+            const capability = await http('/v1/capabilities') as { stage: string; operations: boolean };
+            equal(capability.stage, 'p3-b');
+            equal(capability.operations, true);
+            deepStrictEqual(await http(`/v1/tasks/${publication.taskId}/operations-option`), {
+              option: { projectId: project.id, environmentId: environment.id, releaseOperationId: publication.operationId, diagnosis: true },
+            });
+            const { task: diagnosis } = admissionDtoSchema.parse((await reader.callTool({
+              name: 'start_operations_diagnosis', arguments: { projectId: project.id, environmentId: environment.id,
+                expectedReleaseOperationId: publication.operationId, idempotencyKey: randomUUID(), locale: 'zh-CN' },
+            })).structuredContent);
+            equal(diagnosis.state, 'queued');
+            const initialCalls = audit.calls.length;
+            worker = await startScopedWorker(bundle, ['PATH=/usr/bin:/bin', 'LANG=C.UTF-8', 'ITERVANE_WORKER_POLL_MS=100',
+              'ITERVANE_WORKER_LEASE_SECONDS=30', ...Object.entries({ ...installed, ...providerEnv }).map(([name, value]) => `${name}=${value}`),
+            ], { DATABASE_URL: db.runtimeUrl, ITERVANE_OPERATIONS_WHISKERS_READ_KEY: readKey, ANTHROPIC_API_KEY: auditFixtureKey });
+
+            phase = 'operations_formal_investigation';
+            await poll(async () => {
+              const item = taskDtoSchema.parse(await http(`/v1/tasks/${diagnosis.id}`));
+              if (item.state === 'needs_human' || item.state === 'failed') {
+                const events = await http(`/v1/tasks/${item.id}/events`) as { items?: unknown[] };
+                const reason = taskEventDtoSchema.safeParse(events.items?.at(-1)).data?.reason ?? 'operations_diagnosis_failed';
+                const { rows } = await db.admin.query<{ section: string; state: string }>(
+                  'SELECT section, state FROM itervane.operations_diagnosis_reads WHERE run_id=$1 ORDER BY created_at', [item.runId]);
+                console.error(JSON.stringify({ phase, state: item.state, reason, evidence: rows, modelCalls: audit.calls.slice(initialCalls) }));
+                throw new Error(reason);
+              }
+              return item.state === 'succeeded' ? true : undefined;
+            }, 50_000, 'operations_diagnosis');
+            phase = 'operations_formal_worker_stop';
+            await worker.stop('TERM'); worker = undefined;
+            phase = 'operations_formal_model_trace';
+            const expectedSections = acceptance ? ['container', 'release'] : ['container', 'release', 'logs', 'metrics'];
+            const previous = acceptance?.kind === 'rollback' ? acceptance.previousOperationId : null;
+            const recommendation = previous ? 'review_rollback' : acceptance ? 'review_restart' : 'continue_observation';
+            deepStrictEqual(audit.calls.slice(initialCalls), [...expectedSections.map(() => 'read_operations'), 'finish_role']);
+
+            phase = 'operations_formal_evidence';
+            const { rows } = await db.admin.query<{ document: unknown; sha256: string; container_id: string; tools_used: number; restore_id: string | null }>(
+              `SELECT result.document, result.sha256, observation.document#>>'{observation,containerId}' AS container_id, runtime.tools_used,
+                request.document->>'restoreExecutionId' AS restore_id
+                FROM itervane.operations_diagnosis_results result
+                JOIN itervane.operations_observations observation ON observation.run_id=result.run_id
+                JOIN itervane.operations_requests request ON request.run_id=result.run_id
+                JOIN itervane.run_runtime runtime ON runtime.run_id=result.run_id WHERE result.run_id=$1`, [diagnosis.runId]);
+            equal(rows.length, 1);
+            const row = rows[0]!;
+            const receipt = operationsDiagnosisReceiptSchema.parse(row.document);
+            equal(receipt.providerSha256, providerSha256);
+            equal(receipt.runId, diagnosis.runId);
+            equal(receipt.taskId, diagnosis.id);
+            equal(sha256(JSON.stringify(receipt)), row.sha256);
+            equal(row.tools_used, expectedSections.length);
+            equal(row.container_id, publication.containerId);
+            equal(row.restore_id, publication.restoreExecutionId ?? null);
+            equal(receipt.result.previousReleaseOperationId, previous);
+            deepStrictEqual(receipt.reads.map(item => item.section), expectedSections);
+            const readDiagnosis = async (lookup: Client, locale: Locale) => {
+              const response = operationsObservationViewSchema.parse(await http(`/v1/tasks/${diagnosis.id}/operations`, { locale }));
+              const result = (await lookup.callTool({ name: 'get_operations_result', arguments: { taskId: diagnosis.id } })).structuredContent;
+              deepStrictEqual(operationsObservationViewSchema.parse(result), response);
+              equal(response.releaseOperationId, publication.operationId);
+              equal(response.diagnosis?.receiptSha256, row.sha256);
+              equal(response.observation?.state, acceptance ? 'exited' : 'running');
+              equal(response.diagnosis?.recommendation.code, recommendation);
+              const release = response.diagnosis?.facts.find(fact => fact.section === 'release');
+              equal(release?.result.current.operationId, publication.operationId);
+              if (previous) equal(release?.result.previous?.operationId, previous);
+              const projected = JSON.stringify(response);
+              for (const secret of [readKey, row.container_id]) ok(!projected.includes(secret));
+              return response;
+            };
+            const zh = await readDiagnosis(reader, 'zh-CN');
+            const en = await withEnglishReader(lookup => readDiagnosis(lookup, 'en'), endpoint);
+            deepStrictEqual(zh.diagnosis?.facts, en.diagnosis?.facts);
+            notEqual(zh.diagnosis?.recommendation.message, en.diagnosis?.recommendation.message);
+            const accepted = await acceptance?.verify(diagnosis, row.sha256, { request: http, mcp: reader,
+              withEnglishReader: read => withEnglishReader(read, endpoint) });
+            return { runId: diagnosis.runId, releaseOperationId: publication.operationId, sha256: row.sha256,
+              recommendation, previousReleaseOperationId: previous, restoreExecutionId: row.restore_id, accepted,
+              sections: receipt.reads.map(item => item.section), matchedPublishedTarget: true, httpMcpAgreement: true, model: 'scripted_anthropic_fixture' };
+          } finally {
+            try { await reader.close(); } finally { await diagnosisApi.close(); }
+          }
+        };
+
+        const verifyNativeRestore = async (second: Awaited<ReturnType<typeof publish>>) => {
+          phase = 'operations_native_restore_enrollment';
+          const native = await openNativeWhiskersReadScope();
+          try {
+            const enrollment = await registerOperationsTarget(db.storage, { environmentId: environment.id,
+              releaseTargetRevision: mapping.revision, releaseTargetSha256: mapping.fingerprint,
+              whiskers: { origin: native.origin, serverId: native.serverId } });
+            const readerCredentials = await target.provisionRestartReader();
+            notEqual(readerCredentials.actorId, target.credentials.actorId);
+            const boundTarget = { ...target.binding, imageRepository: targetSettings.imageRepository, registryOrigin: targetSettings.registryOrigin };
+            const reader = KomodoReleaseClient.readOnly(boundTarget, readerCredentials);
+            await reader.verifyInstallation();
+            const stopped = second.proof.runtime;
+            phase = 'operations_native_restore_stop_bound_fixture';
+            await target.setOwnedContainerRunning(false, { containerId: stopped.containerId, reference: stopped.imageReference,
+              configDigest: stopped.configDigest });
+            const authorizeRead = async () => {};
+            const baseline = await reader.inspectStoppedRuntime(boundTarget, second.report, target.endpoint.network, authorizeRead);
+            equal(baseline.state, 'exited');
+            equal(baseline.containerId, stopped.containerId);
+
+            const { accepted, ...stoppedDiagnosis } = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, {
+              taskId: second.report.taskId, operationId: second.report.operationId, containerId: stopped.containerId,
+            }, {
+              kind: 'rollback', previousOperationId: first.report.operationId,
+              verify(diagnosis, diagnosisSha256, readers) {
+                phase = 'operations_native_restore_submission';
+                return proveNativeRestore({ db, diagnosis, diagnosisSha256, current: second.proof, previous: first.proof,
+                  ...readers, async startWorker() {
+                    phase = 'operations_native_restore_worker';
+                    worker = await startScopedWorker(join(shared, 'restore-worker.mjs'), [
+                      'PATH=/usr/bin:/bin', 'LANG=C.UTF-8', 'ITERVANE_WORKER_POLL_MS=250', 'ITERVANE_WORKER_LEASE_SECONDS=30',
+                      `NODE_EXTRA_CA_CERTS=${ca}`, `ITERVANE_OPERATIONS_ENVIRONMENT_ID=${environment.id}`,
+                      `ITERVANE_OPERATIONS_ENROLLMENT_SHA256=${enrollment.fingerprint}`,
+                      `ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256=${mapping.fingerprint}`,
+                      `ITERVANE_RESTORE_KOMODO_READER_ID=${readerCredentials.actorId}`,
+                    ], { DATABASE_URL: db.runtimeUrl, ITERVANE_RESTORE_KOMODO_WRITER_KEY: target.credentials.key,
+                      ITERVANE_RESTORE_KOMODO_WRITER_SECRET: target.credentials.secret, ITERVANE_RESTORE_KOMODO_READER_KEY: readerCredentials.key,
+                      ITERVANE_RESTORE_KOMODO_READER_SECRET: readerCredentials.secret, ITERVANE_RESTORE_PROBE_SECRET: ingress.probeSecret });
+                  },
+                });
+              },
+            });
+            ok(accepted && worker);
+            await worker.stop('TERM'); worker = undefined;
+
+            phase = 'operations_native_restore_readback';
+            const { runtime, update } = accepted.proof;
+            deepStrictEqual(await reader.observeUpdate(boundTarget, update.updateId, authorizeRead), update);
+            equal((await target.observeContainer(runtime.imageReference, runtime.configDigest)).containerId, runtime.containerId);
+            const anonymous = await ingress.anonymousHealthStatus();
+            ok(anonymous === 401 || anonymous === 403);
+            const postRestoreDiagnosis = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, {
+              ...firstPublication, containerId: runtime.containerId, restoreExecutionId: accepted.proof.executionId,
+            });
+            notEqual(postRestoreDiagnosis.runId, stoppedDiagnosis.runId);
+            return { ...accepted.report, distinctKomodoReader: true, stoppedState: baseline.state, stoppedDiagnosis, postRestoreDiagnosis };
+          } finally {
+            try { await worker?.stop('TERM'); worker = undefined; }
+            finally { await native.close(); }
+          }
+        };
+
         if (restoreRun) {
           const scope = { projectId: project.id, environmentId: environment.id };
           const history = () => db.storage.db.transaction(tx => readPublishedOperationsDeployment(tx, scope, { includePrevious: true }));
@@ -986,118 +1175,21 @@ async function probe() {
           equal(latest.previous.releaseOperationId, first.report.operationId);
           equal(latest.previous.manifestDigest, first.report.manifestDigest);
 
+          const restoration = await verifyNativeRestore(second);
+          const restored = await history();
+          equal(restored.releaseOperationId, first.report.operationId);
+          ok('restoreExecutionId' in restored);
+          equal(restored.restoreExecutionId, restoration.executionId);
+          equal(restored.containerId, restoration.restoredContainerId);
+          equal(restored.updateId, restoration.updateId);
+          equal(restored.previous?.releaseOperationId, second.report.operationId);
+          await assertDrained(controllerUid, staging);
           return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, release: first.report,
             dualVersion: { first: { release: first.report, build: after }, second: { release: second.report, build: next.after },
               currentOperationId: latest.releaseOperationId, previousOperationId: latest.previous.releaseOperationId,
               applicationId: application.id, environmentId: environment.id, mappingSha256: mapping.fingerprint,
-              sameTarget: true, sameProtectedIngress: true } };
+              sameTarget: true, sameProtectedIngress: true }, restoration: { ...restoration, whiskersCleanup: true } };
         }
-
-        const verifyInstalledDiagnosis = async (enrollmentSha256: string, readKey: string, restart?: NativeRestartAcceptance) => {
-          phase = 'operations_formal_installation';
-          const providerEnv = { ITERVANE_AUDIT_MODEL_PROVIDER: 'anthropic', ANTHROPIC_BASE_URL: audit.baseURL, ANTHROPIC_MODEL: auditFixtureModel };
-          const configuration = workerConfig({ DATABASE_URL: db.runtimeUrl, ...providerEnv, ANTHROPIC_API_KEY: auditFixtureKey }).auditModel;
-          ok(configuration);
-          const { providerSha256 } = configuredAuditModel(configuration);
-          const installed = { ITERVANE_OPERATIONS_ENVIRONMENT_ID: environment.id, ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollmentSha256,
-            ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: providerSha256 };
-          const { app: diagnosisApi } = await createInstalledApi(db.storage, runtimeConfig({
-            DATABASE_URL: db.runtimeUrl, ITERVANE_OIDC_ISSUER: oidc.config.issuer, ITERVANE_OIDC_AUDIENCE: oidc.config.audience,
-            ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_OPERATIONS_API_ENABLED: '1', ITERVANE_PORTAL_CLIENT_ID: portalClientId, ...installed,
-            ITERVANE_RESTART_API_INSTALLATION_FILE: restart?.installationFile,
-          }), { logger: false });
-          const reader = new Client({ name: 'itervane-native-diagnosis', version: '0.0.0' });
-          try {
-            const endpoint = await diagnosisApi.listen({ host: '127.0.0.1', port: 0 });
-            const http: DiagnosisHttp = async (path, { locale = 'zh-CN', payload, portal = false, status } = {}) => {
-              const token = portal ? `Bearer ${await oidc.token('owner', { azp: portalClientId })}` : await authorization();
-              const response = await fetch(endpoint + path, { headers: { Authorization: token, 'Accept-Language': locale,
-                ...(payload ? { 'content-type': 'application/json' } : {}) }, signal: AbortSignal.timeout(5_000),
-                ...(payload ? { method: 'POST', body: JSON.stringify(payload) } : {}) });
-              if (status !== undefined ? response.status !== status : !response.ok) {
-                await response.body?.cancel();
-                throw new Error(`fixture_diagnosis_http_${response.status}`);
-              }
-              if (!response.ok) { await response.body?.cancel(); return null; }
-              return response.json() as Promise<unknown>;
-            };
-            await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp', endpoint), {
-              requestInit: { headers: { Authorization: `Bearer ${mcpToken}`, 'Accept-Language': 'zh-CN' } },
-            }));
-            const capability = await http('/v1/capabilities') as { stage: string; operations: boolean };
-            equal(capability.stage, 'p3-b');
-            equal(capability.operations, true);
-            deepStrictEqual(await http(`/v1/tasks/${current.id}/operations-option`), {
-              option: { projectId: project.id, environmentId: environment.id, releaseOperationId: operationId, diagnosis: true },
-            });
-            const { task: diagnosis } = admissionDtoSchema.parse((await reader.callTool({
-              name: 'start_operations_diagnosis', arguments: { projectId: project.id, environmentId: environment.id,
-                expectedReleaseOperationId: operationId, idempotencyKey: randomUUID(), locale: 'zh-CN' },
-            })).structuredContent);
-            equal(diagnosis.state, 'queued');
-            const initialCalls = audit.calls.length;
-            worker = await startScopedWorker(bundle, ['PATH=/usr/bin:/bin', 'LANG=C.UTF-8', 'ITERVANE_WORKER_POLL_MS=100',
-              'ITERVANE_WORKER_LEASE_SECONDS=30', ...Object.entries({ ...installed, ...providerEnv }).map(([name, value]) => `${name}=${value}`),
-            ], { DATABASE_URL: db.runtimeUrl, ITERVANE_OPERATIONS_WHISKERS_READ_KEY: readKey, ANTHROPIC_API_KEY: auditFixtureKey });
-
-            phase = 'operations_formal_investigation';
-            await poll(async () => {
-              const item = taskDtoSchema.parse(await http(`/v1/tasks/${diagnosis.id}`));
-              if (item.state === 'needs_human' || item.state === 'failed') {
-                const events = await http(`/v1/tasks/${item.id}/events`) as { items?: unknown[] };
-                const reason = taskEventDtoSchema.safeParse(events.items?.at(-1)).data?.reason ?? 'operations_diagnosis_failed';
-                const { rows } = await db.admin.query<{ section: string; state: string }>(
-                  'SELECT section, state FROM itervane.operations_diagnosis_reads WHERE run_id=$1 ORDER BY created_at', [item.runId]);
-                console.error(JSON.stringify({ phase, state: item.state, reason, evidence: rows, modelCalls: audit.calls.slice(initialCalls) }));
-                throw new Error(reason);
-              }
-              return item.state === 'succeeded' ? true : undefined;
-            }, 50_000, 'operations_diagnosis');
-            phase = 'operations_formal_worker_stop';
-            await worker.stop('TERM'); worker = undefined;
-            phase = 'operations_formal_model_trace';
-            const expectedSections = restart ? ['container', 'release'] : ['container', 'release', 'logs', 'metrics'];
-            deepStrictEqual(audit.calls.slice(initialCalls), [...expectedSections.map(() => 'read_operations'), 'finish_role']);
-
-            phase = 'operations_formal_evidence';
-            const { rows } = await db.admin.query<{ document: unknown; sha256: string; container_id: string; tools_used: number }>(
-              `SELECT result.document, result.sha256, observation.document#>>'{observation,containerId}' AS container_id, runtime.tools_used
-                FROM itervane.operations_diagnosis_results result
-                JOIN itervane.operations_observations observation ON observation.run_id=result.run_id
-                JOIN itervane.run_runtime runtime ON runtime.run_id=result.run_id WHERE result.run_id=$1`, [diagnosis.runId]);
-            equal(rows.length, 1);
-            const row = rows[0]!;
-            const receipt = operationsDiagnosisReceiptSchema.parse(row.document);
-            equal(receipt.providerSha256, providerSha256);
-            equal(receipt.runId, diagnosis.runId);
-            equal(receipt.taskId, diagnosis.id);
-            equal(sha256(JSON.stringify(receipt)), row.sha256);
-            equal(row.tools_used, expectedSections.length);
-            equal(row.container_id, proof.runtime.containerId);
-            deepStrictEqual(receipt.reads.map(item => item.section), expectedSections);
-            const readDiagnosis = async (lookup: Client, locale: Locale) => {
-              const response = operationsObservationViewSchema.parse(await http(`/v1/tasks/${diagnosis.id}/operations`, { locale }));
-              const result = (await lookup.callTool({ name: 'get_operations_result', arguments: { taskId: diagnosis.id } })).structuredContent;
-              deepStrictEqual(operationsObservationViewSchema.parse(result), response);
-              equal(response.releaseOperationId, operationId);
-              equal(response.diagnosis?.receiptSha256, row.sha256);
-              equal(response.observation?.state, restart ? 'exited' : 'running');
-              equal(response.diagnosis?.recommendation.code, restart ? 'review_restart' : 'continue_observation');
-              const projected = JSON.stringify(response);
-              for (const secret of [readKey, row.container_id]) ok(!projected.includes(secret));
-              return response;
-            };
-            const zh = await readDiagnosis(reader, 'zh-CN');
-            const en = await withEnglishReader(lookup => readDiagnosis(lookup, 'en'), endpoint);
-            deepStrictEqual(zh.diagnosis?.facts, en.diagnosis?.facts);
-            notEqual(zh.diagnosis?.recommendation.message, en.diagnosis?.recommendation.message);
-            return { runId: diagnosis.runId, releaseOperationId: operationId, sha256: row.sha256,
-              ...(restart ? { restart: await restart.verify(diagnosis, row.sha256, http, reader) } : {}),
-              sections: receipt.reads.map(item => item.section), matchedPublishedTarget: true, httpMcpAgreement: true, model: 'scripted_anthropic_fixture' };
-          } finally {
-            try { await reader.close(); } finally { await diagnosisApi.close(); }
-          }
-        };
 
         const verifyNativeObservation = async () => {
           phase = 'operations_whiskers_installation';
@@ -1161,7 +1253,7 @@ async function probe() {
               return latest.message;
             };
             notEqual(await compareReader(client, 'zh-CN'), await withEnglishReader(lookup => compareReader(lookup, 'en')));
-            const diagnosis = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey);
+            const diagnosis = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, firstPublication);
             equal((await target.observeContainer(proof.runtime.imageReference, image.configDigest)).containerId, receipt.observation.containerId);
             const [counts] = (await db.admin.query(`SELECT
               (SELECT count(*)::int FROM itervane.release_operations WHERE environment_id=$1) AS releases,
@@ -1267,9 +1359,9 @@ async function probe() {
                   ITERVANE_RESTART_KOMODO_READER_SECRET: readerCredentials.secret, ITERVANE_RESTART_WHISKERS_WRITE_KEY: native.writeKey,
                   ITERVANE_RESTART_PROBE_SECRET: ingress.probeSecret });
               };
-              const result = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, {
-                installationFile: files.installation,
-                async verify(diagnosis, diagnosisSha256, request, mcp) {
+              const result = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, firstPublication, {
+                kind: 'restart', installationFile: files.installation,
+                async verify(diagnosis, diagnosisSha256, { request, mcp }) {
                   await startRestartProcess();
                   phase = interrupted ? 'operations_native_restart_interruption' : 'operations_native_restart_application';
                   const count = interrupted ? 2 : 1;
@@ -1291,8 +1383,8 @@ async function probe() {
                   return accepted;
                 },
               });
-              ok(result.restart);
-              return { ...result.restart, diagnosisRunId: result.runId, diagnosisSections: result.sections,
+              ok(result.accepted);
+              return { ...result.accepted, diagnosisRunId: result.runId, diagnosisSections: result.sections,
                 distinctKomodoReader: true, model: result.model };
             };
             const verified = await exerciseRestart(false);
