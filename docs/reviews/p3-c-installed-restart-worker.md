@@ -10,4 +10,6 @@
 
 TypeScript、246 项单元和缺少安装配置时的启动阻断通过。PostgreSQL 17.12 已验证派发、撤权后恢复结算和专用 Worker 队列分派。后者首轮在既有准入守卫中止，独立复跑通过。真库使用限定的外部响应夹具。 [托管 Komodo](https://github.com/MaLaNg116/itervane/actions/runs/45007441246) · [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45007441274)
 
+同步已合入 #99 的主线后，复核 `a94706d3a351a3f0dba67335d3a1cbd10ad842f5` 的 Worker 认领范围、独立读身份和固定部署校验。16 项托管检查通过，包含九项原生 KVM。最终合入 `60619d92add2e78cb48ceefa1d1a628104fc9614`。 [固定提交检查](https://github.com/MaLaNg116/itervane/pull/100/checks) · [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45045751619) · [合入记录](https://github.com/MaLaNg116/itervane/commit/60619d92add2e78cb48ceefa1d1a628104fc9614)
+
 前置 #97 已通过同一标准应用的独立恢复检查，实际回执显示同一容器启动时间推进、匿名 401、授权健康 200。门户人工排队、续发、授权回执和同一应用的真实 Whiskers 执行由 C2c3c2 与 C2c3c3 继续验收。 [标准应用报告](https://github.com/MaLaNg116/itervane/actions/runs/45004903433/job/137154261966)
