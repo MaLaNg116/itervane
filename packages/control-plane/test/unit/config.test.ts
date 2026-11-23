@@ -46,6 +46,25 @@ it('requires a trusted model fingerprint and configured Worker model for full op
   }
 });
 
+it('starts restore submission only with explicit API opt-in and the formal operations scope', () => {
+  const environmentId = '01020304-1000-4000-8000-010203040507';
+  const enrollmentSha256 = 'a'.repeat(64);
+  const mappingSha256 = 'b'.repeat(64);
+  const env = { ...configured, ITERVANE_PORTAL_CLIENT_ID: 'itervane-portal', ITERVANE_OPERATIONS_API_ENABLED: '1',
+    ITERVANE_OPERATIONS_ENVIRONMENT_ID: environmentId, ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollmentSha256,
+    ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: 'c'.repeat(64), ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: mappingSha256 };
+  expect(runtimeConfig(env)).not.toHaveProperty('restoreApi');
+  expect(runtimeConfig({ ...env, ITERVANE_RESTORE_API_ENABLED: '0' })).not.toHaveProperty('restoreApi');
+  const enabled = { ...env, ITERVANE_RESTORE_API_ENABLED: '1' };
+  expect(runtimeConfig(enabled).restoreApi).toEqual({ environmentId, enrollmentSha256, mappingSha256 });
+  for (const override of [{ ITERVANE_OPERATIONS_API_ENABLED: '0' }, { ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: undefined },
+    { ITERVANE_PORTAL_CLIENT_ID: undefined }, { ITERVANE_PORTAL_CLIENT_ID: 'signed-access-token' }]) {
+    expect(() => runtimeConfig({ ...enabled, ...override })).toThrow('operations_restore_api_requires_formal_diagnosis_and_portal');
+  }
+  expect(() => runtimeConfig({ ...enabled, ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: undefined })).toThrow();
+  expect(() => runtimeConfig({ ...enabled, ITERVANE_RESTORE_API_ENABLED: 'true' })).toThrow();
+});
+
 it('does not reuse the runtime credential as an implicit migration credential', () => {
   expect(() => migrationConfig(configured)).toThrow();
   expect(migrationConfig({ ITERVANE_MIGRATION_DATABASE_URL: 'postgresql://localhost/itervane' })).toBe('postgresql://localhost/itervane');

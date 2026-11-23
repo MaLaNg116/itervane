@@ -45,12 +45,16 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env) {
   const operationsApi = z.enum(['0', '1']).parse(env.ITERVANE_OPERATIONS_API_ENABLED ?? '0') === '1'
     ? operationsWorkflowScopeSchema.parse(operationsEnvironment(env)) : undefined;
   const restartApiInstallationFile = installationFile.optional().parse(env.ITERVANE_RESTART_API_INSTALLATION_FILE);
-  if (restartApiInstallationFile && (!operationsApi?.diagnosisProviderSha256 || !portalClientId || portalClientId === 'signed-access-token')) {
+  const restoreEnabled = z.enum(['0', '1']).parse(env.ITERVANE_RESTORE_API_ENABLED ?? '0') === '1';
+  const hasDiagnosisAndPortal = operationsApi?.diagnosisProviderSha256 && portalClientId && portalClientId !== 'signed-access-token';
+  if (restartApiInstallationFile && !hasDiagnosisAndPortal) {
     throw new Error('operations_restart_api_requires_formal_diagnosis_and_portal');
   }
+  if (restoreEnabled && !hasDiagnosisAndPortal) throw new Error('operations_restore_api_requires_formal_diagnosis_and_portal');
+  const restoreApi = restoreEnabled ? operationsEffectTarget(env) : undefined;
   return { ...config, publicUrl: canonicalPublicUrl(env.ITERVANE_PUBLIC_URL ?? `http://127.0.0.1:${config.port}`),
     ...(portalClientId ? { portalClientId } : {}), ...(operationsApi ? { operationsApi } : {}),
-    ...(restartApiInstallationFile ? { restartApiInstallationFile } : {}) };
+    ...(restartApiInstallationFile ? { restartApiInstallationFile } : {}), ...(restoreApi ? { restoreApi } : {}) };
 }
 
 function sharedWorkerConfig(env: NodeJS.ProcessEnv) {

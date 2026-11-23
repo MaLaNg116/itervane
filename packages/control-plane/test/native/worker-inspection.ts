@@ -976,10 +976,10 @@ async function probe() {
             DATABASE_URL: db.runtimeUrl, ITERVANE_OIDC_ISSUER: oidc.config.issuer, ITERVANE_OIDC_AUDIENCE: oidc.config.audience,
             ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_OPERATIONS_API_ENABLED: '1', ITERVANE_PORTAL_CLIENT_ID: portalClientId, ...installed,
             ITERVANE_RESTART_API_INSTALLATION_FILE: acceptance?.kind === 'restart' ? acceptance.installationFile : undefined,
+            ITERVANE_RESTORE_API_ENABLED: acceptance?.kind === 'rollback' ? '1' : undefined,
+            ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: mapping.fingerprint,
           });
-          const { app: diagnosisApi } = acceptance?.kind === 'rollback'
-            ? { app: createApi(db.storage, config, { logger: false, operationsRestoreTarget: { environmentId: environment.id, mappingSha256: mapping.fingerprint } }) }
-            : await createInstalledApi(db.storage, config, { logger: false });
+          const { app: diagnosisApi } = await createInstalledApi(db.storage, config, { logger: false });
           const reader = new Client({ name: 'itervane-native-diagnosis', version: '0.0.0' });
           try {
             const endpoint = await diagnosisApi.listen({ host: '127.0.0.1', port: 0 });
