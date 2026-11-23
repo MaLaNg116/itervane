@@ -119,8 +119,9 @@
 | 114 | P3-C2d4b 恢复确认与双语回执 | [#114](https://github.com/MaLaNg116/itervane/pull/114)，依赖 #113 | [人工恢复导读](p3-c-restore-operator.md) | TypeScript、248 项单元、六项 PostgreSQL 17.12 专项和两项 Chrome 门户用例通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/114/checks) |
 | 115 | P3-C2d4c1 同一目标双版本正式发布 | [#115](https://github.com/MaLaNg116/itervane/pull/115)，依赖 #114 | [双版本导读](p3-c-native-restore-release-history.md) | TypeScript、248 项单元和 Bash 语法通过，[托管双版本发布和归档核验](https://github.com/MaLaNg116/itervane/actions/runs/45040417026/job/137263382010)通过 |
 | 116 | P3-C2d4c2 同一应用原生版本恢复 | [#116](https://github.com/MaLaNg116/itervane/pull/116)，依赖 #115 | [指定版本原生恢复导读](p3-c-native-version-restore.md) | TypeScript、248 项单元、21 项 PostgreSQL 专项及[托管原生版本恢复](https://github.com/MaLaNg116/itervane/actions/runs/45042222516/job/137268978495)通过 |
-| 117 | P3-C2d4c3a 恢复应答中断与只读接管 | [#117](https://github.com/MaLaNg116/itervane/pull/117)，依赖 #116 | [中断与接管导读](p3-c-native-restore-takeover.md) | TypeScript、248 项单元及 PostgreSQL 中断夹具回归通过，原生接管由[托管检查](https://github.com/MaLaNg116/itervane/pull/117/checks)验收 |
-| 118 | P3-C2d4c3b 原生更新编号已落库的恢复接管 | [#118](https://github.com/MaLaNg116/itervane/pull/118)，依赖 #117 | [接管结算导读](p3-c-recorded-restore-takeover.md) | TypeScript、248 项单元通过，真实接管与双语结算由[托管检查](https://github.com/MaLaNg116/itervane/pull/118/checks)验收 |
+| 117 | P3-C2d4c3a 恢复应答中断与只读接管 | [#117](https://github.com/MaLaNg116/itervane/pull/117)，依赖 #116 | [中断与接管导读](p3-c-native-restore-takeover.md) | TypeScript、248 项单元、PostgreSQL 夹具及[托管原生接管](https://github.com/MaLaNg116/itervane/actions/runs/45044469706/job/137275925472)通过 |
+| 118 | P3-C2d4c3b 原生更新编号已落库的恢复接管 | [#118](https://github.com/MaLaNg116/itervane/pull/118)，依赖 #117 | [接管结算导读](p3-c-recorded-restore-takeover.md) | TypeScript、248 项单元及 11 项 PostgreSQL 专项通过，真实接管与双语结算由[托管检查](https://github.com/MaLaNg116/itervane/pull/118/checks)验收 |
+| 119 | P3-C2d4c3c 恢复批准失效与原生目标变化 | [#119](https://github.com/MaLaNg116/itervane/pull/119)，依赖 #118 | [恢复闸门导读](p3-c-native-restore-authority.md) | TypeScript、248 项单元和两个 Bash 脚本语法检查通过，原生负例由[托管检查](https://github.com/MaLaNg116/itervane/pull/119/checks)验收 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
