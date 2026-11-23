@@ -20,8 +20,31 @@ function readJson(body, type) {
   return JSON.parse(body.toString('utf8'));
 }
 
+async function observeHealthFollowup(base, expectedVersion, signal) {
+  signal?.throwIfAborted();
+  const deadline = AbortSignal.timeout(4_000);
+  let statusCode = null;
+  try {
+    const response = await fetch(base + '/health', { redirect: 'manual', signal: signal ? AbortSignal.any([signal, deadline]) : deadline });
+    statusCode = response.status;
+    if (statusCode !== 200 && statusCode !== 503) {
+      await response.body?.cancel();
+      return { status: 'unavailable', code: 'unexpected_status', statusCode };
+    }
+    const value = readJson(await boundedBody(response, jsonLimit), response.headers.get('Content-Type') ?? '');
+    if (value?.version !== expectedVersion || Object.keys(value).length !== 2 || value.status !== (statusCode === 200 ? 'healthy' : 'unhealthy')) {
+      return { status: 'unavailable', code: 'unexpected_content', statusCode };
+    }
+    return statusCode === 200 ? { status: 'passed', code: null, statusCode }
+      : { status: 'unhealthy', code: 'application_unhealthy', statusCode };
+  } catch {
+    signal?.throwIfAborted();
+    return { status: 'unavailable', code: deadline.aborted ? 'timeout' : statusCode === null ? 'unavailable' : 'unexpected_content', statusCode };
+  }
+}
+
 /** Run the maintainer's fixed HTTP checks against the app in the private guest loopback. */
-export async function checkStandardWebApp({ port, expectedVersion, signal }) {
+export async function checkStandardWebApp({ port, expectedVersion, signal, healthFollowup = false }) {
   if (!Number.isInteger(port) || port < 1 || port > 65535
       || typeof expectedVersion !== 'string' || !/^[a-zA-Z0-9_.-]{1,64}$/.test(expectedVersion)) {
     throw new Error('baseline_target');
@@ -53,6 +76,7 @@ export async function checkStandardWebApp({ port, expectedVersion, signal }) {
     const value = readJson(body, type);
     return value?.status === 'healthy' && value.version === expectedVersion;
   });
+  const followup = healthFollowup ? await observeHealthFollowup(base, expectedVersion, signal) : undefined;
   await check('version', '/api/version', jsonLimit, (body, type) => readJson(body, type)?.version === expectedVersion);
   await check('synthetic_data', '/api/demo', jsonLimit, (body, type) => {
     const value = readJson(body, type);
@@ -70,5 +94,6 @@ export async function checkStandardWebApp({ port, expectedVersion, signal }) {
   } else {
     checks.push({ id: 'compiled_asset', status: 'blocked', code: 'missing_page_asset', statusCode: null });
   }
-  return { status: checks.every(result => result.status === 'passed') ? 'passed' : 'failed', checks };
+  return { status: checks.every(result => result.status === 'passed') ? 'passed' : 'failed', checks,
+    ...(followup ? { healthFollowup: followup } : {}) };
 }

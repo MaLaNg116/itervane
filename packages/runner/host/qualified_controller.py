@@ -49,6 +49,7 @@ VERIFY_DIGESTS = ("verificationInputSha256", "baseSnapshotSha256", "targetManife
 VERIFY_FIELDS = (FIELDS - {"planSha256"}) | {"operation", "commandBytes", *VERIFY_DIGESTS}
 BUILD_PROFILE = "buildProfileSha256"
 RUN_BASELINE = "runStandardBaseline"
+HEALTH_FOLLOWUP = "healthFollowup"
 OCI_INPUTS = "ociInputsSha256"
 RETAIN_IMAGE = "retainStandardImage"
 MATERIALIZED_SOURCE = "materializedFrom"
@@ -91,6 +92,10 @@ def parse_request(line):
             if data[RUN_BASELINE] is not True:
                 raise ValueError("invalid baseline request")
             fields = fields | {RUN_BASELINE}
+            if HEALTH_FOLLOWUP in data:
+                if data[HEALTH_FOLLOWUP] is not True:
+                    raise ValueError("invalid health follow-up request")
+                fields = fields | {HEALTH_FOLLOWUP}
             if OCI_INPUTS in data:
                 fields = fields | {OCI_INPUTS}
                 if RETAIN_IMAGE in data:
@@ -170,6 +175,16 @@ def require_verification_command(command, request):
         or profile.get(RETAIN_IMAGE) != request.get(RETAIN_IMAGE)
         or any(profile.get(key) != request[key] for key in ("runnerImageSha256", "scannerInputsSha256"))):
         raise ValueError("verification command evidence mismatch")
+    if ("healthRegression" in frozen) != (HEALTH_FOLLOWUP in request):
+        raise ValueError("verification health follow-up mismatch")
+    if HEALTH_FOLLOWUP in request:
+        case = frozen["healthRegression"]
+        digests = ("diagnosisSha256", "publicationProofSha256", "sampleEvidenceSha256")
+        if (not isinstance(case, dict) or case.keys() != {"proposalId", "incidentId", "sampleSequence", *digests}
+            or not all(is_v4(case[name]) for name in ("proposalId", "incidentId"))
+            or not all(isinstance(case[name], str) and IMAGE_DIGEST.fullmatch(case[name]) for name in digests)
+            or type(case["sampleSequence"]) is not int or not 0 < case["sampleSequence"] <= 9007199254740991):
+            raise ValueError("invalid health follow-up provenance")
     repair = command["repair"]
     same_snapshot = request["baseSnapshotSha256"] == request["targetManifestSha256"]
     if subject.get("kind") == "original" and same_snapshot and repair is None:
@@ -300,7 +315,13 @@ def build_proof_matches(request, snapshot):
             and baseline.get("baselineSha256") == proof.get("baselineSha256")
             and baseline.get("distSha256") == dist.get("sha256")):
         return False
-    if OCI_INPUTS not in request or baseline.get("status") != "passed":
+    followup = baseline.get(HEALTH_FOLLOWUP)
+    completed = baseline.get("status") in ("passed", "failed")
+    if (HEALTH_FOLLOWUP in baseline) != (HEALTH_FOLLOWUP in request and completed):
+        return False
+    if HEALTH_FOLLOWUP in baseline and (not isinstance(followup, dict) or followup.get("status") not in ("passed", "unhealthy", "unavailable")):
+        return False
+    if OCI_INPUTS not in request or baseline.get("status") != "passed" or (followup and followup["status"] != "passed"):
         return "image" not in baseline
     image = baseline.get("image")
     return (isinstance(image, dict) and image.get(OCI_INPUTS) == request[OCI_INPUTS]

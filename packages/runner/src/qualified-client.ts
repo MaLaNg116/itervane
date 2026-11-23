@@ -136,12 +136,13 @@ export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificatio
   command: VerificationCommand) {
   const { origin, ...scope } = request;
   const { snapshot } = receipt;
-  const { subject, inspection, source, profile, taskId, runId, projectId, generation } = command.input;
+  const { subject, inspection, source, profile, taskId, runId, projectId, generation, healthRegression } = command.input;
   const bindings = { taskId, runId, projectId, generation, ...source, verificationInputSha256: command.inputSha256,
     baseSnapshotSha256: inspection.snapshotSha256, targetManifestSha256: subject.manifestSha256,
     runnerImageSha256: profile.runnerImageSha256, scannerInputsSha256: profile.scannerInputsSha256,
     buildProfileSha256: profile.buildProfileSha256,
     runStandardBaseline: profile.runStandardBaseline,
+    healthFollowup: healthRegression ? true : undefined,
     ociInputsSha256: profile.ociInputsSha256,
     retainStandardImage: profile.retainStandardImage,
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
@@ -164,15 +165,20 @@ export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificatio
     throw new Error('runner_standard_build_binding');
   }
   const baseline = build?.status === 'built' ? build.baseline : undefined;
+  const checkedBaseline = baseline?.status === 'passed' || baseline?.status === 'failed' ? baseline : undefined;
   if (receipt.scope.runStandardBaseline !== scope.runStandardBaseline
       || Boolean(baseline) !== Boolean(scope.runStandardBaseline && build?.status === 'built')
       || (baseline && (baseline.baselineSha256 !== profile.baselineSha256
         || build?.status !== 'built' || baseline.distSha256 !== build.dist.sha256))) {
     throw new Error('runner_standard_baseline_binding');
   }
+  const followup = checkedBaseline?.healthFollowup;
+  if (receipt.scope.healthFollowup !== scope.healthFollowup || Boolean(followup) !== Boolean(checkedBaseline && scope.healthFollowup)) {
+    throw new Error('runner_health_followup_binding');
+  }
   const image = baseline?.status === 'passed' ? baseline.image : undefined;
   if (receipt.scope.ociInputsSha256 !== scope.ociInputsSha256
-      || Boolean(image) !== Boolean(scope.ociInputsSha256 && baseline?.status === 'passed')
+      || Boolean(image) !== Boolean(scope.ociInputsSha256 && baseline?.status === 'passed' && (!followup || followup.status === 'passed'))
       || (image && image.ociInputsSha256 !== scope.ociInputsSha256)) {
     throw new Error('runner_standard_image_binding');
   }
@@ -205,13 +211,14 @@ export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificatio
 }
 
 export function prepareQualifiedVerificationRequest(coordinates: VerificationCoordinates, command: VerificationCommand) {
-  const { taskId, runId, projectId, generation, source, profile, inspection, subject } = command.input;
+  const { taskId, runId, projectId, generation, source, profile, inspection, subject, healthRegression } = command.input;
   return qualifiedVerificationRequestSchema.parse({
     ...coordinates, version: 1, operation: 'verify_source', taskId, runId, projectId, generation, ...source,
     verificationInputSha256: command.inputSha256, baseSnapshotSha256: inspection.snapshotSha256,
     targetManifestSha256: subject.manifestSha256, runnerImageSha256: profile.runnerImageSha256, scannerInputsSha256: profile.scannerInputsSha256,
     ...(profile.buildProfileSha256 ? { buildProfileSha256: profile.buildProfileSha256 } : {}),
     ...(profile.runStandardBaseline ? { runStandardBaseline: profile.runStandardBaseline } : {}),
+    ...(healthRegression ? { healthFollowup: true } : {}),
     ...(profile.ociInputsSha256 ? { ociInputsSha256: profile.ociInputsSha256 } : {}),
     ...(profile.retainStandardImage ? { retainStandardImage: profile.retainStandardImage } : {}),
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
