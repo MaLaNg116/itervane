@@ -9,3 +9,5 @@
 5. 真库回归发现宿主时间回调期间，诊断取证时间可能早于预留时间。`9a0dcd9` 取数据库当前时间与预留时间中较晚的值。专项用例在修复前复现约束拒绝，修复后通过，保留原有取证权限与顺序校验。 [诊断取证](https://github.com/MaLaNg116/itervane/blob/9a0dcd9ee0cd0f675aa0a22b669b0d3b58071e0d/packages/control-plane/src/runtime/operations-evidence-store.ts) · [时间回归用例](https://github.com/MaLaNg116/itervane/blob/9a0dcd9ee0cd0f675aa0a22b669b0d3b58071e0d/packages/control-plane/test/integration/inspections.test.ts#L3300)
 
 固定版本通过 TypeScript、229 项本机单元测试、11 项 PostgreSQL 17.12 专项及 Drizzle 迁移一致性。专项包含发布互斥的三种顺序及诊断取证回归。本批的正式入口仍以人工决定记录为终点。专用任务领取和恢复接管在 C2b2b 交付，Whiskers 原生派发与健康结算在 C2c 验收。 [托管检查](https://github.com/MaLaNg116/itervane/pull/89/checks)
+
+#89 合入前复核版本为 `c6faba8207d893a0c8dbe7a09707098dc13777b6`。17 项托管检查通过。受保护应用报告指纹为 `a243678b69967792cf9dab9fa7e8f41156901e1fabf71d87cc153e104260540c`，核对同一发布目标、诊断四类证据、HTTP 与 MCP 回执一致、一次发布派发及执行槽释放。合入提交为 `b121e031d860d2a120bbce2675e37690361e1676`。 [托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45006596278) · [合入记录](https://github.com/MaLaNg116/itervane/pull/89)

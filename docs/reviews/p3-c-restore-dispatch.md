@@ -7,3 +7,5 @@
 3. 派发后由更高代次领取核对。已知更新 ID、响应丢失和配置后撤销均保留各自的存储事实，环境占用保留，全局槽释放。接管读取原计划与步骤。 [交接与只读进度](https://github.com/MaLaNg116/itervane/blob/a9bf34214855ab4437f9b3fd402deb2da6144f8f/packages/control-plane/src/runtime/operations-execution-lease.ts#L322) · [故障用例](https://github.com/MaLaNg116/itervane/blob/a9bf34214855ab4437f9b3fd402deb2da6144f8f/packages/control-plane/test/integration/inspections.test.ts#L2900)
 
 TypeScript、247 项单元、十项 PostgreSQL 17.12 专项及 Drizzle 一致性检查通过。真库场景使用可控的 Komodo 调用，验证配置后单次派发、旧回执、响应丢失和撤权。独立结算、运行版本登记和双版本参考环境联验进入 C2d3–C2d4。 [托管检查](https://github.com/MaLaNg116/itervane/pull/110/checks)
+
+固定代码版本通过九组托管 KVM、原生 Komodo 和受保护入口回归。现有受保护应用的重启仍为 401／200，HTTP 与 MCP 一致。中断接管保留环境占用，释放全局槽。KVM 产物的源码指纹为 `297d25cbc457a8e90062c0f4c72dc0ef58acadc342361300565ae52ab99a4d6b`。 [KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/45021828481) · [Komodo](https://github.com/MaLaNg116/itervane/actions/runs/45021828401) · [受保护入口](https://github.com/MaLaNg116/itervane/actions/runs/45021828512) · [原生重启回归产物](https://github.com/MaLaNg116/itervane/actions/runs/45021828481/artifacts/14754413314)

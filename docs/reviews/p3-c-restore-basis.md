@@ -7,3 +7,5 @@
 3. 真库场景模拟 A → B → B，核对提案以最后一次发布的 B 为当前版本，用 A 的发布 ID、镜像摘要和回执指纹冻结恢复对象。人审后内部处置队列绑定该提案。另一组核对待结算发布、项目角色和目标登记变化。 [授权及登记变更](https://github.com/MaLaNg116/itervane/blob/fa6d2b3171081693b5389a25dbaee52c443fea94/packages/control-plane/test/integration/inspections.test.ts#L2138) · [重复发布与提案](https://github.com/MaLaNg116/itervane/blob/fa6d2b3171081693b5389a25dbaee52c443fea94/packages/control-plane/test/integration/inspections.test.ts#L2801)
 
 本机 TypeScript、246 项单元和七项 PostgreSQL 17.12 专项通过。本批交付正式诊断和提案的恢复依据，Komodo 派发、恢复结算及原生联验分别在 C2d2–C2d4 验收。 [托管检查](https://github.com/MaLaNg116/itervane/pull/107/checks)
+
+固定托管版本 `58a9250f28c03cc57a5d7a1f5d464160602e0ca1` 通过常规检查和九组 KVM。受保护应用的原生重启联验继续匹配发布目标，HTTP 与外部 MCP 读到相同结果。正向路径为 401／200，并释放环境占用。中断路径保留 `native_unconfirmed` 和环境占用，释放全局槽。证据源码指纹为 `83578440a54eaa1c82ce540b6629c9ed195ab9700cd808ae72e31f40e8eb86c5`。 [常规检查](https://github.com/MaLaNg116/itervane/actions/runs/45016821439) · [KVM](https://github.com/MaLaNg116/itervane/actions/runs/45016756490) · [原生回归产物](https://github.com/MaLaNg116/itervane/actions/runs/45016756490/artifacts/14752960815)
