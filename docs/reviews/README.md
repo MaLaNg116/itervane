@@ -132,6 +132,7 @@
 | 127 | P3-C3-C3a 隔离复现应用健康故障 | [#127](https://github.com/MaLaNg116/itervane/pull/127)，已合入 main | [应用故障复现导读](p3-c-linked-repair-reproduction.md) | TypeScript、253 项单元、72 项 Linux 宿主、23 项 PostgreSQL 相关用例及[两台独立 VM 的健康续测](https://github.com/MaLaNg116/itervane/actions/runs/45119057618/job/137508396710)通过 |
 | 128 | P3-C3-C3b 关联健康故障的受限修复 | [#128](https://github.com/MaLaNg116/itervane/pull/128)，依赖 #127 | [受限修复导读](p3-c-linked-health-repair.md) | TypeScript、253 项 Windows 单元、11 项 PostgreSQL 及迁移一致性通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/128/checks) |
 | 129 | P3-C3-C3c 受保护应用的联验 | [#129](https://github.com/MaLaNg116/itervane/pull/129)，依赖 #128 | [两版发布原生联验导读](p3-c-native-linked-health.md) | TypeScript、两份 Runner 场景脚本与工作流语法通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/129/checks) |
+| 130 | P3-C3-D1 授权事件读面 | [#130](https://github.com/MaLaNg116/itervane/pull/130)，依赖 #129 | [事件读面导读](p3-c-incident-views.md) | TypeScript 与 PostgreSQL 双语和项目授权用例通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/130/checks) |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
