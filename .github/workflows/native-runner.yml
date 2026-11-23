@@ -228,10 +228,18 @@ jobs:
                 (map(.executionId) | unique | length) == 3 and (map(.diagnosisRunId) | unique | length) == 3 and
                 all(.currentOperationId == $second.operationId and .requestedOperationId == $first.operationId and
                   .writes == 0 and .originalContainerRetained and .slotReleased and .httpMcpAgreement))' "$report" >/dev/null
-            jq -e '.dualVersion as $versions | .restoreAuthorization.health as $health |
+            jq -e '.dualVersion as $versions | .restoreAuthorization.health as $health | $health.diagnosis as $diagnosis |
               $health.releaseOperationId == $versions.currentOperationId and $health.containerId == $versions.currentContainerId and
-              $health.signals == ["healthy", "runtime_stopped", "healthy", "application_unhealthy", "probe_identity", "healthy"] and
-              $health.samples == 6 and $health.incidents == 2 and $health.unknownPreserved and $health.eachRecovered' "$report" >/dev/null
+              $health.signals == ["healthy", "runtime_stopped", "runtime_stopped", "healthy", "application_unhealthy", "probe_identity", "healthy"] and
+              $health.samples == 7 and $health.incidents == 2 and $health.unknownPreserved and $health.eachRecovered and
+              $diagnosis.attempt == 1 and $diagnosis.admissions == 1 and $diagnosis.sampleSequence > 0 and
+              ($diagnosis.runId | test("^[a-f0-9-]{36}$")) and ($diagnosis.taskId | test("^[a-f0-9-]{36}$")) and
+              ($diagnosis.incidentId | test("^[a-f0-9-]{36}$")) and ($diagnosis.sha256 | test("^[a-f0-9]{64}$")) and
+              $diagnosis.releaseOperationId == $versions.currentOperationId and
+              $diagnosis.previousReleaseOperationId == $versions.first.release.operationId and $diagnosis.recommendation == "review_rollback" and
+              $diagnosis.sections == ["container", "release"] and $diagnosis.model == "scripted_anthropic_fixture" and
+              $diagnosis.sameTaskAfterReinstall and $diagnosis.skippedAfterRevocation and $diagnosis.httpMcpAgreement and
+              $diagnosis.matchedPublishedTarget' "$report" >/dev/null
           fi
           if [[ "$NATIVE_SCENARIO" == protected-release-restore ]]; then
             jq -e '.dualVersion.first.release as $first | .dualVersion.second.release as $second | .restoration as $restored |

@@ -35,6 +35,7 @@ import { KomodoReleaseClient } from '../../src/runtime/release-komodo.js';
 import { createKeycloakRolloutTokenSource, ReleaseRolloutVerifier } from '../../src/runtime/release-rollout.js';
 import { ReleaseIngressError } from '../../src/runtime/release-traefik.js';
 import { readPublishedOperationsDeployment } from '../../src/service/operations-deployment.js';
+import { changeOperationsIncidentMonitor } from '../../src/service/operations-incident-monitor.js';
 import { changeOperationsRestartInstallation } from '../../src/service/operations-restart-installations.js';
 import { verificationProfileFingerprint } from '../../src/service/repair-retry.js';
 import { registerOperationsTarget } from '../../src/service/operations-targets.js';
@@ -964,14 +965,14 @@ async function probe() {
         const first = await publish(current, decision);
         const { proof } = first;
         const firstPublication = { taskId: current.id, operationId, containerId: proof.runtime.containerId };
+        const providerEnv = { ITERVANE_AUDIT_MODEL_PROVIDER: 'anthropic', ANTHROPIC_BASE_URL: audit.baseURL, ANTHROPIC_MODEL: auditFixtureModel };
+        const configuration = workerConfig({ DATABASE_URL: db.runtimeUrl, ...providerEnv, ANTHROPIC_API_KEY: auditFixtureKey }).auditModel;
+        ok(configuration);
+        const { providerSha256 } = configuredAuditModel(configuration);
 
         const verifyInstalledDiagnosis = async <T>(enrollmentSha256: string, readKey: string, publication: NativeDiagnosisPublication,
-          acceptance?: NativeDiagnosisAcceptance<T>) => {
+          acceptance?: NativeDiagnosisAcceptance<T> | { kind: 'monitor'; taskId: string; previousOperationId: string }) => {
           phase = 'operations_formal_installation';
-          const providerEnv = { ITERVANE_AUDIT_MODEL_PROVIDER: 'anthropic', ANTHROPIC_BASE_URL: audit.baseURL, ANTHROPIC_MODEL: auditFixtureModel };
-          const configuration = workerConfig({ DATABASE_URL: db.runtimeUrl, ...providerEnv, ANTHROPIC_API_KEY: auditFixtureKey }).auditModel;
-          ok(configuration);
-          const { providerSha256 } = configuredAuditModel(configuration);
           const installed = { ITERVANE_OPERATIONS_ENVIRONMENT_ID: environment.id, ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollmentSha256,
             ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: providerSha256 };
           const config = runtimeConfig({
@@ -1006,10 +1007,11 @@ async function probe() {
             deepStrictEqual(await http(`/v1/tasks/${publication.taskId}/operations-option`), {
               option: { projectId: project.id, environmentId: environment.id, releaseOperationId: publication.operationId, diagnosis: true },
             });
-            const { task: diagnosis } = admissionDtoSchema.parse((await reader.callTool({
-              name: 'start_operations_diagnosis', arguments: { projectId: project.id, environmentId: environment.id,
-                expectedReleaseOperationId: publication.operationId, idempotencyKey: randomUUID(), locale: 'zh-CN' },
-            })).structuredContent);
+            const diagnosis = acceptance?.kind === 'monitor' ? taskDtoSchema.parse(await http(`/v1/tasks/${acceptance.taskId}`))
+              : admissionDtoSchema.parse((await reader.callTool({
+                name: 'start_operations_diagnosis', arguments: { projectId: project.id, environmentId: environment.id,
+                  expectedReleaseOperationId: publication.operationId, idempotencyKey: randomUUID(), locale: 'zh-CN' },
+              })).structuredContent).task;
             equal(diagnosis.state, 'queued');
             const initialCalls = audit.calls.length;
             worker = await startScopedWorker(bundle, ['PATH=/usr/bin:/bin', 'LANG=C.UTF-8', 'ITERVANE_WORKER_POLL_MS=100',
@@ -1033,7 +1035,7 @@ async function probe() {
             await worker.stop('TERM'); worker = undefined;
             phase = 'operations_formal_model_trace';
             const expectedSections = acceptance ? ['container', 'release'] : ['container', 'release', 'logs', 'metrics'];
-            const previous = acceptance?.kind === 'rollback' ? acceptance.previousOperationId : null;
+            const previous = acceptance && acceptance.kind !== 'restart' ? acceptance.previousOperationId : null;
             const recommendation = previous ? 'review_rollback' : acceptance ? 'review_restart' : 'continue_observation';
             deepStrictEqual(audit.calls.slice(initialCalls), [...expectedSections.map(() => 'read_operations'), 'finish_role']);
 
@@ -1076,8 +1078,8 @@ async function probe() {
             const en = await withEnglishReader(lookup => readDiagnosis(lookup, 'en'), endpoint);
             deepStrictEqual(zh.diagnosis?.facts, en.diagnosis?.facts);
             notEqual(zh.diagnosis?.recommendation.message, en.diagnosis?.recommendation.message);
-            const accepted = await acceptance?.verify(diagnosis, row.sha256, { request: http, mcp: reader,
-              withEnglishReader: read => withEnglishReader(read, endpoint) });
+            const accepted = acceptance && 'verify' in acceptance ? await acceptance.verify(diagnosis, row.sha256, { request: http, mcp: reader,
+              withEnglishReader: read => withEnglishReader(read, endpoint) }) : undefined;
             return { runId: diagnosis.runId, releaseOperationId: publication.operationId, sha256: row.sha256,
               recommendation, previousReleaseOperationId: previous, restoreExecutionId: row.restore_id, accepted,
               sections: receipt.reads.map(item => item.section), matchedPublishedTarget: true, httpMcpAgreement: true, model: 'scripted_anthropic_fixture' };
@@ -1129,6 +1131,9 @@ async function probe() {
               return observed;
             };
             const stopped = second.proof.runtime;
+            const stoppedPublication = {
+              taskId: second.report.taskId, operationId: second.report.operationId, containerId: stopped.containerId,
+            };
             const exerciseHealth = async (fail: boolean) => {
               const result = await target.exerciseFixtureHealth(stopped.imageReference, stopped.configDigest, standardRuntimePort, fail);
               equal(result.containerId, stopped.containerId);
@@ -1138,17 +1143,32 @@ async function probe() {
                 configDigest: stopped.configDigest });
               await exerciseHealth(false);
             };
-            const verifyHealth = () => {
+            const verifyHealth = async () => {
               phase = 'operations_native_health_probe';
+              const { monitorId } = await changeOperationsIncidentMonitor(db.storage, {
+                action: 'register', environmentId: environment.id, expectedActiveId: null,
+                enrollmentSha256: enrollment.fingerprint, mappingSha256: mapping.fingerprint, providerSha256, locale: 'zh-CN',
+                validUntil: new Date(Date.now() + 3_600_000).toISOString(),
+              });
               return proveInstalledHealthProbe({
                 database: db.storage, caFile: ingress.caFile, environmentId: environment.id, releaseOperationId: second.report.operationId,
-                containerId: stopped.containerId,
+                containerId: stopped.containerId, monitorId,
                 install: () => createInstalledHealthWorker(db.storage, healthWorkerConfig({
                   DATABASE_URL: db.runtimeUrl, ITERVANE_OPERATIONS_ENVIRONMENT_ID: environment.id,
                   ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollment.fingerprint, ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: mapping.fingerprint,
                   ITERVANE_HEALTH_KOMODO_READER_ID: readerCredentials.actorId, ITERVANE_HEALTH_KOMODO_READER_KEY: readerCredentials.key,
                   ITERVANE_HEALTH_KOMODO_READER_SECRET: readerCredentials.secret, ITERVANE_HEALTH_PROBE_SECRET: ingress.probeSecret,
+                  ITERVANE_HEALTH_INCIDENT_MONITOR_ID: monitorId,
                 })),
+                diagnose: queued => verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, stoppedPublication, {
+                  kind: 'monitor', taskId: queued.taskId, previousOperationId: first.report.operationId,
+                }),
+                async revokeMonitor() {
+                  const revoked = await changeOperationsIncidentMonitor(db.storage, {
+                    action: 'revoke', environmentId: environment.id, expectedActiveId: monitorId,
+                  });
+                  equal(revoked.status, 'revoked');
+                },
                 stopContainer: () => stopFixture(stopped), startContainer: startHealthyFixture, failHealth: () => exerciseHealth(true),
                 async restoreHealth() { await stopFixture(stopped); await startHealthyFixture(); },
                 stopIdentity: ingress.stopIdentity, startIdentity: ingress.startIdentity,
@@ -1160,9 +1180,6 @@ async function probe() {
             const baseline = await reader.inspectStoppedRuntime(boundTarget, second.report, target.endpoint.network, authorizeRead);
             equal(baseline.state, 'exited');
             equal(baseline.containerId, stopped.containerId);
-            const stoppedPublication = {
-              taskId: second.report.taskId, operationId: second.report.operationId, containerId: stopped.containerId,
-            };
 
             if (restoreAuthorityRun) {
               const proveDenied = async (kind: 'revoked' | 'expired' | 'target_changed') => {
