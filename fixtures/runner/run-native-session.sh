@@ -6,7 +6,7 @@ test "${PROBE_HOST_ENVIRONMENT:-}" = github-hosted
 directory=$(realpath -- "$1")
 scenario=${2:-regression}
 case "$scenario" in
-  regression|standard-build|standard-build-missing-cache|standard-oci|protected-release|protected-release-npm|protected-release-drift|protected-release-faults|protected-release-operations|protected-release-restore|protected-release-restore-authorization) ;;
+  regression|standard-build|standard-build-missing-cache|standard-oci|protected-release|protected-release-npm|protected-release-drift|protected-release-faults|protected-release-operations|protected-release-restore|protected-release-restore-authorization|protected-release-linked-health) ;;
   *) exit 1 ;;
 esac
 runner_user=itervane-probe
