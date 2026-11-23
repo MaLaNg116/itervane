@@ -490,7 +490,8 @@ async function probe() {
             archive: image.archive });
         }
         const sections = result.observations.map(item => item.section);
-        deepStrictEqual(sections, failed ? ['baseline', 'source', 'build'] : ['baseline', 'image', 'source', 'build']);
+        deepStrictEqual(sections, result.evidence.baseline.status === 'passed'
+          ? ['baseline', 'image', 'source', 'build'] : ['baseline', 'source', 'build']);
         const [last] = (await db.admin.query(`SELECT type,detail FROM itervane.task_events
           WHERE task_id=$1 AND type='task.verification_recorded' AND detail->>'runId'=$2 ORDER BY sequence DESC LIMIT 1`,
           [task.id, task.runId])).rows;
@@ -1166,9 +1167,11 @@ async function probe() {
               return next.state === 'waiting_input' && next.runId !== accepted.task.runId ? next : undefined;
             }, 550_000, 'linked_health_verified');
             await worker.stop('TERM'); worker = undefined;
-            phase = 'linked_health_reproduction_and_patch';
+            phase = 'linked_health_read_original_reproduction';
             const before = await recordedVerification(accepted.task, true);
+            phase = 'linked_health_read_repaired_verification';
             const after = await recordedVerification(repairedTask, false, 'repair');
+            phase = 'linked_health_read_scoped_patch';
             const change = formalRepairDtoSchema.parse(await request(`/v1/tasks/${repairedTask.id}/repair`));
             ok(change.status === 'recorded' && change.result.status === 'candidate_ready');
             equal(change.result.generation, 2);
