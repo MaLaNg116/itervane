@@ -40,6 +40,7 @@ async function requireGenericTaskControl(tx: Transaction, taskId: string) {
 type TaskAdmission = Pick<typeof tasks.$inferInsert,
   'projectId' | 'requestedBy' | 'repositoryId' | 'commit' | 'purpose' | 'dataClass' | 'locale' | 'requestKey' | 'requestHash'>;
 type OperationsAdmission = { request: ReturnType<typeof freezeOperationsRequest>; providerSha256: string | undefined };
+type OperationsTarget = Awaited<ReturnType<typeof readOperationsObservationTarget>>;
 
 async function replayAdmission(tx: Transaction, scope: Pick<TaskAdmission, 'projectId' | 'requestedBy' | 'requestKey' | 'requestHash'>) {
   const [existing] = await tx.select({ id: tasks.id, requestHash: tasks.requestHash }).from(tasks)
@@ -117,10 +118,18 @@ export class TaskService {
       const target = await readOperationsObservationTarget(tx, actor, { projectId, environmentId });
       if (installation && installation.enrollmentSha256 !== target.enrollmentSha256) throw new DomainError('unavailable');
       if (expectedReleaseOperationId && expectedReleaseOperationId !== target.releaseOperationId) throw new DomainError('version_conflict');
-      return this.insertTask(tx, { ...scope, repositoryId: target.source.repositoryId, commit: target.source.commit,
-        purpose: translate(locale, 'operations.task.purpose'), dataClass: target.dataClass, locale },
-      { request: freezeOperationsRequest(target), providerSha256 });
+      return this.insertAuthorizedOperations(tx, target, { ...scope, locale, providerSha256 });
     });
+  }
+
+  // Called in the transaction that verifies the current actor, target and optional incident.
+  insertAuthorizedOperations(tx: Transaction, target: OperationsTarget,
+    { requestedBy, requestKey, requestHash, locale, providerSha256, incident }:
+    Pick<TaskAdmission, 'requestedBy' | 'requestKey' | 'requestHash'> & { locale: Locale; providerSha256: string | undefined; incident?: true }) {
+    return this.insertTask(tx, { projectId: target.projectId, requestedBy, requestKey, requestHash, locale,
+      repositoryId: target.source.repositoryId, commit: target.source.commit, dataClass: target.dataClass,
+      purpose: translate(locale, incident ? 'operations.incident.purpose' : 'operations.task.purpose'),
+    }, { request: freezeOperationsRequest(target), providerSha256 });
   }
 
   async get(identity: VerifiedIdentity, taskId: string) {

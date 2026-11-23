@@ -38,7 +38,7 @@ import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, fo
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
   operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
   operationsDiagnosisRuntime, operationsExecutionIntents, operationsExecutions, operationsExecutionSchedules, operationsHealthSamples,
-  operationsIncidents, operationsObservations,
+  operationsIncidentDiagnoses, operationsIncidentMonitors, operationsIncidents, operationsObservations,
   operationsProposals, operationsRequests, operationsRestartInstallations, operationsRestartRecoveries, operationsRestartRequests, operationsRestartResumes,
   operationsRestoreRecoveries, operationsRestoreSteps, operationsTargets,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
@@ -59,7 +59,7 @@ import { FormalRolloutWorker } from '../../src/runtime/formal-rollout-worker.js'
 import { createInstalledApi } from '../../src/runtime/installed-api.js';
 import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-rescan.js';
 import { runFormalVerification, type FormalVerificationOptions } from '../../src/runtime/formal-verification.js';
-import { BudgetExhausted, ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
+import { appendEvent, BudgetExhausted, clearSlot, ExecutionLost, type ExecutionScope } from '../../src/runtime/authority.js';
 import { GuardedCheckpointer } from '../../src/runtime/checkpointer.js';
 import { FormalRepairExecution, type RepairRunner } from '../../src/runtime/repair-execution.js';
 import { observeFormalRepairTargets, type RepairObservationRunner } from '../../src/runtime/repair-observation.js';
@@ -89,6 +89,8 @@ import { readOperationsDeployment } from '../../src/service/operations-deploymen
 import { OperationsDecisionService } from '../../src/service/operations-decisions.js';
 import { OperationsExecutionAdmission } from '../../src/service/operations-execution-admission.js';
 import { OperationsHealthJournal } from '../../src/service/operations-health.js';
+import { changeOperationsIncidentMonitor } from '../../src/service/operations-incident-monitor.js';
+import { OperationsIncidentScheduler } from '../../src/service/operations-incident-scheduler.js';
 import { OperationsObservationViewService } from '../../src/service/operations-observation-view.js';
 import { OperationsProposalService, readOperationsProposal } from '../../src/service/operations-proposals.js';
 import { changeOperationsRestartInstallation } from '../../src/service/operations-restart-installations.js';
@@ -2153,6 +2155,192 @@ function healthInstallation({ scope, enrollment, registration }: Awaited<ReturnT
 const stoppedHealth = { status: 'unhealthy', reason: 'runtime_stopped', evidenceSha256: sha256('stopped health fixture') } as const;
 const recoveredHealth = { status: 'healthy', evidenceSha256: sha256('protected health fixture') } as const;
 const unavailableHealth = { status: 'unavailable', reason: 'probe_identity', evidenceSha256: sha256('probe identity fixture') } as const;
+
+async function incidentMonitorFixture(fixture?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  const application = fixture ?? await installedOperationsFixture();
+  const installation = healthInstallation(application);
+  const worker = diagnosisInstallation(application);
+  const registration = { action: 'register', ...installation, expectedActiveId: null, locale: 'zh-CN',
+    providerSha256: worker.diagnosisProviderSha256, validUntil: new Date(Date.now() + 60 * 60_000).toISOString() };
+  const { monitorId } = await changeOperationsIncidentMonitor(database.storage, registration);
+  const journal = new OperationsHealthJournal(database.storage, installation);
+  const makeScheduler = (id = monitorId) => new OperationsIncidentScheduler(database.storage, { ...installation, monitorId: id });
+  const sample = async (signal: typeof stoppedHealth | typeof recoveredHealth | typeof unavailableHealth = stoppedHealth) =>
+    journal.recordProbe((await journal.prepareProbe()).probe, signal);
+  return { application, installation, worker, registration, monitorId, journal, makeScheduler, sample };
+}
+
+it('admits one incident diagnosis in concurrent polls and recovers its original wakeup after lease loss', async () => {
+  const fixture = await incidentMonitorFixture();
+  const first = fixture.makeScheduler();
+  expect(await first.tick()).toEqual({ status: 'idle', reason: 'no_incident' });
+  const sample = await fixture.sample();
+  const results = await Promise.all([first.tick(), fixture.makeScheduler().tick()]);
+  const admitted = results.find(result => result.status === 'queued');
+  if (!admitted) throw new Error('Expected an incident diagnosis task');
+  expect(admitted).toMatchObject({ incidentId: sample.incidentId, sampleSequence: sample.sequence, attempt: 1 });
+  expect(results).toContainEqual({ status: 'active', taskId: admitted.taskId });
+  expect(await fixture.makeScheduler().tick()).toEqual({ status: 'active', taskId: admitted.taskId });
+  const [monitor] = await database.storage.db.select().from(operationsIncidentMonitors);
+  const [link] = await database.storage.db.select().from(operationsIncidentDiagnoses);
+  expect(link).toMatchObject({ incidentId: sample.incidentId, environmentId: fixture.installation.environmentId,
+    monitorId: fixture.monitorId, taskId: admitted.taskId, runId: admitted.runId, sampleSequence: sample.sequence });
+  expect(await fixture.application.taskService.get(identity, admitted.taskId)).toMatchObject({ workflow: 'operations',
+    requestedBy: monitor?.principalId, locale: 'zh-CN', purpose: translate('zh-CN', 'operations.incident.purpose'),
+    source: task.source, state: 'queued' });
+  const scope = await claimOperations(fixture.worker);
+  if (!scope) throw new Error('Expected the monitored diagnosis to hold the global slot');
+  expect(scope).toMatchObject({ taskId: admitted.taskId, runId: admitted.runId });
+  const recovered = await reclaimDiagnosis(scope, fixture.worker);
+  await expect(coordinator.withLease(scope, async () => {})).rejects.toBeInstanceOf(ExecutionLost);
+  const request = await coordinator.withLease(recovered, async (_tx, current) => current.operationsDiagnosis);
+  expect(request).toMatchObject({ providerSha256: fixture.registration.providerSha256,
+    document: { request: { grantId: monitor?.grantId, releaseOperationId: fixture.application.operationId } } });
+  await coordinator.stop(recovered, 'operations_review_required');
+  expect(await fixture.makeScheduler().tick()).toEqual({ status: 'stopped', reason: 'task_stopped' });
+  expect(await database.storage.db.select().from(operationsIncidentDiagnoses)).toHaveLength(1);
+}, 60_000);
+
+it('rolls back the incident task, queue wakeup and trigger link when admission cannot commit', async () => {
+  const fixture = await incidentMonitorFixture();
+  const sample = await fixture.sample();
+  const current = await database.admin.query('SELECT count(*)::int AS count FROM itervane_queue.job WHERE name=$1', [queueName]);
+  const [monitor] = await database.storage.db.select().from(operationsIncidentMonitors);
+  if (!monitor) throw new Error('Expected a monitored diagnosis actor');
+  await database.admin.query(`ALTER TABLE itervane.operations_incident_diagnoses
+    ADD CONSTRAINT incident_fixture_reject_attempt CHECK (attempt <> 1)`);
+  try {
+    await expect(fixture.makeScheduler().tick()).rejects.toMatchObject({
+      cause: { code: '23514', constraint: 'incident_fixture_reject_attempt' },
+    });
+    expect(await database.storage.db.select().from(taskRecords).where(eq(taskRecords.requestedBy, monitor.principalId))).toEqual([]);
+    expect(await database.storage.db.select().from(operationsDiagnosisInputs)).toEqual([]);
+    expect(await database.storage.db.select().from(operationsIncidentDiagnoses)).toEqual([]);
+    const after = await database.admin.query('SELECT count(*)::int AS count FROM itervane_queue.job WHERE name=$1', [queueName]);
+    expect(after.rows).toEqual(current.rows);
+  } finally {
+    await database.admin.query('ALTER TABLE itervane.operations_incident_diagnoses DROP CONSTRAINT incident_fixture_reject_attempt');
+  }
+  expect(await fixture.makeScheduler().tick()).toMatchObject({
+    status: 'queued', attempt: 1, incidentId: sample.incidentId, sampleSequence: sample.sequence,
+  });
+}, 45_000);
+
+it('requires fresh incident samples and an environment cooldown before exhausting the diagnosis budget', async () => {
+  const fixture = await incidentMonitorFixture();
+  const scheduler = fixture.makeScheduler();
+  const agedProbe = (await fixture.journal.prepareProbe()).probe;
+  const stale = await fixture.journal.recordProbe({ ...agedProbe, startedAt: new Date(Date.now() - 7 * 60_000).toISOString() }, stoppedHealth);
+  expect(await scheduler.tick()).toEqual({ status: 'idle', reason: 'awaiting_sample' });
+  const finish = async (attempt: number) => {
+    const accepted = await scheduler.tick();
+    if (accepted.status !== 'queued') throw new Error('Expected the next bounded diagnostic task');
+    expect(accepted).toMatchObject({ attempt, incidentId: stale.incidentId });
+    const scope = await claimOperations(fixture.worker);
+    if (!scope) throw new Error('Expected the diagnostic task lease');
+    expect(scope.taskId).toBe(accepted.taskId);
+    // Represent an observed diagnosis completion. Native evidence is exercised by the worker acceptance.
+    await coordinator.withLease(scope, async (tx, { task }) => {
+      await appendEvent(tx, task, 'task.operations_observed', 'succeeded', { workerId: scope.workerId });
+      await clearSlot(tx);
+    });
+    return accepted.taskId;
+  };
+  const ageAdmission = (id: string) => database.admin.query(`UPDATE itervane.operations_incident_diagnoses
+    SET admitted_at=admitted_at - interval '121 seconds' WHERE task_id=$1`, [id]);
+  await fixture.sample();
+  const first = await finish(1);
+  expect(await scheduler.tick()).toEqual({ status: 'idle', reason: 'awaiting_sample' });
+  await fixture.sample(unavailableHealth);
+  expect(await scheduler.tick()).toEqual({ status: 'idle', reason: 'awaiting_sample' });
+  await fixture.sample();
+  expect(await scheduler.tick()).toEqual({ status: 'idle', reason: 'cooldown' });
+  await ageAdmission(first);
+  const second = await finish(2);
+  await ageAdmission(second);
+  await fixture.sample();
+  await finish(3);
+  await fixture.sample();
+  expect(await scheduler.tick()).toEqual({ status: 'stopped', reason: 'attempt_limit' });
+  expect(await fixture.makeScheduler().tick()).toEqual({ status: 'stopped', reason: 'attempt_limit' });
+  expect(await database.storage.db.select().from(operationsIncidents)).toMatchObject([
+    { id: stale.incidentId, diagnosisStopReason: 'attempt_limit', diagnosisStoppedAt: expect.any(Date) },
+  ]);
+  expect(await database.storage.db.select().from(operationsIncidentDiagnoses)).toHaveLength(3);
+  await fixture.sample(recoveredHealth);
+  const reopened = await fixture.sample();
+  expect(reopened.incidentId).not.toBe(stale.incidentId);
+  expect(await scheduler.tick()).toEqual({ status: 'idle', reason: 'cooldown' });
+}, 60_000);
+
+it('rechecks the project grant and monitor generation before claiming an incident diagnosis', async () => {
+  const fixture = await incidentMonitorFixture();
+  const [monitor] = await database.storage.db.select().from(operationsIncidentMonitors);
+  if (!monitor) throw new Error('Expected a diagnostic monitor');
+  await fixture.sample();
+  const [member] = await database.storage.db.select().from(projectMembers).where(eq(projectMembers.principalId, monitor.principalId));
+  expect(member).toMatchObject({ grantId: monitor.grantId, projectId: fixture.application.scope.projectId, role: 'maintainer' });
+  await database.storage.db.transaction(async tx => {
+    const where = eq(projectMembers.principalId, monitor.principalId);
+    await tx.update(projectMembers).set({ role: 'viewer' }).where(where);
+    const [renewed] = await tx.update(projectMembers).set({ role: 'maintainer' }).where(where).returning();
+    expect(renewed?.grantId).not.toBe(monitor.grantId);
+  });
+  expect(await fixture.makeScheduler().tick()).toEqual({ status: 'skipped', reason: 'forbidden' });
+  await expect(changeOperationsIncidentMonitor(database.storage, fixture.registration)).rejects.toMatchObject({ code: 'version_conflict' });
+  const reissued = await changeOperationsIncidentMonitor(database.storage, { ...fixture.registration, expectedActiveId: fixture.monitorId });
+  expect(await fixture.makeScheduler().tick()).toEqual({ status: 'skipped', reason: 'forbidden' });
+  const second = fixture.makeScheduler(reissued.monitorId);
+  const accepted = await second.tick();
+  if (accepted.status !== 'queued') throw new Error('Expected a task for the new monitored grant');
+  await changeOperationsIncidentMonitor(database.storage, { action: 'revoke', environmentId: fixture.installation.environmentId,
+    expectedActiveId: reissued.monitorId });
+  expect(await claimOperations(fixture.worker)).toBeNull();
+  expect(await fixture.application.taskService.get(identity, accepted.taskId)).toMatchObject({ state: 'needs_human' });
+  expect(await fixture.application.taskService.events(identity, accepted.taskId, 10)).toMatchObject([
+    { type: 'task.accepted' }, { type: 'task.needs_human', reason: 'permission_revoked' },
+  ]);
+  expect(await second.tick()).toEqual({ status: 'skipped', reason: 'forbidden' });
+  expect(await database.storage.db.select().from(operationsIncidentDiagnoses)).toHaveLength(1);
+}, 60_000);
+
+it('blocks further incident diagnosis work when the active registration expires', async () => {
+  const fixture = await incidentMonitorFixture();
+  await fixture.sample();
+  const accepted = await fixture.makeScheduler().tick();
+  if (accepted.status !== 'queued') throw new Error('Expected the monitored run before expiry');
+  const scope = await claimOperations(fixture.worker);
+  if (!scope) throw new Error('Expected the original diagnostic lease');
+  await database.admin.query(`UPDATE itervane.operations_incident_monitors
+    SET created_at=clock_timestamp() - interval '2 minutes', valid_until=clock_timestamp() - interval '1 minute' WHERE id=$1`, [fixture.monitorId]);
+  const read = vi.fn();
+  await expect(coordinator.withLease(scope, read)).rejects.toMatchObject({ code: 'forbidden' });
+  expect(read).not.toHaveBeenCalled();
+  expect(await fixture.makeScheduler().tick()).toEqual({ status: 'skipped', reason: 'forbidden' });
+  await coordinator.stop(scope, 'permission_revoked');
+  expect(await fixture.application.taskService.get(identity, accepted.taskId)).toMatchObject({ state: 'needs_human' });
+}, 60_000);
+
+it('defers incident diagnosis during a pending release and fences its old queued instance after publication', async () => {
+  const fixture = await incidentMonitorFixture();
+  const initial = await fixture.sample();
+  task = (await fixture.application.taskService.admit(identity, { projectId: fixture.application.scope.projectId,
+    source: task.source, purpose: 'Publish the replacement instance', dataClass: 'synthetic', idempotencyKey: randomUUID() })).task;
+  const prepared = await preparedFormalRelease({ existingTarget: fixture.application.target, imageVariant: 'incident target replacement' });
+  const accepted = await fixture.makeScheduler().tick();
+  if (accepted.status !== 'queued') throw new Error('Expected a monitored diagnosis before the next release');
+  const next = await prepared.confirm();
+  expect(await fixture.makeScheduler().tick()).toEqual({ status: 'skipped', reason: 'conflict' });
+  expect(await claimOperations(fixture.worker)).toBeNull();
+  expect(await fixture.application.taskService.get(identity, accepted.taskId)).toMatchObject({ state: 'queued' });
+  await finishTestRollout(await parkForRollout(next, true, 'd'.repeat(24)), 'standard-v3');
+  expect(await claimOperations(fixture.worker)).toBeNull();
+  expect(await fixture.application.taskService.get(identity, accepted.taskId)).toMatchObject({ state: 'needs_human' });
+  const newIncident = await fixture.sample();
+  expect(newIncident.incidentId).not.toBe(initial.incidentId);
+  expect(await fixture.makeScheduler().tick()).toEqual({ status: 'idle', reason: 'cooldown' });
+  expect(await database.storage.db.select().from(operationsIncidentDiagnoses)).toHaveLength(1);
+}, 60_000);
 
 it('deduplicates concurrent health samples, preserves uncertainty and recovers the same incident', async () => {
   const fixture = await installedOperationsFixture();

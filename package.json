@@ -36,6 +36,7 @@
     "bootstrap:owner": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/bootstrap.ts",
     "register:release-target": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/register-release-target.ts",
     "register:operations-target": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/register-operations-target.ts",
+    "register:operations-incident-monitor": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/register-operations-incident-monitor.ts",
     "register:operations-restart-installation": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/register-operations-restart-installation.ts",
     "check": "tsx scripts/check.ts"
   },

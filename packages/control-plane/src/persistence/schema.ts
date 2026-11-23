@@ -798,6 +798,8 @@ export const operationsIncidents = domain.table('operations_incidents', {
   unhealthySamples: integer('unhealthy_samples').notNull(),
   closedAt: timestamp('closed_at', { withTimezone: true }),
   closedReason: text('closed_reason').$type<'recovered' | 'target_changed'>(),
+  diagnosisStoppedAt: timestamp('diagnosis_stopped_at', { withTimezone: true }),
+  diagnosisStopReason: text('diagnosis_stop_reason').$type<'attempt_limit' | 'task_stopped' | 'operator_stopped'>(),
 }, t => [
   unique('operations_incident_scope').on(t.id, t.environmentId, t.bindingSha256),
   uniqueIndex('operations_incident_active_environment').on(t.environmentId).where(sql`${t.closedAt} IS NULL`),
@@ -808,6 +810,9 @@ export const operationsIncidents = domain.table('operations_incidents', {
     (${t.closedAt} IS NULL AND ${t.closedReason} IS NULL)
     OR (${t.closedAt} >= ${t.lastUnhealthyAt} AND ${t.closedReason} IN ('recovered', 'target_changed'))
   )) IS TRUE`),
+  check('operations_incident_diagnosis_stop', sql`((
+    ${t.diagnosisStoppedAt} IS NULL AND ${t.diagnosisStopReason} IS NULL
+  ) OR (${t.diagnosisStoppedAt} >= ${t.openedAt} AND ${t.diagnosisStopReason} IN ('attempt_limit', 'task_stopped', 'operator_stopped'))) IS TRUE`),
 ]);
 
 export const operationsHealthSamples = domain.table('operations_health_samples', {
@@ -821,6 +826,7 @@ export const operationsHealthSamples = domain.table('operations_health_samples',
   recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull(),
 }, t => [
   index('operations_health_samples_environment_sequence').on(t.environmentId, t.sequence),
+  unique('operations_health_sample_incident').on(t.sequence, t.incidentId),
   foreignKey({ name: 'operations_health_sample_incident_fk', columns: [t.incidentId, t.environmentId, t.bindingSha256],
     foreignColumns: [operationsIncidents.id, operationsIncidents.environmentId, operationsIncidents.bindingSha256] }),
   check('operations_health_sample_binding', sql`(${t.sequence} > 0 AND ${t.bindingSha256} ~ '^[a-f0-9]{64}$'
@@ -834,6 +840,50 @@ export const operationsHealthSamples = domain.table('operations_health_samples',
       OR (${t.signal}->>'status' = 'unavailable'
         AND ${t.signal}->>'reason' IN ('ingress_unavailable', 'probe_identity', 'komodo_unavailable', 'target_changed'))
     )) IS TRUE`),
+]);
+
+export const operationsIncidentMonitors = domain.table('operations_incident_monitors', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  environmentId: uuid('environment_id').notNull().references(() => environments.id),
+  principalId: uuid('principal_id').notNull().references(() => principals.id),
+  grantId: uuid('grant_id').notNull(),
+  enrollmentSha256: text('enrollment_sha256').notNull(),
+  mappingSha256: text('mapping_sha256').notNull(),
+  providerSha256: text('provider_sha256').notNull(),
+  locale: text('locale').notNull().$type<'en' | 'zh-CN'>(),
+  createdAt: createdAt(),
+  validUntil: timestamp('valid_until', { withTimezone: true }).notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+}, t => [
+  unique('operations_incident_monitor_scope').on(t.id, t.environmentId),
+  uniqueIndex('operations_incident_active_monitor').on(t.environmentId).where(sql`${t.revokedAt} IS NULL`),
+  check('operations_incident_monitor_policy', sql`${t.locale} IN ('en', 'zh-CN')
+    AND ${t.enrollmentSha256} ~ '^[a-f0-9]{64}$' AND ${t.mappingSha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.providerSha256} ~ '^[a-f0-9]{64}$' AND ${t.validUntil} > ${t.createdAt}
+    AND (${t.revokedAt} IS NULL OR ${t.revokedAt} >= ${t.createdAt})`),
+]);
+
+export const operationsIncidentDiagnoses = domain.table('operations_incident_diagnoses', {
+  incidentId: uuid('incident_id').notNull(), environmentId: uuid('environment_id').notNull(),
+  bindingSha256: text('binding_sha256').notNull(), monitorId: uuid('monitor_id').notNull(),
+  attempt: integer('attempt').notNull(),
+  sampleSequence: bigint('sample_sequence', { mode: 'number' }).notNull(),
+  taskId: uuid('task_id').notNull(),
+  runId: uuid('run_id').notNull().references(() => operationsDiagnosisInputs.runId),
+  admittedAt: timestamp('admitted_at', { withTimezone: true }).notNull(),
+}, t => [
+  primaryKey({ columns: [t.incidentId, t.attempt] }),
+  unique('operations_incident_diagnosis_run').on(t.runId),
+  unique('operations_incident_diagnosis_sample').on(t.sampleSequence),
+  index('operations_incident_diagnosis_environment_time').on(t.environmentId, t.admittedAt, t.sampleSequence),
+  foreignKey({ name: 'operations_incident_diagnosis_scope_fk', columns: [t.incidentId, t.environmentId, t.bindingSha256],
+    foreignColumns: [operationsIncidents.id, operationsIncidents.environmentId, operationsIncidents.bindingSha256] }),
+  foreignKey({ name: 'operations_incident_diagnosis_sample_fk', columns: [t.sampleSequence, t.incidentId],
+    foreignColumns: [operationsHealthSamples.sequence, operationsHealthSamples.incidentId] }),
+  foreignKey({ name: 'operations_incident_diagnosis_monitor_fk', columns: [t.monitorId, t.environmentId],
+    foreignColumns: [operationsIncidentMonitors.id, operationsIncidentMonitors.environmentId] }),
+  foreignKey({ name: 'operations_incident_diagnosis_task_fk', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
+  check('operations_incident_diagnosis_budget', sql`${t.attempt} BETWEEN 1 AND 3`),
 ]);
 
 export const formalReleaseSteps = domain.table('formal_release_steps', {

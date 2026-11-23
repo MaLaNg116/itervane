@@ -6,6 +6,7 @@ import { queueName, type Database } from '../persistence/database.js';
 import { formalRepairRetries, operationsExecutionSchedules, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { requireProjectAccess, requireStoredActor, type Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
+import { requireIncidentDiagnosisAuthority } from '../service/operations-incident-monitor.js';
 import { readOperationsDiagnosis, readOperationsRequest } from '../service/operations-requests.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, enqueue, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope, type TaskRow } from './authority.js';
@@ -21,7 +22,9 @@ export async function authorizeRun(tx: Transaction, task: TaskRow, runId: string
   if (role === 'operations') {
     const operationsRequest = await readOperationsRequest(tx, task, runId);
     if (operationsRequest.document.grantId !== access.grantId) throw new DomainError('forbidden');
-    return { ...access, operationsRequest, operationsDiagnosis: await readOperationsDiagnosis(tx, task, runId, operationsRequest) };
+    const operationsDiagnosis = await readOperationsDiagnosis(tx, task, runId, operationsRequest);
+    await requireIncidentDiagnosisAuthority(tx, runId, task.requestedBy, operationsRequest.document, operationsDiagnosis?.providerSha256);
+    return { ...access, operationsRequest, operationsDiagnosis };
   } else if (task.generation !== 1) {
     const [retry] = await tx.select({ grantId: formalRepairRetries.grantId }).from(formalRepairRetries).where(eq(formalRepairRetries.runId, runId));
     if (retry && retry.grantId !== access.grantId) throw new DomainError('forbidden');
@@ -95,8 +98,12 @@ export class ExecutionCoordinator {
       try { access = await authorizeRun(tx, task, run.id, run.role); }
       catch (error) {
         if (!(error instanceof DomainError)) throw error;
+        if (error.code === 'conflict' && run.role === 'operations') {
+          await settle(); await enqueue(tx, this.database, task, run.id, true); return null;
+        }
         await appendEvent(tx, task, 'task.needs_human', 'needs_human', { workerId,
-          reason: error.code === 'unsupported_state' && run.role === 'operations' ? 'operations_unavailable' : 'permission_revoked' });
+          reason: run.role === 'operations' && error.code !== 'forbidden' && error.code !== 'not_found'
+            ? 'operations_unavailable' : 'permission_revoked' });
         await settle(); return null;
       }
       if (access.operationsRequest && (access.operationsRequest.document.environmentId !== operations?.environmentId
