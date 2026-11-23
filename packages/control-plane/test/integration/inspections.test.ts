@@ -15,7 +15,8 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseTargetSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
   operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartExecutionViewSchema, operationsRestartRecoveryProofSchema,
-  operationsRestartRequestSchema, operationsRestartSubmissionSchema, operationsRestorePlanSchema, taskDtoSchema, translate, verificationViewSchema,
+  operationsRestartRequestSchema, operationsRestartSubmissionSchema, operationsRestorePlanSchema, operationsRestoreRecoveryProofSchema, taskDtoSchema, translate,
+  verificationViewSchema,
   whiskersRestartImageDigest,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type OperationsDiagnosisObservation, type OperationsDiagnosisSection,
@@ -37,7 +38,7 @@ import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, fo
   operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
   operationsDiagnosisRuntime, operationsExecutionIntents, operationsExecutions, operationsExecutionSchedules, operationsObservations,
   operationsProposals, operationsRequests, operationsRestartInstallations, operationsRestartRecoveries, operationsRestartRequests, operationsRestartResumes,
-  operationsRestoreSteps, operationsTargets,
+  operationsRestoreRecoveries, operationsRestoreSteps, operationsTargets,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
   taskEvents, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
@@ -50,6 +51,8 @@ import { FormalReleaseSteps } from '../../src/runtime/formal-release-steps.js';
 import { FormalReleaseWorker } from '../../src/runtime/formal-release-worker.js';
 import { FormalRolloutCoordinator } from '../../src/runtime/formal-rollout-claim.js';
 import { OperationsRestoreWorker } from '../../src/runtime/operations-restore-worker.js';
+import { OperationsRestoreRecoveryWorker } from '../../src/runtime/operations-restore-recovery-worker.js';
+import type { KomodoReleaseClient } from '../../src/runtime/release-komodo.js';
 import { FormalRolloutWorker } from '../../src/runtime/formal-rollout-worker.js';
 import { createInstalledApi } from '../../src/runtime/installed-api.js';
 import { runFormalRescan, type RescanRunner } from '../../src/runtime/formal-rescan.js';
@@ -2897,7 +2900,7 @@ it('binds a rollback intent and read-only takeover to the approved image after a
   expect(await database.storage.db.select({ state: operationsExecutions.state }).from(operationsExecutions)).toEqual([{ state: 'reserved' }]);
 });
 
-it.each(['acknowledged', 'reply_lost', 'prior_receipt', 'approval_revoked'] as const)('keeps a fenced restore dispatch accountable when %s', async outcome => {
+async function dispatchedRestore(outcome: 'acknowledged' | 'reply_lost' | 'prior_receipt' | 'approval_revoked') {
   const earlier = await installedOperationsFixture();
   task = (await earlier.taskService.admit(identity, { projectId: earlier.scope.projectId, source: task.source, purpose: 'Publish a newer image',
     dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
@@ -2965,6 +2968,11 @@ it.each(['acknowledged', 'reply_lost', 'prior_receipt', 'approval_revoked'] as c
     .toBe('reserved');
   const successor = await executor.claim(await fetchOperationsWakeup(), randomUUID(), 'rollback');
   if (!successor) throw new Error('Expected a read-only restore lease');
+  return { earlier, current, executor, scope, successor, execution, schedule, config, ack, sends };
+}
+
+it.each(['acknowledged', 'reply_lost', 'prior_receipt', 'approval_revoked'] as const)('keeps a fenced restore dispatch accountable when %s', async outcome => {
+  const { executor, scope, successor, config, ack } = await dispatchedRestore(outcome);
   expect(successor).toMatchObject({ mode: 'reconcile', fence: scope.fence + 1 });
   const progress = await executor.readRestoreProgress(successor);
   expect(progress.steps).toMatchObject(outcome === 'approval_revoked' ? [{ kind: 'configure', receipt: config }] : [
@@ -2973,6 +2981,81 @@ it.each(['acknowledged', 'reply_lost', 'prior_receipt', 'approval_revoked'] as c
   await expect(executor.beginRestoreStep(successor, 'deploy', progress.sha256)).rejects.toBeInstanceOf(ExecutionLost);
   await expect(executor.recordRestoreStep(successor, 'deploy', progress.sha256, ack)).rejects.toBeInstanceOf(ExecutionLost);
 });
+
+it.each(['verified', 'missing_update', 'wrong_runtime', 'expired_reader', 'update_pending'] as const)('records bounded independent restore verification for %s', async result => {
+  const fixture = await dispatchedRestore(result === 'missing_update' ? 'reply_lost' : 'acknowledged');
+  const { earlier, current, executor, scope, successor, execution, schedule, ack, sends } = fixture;
+  const completed = { ...ack, status: 'Complete' as const, success: true };
+  const runtime = { ...earlier.runtime, containerId: sha256('restored instance') };
+  const applyRead = vi.fn(async (target: Parameters<KomodoReleaseClient['observeUpdate']>[0], id: string, authorize: () => Promise<void>) => {
+    await authorize();
+    expect(target.deploymentId).toEqual(ack.deploymentId);
+    expect(id).toEqual(ack.updateId);
+    return result === 'update_pending' ? { ...completed, status: 'InProgress' as const, success: false } : completed;
+  });
+  const worker = new OperationsRestoreRecoveryWorker(executor, { observeUpdate: applyRead }, {
+    async observe(subject, authorize) {
+      await authorize();
+      expect(subject.image).toMatchObject({ manifestDigest: earlier.image.manifestDigest, configDigest: earlier.image.configDigest });
+      return result === 'wrong_runtime' ? { ...runtime, containerId: current.runtime.containerId } : runtime;
+    },
+  });
+  let reader = successor;
+  if (result === 'verified') {
+    const progress = await executor.readRestoreProgress(reader);
+    const forged = operationsRestoreRecoveryProofSchema.parse({ version: 1, executionId: execution.id, restoreOperationId: earlier.operationId,
+      planSha256: progress.sha256, fence: reader.fence, attempt: 1, update: completed, runtime: { ...runtime, version: 'different-version' } });
+    await expect(database.storage.db.update(operationsRestoreRecoveries).set({
+      state: 'verified', proof: forged, proofSha256: sha256(JSON.stringify(forged)),
+    }).where(eq(operationsRestoreRecoveries.executionId, execution.id)))
+      .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restore_recovery_proof_required' } });
+  }
+  if (result === 'expired_reader') {
+    await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
+    await coordinator.reconcile(randomUUID());
+    await expect(worker.verify(successor)).resolves.toBe('lease_lost');
+    const retry = await executor.claim(await fetchOperationsWakeup(), randomUUID(), 'rollback');
+    if (!retry) throw new Error('Expected a replacement restore reader');
+    expect(retry.fence).toBe(successor.fence + 1);
+    reader = retry;
+  }
+  if (result === 'update_pending') {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await expect(worker.verify(reader)).resolves.toBe('retry');
+      const retry = await executor.claim(await fetchOperationsWakeup(), randomUUID(), 'rollback');
+      if (!retry) throw new Error('Expected the next restore reader');
+      reader = retry;
+    }
+  }
+  const verified = result === 'verified' || result === 'expired_reader';
+  await expect(worker.verify(reader)).resolves.toBe(verified ? 'verified' : 'manual_review');
+  expect(sends).toEqual(['configure', 'deploy']);
+  expect(applyRead).toHaveBeenCalledTimes(result === 'missing_update' ? 0 : result === 'update_pending' ? 3 : 1);
+  const attempts = await database.storage.db.select().from(operationsRestoreRecoveries).orderBy(operationsRestoreRecoveries.attempt);
+  const final = attempts.at(-1);
+  if (result === 'expired_reader') {
+    expect(attempts[0]).toMatchObject({ attempt: 1, fence: successor.fence, failure: 'lease_expired', state: 'retry' });
+  }
+  if (verified) {
+    expect(final).toMatchObject({ state: 'verified', failure: null, fence: reader.fence,
+      proof: { restoreOperationId: earlier.operationId, update: completed, runtime } });
+    expect(final?.proofSha256).toBe(sha256(JSON.stringify(operationsRestoreRecoveryProofSchema.parse(final?.proof))));
+  } else {
+    const failure = result === 'wrong_runtime' ? 'target_changed' : result;
+    expect(final).toMatchObject({ state: 'manual_review', failure, proof: null });
+  }
+  for (const locale of ['zh-CN', 'en'] as const) {
+    const events = await earlier.taskService.events(identity, schedule.taskId, 10, locale);
+    expect(events.at(-1)).toMatchObject({ type: 'task.operations_restore_recovery_recorded',
+      reasonMessage: translate(locale, verified ? 'reason.operations_restore_recovery_verified' : 'reason.operations_restore_recovery_manual') });
+  }
+  expect(await database.storage.db.select({ state: operationsExecutions.state }).from(operationsExecutions)
+    .where(eq(operationsExecutions.id, execution.id))).toEqual([{ state: 'reserved' }]);
+  expect((await database.storage.pool.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
+  await expect(executor.settleRestoreRecovery(scope, { update: completed, runtime })).rejects.toBeInstanceOf(ExecutionLost);
+  await expect(database.storage.db.delete(operationsRestoreRecoveries))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restore_recovery_is_immutable' } });
+}, 45_000);
 
 it.each(['wait', 'expired', 'replaced', 'publishing', 'revoked'] as const)('limits proposal admission after %s', async mode => {
   if (mode === 'expired') await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_results
@@ -3000,6 +3083,32 @@ it.each(['wait', 'expired', 'replaced', 'publishing', 'revoked'] as const)('limi
 
 const operationsPortal = 'itervane-operations-decision-portal';
 const decisionIdentity = (subject = 'owner') => issuer.token(subject, { azp: operationsPortal }).then(createIdentityVerifier(issuer.config));
+
+it('keeps operations authorization timestamps ordered when the database clock falls behind the diagnosis', async () => {
+  await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_results
+    ALTER COLUMN created_at SET DEFAULT (clock_timestamp() + interval '20 seconds')`);
+  const { installed, diagnosis, task: diagnosed, service } = await settleProposalDiagnosis('restart')
+    .finally(() => database.admin.query('ALTER TABLE itervane.operations_diagnosis_results ALTER COLUMN created_at SET DEFAULT now()'));
+  const clock = await database.storage.pool.query('SELECT clock_timestamp() < $1::timestamptz AS behind', [diagnosis.createdAt]);
+  expect(clock.rows[0]?.behind).toBe(true);
+
+  const { proposal } = await service.freeze(identity, diagnosed.id, { diagnosisSha256: diagnosis.sha256 });
+  const owner = await decisionIdentity();
+  const decisionService = new OperationsDecisionService(database.storage, installed, operationsPortal);
+  const decisionInput = { fingerprint: proposal.fingerprint };
+  const confirmed = (await decisionService.decide(owner, proposal.id, {
+    ...decisionInput, action: 'confirm', expectedVersion: 0, idempotencyKey: randomUUID(),
+  })).decision;
+  const { execution } = await new OperationsExecutionAdmission(database.storage, installed)
+    .enqueue({ ...decisionInput, proposalId: proposal.id, decisionVersion: 1 });
+  const revoked = (await decisionService.decide(owner, proposal.id, {
+    ...decisionInput, action: 'revoke', expectedVersion: 1, idempotencyKey: randomUUID(),
+  })).decision;
+  expect([proposal.createdAt, confirmed.decidedAt, execution.createdAt, revoked.decidedAt])
+    .toEqual([diagnosis.createdAt, diagnosis.createdAt, diagnosis.createdAt, diagnosis.createdAt]);
+  expect((await database.storage.db.select().from(operationsExecutions).where(eq(operationsExecutions.id, execution.id)))[0])
+    .toMatchObject({ state: 'blocked', blockedReason: 'approval_revoked', closedAt: revoked.decidedAt });
+});
 
 async function restartExecutionCandidate(prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
   const { fixture, installed, diagnosis, task: diagnosed, service } = await settleProposalDiagnosis('restart', prepared);

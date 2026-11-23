@@ -29,6 +29,8 @@ import { attachOperationsRestartApproval, prepareOperationsRestartRequest, readO
 import { findActiveRestartRecovery, finishRestartRecovery, proveRestartRecovery, readRestartRecoveryBinding, startRestartRecovery,
   type RecoveryFailure } from './operations-restart-recovery.js';
 import { blockQueuedRestartResume, latestRestartResume } from './operations-restart-resume.js';
+import { findActiveRestoreRecovery, finishRestoreRecovery, proveRestoreRecovery, readRestoreRecoveryBinding, startRestoreRecovery,
+  type RestoreReadFailure } from './operations-restore-recovery.js';
 import { parseRestoreStepReceipt, type OperationsRestoreStep } from './operations-restore-steps.js';
 import { matchRestartBaseline } from './release-rollout.js';
 
@@ -128,6 +130,11 @@ export async function recoverOperationsExecutionSlot(tx: Transaction, database: 
       await finishRestartRecovery(tx, database, bound, attempt, workerId, { failure: 'lease_expired' });
       return true;
     }
+    const restoration = await findActiveRestoreRecovery(tx, { executionId: execution.id, fence: slot.fence, workerId: slot.workerId });
+    if (restoration) {
+      await finishRestoreRecovery(tx, database, bound, restoration, workerId, { failure: 'lease_expired' });
+      return true;
+    }
   }
   if (execution.state === 'blocked') {
     if (intent || (task.state !== 'cancelled' && task.state !== 'needs_human')) throw new ExecutionLost();
@@ -209,6 +216,7 @@ export class OperationsExecutionCoordinator {
       await tx.update(operationsExecutionSchedules).set({ wakeupJobId: null }).where(eq(operationsExecutionSchedules.executionId, execution.id));
       const scope = Object.freeze({ ...lease, executionId: execution.id, mode });
       if (mode === 'reconcile' && action.kind === 'restart') await startRestartRecovery(tx, scope);
+      if (mode === 'reconcile' && action.kind === 'rollback' && bound.intent?.restorePlan) await startRestoreRecovery(tx, scope);
       return scope;
     });
   }
@@ -343,6 +351,37 @@ export class OperationsExecutionCoordinator {
         .orderBy(operationsRestoreSteps.kind);
       return { ...intent, steps };
     });
+  }
+
+  async authorizeRestoreRecovery(scope: OperationsExecutionLease) {
+    return this.withRestoreRecovery(scope, (tx, bound) => this.readRestoreBinding(tx, scope, bound));
+  }
+
+  async settleRestoreRecovery(scope: OperationsExecutionLease, raw: unknown) {
+    return this.withRestoreRecovery(scope, async (tx, bound, attempt) => {
+      const binding = await this.readRestoreBinding(tx, scope, bound);
+      const proof = proveRestoreRecovery(scope, attempt, binding, raw);
+      return finishRestoreRecovery(tx, this.coordinator.database, bound, attempt, scope.workerId, { proof });
+    });
+  }
+
+  async deferRestoreRecovery(scope: OperationsExecutionLease, failure: RestoreReadFailure) {
+    return this.withRestoreRecovery(scope, (tx, bound, attempt) =>
+      finishRestoreRecovery(tx, this.coordinator.database, bound, attempt, scope.workerId, { failure }));
+  }
+
+  private async withRestoreRecovery<T>(scope: OperationsExecutionLease,
+    run: (tx: Transaction, bound: BoundExecution, attempt: NonNullable<Awaited<ReturnType<typeof findActiveRestoreRecovery>>>) => Promise<T>) {
+    return this.withLease(scope, async (tx, bound) => {
+      if (scope.mode !== 'reconcile') throw new ExecutionLost();
+      const attempt = await findActiveRestoreRecovery(tx, scope);
+      if (!attempt) throw new ExecutionLost();
+      return run(tx, bound, attempt);
+    });
+  }
+
+  private readRestoreBinding(tx: Transaction, scope: OperationsExecutionLease, bound: BoundExecution) {
+    return readRestoreRecoveryBinding(tx, scope, this.requireRestoreIntent(bound), readOperationsProposal(bound.proposal));
   }
 
   async pauseForRestartApproval(scope: OperationsExecutionLease, raw: unknown) {

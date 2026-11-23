@@ -64,7 +64,7 @@ export async function readOperationsProposalBasis(tx: Transaction, task: typeof 
   }
   // The database timestamp anchors the window to the diagnosis, including across Worker clocks or request retries.
   const validUntil = new Date(diagnosis.recordedAt.getTime() + target.approvalTtlSeconds * 1_000);
-  return { run, environmentId, validUntil, whiskers: target.whiskers, publishedVersion: target.version, restorePlan, document: {
+  return { run, environmentId, validUntil, diagnosedAt: diagnosis.recordedAt, whiskers: target.whiskers, publishedVersion: target.version, restorePlan, document: {
     version: 1 as const, diagnosis: { taskId: task.id, runId: run.id, sha256: diagnosis.sha256, observedAt },
     target: request.document, targetProofSha256: target.proofSha256, action, validUntil: validUntil.toISOString(),
   } };
@@ -81,8 +81,8 @@ export class OperationsProposalService {
       const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId)).for('update');
       if (!task) throw new DomainError('not_found');
       const { grantId } = await requireProjectAccess(tx, actor, task.projectId, true);
-      const { run, environmentId, validUntil, document: basis } = await readOperationsProposalBasis(tx, task, diagnosisSha256, this.installation);
-      const now = await databaseNow(tx);
+      const { run, environmentId, validUntil, diagnosedAt, document: basis } = await readOperationsProposalBasis(tx, task, diagnosisSha256, this.installation);
+      const now = await databaseNow(tx, diagnosedAt);
       if (identity.expiresAt * 1_000 <= now.getTime()) throw new DomainError('unauthenticated');
       if (validUntil <= now) throw new DomainError('unsupported_state');
       const [existing] = await tx.select().from(operationsProposals).where(eq(operationsProposals.diagnosisRunId, run.id));

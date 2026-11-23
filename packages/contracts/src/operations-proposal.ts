@@ -4,7 +4,7 @@ import { sha256Schema } from './inspection.js';
 import { operationsRequestBindingSchema } from './operations.js';
 import { idSchema } from './primitives.js';
 import { ociDigestSchema } from './qualified-standard-image.js';
-import { komodoReleaseTargetSchema, releaseDecisionDtoSchema, releaseDecisionSchema, releaseRuntimeObservationSchema } from './release.js';
+import { komodoReleaseTargetSchema, releaseDecisionDtoSchema, releaseDecisionSchema, releaseKomodoCompletionSchema, releaseRuntimeObservationSchema } from './release.js';
 
 const rollbackRelease = z.strictObject({
   operationId: idSchema, manifestDigest: ociDigestSchema, configDigest: ociDigestSchema, proofSha256: sha256Schema,
@@ -38,6 +38,21 @@ export const operationsRestorePlanSchema = z.strictObject({
 }).refine(plan => plan.current.operationId !== plan.restore.operationId && plan.current.manifestDigest !== plan.restore.manifestDigest,
 'Recovery requires a different verified release');
 export type OperationsRestorePlan = z.infer<typeof operationsRestorePlanSchema>;
+
+export const maxOperationsRestoreRecoveryAttempts = 3;
+export const operationsRestoreRecoveryFailureSchema = z.enum([
+  'missing_update', 'update_failed', 'target_changed', 'update_pending', 'unavailable', 'unhealthy', 'lease_expired',
+]);
+export type OperationsRestoreRecoveryFailure = z.infer<typeof operationsRestoreRecoveryFailureSchema>;
+export const operationsRestoreObservationSchema = z.strictObject({
+  update: releaseKomodoCompletionSchema.extend({ success: z.literal(true) }),
+  runtime: releaseRuntimeObservationSchema,
+});
+export const operationsRestoreRecoveryProofSchema = operationsRestoreObservationSchema.extend({
+  version: z.literal(1), executionId: idSchema, restoreOperationId: idSchema, planSha256: sha256Schema,
+  fence: z.int().positive(), attempt: z.int().min(1).max(maxOperationsRestoreRecoveryAttempts),
+});
+export type OperationsRestoreRecoveryProof = z.infer<typeof operationsRestoreRecoveryProofSchema>;
 
 const proposalStatus = z.enum(['pending', 'confirmed', 'rejected', 'revoked', 'expired', 'stale']);
 const operationKind = z.enum(['restart', 'rollback']);
