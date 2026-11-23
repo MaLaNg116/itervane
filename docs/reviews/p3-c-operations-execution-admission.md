@@ -13,4 +13,6 @@
 
 修订后的版本 `1b940650e36cd4f7ba7257a3e91659880fc730ab` 完成托管回归，235 项单元和 219 项 PostgreSQL 17 集成测试通过，门户和扫描器检查也通过。 [完整托管验证](https://github.com/MaLaNg116/itervane/actions/runs/44988025701) · [真库验收](https://github.com/MaLaNg116/itervane/actions/runs/44988025701/job/137102769641)
 
+合入复核使用 `25aec25fe6411fde602a554e4789981167b3797f`。已核对数据库行锁及发布和处置的两种申请顺序。九组 KVM 与常规检查通过，标准应用诊断报告源码指纹为 `ff8b5798ba95e312c8e854c90fd2c1204b9e7984db8c6d7eeb17ab67e40b2ab1`，四类证据关联同一发布。合并提交为 `e341d1ada3e6f7ebe97a2f6e0290791be06587b7`，并保留分项提交。 [常规检查](https://github.com/MaLaNg116/itervane/actions/runs/45003733555) · [KVM 回归](https://github.com/MaLaNg116/itervane/actions/runs/45003730130) · [原生 Whiskers](https://github.com/MaLaNg116/itervane/actions/runs/45003730077)
+
 C2b2 将预留对应到持久化任务和全局执行槽，审查租约、重新领取及撤销竞态。原生派发及恢复健康在后续批次实测，现阶段的 `reserved` 只代表通过准入。
