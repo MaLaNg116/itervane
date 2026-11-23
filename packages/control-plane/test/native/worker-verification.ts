@@ -16,6 +16,7 @@ import { prepareFormalVerificationInput } from '../../src/runtime/verification-i
 import { currentInspectionAttempt } from '../../src/service/inspection-evidence.js';
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
 import { runKomodoReleaseFixture } from './komodo-release-worker.js';
+import { repairNativeHealthFixture } from './health-repair.js';
 import { readApprovedArchive } from './release-archive.js';
 import { interruptibleRegistryImport, recoverInterruptedRegistry } from './release-recovery.js';
 
@@ -34,7 +35,10 @@ async function verify() {
   const target = { taskId: idSchema.parse(taskId), runId: idSchema.parse(runId) };
   const findingId = expected === 'original' ? null : sha256Schema.parse(expected);
   const [profileSha, baselineSha, expectedBuild, expectedBaseline, optionalProbe] = buildArgs;
-  const followupTrial = optionalProbe === 'followup-passed' ? 'passed' : optionalProbe === 'followup-unhealthy' ? 'unhealthy' : undefined;
+  const previousReceiptSha256 = optionalProbe?.startsWith('followup-repaired:')
+    ? sha256Schema.parse(optionalProbe.slice('followup-repaired:'.length)) : undefined;
+  const followupTrial = optionalProbe === 'followup-passed' || previousReceiptSha256 ? 'passed'
+    : optionalProbe === 'followup-unhealthy' ? 'unhealthy' : undefined;
   const ociInputsSha = followupTrial ? undefined : optionalProbe;
   if (buildArgs.length !== 0 && (buildArgs.length < 3 || buildArgs.length > 5 || findingId !== null
       || (expectedBuild !== 'built' && expectedBuild !== 'profile_mismatch' && expectedBuild !== 'offline_install')
@@ -82,20 +86,24 @@ async function verify() {
       phase = 'health_followup_preflight';
       equal(expectedBaseline, 'passed');
       const prepared = await coordinator.withLease(scope, (tx, { task }) => prepareFormalVerificationInput(tx, task, scope, profile));
-      const command = canonicalVerificationCommand({ input: { ...prepared.document, healthRegression: {
+      let pulses = 0;
+      const authorize = async () => {
+        await coordinator.withLease(scope, async () => undefined);
+        pulses++;
+      };
+      phase = 'health_followup_repair_fixture';
+      const fixed = previousReceiptSha256 ? await repairNativeHealthFixture(runner, original, prepared.document,
+        { origin: prepared.origin, fence: scope.fence, authorize, signal: abort.signal }, previousReceiptSha256) : undefined;
+      const command = canonicalVerificationCommand({ input: { ...prepared.document, ...(fixed ? { subject: fixed.subject } : {}), healthRegression: {
         proposalId: randomUUID(), diagnosisSha256: sha256('test diagnosis'), publicationProofSha256: sha256('test publication'),
         incidentId: randomUUID(), sampleSequence: 1, sampleEvidenceSha256: sha256('test protected response'),
-      } }, repair: null });
+      } }, repair: fixed?.repair ?? null });
       const status = await runner.observe(abort.signal);
       equal(status?.state, 'idle');
       const request = prepareQualifiedVerificationRequest({ requestId: randomUUID(), fence: scope.fence,
         workspaceSha256: status!.workspaceSha256, origin: prepared.origin }, command);
       phase = 'health_followup_dispatch';
-      let pulses = 0;
-      const response = await runner.verify(request, command.input, null, async () => {
-        await coordinator.withLease(scope, async () => undefined);
-        pulses++;
-      }, abort.signal);
+      const response = await runner.verify(request, command.input, command.repair, authorize, abort.signal);
       if (response.kind !== 'verification_receipt') {
         phase = `health_followup_${response.code}`;
         throw new Error('verification_fixture_health_followup');
@@ -107,10 +115,15 @@ async function verify() {
       equal(response.commitSha256, original.commitSha256);
       equal(snapshot.tree, original.snapshot.tree);
       equal(snapshot.manifestSha256, original.snapshot.manifestSha256);
-      const comparison = compareVerificationScans(snapshot, snapshot);
+      const comparison = compareVerificationScans(snapshot, snapshot.target ?? snapshot);
       ok(comparison.status === 'compared');
       deepStrictEqual(comparison.totals, { introduced: 0, resolved: 0, remaining: 0 });
       ok(pulses >= 2 && response.domainId !== original.domainId);
+      if (fixed) {
+        ok(snapshot.target && snapshot.target.patchSha256 === fixed.subject.patchSha256);
+        equal(snapshot.target.manifestSha256, fixed.subject.manifestSha256);
+        equal(new Set([original.domainId, response.domainId, fixed.proof.observationDomainId, fixed.proof.repairDomainId]).size, 4);
+      }
       ok(snapshot.build?.status === 'built' && snapshot.build.baseline?.status === 'passed');
       const baseline = snapshot.build.baseline;
       equal(baseline.appExited, true);
@@ -121,9 +134,10 @@ async function verify() {
       await coordinator.withLease(scope, tx => clearSlot(tx));
       return { domainId: response.domainId, commit: response.scope.commit, inputSha256: response.scope.verificationInputSha256,
         receiptSha256: sha256(JSON.stringify(response)), commandSha256: response.scope.commandSha256,
-        baseSnapshotSha256: snapshot.manifestSha256, targetManifestSha256: response.scope.targetManifestSha256, patchSha256: null,
-        originalReportsSha256: sha256(JSON.stringify(snapshot.reports)), targetReportsSha256: null, dispatches: 1, newFindingGroups: 0,
-        cleanupConfirmed: true, build: snapshot.build, pulses };
+        baseSnapshotSha256: snapshot.manifestSha256, targetManifestSha256: response.scope.targetManifestSha256,
+        patchSha256: snapshot.target?.patchSha256 ?? null,
+        originalReportsSha256: sha256(JSON.stringify(snapshot.reports)), targetReportsSha256: snapshot.target ? sha256(JSON.stringify(snapshot.target.reports)) : null,
+        dispatches: 1, newFindingGroups: 0, cleanupConfirmed: true, build: snapshot.build, pulses, ...(fixed ? { repair: fixed.proof } : {}) };
     }
     let dispatches = 0;
     const observedRunner: RescanRunner = {
