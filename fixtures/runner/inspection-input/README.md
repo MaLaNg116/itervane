@@ -5,3 +5,5 @@
 The files are synthetic scan inputs. The Runner checks the original and updated variants from a fixed Git commit without installing dependencies or executing project files.
 
 Repair replays against the sealed snapshot.
+
+Different materialized bytes.
