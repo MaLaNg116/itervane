@@ -39,7 +39,8 @@ import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, fo
   operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
   operationsDiagnosisRuntime, operationsExecutionIntents, operationsExecutions, operationsExecutionSchedules, operationsHealthSamples,
   operationsIncidentDiagnoses, operationsIncidentMonitors, operationsIncidents, operationsObservations,
-  operationsProposals, operationsRepairProposals, operationsRequests, operationsRestartInstallations, operationsRestartRecoveries, operationsRestartRequests, operationsRestartResumes,
+  operationsProposals, operationsRepairAdmissions, operationsRepairProposals, operationsRequests, operationsRestartInstallations,
+  operationsRestartRecoveries, operationsRestartRequests, operationsRestartResumes,
   operationsRestoreRecoveries, operationsRestoreSteps, operationsTargets,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, repositories, runRuntime,
   taskEvents, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
@@ -93,6 +94,7 @@ import { changeOperationsIncidentMonitor } from '../../src/service/operations-in
 import { OperationsIncidentScheduler } from '../../src/service/operations-incident-scheduler.js';
 import { OperationsObservationViewService } from '../../src/service/operations-observation-view.js';
 import { OperationsProposalService, readOperationsProposal } from '../../src/service/operations-proposals.js';
+import { OperationsRepairAdmission } from '../../src/service/operations-repair-admission.js';
 import { OperationsRepairProposalService, readOperationsRepairProposal } from '../../src/service/operations-repair-proposals.js';
 import { changeOperationsRestartInstallation } from '../../src/service/operations-restart-installations.js';
 import { freezeOperationsRequest, readOperationsDiagnosis, readOperationsRequest } from '../../src/service/operations-requests.js';
@@ -3195,6 +3197,83 @@ it('rejects a linked repair proposal after the diagnosis confirmation window', a
   const service = new OperationsRepairProposalService(database.storage, healthInstallation(fixture));
   await expect(service.freeze(identity, saved.task.id, { diagnosisSha256: saved.diagnosis.sha256 })).rejects.toMatchObject({ code: 'unsupported_state' });
   expect(await database.storage.db.select().from(operationsRepairProposals)).toHaveLength(0);
+}, 45_000);
+
+async function proposedLinkedRepair() {
+  const context = await settleProposalDiagnosis('investigate');
+  const installation = healthInstallation(context.fixture);
+  const { proposal } = await new OperationsRepairProposalService(database.storage, installation)
+    .freeze(identity, context.task.id, { diagnosisSha256: context.diagnosis.sha256 });
+  const clientId = 'itervane-linked-repair-portal';
+  const approver = await createIdentityVerifier(issuer.config)(await issuer.token('owner', { azp: clientId }));
+  const service = new OperationsRepairAdmission(database.storage, installation, clientId);
+  const input = { fingerprint: proposal.fingerprint, locale: 'zh-CN' };
+  return { ...context, proposal, input, approver, admission: service, confirm: () => service.confirm(approver, proposal.id, input) };
+}
+
+it('enqueues one linked repair task after scoped portal confirmation', async () => {
+  const fixture = await proposedLinkedRepair();
+  const { admission, approver, input, proposal } = fixture;
+  await expect(admission.confirm(identity, proposal.id, input)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(admission.confirm(approver, proposal.id, { ...input, fingerprint: sha256('other proposal') }))
+    .rejects.toMatchObject({ code: 'version_conflict' });
+  await expect(admission.confirm(approver, proposal.id, { ...input, commit: 'e'.repeat(40) }))
+    .rejects.toMatchObject({ code: 'invalid_input' });
+  const admitted = await Promise.all([fixture.confirm(), fixture.confirm()]);
+  expect(admitted.map(item => item.replayed).sort()).toEqual([false, true]);
+  const linked = admitted[0]!.task;
+  expect(admitted[1]?.task).toEqual(linked);
+  expect(linked).toMatchObject({ source: fixture.task.source, projectId: fixture.task.projectId, state: 'queued',
+    locale: 'zh-CN', purpose: translate('zh-CN', 'operations.incident.repairPurpose') });
+  const links = await database.storage.db.select().from(operationsRepairAdmissions);
+  expect(links).toMatchObject([{ proposalId: proposal.id, taskId: linked.id, runId: linked.runId,
+    actorId: linked.requestedBy, sourceCommit: linked.source.commit, selfConfirmed: true }]);
+  await expect(admission.confirm(approver, proposal.id, { ...input, locale: 'en' })).rejects.toMatchObject({ code: 'idempotency_conflict' });
+  await expect(database.storage.db.delete(operationsRepairAdmissions))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_repair_admission_is_immutable' } });
+  const scope = await claimOperations(fixture.installed);
+  if (!scope) throw new Error('Expected the linked repair to use the normal execution lease');
+  expect(scope).toMatchObject({ taskId: linked.id, runId: linked.runId });
+  const recovered = await reclaimDiagnosis(scope, fixture.installed);
+  expect(recovered).toMatchObject({ taskId: linked.id, runId: linked.runId });
+  expect(recovered.fence).toBeGreaterThan(scope.fence);
+  await expect(coordinator.withLease(scope, async () => {})).rejects.toBeInstanceOf(ExecutionLost);
+  await coordinator.stop(recovered, 'operations_review_required');
+}, 45_000);
+
+it('rolls back a linked repair task and its initial wakeup when the confirmation cannot commit', async () => {
+  const fixture = await proposedLinkedRepair();
+  const countJobs = () => database.admin.query('SELECT count(*)::int AS count FROM itervane_queue.job WHERE name=$1', [queueName]);
+  const before = await countJobs();
+  await database.admin.query(`ALTER TABLE itervane.operations_repair_admissions
+    ADD CONSTRAINT repair_admission_fixture CHECK (self_confirmed = false)`);
+  try {
+    await expect(fixture.confirm()).rejects.toMatchObject({ cause: { code: '23514', constraint: 'repair_admission_fixture' } });
+    expect(await database.storage.db.select().from(taskRecords).where(eq(taskRecords.requestKey, `linked-repair:${fixture.proposal.id}`))).toEqual([]);
+    expect(await database.storage.db.select().from(operationsRepairAdmissions)).toEqual([]);
+    expect((await countJobs()).rows).toEqual(before.rows);
+  } finally { await database.admin.query('ALTER TABLE itervane.operations_repair_admissions DROP CONSTRAINT repair_admission_fixture'); }
+  expect(await fixture.confirm()).toMatchObject({ task: { state: 'queued' }, replayed: false });
+}, 45_000);
+
+it('blocks a queued linked repair after the portal owner grant is replaced', async () => {
+  const fixture = await proposedLinkedRepair();
+  const { task: linked } = await fixture.confirm();
+  const [removed] = await database.storage.db.delete(workspaceMembers).returning();
+  await database.storage.db.insert(workspaceMembers).values({ workspaceId: removed!.workspaceId, principalId: removed!.principalId });
+  await expect(fixture.confirm()).rejects.toMatchObject({ code: 'forbidden' });
+  expect(await claimOperations(fixture.installed)).toBeNull();
+  expect(await fixture.fixture.taskService.get(identity, linked.id)).toMatchObject({ state: 'needs_human' });
+  const events = await fixture.fixture.taskService.events(identity, linked.id, 10);
+  expect(events.at(-1)).toMatchObject({ type: 'task.needs_human', reason: 'permission_revoked' });
+}, 45_000);
+
+it('requires the diagnosed publication to remain current when confirming a linked repair', async () => {
+  const fixture = await proposedLinkedRepair();
+  const replacement = await (await competingPublication(fixture.fixture)).confirm();
+  await finishTestRollout(await parkForRollout(replacement, true, 'd'.repeat(24)), 'standard-v3');
+  await expect(fixture.confirm()).rejects.toMatchObject({ code: 'version_conflict' });
+  expect(await database.storage.db.select().from(operationsRepairAdmissions)).toHaveLength(0);
 }, 45_000);
 
 it('freezes one immutable restart proposal from the settled diagnosis under concurrent requests', async () => {
