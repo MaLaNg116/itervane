@@ -16,6 +16,7 @@ import { TaskRepair } from './task-repair.js';
 import { TaskVerification } from './task-verification.js';
 import { TaskRelease } from './task-release.js';
 import { TaskOperations } from './task-operations.js';
+import { TaskIncident } from './task-incidents.js';
 
 const controlText = {
   cancel: { title: 'cancelTitle', help: 'cancelHelp', confirm: 'confirmCancel' },
@@ -87,6 +88,7 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
     </Panel>
     {operations ? <TaskOperations task={task} /> : <TaskInspection taskId={task.id} />}
     </div>
+    <TaskIncident key={task.id} task={task} />
     {!operations && <>
       <TaskAudit taskId={task.id} />
       <TaskRepair taskId={task.id} canWrite={canWrite} disabled={control.isPending}
