@@ -111,6 +111,7 @@
 | 106 | P3-C2c3c3c 自托管重启参考安装 | [#106](https://github.com/MaLaNg116/itervane/pull/106)，依赖 #105 | [安装导读](p3-c-restart-reference-installation.md) | TypeScript、246 项单元、四项真实 PostgreSQL 专项及 [正式 API 装机后的原生重启和只读接管](https://github.com/MaLaNg116/itervane/actions/runs/45014647418/job/137184243333)通过 |
 | 107 | P3-C2d1 已发布版本的恢复依据 | [#107](https://github.com/MaLaNg116/itervane/pull/107)，依赖 #106 | [恢复依据导读](p3-c-restore-basis.md) | TypeScript、246 项单元、七项 PostgreSQL 17.12 专项及[九组 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45016756490)通过 |
 | 108 | P3-C2d2a 批准绑定的恢复意图与接管 | [#108](https://github.com/MaLaNg116/itervane/pull/108)，依赖 #107 | [恢复意图导读](p3-c-restore-intent.md) | TypeScript、246 项单元、七项 PostgreSQL 17.12 专项、迁移一致性及[九组 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45018166747)通过 |
+| 109 | P3-C2d2b1 独立 Komodo 读身份核对部署更新 | [#109](https://github.com/MaLaNg116/itervane/pull/109)，依赖 #108 | [独立回读导读](p3-c-restore-komodo-reader.md) | TypeScript、247 项单元及[十项原生 Komodo 验收](https://github.com/MaLaNg116/itervane/actions/runs/45018810794/job/137196935607)通过 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 

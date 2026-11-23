@@ -121,6 +121,42 @@ export class KomodoReleaseClient {
     this.#credentials = auth.data;
   }
 
+  static readOnly(frozen: KomodoReleaseTarget, credentials: Credentials) {
+    const original = komodoReleaseTargetSchema.parse(frozen);
+    if (original.komodo.actorId === credentials.actorId) throw new KomodoReleaseError('configuration', 'binding');
+    const adapter = new KomodoReleaseClient(original.komodo.origin, credentials);
+    const fingerprint = sha256(JSON.stringify(original));
+    const readerTarget = { ...original, komodo: { ...original.komodo, actorId: credentials.actorId } };
+    const bind = (raw: KomodoReleaseTarget) => {
+      const target = komodoReleaseTargetSchema.safeParse(raw);
+      if (!target.success || sha256(JSON.stringify(target.data)) !== fingerprint) throw new KomodoReleaseError('target', 'binding');
+    };
+    return {
+      async verifyInstallation(signal?: AbortSignal) {
+        await adapter.verifyReadPrincipal(signal);
+        await adapter.inspectTarget(readerTarget, async () => {}, signal);
+      },
+      inspectTarget(target, authorize, signal?: AbortSignal) {
+        bind(target);
+        return adapter.inspectTarget(readerTarget, authorize, signal);
+      },
+      inspectRuntime(target, image, network, authorize, signal?: AbortSignal) {
+        bind(target);
+        return adapter.inspectRuntime(readerTarget, image, network, authorize, signal);
+      },
+      inspectStoppedRuntime(target, image, network, authorize, signal?: AbortSignal) {
+        bind(target);
+        return adapter.inspectStoppedRuntime(readerTarget, image, network, authorize, signal);
+      },
+      observeUpdate(target, updateId, authorize, signal?: AbortSignal) {
+        bind(target);
+        // Use the original writer to validate the update while authenticating the request with the reader.
+        return adapter.readBoundUpdate(original, updateId, authorize, signal);
+      },
+    } satisfies Pick<KomodoReleaseClient, 'inspectTarget' | 'inspectRuntime' | 'inspectStoppedRuntime' | 'observeUpdate'> &
+      { verifyInstallation(signal?: AbortSignal): Promise<void> };
+  }
+
   private binding(raw: unknown) {
     const target = komodoReleaseTargetSchema.safeParse(raw);
     if (!target.success || target.data.komodo.origin !== this.origin || target.data.komodo.actorId !== this.#credentials.actorId) {
@@ -262,36 +298,14 @@ export class KomodoReleaseClient {
     return this.verifyUpdate('Deploy', target, received);
   }
 
-  async observeUpdate(raw: KomodoReleaseTarget, updateId: string, authorize: Authorize, signal?: AbortSignal) {
-    const target = this.binding(raw);
+  private async readBoundUpdate(target: KomodoReleaseTarget, updateId: string, authorize: Authorize, signal?: AbortSignal) {
     const id = komodoResourceIdSchema.safeParse(updateId);
     if (!id.success) throw new KomodoReleaseError('GetUpdate', 'binding');
     const observed = await this.call('GetUpdate', { id: id.data }, update, authorize, signal);
     return this.verifyUpdate('GetUpdate', target, observed, id.data);
   }
-}
 
-export function createKomodoRestartReader(frozen: KomodoReleaseTarget, credentials: Credentials) {
-  const original = komodoReleaseTargetSchema.parse(frozen);
-  if (original.komodo.actorId === credentials.actorId) throw new KomodoReleaseError('configuration', 'binding');
-  const adapter = new KomodoReleaseClient(original.komodo.origin, credentials);
-  const fingerprint = sha256(JSON.stringify(original));
-  const readerTarget = { ...original, komodo: { ...original.komodo, actorId: credentials.actorId } };
-  const bind = (target: KomodoReleaseTarget) => {
-    const checked = komodoReleaseTargetSchema.safeParse(target);
-    if (!checked.success || sha256(JSON.stringify(checked.data)) !== fingerprint) throw new KomodoReleaseError('target', 'binding');
-    return readerTarget;
-  };
-  return {
-    async verifyInstallation(signal?: AbortSignal) {
-      await adapter.verifyReadPrincipal(signal);
-      await adapter.inspectTarget(readerTarget, async () => {}, signal);
-    },
-    inspectRuntime(target, image, network, authorize, signal?: AbortSignal) {
-      return adapter.inspectRuntime(bind(target), image, network, authorize, signal);
-    },
-    inspectStoppedRuntime(target, image, network, authorize, signal?: AbortSignal) {
-      return adapter.inspectStoppedRuntime(bind(target), image, network, authorize, signal);
-    },
-  } satisfies Pick<KomodoReleaseClient, 'inspectRuntime' | 'inspectStoppedRuntime'> & { verifyInstallation(signal?: AbortSignal): Promise<void> };
+  async observeUpdate(raw: KomodoReleaseTarget, updateId: string, authorize: Authorize, signal?: AbortSignal) {
+    return this.readBoundUpdate(this.binding(raw), updateId, authorize, signal);
+  }
 }
