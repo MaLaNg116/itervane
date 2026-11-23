@@ -16,7 +16,8 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
   operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartExecutionViewSchema, operationsRestartRecoveryProofSchema,
   operationsRestartRequestSchema, operationsRestartSubmissionSchema, operationsRestoreExecutionViewSchema, operationsRestorePlanSchema, operationsRestoreRecoveryProofSchema,
-  operationsIncidentsViewSchema, operationsSubmissionSchema, standardHealthRepairPath, taskDtoSchema, taskIncidentViewSchema, translate,
+  operationsIncidentsViewSchema, operationsIncidentStopResultSchema, operationsSubmissionSchema, standardHealthRepairPath, taskDtoSchema,
+  taskIncidentViewSchema, translate,
   verificationViewSchema,
   whiskersRestartImageDigest,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
@@ -3430,6 +3431,73 @@ it('projects the authorized incident history and task associations in both local
     expect((await get(context(linked.id))).statusCode).toBe(404);
   } finally { await api.close(); }
 }, 45_000);
+
+it.each(['queued', 'running'] as const)('stops automatic diagnosis while retaining the %s task and its MCP history', async state => {
+  const fixture = await incidentMonitorFixture();
+  const { application, worker: operationsApi } = fixture;
+  const sample = await fixture.sample();
+  if (!sample.incidentId) throw new Error('Expected open incident');
+  const admission = await fixture.makeScheduler().tick();
+  if (admission.status !== 'queued') throw new Error('Expected one queued diagnosis');
+  const active = state === 'running' ? await claimOperations(operationsApi) : null;
+  if (state === 'running' && !active) throw new Error('Expected diagnosis lease');
+
+  const publicUrl = 'https://itervane.example';
+  const portalClientId = 'itervane-operations-portal';
+  const api = createApi(database.storage, { ...issuer.config, operationsApi, publicUrl, portalClientId }, { logger: false });
+  const portal = await issuer.token('owner', { azp: portalClientId });
+  const owner = await issuer.token();
+  const token = await issuer.token('owner', { aud: `${publicUrl}/mcp`, scope: 'itervane:read' });
+  const mcp = new Client({ name: 'incident-readonly', version: '0.1.0' });
+  const { scope } = application;
+  const list = `/v1/projects/${scope.projectId}/environments/${scope.environmentId}/operations-incidents`;
+  const stop = list + `/${sample.incidentId}/stop-diagnosis`;
+  const body = { expectedReleaseOperationId: application.operationId, expectedRestoreExecutionId: null };
+  const post = (authorization: string, payload = body) => api.inject({ method: 'POST', url: stop, payload,
+    headers: { authorization: `Bearer ${authorization}`, 'Accept-Language': 'zh-CN' } });
+  try {
+    expect((await post(owner)).statusCode).toBe(403);
+    expect((await post(portal, { ...body, expectedReleaseOperationId: randomUUID() })).statusCode).toBe(409);
+    const concurrent = await Promise.all([post(portal), post(portal)]);
+    expect(concurrent.map(response => response.statusCode)).toEqual([200, 200]);
+    const stops = concurrent.map(response => operationsIncidentStopResultSchema.parse(response.json()));
+    expect(stops.map(value => value.replayed).sort()).toEqual([false, true]);
+    expect(stops[0]).toMatchObject({ incidentId: sample.incidentId, reason: 'operator_stopped', locale: 'zh-CN' });
+    expect(stops[1]?.stoppedAt).toBe(stops[0]?.stoppedAt);
+    const [operator] = await database.storage.db.select().from(workspaceMembers);
+    const [incident] = await database.storage.db.select().from(operationsIncidents).where(eq(operationsIncidents.id, sample.incidentId));
+    expect(incident).toMatchObject({ diagnosisStoppedBy: operator?.principalId, diagnosisStopGrantId: operator?.grantId,
+      diagnosisStoppedAt: new Date(stops[0]!.stoppedAt), diagnosisStopReason: 'operator_stopped' });
+    await expect(database.storage.db.update(operationsIncidents).set({ diagnosisStopGrantId: randomUUID() })
+      .where(eq(operationsIncidents.id, sample.incidentId))).rejects
+      .toMatchObject({ cause: { code: '23514', message: 'operations_incident_stop_is_immutable' } });
+    if (active) {
+      await expect(coordinator.withLease(active, async () => true)).rejects.toMatchObject({ code: 'unsupported_state' });
+      await coordinator.stop(active, 'operations_review_required');
+    } else expect(await claimOperations(operationsApi)).toBeNull();
+    expect((await fixture.sample()).incidentId).toBe(sample.incidentId);
+    expect(await fixture.makeScheduler().tick()).toEqual({ status: 'stopped', reason: 'operator_stopped' });
+    expect(await database.storage.db.select().from(operationsIncidentDiagnoses)).toHaveLength(1);
+
+    const address = await api.listen({ host: '127.0.0.1', port: 0 });
+    await mcp.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+      requestInit: { headers: { authorization: `Bearer ${token}`, 'Accept-Language': 'zh-CN' } },
+    }));
+    const incidentTools = (await mcp.listTools()).tools.filter(tool => tool.name === 'list_operations_incidents' || tool.name === 'get_task_incident');
+    expect(incidentTools).toHaveLength(2);
+    expect(incidentTools.every(tool => tool.annotations?.readOnlyHint)).toBe(true);
+    const get = (url: string) => api.inject({ url, headers: { authorization: `Bearer ${owner}`, 'Accept-Language': 'zh-CN' } });
+    const history = operationsIncidentsViewSchema.parse((await get(list)).json());
+    const visible = (await mcp.callTool({ name: 'list_operations_incidents', arguments: scope })).structuredContent;
+    expect(operationsIncidentsViewSchema.parse(visible)).toEqual(history);
+    expect(history.items[0]?.diagnosisStop).toMatchObject({ at: stops[0]?.stoppedAt, reason: 'operator_stopped' });
+    const detail = (await mcp.callTool({ name: 'get_task_incident', arguments: { taskId: admission.taskId } })).structuredContent;
+    const projected = (await get(`/v1/tasks/${admission.taskId}/operations-incident`)).json();
+    expect(taskIncidentViewSchema.parse(detail)).toEqual(taskIncidentViewSchema.parse(projected));
+    const outside = await mcp.callTool({ name: 'list_operations_incidents', arguments: { ...scope, environmentId: randomUUID() } });
+    expect(apiErrorSchema.parse(outside.structuredContent).error.code).toBe('not_found');
+  } finally { await mcp.close(); await api.close(); }
+}, 55_000);
 
 it.each(['unhealthy', 'passed', 'unavailable', 'missing', 'revoked'] as const)
   ('settles a verified linked health reproduction (%s) with bounded evidence', async outcome => {
