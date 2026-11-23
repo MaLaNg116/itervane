@@ -14,7 +14,7 @@ export function createApp({ mode = 'healthy', version = '0.1.0' } = {}) {
   let healthRequests = 0;
   app.get('/health', (_request, response) => {
     if (++healthRequests > 1) {
-      console.error('fixture-health-repeat');
+      console.error('ERROR fixture-health-repeat');
       return response.status(503).json({ status: 'unhealthy', version });
     }
     response.status(mode === 'healthy' ? 200 : 503).json({ status: mode, version });
