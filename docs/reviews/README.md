@@ -126,8 +126,9 @@
 | 121 | P3-C3-A1 健康事件账本 | [#121](https://github.com/MaLaNg116/itervane/pull/121)，依赖 #120 | [健康事件导读](p3-c-operations-health-journal.md) | TypeScript、249 项单元、三个 PostgreSQL 专项和迁移一致性通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/121/checks) |
 | 122 | P3-C3-A2 受保护应用的原生健康探针 | [#122](https://github.com/MaLaNg116/itervane/pull/122)，依赖 #121 | [健康探针导读](p3-c-native-health-probe.md) | TypeScript、253 项单元、三个 PostgreSQL 专项通过，[六次健康采样的托管原生验收](https://github.com/MaLaNg116/itervane/actions/runs/45050831325/job/137295351968)通过 |
 | 123 | P3-C3-B1 持久化诊断准入、冷却和监控授权 | [#123](https://github.com/MaLaNg116/itervane/pull/123)，已合入 main | [诊断准入导读](p3-c-incident-diagnosis.md) | TypeScript、253 项单元、九项 PostgreSQL 专项、迁移一致性及[托管 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45108232278)通过 |
-| 124 | P3-C3-B2 健康 Worker 调度与原生诊断 | [#124](https://github.com/MaLaNg116/itervane/pull/124)，依赖 #123 | [健康触发导读](p3-c-installed-incident-diagnosis.md) | TypeScript、253 项单元、九项 PostgreSQL 专项及[同一已发布实例的原生触发诊断](https://github.com/MaLaNg116/itervane/actions/runs/45109429084/job/137478135983)通过 |
+| 124 | P3-C3-B2 健康 Worker 调度与原生诊断 | [#124](https://github.com/MaLaNg116/itervane/pull/124)，已合入 main | [健康触发导读](p3-c-installed-incident-diagnosis.md) | TypeScript、253 项单元、九项 PostgreSQL 专项及[同一已发布实例的原生触发诊断](https://github.com/MaLaNg116/itervane/actions/runs/45109429084/job/137478135983)通过 |
 | 125 | P3-C3-C1 关联修复提案 | [#125](https://github.com/MaLaNg116/itervane/pull/125)，依赖 #124 | [关联修复提案导读](p3-c-linked-repair-basis.md) | TypeScript、253 项单元、13 项 PostgreSQL 专项和迁移一致性通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/125/checks) |
+| 126 | P3-C3-C2 关联修复确认与固定源码 | [#126](https://github.com/MaLaNg116/itervane/pull/126)，依赖 #125 | [确认与源码导读](p3-c-linked-repair-admission.md) | TypeScript、253 项单元、71 项 Linux 宿主和 13 项 PostgreSQL 专项通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/126/checks) |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
