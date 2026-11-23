@@ -74,7 +74,7 @@ import { runOperationsObservation } from '../../src/runtime/operations-execution
 import { OperationsExecutionCoordinator } from '../../src/runtime/operations-execution-lease.js';
 import { OperationsRestartWorker } from '../../src/runtime/operations-restart-worker.js';
 import { OperationsRestartRecoveryWorker } from '../../src/runtime/operations-restart-recovery-worker.js';
-import { holdRestartAcknowledgement } from '../native/restart-crash-barrier.js';
+import { holdOperationsAcknowledgement } from '../native/operations-acknowledgement-barrier.js';
 import { RestartQueueWorker } from '../../src/runtime/installed-restart-worker.js';
 import { RestoreQueueWorker } from '../../src/runtime/installed-restore-worker.js';
 import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
@@ -3814,7 +3814,7 @@ it('holds the durable restart acknowledgement at the native interruption point',
   await request();
   const scope = await lease();
   await runtime.prepareRestartResume(scope, binding);
-  const barrier = await holdRestartAcknowledgement(database, action.execution.id);
+  const barrier = await holdOperationsAcknowledgement(database, 'restart', action.execution.id);
   const recording = runtime.recordRestartResume(scope, { ...approval, outcome: 'acknowledged' });
   void recording.catch(() => {});
   try {

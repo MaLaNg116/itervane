@@ -7,7 +7,7 @@ import { operationsProposalViewSchema, operationsRestartExecutionViewSchema, ope
 import { sha256 } from '@itervane/runner';
 import { lockEnvironmentForEffect, requireNoOperationsHold } from '../../src/service/environment-effects.js';
 import type { databaseFixture } from '../helpers/database.js';
-import { awaitRestartWorkerDisconnect, holdRestartAcknowledgement } from './restart-crash-barrier.js';
+import { awaitOperationsWorkerDisconnect, holdOperationsAcknowledgement } from './operations-acknowledgement-barrier.js';
 
 export type DiagnosisHttp = (path: string, options?: { locale?: Locale; portal?: boolean; payload?: object; status?: number }) => Promise<unknown>;
 export type DiagnosisReaders = {
@@ -75,13 +75,13 @@ export async function proveNativeRestart(input: RestartProofInput, interruption?
     deepStrictEqual(await request(continuePath, { portal: true, payload: continuation, status: 202 }), queued);
   };
   if (interruption) {
-    const barrier = await holdRestartAcknowledgement(db, queued.executionId);
+    const barrier = await holdOperationsAcknowledgement(db, 'restart', queued.executionId);
     try {
       await submit();
       const backend = await barrier.waitForWorker();
       await interruption.stopWorker();
       await barrier.release();
-      await awaitRestartWorkerDisconnect(db, backend);
+      await awaitOperationsWorkerDisconnect(db, backend);
     } finally { await barrier.close(); }
     const revoked = operationsProposalViewSchema.parse(await request(decisionPath, { portal: true, payload: {
       action: 'revoke', expectedVersion: 1, fingerprint: proposal.fingerprint, idempotencyKey: randomUUID(),
