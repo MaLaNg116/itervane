@@ -5,13 +5,13 @@ export const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 export const sourceContentLimits = Object.freeze({ maxFiles: 5000, maxFileBytes: 2097152, maxSourceBytes: 33554432 });
 export const retrySourceInspectionReasonSchema = z.enum(['runner_unavailable', 'inspection_reconciling', 'inspection_failed']);
 export const sourceInspectionPauseReasonSchema = z.enum([
-  ...retrySourceInspectionReasonSchema.options, 'inspection_unsupported', 'inspection_ready', 'inspection_incomplete',
+  ...retrySourceInspectionReasonSchema.options, 'inspection_unsupported', 'inspection_source_mismatch', 'inspection_ready', 'inspection_incomplete',
 ]);
 export type SourceInspectionPauseReason = z.infer<typeof sourceInspectionPauseReasonSchema>;
 export const sourceInspectionObservationSchema = z.strictObject({
   requestId: idSchema, coverage: z.enum(['complete', 'incomplete']),
 });
-export const sourceInspectionBlockReasonSchema = z.enum(['runner_unavailable', 'inspection_failed', 'inspection_unsupported']);
+export const sourceInspectionBlockReasonSchema = z.enum(['runner_unavailable', 'inspection_failed', 'inspection_unsupported', 'inspection_source_mismatch']);
 export const scannerStatusSchema = z.enum(['completed', 'failed', 'unavailable', 'unsupported']);
 export const scannerReasonSchema = z.enum(['timeout', 'scanner_error', 'invalid_report', 'missing_inventory', 'database_unavailable', 'empty_source']);
 export const scannerDatabaseSchema = z.strictObject({ sha256: sha256Schema, updatedAt: z.iso.datetime() });

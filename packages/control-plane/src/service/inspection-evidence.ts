@@ -1,6 +1,6 @@
 import { and, eq, ne } from 'drizzle-orm';
 import {
-  qualifiedInspectionResponseSchema, qualifiedInspectionScopeSchema,
+  qualifiedInspectionJobScopeSchema, qualifiedInspectionResponseSchema,
   type InspectionPlan, type QualifiedInspectionReceipt,
 } from '@itervane/contracts';
 import { sha256, verifyQualifiedInspectionReceipt } from '@itervane/runner';
@@ -16,10 +16,11 @@ export async function currentInspectionAttempt(tx: Transaction, runId: string) {
 }
 
 export function inspectionScope(attempt: InspectionAttempt) {
-  return qualifiedInspectionScopeSchema.parse({
+  return qualifiedInspectionJobScopeSchema.parse({
     version: 1, requestId: attempt.requestId, taskId: attempt.taskId, runId: attempt.runId,
     projectId: attempt.projectId, repositoryId: attempt.repositoryId, generation: attempt.generation,
     fence: attempt.fence, planSha256: attempt.planSha256, workspaceSha256: attempt.workspaceSha256, commit: attempt.commit,
+    ...(attempt.materializedFrom ? { materializedFrom: attempt.materializedFrom } : {}),
   });
 }
 

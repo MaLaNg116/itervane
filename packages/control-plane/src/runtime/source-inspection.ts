@@ -12,6 +12,7 @@ import {
   currentInspectionAttempt, inspectionCoverage, readInspectionEvidence, verifyInspectionEvidence, type InspectionAttempt,
 } from '../service/inspection-evidence.js';
 import { prepareInspection } from '../service/inspections.js';
+import { matchesLinkedRepairSource } from '../service/operations-repair-proposals.js';
 import { ExecutionLost, type ExecutionScope, type TaskRow } from './authority.js';
 import type { ExecutionCoordinator } from './coordinator.js';
 
@@ -20,6 +21,7 @@ type Publish = (tx: Transaction, task: TaskRow, result: ToolResult, requestId?: 
 const unavailable = { status: 'business_error', code: 'runner_unavailable', retryable: false } as const;
 const checkFailed = { status: 'infrastructure_error', code: 'inspection_failed', retryable: true } as const;
 const unsupported = { status: 'business_error', code: 'inspection_unsupported', retryable: false } as const;
+const sourceMismatch = { status: 'business_error', code: 'inspection_source_mismatch', retryable: false } as const;
 const unknown = (requestId: string) => ({ status: 'unknown', operationId: requestId, requiresReconciliation: true } as const);
 
 function observation(evidence: ReturnType<typeof verifyInspectionEvidence>): ToolResult {
@@ -58,12 +60,13 @@ export class SourceInspection {
       status = probed.success ? probed.data : null;
     }
 
-    const reserved = await this.coordinator.withLease(scope, async (tx, { task }) => {
+    const reserved = await this.coordinator.withLease(scope, async (tx, { task, linkedRepair }) => {
       signal?.throwIfAborted();
       const plan = await prepareInspection(tx, task, scope.runId, scope.fence);
       const pending = await currentInspectionAttempt(tx, scope.runId);
       if (pending?.state === 'recorded' && pending.workspaceSha256) {
-        const recorded = observation(readInspectionEvidence(pending, plan));
+        const evidence = readInspectionEvidence(pending, plan);
+        const recorded = linkedRepair && !matchesLinkedRepairSource(linkedRepair.frozen, evidence.receipt) ? sourceMismatch : observation(evidence);
         return { result: await publish(tx, task, recorded, pending.requestId) };
       }
       if (pending?.state === 'reserved' && pending.fence === scope.fence) throw new ExecutionLost();
@@ -83,20 +86,26 @@ export class SourceInspection {
       const [repo] = await tx.select().from(repositories)
         .where(and(eq(repositories.id, task.repositoryId), eq(repositories.projectId, task.projectId))).for('share');
       if (!repo) throw new DomainError('not_found');
+      const frozen = linkedRepair?.frozen;
+      const originSha256 = sha256(repo.url);
+      if (frozen && originSha256 !== frozen.source.originSha256) return { result: await publish(tx, task, sourceMismatch) };
       const parsed = qualifiedInspectionRequestSchema.safeParse({ version: 1, taskId: task.id, runId: scope.runId,
         projectId: task.projectId, requestId: randomUUID(), repositoryId: repo.id, commit: task.commit,
-        generation: scope.generation, fence: scope.fence, planSha256: plan.sha256, workspaceSha256: status.workspaceSha256, origin: repo.url });
+        generation: scope.generation, fence: scope.fence, planSha256: plan.sha256, workspaceSha256: status.workspaceSha256, origin: repo.url,
+        ...(frozen?.source.patchSha256 ? { materializedFrom: { commit: frozen.source.git.commit,
+          baseSnapshotSha256: frozen.source.originalSnapshotSha256 } } : {}),
+      });
       if (!parsed.success) return { result: await publish(tx, task, unsupported) };
 
-      const { origin, version: _version, ...coordinates } = parsed.data;
+      const { origin: _origin, version: _version, ...coordinates } = parsed.data;
       const [attempt] = await tx.insert(inspectionAttempts).values({ ...coordinates, workerId: scope.workerId,
-        imageSha256: status.imageSha256, originSha256: sha256(origin) }).returning();
+        imageSha256: status.imageSha256, originSha256 }).returning();
       if (!attempt) throw new ExecutionLost();
-      return { attempt, request: parsed.data, plan: plan.document };
+      return { attempt, request: parsed.data, plan: plan.document, frozen };
     });
     if ('result' in reserved) return reserved.result!;
 
-    const { attempt, request, plan } = reserved;
+    const { attempt, request, plan, frozen } = reserved;
     let authoritySeen = false;
     let authorityFailure: { error: unknown } | undefined;
     const authorize = async () => {
@@ -121,9 +130,10 @@ export class SourceInspection {
       const response = qualifiedInspectionResponseSchema.parse(await this.runner!.inspect(request, authorize, signal));
       if (response.kind === 'receipt') {
         if (!authoritySeen) throw new Error('inspection_without_authority');
-        evidence = verifyInspectionEvidence(response, attempt, plan);
+        const measured = verifyInspectionEvidence(response, attempt, plan);
         cleanupProven = true;
-        result = observation(evidence);
+        if (frozen && !matchesLinkedRepairSource(frozen, measured.receipt)) result = sourceMismatch;
+        else { evidence = measured; result = observation(evidence); }
       } else {
         if (response.requestId !== request.requestId || (response.cleanup === 'confirmed' && !response.domainId)
             || (response.cleanup === 'not_started' && response.domainId)) throw new Error('inspection_rejection_binding');

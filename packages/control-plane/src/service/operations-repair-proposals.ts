@@ -1,4 +1,5 @@
-import { freezeOperationsRepairSchema, idSchema, operationsRepairProposalSchema } from '@itervane/contracts';
+import { freezeOperationsRepairSchema, idSchema, operationsRepairProposalSchema, type OperationsRepairProposal,
+  type QualifiedInspectionReceipt } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { and, eq } from 'drizzle-orm';
 import type { VerifiedIdentity } from '../auth/identity.js';
@@ -39,6 +40,25 @@ export async function readLinkedOperationsRepair(tx: Transaction, task: TaskRow)
       || admission.sourceCommit !== task.commit || admission.actorId !== task.requestedBy || admission.requestSha256 !== requestSha256
       || task.requestHash !== requestSha256) throw new DomainError('version_conflict');
   return { admission, frozen };
+}
+
+export function matchesLinkedRepairSource({ source }: OperationsRepairProposal, receipt: QualifiedInspectionReceipt) {
+  if (receipt.originSha256 !== source.originSha256 || receipt.scope.repositoryId !== source.git.repositoryId) return false;
+  const { materializedFrom } = receipt.scope;
+  if (source.patchSha256 === null) return !materializedFrom && receipt.scope.commit === source.git.commit
+    && receipt.snapshot.manifestSha256 === source.originalSnapshotSha256;
+  return materializedFrom?.commit === source.git.commit && materializedFrom.baseSnapshotSha256 === source.originalSnapshotSha256
+    && receipt.snapshot.materializedCandidateSha256 === source.deployedSnapshotSha256;
+}
+
+export async function requireLinkedRepairReleaseTarget(tx: Transaction, task: TaskRow, environmentId: string, grantId: string) {
+  const linked = await readLinkedOperationsRepair(tx, task);
+  if (!linked) return;
+  if (linked.admission.grantId !== grantId) throw new DomainError('forbidden');
+  const { target } = linked.frozen;
+  if (target.environmentId !== environmentId) throw new DomainError('version_conflict');
+  const { binding } = await readHealthProbeTarget(tx, target);
+  if (sha256(JSON.stringify(binding)) !== sha256(JSON.stringify(target))) throw new DomainError('version_conflict');
 }
 
 async function readRepairSource(tx: Transaction, scope: {

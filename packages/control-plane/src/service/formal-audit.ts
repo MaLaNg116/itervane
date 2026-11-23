@@ -13,6 +13,7 @@ import { DomainError, parseInput } from './errors.js';
 import { prepareFormalRepairInput } from './formal-repair.js';
 import { currentInspectionAttempt, inspectionCoverage, readInspectionEvidence } from './inspection-evidence.js';
 import { readInspectionPlan } from './inspections.js';
+import { matchesLinkedRepairSource, readLinkedOperationsRepair } from './operations-repair-proposals.js';
 
 // The current Worker calls this under its authorized lease before yielding to the audit stage.
 export async function prepareFormalAuditInput(tx: Transaction, task: TaskRow, scope: ExecutionScope) {
@@ -21,6 +22,8 @@ export async function prepareFormalAuditInput(tx: Transaction, task: TaskRow, sc
   if (!plan || attempt?.state !== 'recorded' || !attempt.workspaceSha256) throw new DomainError('unavailable');
   const evidence = readInspectionEvidence(attempt, plan);
   if (inspectionCoverage(evidence.receipt) !== 'complete') throw new DomainError('unavailable');
+  const linked = await readLinkedOperationsRepair(tx, task);
+  if (linked && !matchesLinkedRepairSource(linked.frozen, evidence.receipt)) throw new DomainError('version_conflict');
 
   const [stored] = await tx.select().from(formalAuditInputs).where(eq(formalAuditInputs.runId, scope.runId));
   const previous = stored ? formalAuditInputSchema.parse(stored.document) : null;
