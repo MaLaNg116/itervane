@@ -232,6 +232,18 @@ jobs:
               .operations.restart.resumeCount == 1 and .operations.restart.acknowledgedCount == 1 and
               .operations.restart.blockedBeforeApproval and .operations.restart.distinctKomodoReader and
               .operations.restart.environmentReleased and .operations.restart.slotReleased and .operations.restart.httpMcpAgreement' "$report" >/dev/null
+            jq -e '.operations.restart as $verified | $verified.interrupted as $interrupted |
+              $interrupted.releaseOperationId == .release.operationId and
+              $interrupted.activeContainer == .operations.containerId and $interrupted.approvalId != $verified.approvalId and
+              $interrupted.diagnosisRunId != $verified.diagnosisRunId and $interrupted.diagnosisSections == ["container", "release"] and
+              $interrupted.stoppedStart == $verified.recoveredStart and $interrupted.recoveredStart > $interrupted.stoppedStart and
+              ($interrupted.proofSha256 | test("^[a-f0-9]{64}$")) and
+              ($interrupted.anonymousStatus == 401 or $interrupted.anonymousStatus == 403) and $interrupted.healthStatus == 200 and
+              $interrupted.nativeAuditCount == 2 and $interrupted.resumeCount == 1 and $interrupted.acknowledgedCount == 0 and
+              $interrupted.approvalRevoked and $interrupted.environmentHeld and $interrupted.publicationBlocked and
+              $interrupted.slotReleased and ($interrupted.environmentReleased == false) and
+              $interrupted.manualReason == "native_unconfirmed" and ($interrupted.sameWorker == false) and
+              $interrupted.readFence > $interrupted.sendFence and $interrupted.httpMcpAgreement' "$report" >/dev/null
           fi
       - name: Retain independent KVM evidence
         if: always()

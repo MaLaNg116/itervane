@@ -20,8 +20,8 @@ export async function openNativeWhiskersRestartScope() {
     return {
       origin: whiskersOrigin, serverId: 'local', readKey: fixture.readKey, writeKey: fixture.writers.primary,
       installationFiles: (scope: { environmentId: string; enrollmentSha256: string }) => fixture.restartInstallationFiles(fixture.writers.primary, scope),
-      approve: (containerId: string) => approveRestart(page, containerId, operatorEmail),
-      verifyAudit: (containerName: string) => observeRestartAudit(page, containerName, fixture.primaryWriter),
+      approve: (containerId: string, count = 1) => approveRestart(page, containerId, operatorEmail, count),
+      verifyAudit: (containerName: string, count = 1) => observeRestartAudit(page, containerName, fixture.primaryWriter, count),
       close,
     };
   } catch {

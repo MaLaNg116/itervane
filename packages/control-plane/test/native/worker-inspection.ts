@@ -1185,14 +1185,14 @@ async function probe() {
             const { containerId, version, configDigest, imageReference } = proof.runtime;
             const subject = { containerId, version, image, rolloutCheckSha256, check: ingress.check, target: boundTarget };
 
-            phase = 'operations_native_stop_bound_fixture';
-            await target.setOwnedContainerRunning(false, { containerId, configDigest, reference: imageReference });
-            const result = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, {
-              writer,
-              async verify(diagnosis, diagnosisSha256, request, mcp) {
+            const exerciseRestart = async (interrupted: boolean) => {
+              phase = 'operations_native_stop_bound_fixture';
+              await target.setOwnedContainerRunning(false, { containerId, configDigest, reference: imageReference });
+              const startRestartProcess = async () => {
                 phase = 'operations_native_restart_worker';
                 worker = await startScopedWorker(join(shared, 'restart-worker.mjs'), [
-                  'PATH=/usr/bin:/bin', 'LANG=C.UTF-8', 'ITERVANE_WORKER_POLL_MS=250', 'ITERVANE_WORKER_LEASE_SECONDS=30',
+                  'PATH=/usr/bin:/bin', 'LANG=C.UTF-8', 'ITERVANE_WORKER_POLL_MS=250',
+                  `ITERVANE_WORKER_LEASE_SECONDS=${interrupted ? 18 : 30}`,
                   `NODE_EXTRA_CA_CERTS=${ca}`, `ITERVANE_OPERATIONS_ENVIRONMENT_ID=${environment.id}`,
                   `ITERVANE_OPERATIONS_ENROLLMENT_SHA256=${enrollment.fingerprint}`, `ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256=${mapping.fingerprint}`,
                   `ITERVANE_RESTART_INSTALLATION_FILE=${files.installation}`, `ITERVANE_RESTART_GUARDRAILS_FILE=${files.guardrails}`,
@@ -1200,17 +1200,41 @@ async function probe() {
                 ], { DATABASE_URL: db.runtimeUrl, ITERVANE_RESTART_KOMODO_READER_KEY: readerCredentials.key,
                   ITERVANE_RESTART_KOMODO_READER_SECRET: readerCredentials.secret, ITERVANE_RESTART_WHISKERS_WRITE_KEY: native.writeKey,
                   ITERVANE_RESTART_PROBE_SECRET: ingress.probeSecret });
-                phase = 'operations_native_restart_application';
-                const accepted = await proveNativeRestart({ db, diagnosis, diagnosisSha256, released: proof, request, mcp,
-                  readStopped: () => verifier.captureRestartBaseline(subject, async () => {}),
-                  approve: () => native.approve(containerId), verifyAudit: () => native.verifyAudit(target.endpoint.container) });
-                await worker.stop('TERM'); worker = undefined;
-                return accepted;
-              },
-            });
-            ok(result.restart);
-            return { ...result.restart, diagnosisRunId: result.runId, diagnosisSections: result.sections,
-              distinctKomodoReader: true, model: result.model };
+              };
+              const result = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, {
+                writer,
+                async verify(diagnosis, diagnosisSha256, request, mcp) {
+                  await startRestartProcess();
+                  phase = interrupted ? 'operations_native_restart_interruption' : 'operations_native_restart_application';
+                  const count = interrupted ? 2 : 1;
+                  const accepted = await proveNativeRestart({ db, diagnosis, diagnosisSha256, released: proof, request, mcp,
+                    readStopped: () => verifier.captureRestartBaseline(subject, async () => {}),
+                    approve: () => native.approve(containerId, count), verifyAudit: () => native.verifyAudit(target.endpoint.container, count),
+                  }, interrupted ? {
+                    environmentId: environment.id,
+                    async stopWorker() {
+                      const active = worker;
+                      ok(active);
+                      await active.stop('KILL');
+                      worker = undefined;
+                    },
+                    startWorker: startRestartProcess,
+                  } : undefined);
+                  ok(worker);
+                  await worker.stop('TERM'); worker = undefined;
+                  return accepted;
+                },
+              });
+              ok(result.restart);
+              return { ...result.restart, diagnosisRunId: result.runId, diagnosisSections: result.sections,
+                distinctKomodoReader: true, model: result.model };
+            };
+            const verified = await exerciseRestart(false);
+            const interrupted = await exerciseRestart(true);
+            equal(interrupted.stoppedStart, verified.recoveredStart);
+            notEqual(interrupted.approvalId, verified.approvalId);
+            notEqual(interrupted.diagnosisRunId, verified.diagnosisRunId);
+            return { ...verified, interrupted };
           } finally {
             try { await worker?.stop('TERM'); worker = undefined; }
             finally { await native.close(); }
