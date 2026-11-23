@@ -1175,12 +1175,13 @@ async function probe() {
             const change = formalRepairDtoSchema.parse(await request(`/v1/tasks/${repairedTask.id}/repair`));
             ok(change.status === 'recorded' && change.result.status === 'candidate_ready');
             equal(change.result.generation, 2);
-            const patch = formalRepairPatchDtoSchema.parse(await request(`/v1/tasks/${repairedTask.id}/repair/patch`));
+            const { patchSha256 } = change.result.candidate;
+            equal(patchSha256, after.patchSha256);
+            const patch = formalRepairPatchDtoSchema.parse(await request(`/v1/tasks/${repairedTask.id}/repair/patch?expectedSha256=${patchSha256}`));
             equal(patch.patchSha256, after.patchSha256);
             equal(patch.patch.files.length, 1);
             equal(patch.patch.files[0]?.path, 'server/app.mjs');
             equal(change.result.candidate.manifestSha256, after.targetManifestSha256);
-            equal(change.result.candidate.patchSha256, patch.patchSha256);
             equal(after.baseSnapshotSha256, before.baseSnapshotSha256);
             equal(after.reviewTrial.input.document.healthReproduction?.receiptSha256, before.receiptSha256);
             equal(before.reviewTrial.input.document.healthRegression?.sampleSequence, failed.sequence);
