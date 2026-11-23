@@ -2900,8 +2900,9 @@ it('binds a rollback intent and read-only takeover to the approved image after a
   expect(await database.storage.db.select({ state: operationsExecutions.state }).from(operationsExecutions)).toEqual([{ state: 'reserved' }]);
 });
 
-async function dispatchedRestore(outcome: 'acknowledged' | 'reply_lost' | 'prior_receipt' | 'approval_revoked') {
-  const earlier = await installedOperationsFixture();
+async function dispatchedRestore(outcome: 'acknowledged' | 'reply_lost' | 'prior_receipt' | 'approval_revoked',
+  prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  const earlier = prepared ?? await installedOperationsFixture();
   task = (await earlier.taskService.admit(identity, { projectId: earlier.scope.projectId, source: task.source, purpose: 'Publish a newer image',
     dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
   const next = await queuedFormalRelease({ existingTarget: earlier.target, imageVariant: 'newer rollback fixture' });
@@ -3003,12 +3004,18 @@ it.each(['verified', 'missing_update', 'wrong_runtime', 'expired_reader', 'updat
   let reader = successor;
   if (result === 'verified') {
     const progress = await executor.readRestoreProgress(reader);
-    const forged = operationsRestoreRecoveryProofSchema.parse({ version: 1, executionId: execution.id, restoreOperationId: earlier.operationId,
-      planSha256: progress.sha256, fence: reader.fence, attempt: 1, update: completed, runtime: { ...runtime, version: 'different-version' } });
-    await expect(database.storage.db.update(operationsRestoreRecoveries).set({
-      state: 'verified', proof: forged, proofSha256: sha256(JSON.stringify(forged)),
-    }).where(eq(operationsRestoreRecoveries.executionId, execution.id)))
+    const proof = operationsRestoreRecoveryProofSchema.parse({ version: 1, executionId: execution.id, restoreOperationId: earlier.operationId,
+      planSha256: progress.sha256, fence: reader.fence, attempt: 1, update: completed, runtime });
+    const saveOnly = (document: typeof proof) => database.storage.db.update(operationsRestoreRecoveries).set({
+      state: 'verified', proof: document, proofSha256: sha256(JSON.stringify(document)),
+    }).where(eq(operationsRestoreRecoveries.executionId, execution.id));
+    await expect(saveOnly({ ...proof, runtime: { ...runtime, version: 'different-version' } }))
       .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restore_recovery_proof_required' } });
+    await expect(saveOnly(proof))
+      .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restore_recovery_must_record_outcome' } });
+    await expect(database.storage.db.update(operationsExecutions).set({ state: 'recovered' }).where(eq(operationsExecutions.id, execution.id)))
+      .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restore_recovery_verified_receipt_required' } });
+    expect((await database.storage.db.select().from(operationsRestoreRecoveries))[0]).toMatchObject({ state: 'observing', proof: null });
   }
   if (result === 'expired_reader') {
     await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second'");
@@ -3047,15 +3054,64 @@ it.each(['verified', 'missing_update', 'wrong_runtime', 'expired_reader', 'updat
   for (const locale of ['zh-CN', 'en'] as const) {
     const events = await earlier.taskService.events(identity, schedule.taskId, 10, locale);
     expect(events.at(-1)).toMatchObject({ type: 'task.operations_restore_recovery_recorded',
+      state: verified ? 'succeeded' : 'needs_human',
       reasonMessage: translate(locale, verified ? 'reason.operations_restore_recovery_verified' : 'reason.operations_restore_recovery_manual') });
   }
-  expect(await database.storage.db.select({ state: operationsExecutions.state }).from(operationsExecutions)
-    .where(eq(operationsExecutions.id, execution.id))).toEqual([{ state: 'reserved' }]);
+  expect((await database.storage.db.select().from(operationsExecutions).where(eq(operationsExecutions.id, execution.id)))[0])
+    .toMatchObject({ state: verified ? 'recovered' : 'reserved', closedAt: verified ? final?.completedAt : null });
+  const published = await database.storage.db.transaction(async tx => readOperationsDeployment(tx, await requireActor(tx, identity), earlier.scope));
+  expect(published).toMatchObject(verified
+    ? { releaseOperationId: earlier.operationId, restoreExecutionId: execution.id, containerId: runtime.containerId }
+    : { releaseOperationId: current.binding.decision.operationId, containerId: current.runtime.containerId });
+  if (!verified) expect(published).not.toHaveProperty('restoreExecutionId');
   expect((await database.storage.pool.query('SELECT task_id FROM itervane.execution_slot')).rows[0]).toEqual({ task_id: null });
   await expect(executor.settleRestoreRecovery(scope, { update: completed, runtime })).rejects.toBeInstanceOf(ExecutionLost);
   await expect(database.storage.db.delete(operationsRestoreRecoveries))
     .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_restore_recovery_is_immutable' } });
 }, 45_000);
+
+it('binds diagnosis and restart to the restored instance and lets a later formal release supersede it', async () => {
+  const original = await installedOperationsFixture();
+  const stale = await restartExecutionCandidate(original);
+  await stale.decide('confirm');
+  const { earlier, current, executor, successor, execution, ack } = await dispatchedRestore('acknowledged', original);
+  const archived = () => database.storage.db.select().from(releaseOperations).orderBy(releaseOperations.id);
+  const originalRecords = await archived();
+  const publication = () => database.storage.db.transaction(async tx =>
+    readOperationsDeployment(tx, await requireActor(tx, identity), earlier.scope, { includePrevious: true }));
+  const before = await publication();
+  expect(before).toMatchObject({ releaseOperationId: current.binding.decision.operationId, previous: { releaseOperationId: earlier.operationId } });
+  const restored = { ...earlier.runtime, containerId: sha256('replacement runtime for the first image') };
+  const update = { ...ack, status: 'Complete' as const, success: true };
+  await expect(executor.settleRestoreRecovery(successor, { update, runtime: restored })).resolves.toBe('verified');
+  expect(await archived()).toEqual(originalRecords);
+  expect(await publication()).toMatchObject({ releaseOperationId: earlier.operationId, restoreExecutionId: execution.id,
+    manifestDigest: earlier.image.manifestDigest, containerId: restored.containerId, updateId: update.updateId,
+    previous: { releaseOperationId: current.binding.decision.operationId } });
+  await expect(stale.reserve()).rejects.toMatchObject({ code: 'version_conflict' });
+  await expect(database.storage.db.insert(operationsExecutions).values({
+    id: randomUUID(), environmentId: earlier.scope.environmentId, proposalId: stale.proposal.id,
+    proposalFingerprint: stale.proposal.fingerprint, state: 'reserved', decisionVersion: 1,
+    createdAt: sql`GREATEST(clock_timestamp(), (SELECT decided_at FROM itervane.operations_decisions
+      WHERE proposal_id = ${stale.proposal.id} AND version = 1))`,
+  })).rejects.toMatchObject({ cause: { code: '23514', message: 'operations_execution_authority_required' } });
+
+  const restart = await restartAwaitingRecovery('acknowledged', { ...earlier, runtime: restored });
+  const request = readOperationsProposal(restart.action.proposal).target;
+  expect(request).toMatchObject({ releaseOperationId: earlier.operationId, restoreExecutionId: execution.id, containerId: restored.containerId });
+  const { scope } = await restart.claimRecovery();
+  await expect(restart.runtime.settleRestartRecovery(scope, restart.outcomeEvidence)).resolves.toBe('verified');
+  expect(await publication()).toMatchObject({ releaseOperationId: earlier.operationId, restoreExecutionId: execution.id,
+    containerId: restored.containerId, updateId: update.updateId });
+
+  task = (await earlier.taskService.admit(identity, { projectId: earlier.scope.projectId, source: task.source,
+    purpose: 'Publish after recovery', dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
+  const newest = await queuedFormalRelease({ existingTarget: earlier.target, imageVariant: 'image after recovery' });
+  const launched = await finishTestRollout(await parkForRollout(newest, true, '7'.repeat(24)), 'standard-v4');
+  const published = await publication();
+  expect(published).toMatchObject({ releaseOperationId: newest.operationId, manifestDigest: launched.image.manifestDigest, version: 'standard-v4' });
+  expect(published).not.toHaveProperty('restoreExecutionId');
+}, 60_000);
 
 it.each(['wait', 'expired', 'replaced', 'publishing', 'revoked'] as const)('limits proposal admission after %s', async mode => {
   if (mode === 'expired') await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_results
@@ -3130,8 +3186,8 @@ async function competingPublication(fixture: Awaited<ReturnType<typeof installed
   return preparedFormalRelease({ existingTarget: fixture.target });
 }
 
-async function queuedOperationsLease() {
-  const action = await restartExecutionCandidate();
+async function queuedOperationsLease(prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  const action = await restartExecutionCandidate(prepared);
   await action.decide('confirm');
   const { execution, schedule } = await action.enqueue();
   const runtime = new OperationsExecutionCoordinator(coordinator, action.installed);
@@ -3515,8 +3571,8 @@ it('fences a Whiskers restart approval receipt after the sender loses its lease'
   expect((await database.storage.db.select().from(operationsRestartRequests))[0]).toMatchObject({ approvalId: null });
 });
 
-async function pausedWhiskersRestart() {
-  const action = await queuedOperationsLease();
+async function pausedWhiskersRestart(prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  const action = await queuedOperationsLease(prepared);
   const { scope, approval, writer } = await prepareNativeRestart(action);
   await action.runtime.pauseForRestartApproval(scope, approval);
   const runtime = new OperationsExecutionCoordinator(coordinator, action.installed, operationsPortal);
@@ -3535,8 +3591,9 @@ async function pausedWhiskersRestart() {
     binding: { ...approval, ...writer, runtimeBaselineSha256: sha256(JSON.stringify(stoppedBaseline(action.fixture))) } };
 }
 
-async function restartAwaitingRecovery(outcome: 'acknowledged' | 'unknown' = 'acknowledged') {
-  const { action, runtime, request, lease, approval, binding } = await pausedWhiskersRestart();
+async function restartAwaitingRecovery(outcome: 'acknowledged' | 'unknown' = 'acknowledged',
+  prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  const { action, runtime, request, lease, approval, binding } = await pausedWhiskersRestart(prepared);
   await request();
   const sent = await lease();
   await runtime.prepareRestartResume(sent, binding);

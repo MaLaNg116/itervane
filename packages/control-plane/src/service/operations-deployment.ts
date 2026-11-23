@@ -1,8 +1,9 @@
-import { releaseKomodoCompletionSchema, releaseRegistryHost, releaseRolloutProofSchema, taskDtoSchema } from '@itervane/contracts';
+import { operationsRestorePlanSchema, operationsRestoreRecoveryProofSchema, releaseKomodoCompletionSchema, releaseKomodoUpdateSchema,
+  releaseRegistryHost, releaseRolloutProofSchema, taskDtoSchema } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { and, desc, eq, inArray, sql, type SQL } from 'drizzle-orm';
-import { environments, formalReleaseRolloutAttempts, formalReleaseSteps, formalReleaseTargets,
-  releaseCandidates, releaseOperations, tasks } from '../persistence/schema.js';
+import { environments, formalReleaseRolloutAttempts, formalReleaseSteps, formalReleaseTargets, operationsExecutionIntents,
+  operationsRestoreRecoveries, operationsRestoreSteps, releaseCandidates, releaseOperations, tasks } from '../persistence/schema.js';
 import { requireProjectAccess, type Actor, type Transaction } from './access.js';
 import { DomainError } from './errors.js';
 import { readReleaseManifest } from './formal-release.js';
@@ -56,6 +57,42 @@ function checkedRelease({ operation, candidate, sourceTask, receipt, dispatch }:
     proofSha256: sha256(JSON.stringify({ proof, dispatch: dispatched.data })) };
 }
 
+async function readRestoredDeployment(tx: Transaction, archived: NonNullable<ReturnType<typeof checkedRelease>>,
+  restoreExecutionId: string, mapping: Mapping, target: ReturnType<typeof installedTarget>) {
+  const [restoration] = await tx.select({ receipt: operationsRestoreRecoveries, intent: operationsExecutionIntents, step: operationsRestoreSteps })
+    .from(operationsRestoreRecoveries).innerJoin(operationsExecutionIntents,
+      eq(operationsExecutionIntents.executionId, operationsRestoreRecoveries.executionId))
+    .innerJoin(operationsRestoreSteps, and(eq(operationsRestoreSteps.executionId, operationsRestoreRecoveries.executionId),
+      eq(operationsRestoreSteps.kind, 'deploy')))
+    .where(and(eq(operationsRestoreRecoveries.executionId, restoreExecutionId), eq(operationsRestoreRecoveries.state, 'verified')));
+  if (!restoration) throw new Error('operations_restore_publication_integrity');
+  const { receipt, intent, step } = restoration;
+  if (!receipt.completedAt) throw new Error('operations_restore_publication_integrity');
+  const proof = operationsRestoreRecoveryProofSchema.parse(receipt.proof);
+  const plan = operationsRestorePlanSchema.parse(intent.restorePlan);
+  const sent = releaseKomodoUpdateSchema.parse(step.receipt);
+  const { update, runtime } = proof;
+  const reference = `${releaseRegistryHost(target.registryOrigin)}/${target.imageRepository}@${archived.manifestDigest}`;
+  if (proof.executionId !== restoreExecutionId || proof.restoreOperationId !== archived.releaseOperationId
+      || proof.attempt !== receipt.attempt || proof.fence !== receipt.fence || step.fence >= proof.fence
+      || sha256(JSON.stringify(proof)) !== receipt.proofSha256 || sha256(JSON.stringify(plan)) !== proof.planSha256
+      || proof.planSha256 !== intent.restorePlanSha256 || proof.planSha256 !== step.planSha256
+      || plan.environmentId !== mapping.environmentId || plan.targetRevision !== mapping.revision || plan.mappingSha256 !== mapping.sha256
+      || plan.restore.operationId !== archived.releaseOperationId || plan.restore.proofSha256 !== archived.proofSha256
+      || plan.restore.manifestDigest !== archived.manifestDigest || plan.restore.configDigest !== archived.configDigest
+      || plan.restore.publishedVersion !== archived.version || runtime.containerId === plan.current.containerId
+      || runtime.configDigest !== archived.configDigest || runtime.imageReference !== reference || runtime.version !== archived.version
+      || runtime.runtimeConfigSha256 !== target.runtimeConfigSha256 || runtime.rolloutCheckSha256 !== target.rolloutCheckSha256
+      || runtime.network !== target.rolloutCheck.network || update.updateId !== sent.updateId
+      || update.deploymentId !== target.deploymentId || update.deploymentId !== sent.deploymentId
+      || update.actorId !== target.komodo.actorId || update.actorId !== sent.actorId) {
+    throw new Error('operations_restore_publication_integrity');
+  }
+  return { ...archived, restoreExecutionId, containerId: runtime.containerId, updateId: update.updateId,
+    verifiedAt: receipt.completedAt.toISOString(),
+    proofSha256: sha256(JSON.stringify({ archivedProofSha256: archived.proofSha256, recoveryProofSha256: receipt.proofSha256 })) };
+}
+
 // Internal evidence lookup. Callers must authorize the project or bind a historical effect under its lease first.
 export async function readPublishedOperationsDeployment(tx: Transaction, scope: { projectId: string; environmentId: string },
   options: { includePrevious?: boolean } = {}) {
@@ -74,7 +111,13 @@ export async function readPublishedOperationsDeployment(tx: Transaction, scope: 
   ).limit(1);
   if (pending) throw new DomainError('conflict');
 
-  const findPublished = (filter?: SQL) => tx.select({ operation: releaseOperations, candidate: releaseCandidates, sourceTask: tasks,
+  const { rows: [publication] } = await tx.execute<{ releaseOperationId: string | null; restoreExecutionId: string | null; fence: number | null }>(sql`
+    SELECT release_operation_id AS "releaseOperationId", restore_execution_id AS "restoreExecutionId", fence
+    FROM itervane.current_operations_publication(${environment.id}::uuid)
+  `);
+  if (!publication?.releaseOperationId || !publication.fence) throw new DomainError('unsupported_state');
+
+  const findPublished = (filter: SQL | undefined) => tx.select({ operation: releaseOperations, candidate: releaseCandidates, sourceTask: tasks,
     receipt: formalReleaseRolloutAttempts, dispatch: formalReleaseSteps })
     .from(releaseOperations).innerJoin(releaseCandidates, and(eq(releaseCandidates.id, releaseOperations.candidateId),
       eq(releaseCandidates.environmentId, environment.id), eq(releaseCandidates.projectId, projectId),
@@ -85,16 +128,18 @@ export async function readPublishedOperationsDeployment(tx: Transaction, scope: 
     .leftJoin(formalReleaseSteps, and(eq(formalReleaseSteps.operationId, releaseOperations.id),
       eq(formalReleaseSteps.kind, 'komodo_dispatch'), eq(formalReleaseSteps.state, 'confirmed')))
     .where(and(eq(releaseOperations.environmentId, environment.id), eq(releaseOperations.state, 'verified_formal'), filter))
-    .orderBy(desc(releaseOperations.updatedAt), desc(releaseOperations.id)).limit(1);
+    .orderBy(desc(formalReleaseSteps.preparedFence), desc(releaseOperations.id)).limit(1);
 
-  // Select the latest release before checking evidence, including when its mapping is no longer current.
-  const [latest] = await findPublished();
+  // Select the latest native dispatch before checking evidence, including when its mapping is no longer current.
+  const [latest] = await findPublished(eq(releaseOperations.id, publication.releaseOperationId));
   if (!latest) throw new DomainError('unsupported_state');
-  const current = checkedRelease(latest, mapping, target);
-  if (!current) throw new DomainError('unsupported_state');
+  const archived = checkedRelease(latest, mapping, target);
+  if (!archived) throw new DomainError('unsupported_state');
+  const current = publication.restoreExecutionId ? await readRestoredDeployment(tx, archived, publication.restoreExecutionId, mapping, target) : archived;
 
   // An identical redeployment offers no recovery image. The candidate must have run under the current target revision.
   const [earlier] = options.includePrevious ? await findPublished(and(
+    sql`${formalReleaseSteps.preparedFence} < ${publication.fence}`,
     sql`${releaseCandidates.document}#>>'{target,revision}' = ${String(mapping.revision)}`,
     sql`${releaseCandidates.document}#>>'{target,mappingSha256}' = ${mapping.sha256}`,
     sql`${releaseCandidates.document}#>>'{image,manifestDigest}' <> ${current.manifestDigest}`,
