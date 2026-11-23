@@ -47,11 +47,12 @@ export function finishAudit(evidence: readonly AgentEvidence[], raw: unknown): A
 
 export function finishFormalAudit(evidence: readonly AgentEvidence[], raw: unknown, locale: Locale): AuditReport | undefined {
   const scans = evidence.flatMap(({ data, id }) => data.kind === 'scan' ? [{ ...data, id }] : []);
+  const reproduction = evidence.filter(item => item.data.kind === 'health_reproduction');
   if (scans.length !== auditScannerSchema.options.length || new Set(scans.map(scan => scan.scanner)).size !== scans.length
-    || new Set(scans.map(scan => scan.inspectionSha256)).size !== 1) return;
+    || new Set(scans.map(scan => scan.inspectionSha256)).size !== 1 || reproduction.length > 1) return;
   const partial = scans.some(scan => scan.totalFindings > scan.findings.length);
   const text = agentText(locale).formal;
-  return explainAudit(evidence, raw, scans.map(scan => scan.id), {
+  return explainAudit(evidence, raw, [...scans, ...reproduction].map(item => item.id), {
     coverage: partial ? 'partial' : 'complete', limits: partial ? [text.scope, text.truncated] : [text.scope],
     findings: scans.flatMap(scan => scan.findings),
   });

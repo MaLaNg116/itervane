@@ -65,9 +65,11 @@ export class VerificationViewService {
       const result = await readRecord(tx, task, run, locale);
       const retry = await readRepairRetry(tx, task, run);
       const previous = retry ? await readRecord(tx, task, { runId: retry.previous.previousRunId, generation: run.generation - 1 }, locale) : null;
-      if (retry && (!previous || previous.resultSha256 !== retry.previous.verificationResultSha256
-          || previous.receiptSha256 !== retry.previous.receiptSha256 || previous.candidateManifestSha256 !== retry.previous.candidateManifestSha256
-          || previous.outcome !== retry.previous.failure.outcome)) {
+      const prior = retry?.previous;
+      const priorManifest = prior && ('subjectManifestSha256' in prior ? prior.subjectManifestSha256 : prior.candidateManifestSha256);
+      const priorOutcome = prior && ('regression' in prior ? 'checks_failed' : prior.failure.outcome);
+      if (prior && (!previous || previous.resultSha256 !== prior.verificationResultSha256
+          || previous.receiptSha256 !== prior.receiptSha256 || previous.candidateManifestSha256 !== priorManifest || previous.outcome !== priorOutcome)) {
         throw new Error('formal_verification_view_retry_binding');
       }
       return verificationViewSchema.parse({ version: 1, taskId, locale, current: result ?? { ...run, ...waitingStatus(task, current.reason, locale) }, previous });

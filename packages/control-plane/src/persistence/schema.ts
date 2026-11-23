@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import { bigint, boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
   agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
-  type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairInput, type FormalRepairResult, type FormalRepairRetry,
+  type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairContinuation, type FormalRepairInput, type FormalRepairResult,
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan, type MaterializedSourceBasis,
   type OperationsDiagnosisObservation, type OperationsDiagnosisReceipt, type OperationsDiagnosisSection,
   type OperationsHealthBinding, type OperationsHealthSignal,
@@ -371,7 +371,7 @@ export const formalRepairRetries = domain.table('formal_repair_retries', {
   previousRunId: uuid('previous_run_id').notNull().references(() => formalVerificationResults.runId),
   runId: uuid('run_id').notNull(),
   grantId: uuid('grant_id').notNull(), workerId: uuid('worker_id').notNull(), preparedFence: integer('prepared_fence').notNull(),
-  sha256: text('sha256').notNull(), document: jsonb('document').$type<FormalRepairRetry>().notNull(), createdAt: createdAt(),
+  sha256: text('sha256').notNull(), document: jsonb('document').$type<FormalRepairContinuation>().notNull(), createdAt: createdAt(),
 }, t => [
   unique('formal_repair_retry_run').on(t.runId),
   foreignKey({ name: 'formal_repair_retry_task_run_fk', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),

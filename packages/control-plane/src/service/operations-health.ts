@@ -83,7 +83,8 @@ export class OperationsHealthJournal {
 }
 
 // Keep the environment locked through the caller's eligibility checks and commit.
-export async function readHealthProbeTarget(tx: Transaction, { environmentId, enrollmentSha256, mappingSha256 }: OperationsHealthInstallation) {
+export async function readHealthProbeTarget(tx: Transaction, { environmentId, enrollmentSha256, mappingSha256 }: OperationsHealthInstallation,
+  ownReleaseOperationId?: string) {
   await lockEnvironmentForEffect(tx, environmentId);
   const [enrollment] = await tx.select().from(operationsTargets)
     .where(and(eq(operationsTargets.environmentId, environmentId), eq(operationsTargets.sha256, enrollmentSha256))).for('share');
@@ -93,7 +94,8 @@ export async function readHealthProbeTarget(tx: Transaction, { environmentId, en
     .where(and(eq(operationsExecutions.environmentId, environmentId), eq(operationsExecutions.state, 'reserved'))).limit(1);
   if (hold) throw new DomainError('conflict');
 
-  const current = await readPublishedOperationsDeployment(tx, { environmentId, projectId: enrollment.projectId });
+  const current = await readPublishedOperationsDeployment(tx, { environmentId, projectId: enrollment.projectId },
+    ownReleaseOperationId ? { ownReleaseOperationId } : undefined);
   if (current.applicationId !== enrollment.applicationId || current.mappingSha256 !== mappingSha256 ||
       current.mappingSha256 !== registered.releaseTargetSha256 || current.targetRevision !== registered.releaseTargetRevision) {
     throw new DomainError('version_conflict');

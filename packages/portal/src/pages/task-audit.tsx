@@ -53,7 +53,8 @@ function AuditResult({ result, sha256 }: { result: FormalAuditResult; sha256: st
       <summary>{t('auditEvidence')}</summary>
       <p><code className="break-text">{sha256}</code></p>
       <ul>{result.evidence.map(item => <li key={item.id}>
-        {item.kind === 'scan' ? <><strong>{item.scanner} {item.version}</strong> · {t('scanFindings')} {item.totalFindings}</> : <strong>{item.ruleId}</strong>}
+        {item.kind === 'scan' ? <><strong>{item.scanner} {item.version}</strong> · {t('scanFindings')} {item.totalFindings}</>
+          : <strong>{item.kind === 'rule' ? item.ruleId : t('auditHealthReproduction')}</strong>}
         <br /><code className="break-text">{item.id}</code>
       </li>)}</ul>
     </details>

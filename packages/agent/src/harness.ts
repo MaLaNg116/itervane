@@ -1,5 +1,5 @@
 import { Annotation, END, START, StateGraph, type BaseCheckpointSaver } from '@langchain/langgraph';
-import type { FormalRepairRetryContext, OperationsDiagnosisInput } from '@itervane/contracts';
+import type { FormalRepairRetryContext, LinkedHealthRepairContext, OperationsDiagnosisInput } from '@itervane/contracts';
 import type { ConversationEntry, ModelAdapter } from '@itervane/model';
 import {
   agentSpecSchema, auditScannerSchema, checkKinds, sha256, type AgentSpec, type AgentEvidence, type AgentOrigin,
@@ -25,9 +25,9 @@ export interface AgentHost {
 }
 export type AgentFixtureHost = AgentHost;
 type HarnessOptions = { model: ModelAdapter; checkpointer: BaseCheckpointSaver; host: AgentHost };
-type FormalAuditProfile = { origin: 'formal_audit'; inputSha256: string; providerSha256: string; ruleIds: readonly string[] };
+type FormalAuditProfile = { origin: 'formal_audit'; inputSha256: string; providerSha256: string; ruleIds: readonly string[]; healthReproduction?: true };
 type FormalRepairProfile = { origin: 'formal_repair'; inputSha256: string; providerSha256: string; findings: readonly RepairFindingSummary[];
-  previousVerification?: FormalRepairRetryContext };
+  previousVerification?: FormalRepairRetryContext; healthReproduction?: LinkedHealthRepairContext };
 type FormalVerificationProfile = {
   origin: 'formal_verification'; inputSha256: string; providerSha256: string;
   sectionSha256: Readonly<Record<VerificationSection, string>>;
@@ -82,9 +82,12 @@ function currentEvidence(state: AgentState) {
   return state.evidence.filter(item => state.currentEvidence.includes(item.id));
 }
 
-function missingObservations(role: AgentRole, entries: AgentEvidence[], origin: AgentOrigin) {
-  if (origin === 'formal_audit') return auditScannerSchema.options.filter(scanner =>
-    !hasObservation(entries, { name: 'read_scan', args: { scanner } }));
+function missingObservations(role: AgentRole, entries: AgentEvidence[], profile: HarnessProfile) {
+  const { origin } = profile;
+  if (origin === 'formal_audit') return [
+    ...auditScannerSchema.options.filter(scanner => !hasObservation(entries, { name: 'read_scan', args: { scanner } })),
+    ...(profile.healthReproduction && !hasObservation(entries, { name: 'read_health_reproduction', args: {} }) ? ['health_reproduction'] : []),
+  ];
   if (origin === 'formal_repair') {
     if (entries.some(item => item.data.kind === 'repair_candidate')) return [];
     return entries.some(item => item.data.kind === 'repair_targets') ? ['apply_repair_template', 'apply_repair_patch'] : ['read_repair_targets'];
@@ -105,12 +108,15 @@ function conversation(spec: AgentSpec, state: AgentState, entries: AgentEvidence
     goal: spec.goal, role: state.role, source: origin === 'trusted_fixture' ? spec.source : undefined,
     snapshotSha256: state.role === 'verify' ? candidate?.snapshotSha256 ?? spec.snapshotSha256 : spec.snapshotSha256,
     feedback: state.feedback ? agentText(spec.locale).feedback[state.feedback] : null,
-    completionNeeds: missingObservations(state.role, entries, origin),
+    completionNeeds: missingObservations(state.role, entries, profile),
+    guidance: profile.origin === 'formal_repair' && profile.healthReproduction ? agentText(spec.locale).linkedHealth.repair
+      : profile.origin === 'formal_audit' && profile.healthReproduction ? agentText(spec.locale).linkedHealth.audit : undefined,
     handoff: {
       findings: profile.origin === 'formal_repair' ? profile.findings
         : state.audit?.findings.map(({ id, ruleId, severity, certainty }) => ({ id, ruleId, severity, certainty })) ?? [],
       previousChecks: latestVerification?.checks,
       previousVerification: profile.origin === 'formal_repair' ? profile.previousVerification : undefined,
+      healthReproduction: profile.origin === 'formal_repair' ? profile.healthReproduction : undefined,
     },
     evidenceIndex: entries.map(({ id, data }) => ({
       id, kind: data.kind, check: data.kind === 'check' ? data.result.check : undefined,
@@ -262,12 +268,15 @@ function createHarness<Profile extends HarnessProfile>({ model, checkpointer, ho
     const verifying = profile.origin === 'formal_verification';
     const investigating = profile.origin === 'formal_operations';
     const ruleIds = profile.origin === 'formal_audit' ? profile.ruleIds : [];
+    const linkedHealth = profile.origin === 'formal_audit' && profile.healthReproduction === true;
     const repairFindingIds = repairing ? profile.findings.map(item => item.id) : [];
+    if (repairing && profile.healthReproduction) repairFindingIds.push(profile.healthReproduction.receiptSha256);
     const threadPrefix = formal ? initialRole(origin) : 'fixture-agent';
     const report = (status: AgentStatus, reason: AgentReason, state?: AgentState, checkpointId?: string) =>
       agentReport<Profile['origin']>(origin, spec, bindingSha256, status, reason, state, checkpointId);
     const permits = (state: AgentState, call: PlannedTool) => canCall(state.role, call.name, origin)
       && (!formal || call.name !== 'read_rule' || ruleIds.includes(call.args.ruleId))
+      && (call.name !== 'read_health_reproduction' || linkedHealth)
       && (!repairing || !currentEvidence(state).some(item => item.data.kind === 'repair_candidate'))
       && (call.name !== 'read_verification' || pendingVerificationSections(currentEvidence(state)).includes(call.args.section))
       && (call.name !== 'read_operations' || missingOperationsSections(currentEvidence(state)).includes(call.args.section))
@@ -333,7 +342,7 @@ function createHarness<Profile extends HarnessProfile>({ model, checkpointer, ho
         if (before) return { state: before };
         const system = agentPrompt(spec.locale, state.role, origin);
         const entries = currentEvidence(state);
-        const tools = toolDefinitions(spec.locale, state.role, entries, origin, ruleIds, repairFindingIds);
+        const tools = toolDefinitions(spec.locale, state.role, entries, origin, ruleIds, repairFindingIds, linkedHealth);
         const reservedBytes = Buffer.byteLength(system) + (formal ? Buffer.byteLength(JSON.stringify(tools)) : 0);
         const messages = conversation(spec, state, entries, profile, reservedBytes);
         if (!messages) return { state: stopped(state, 'context_budget') };

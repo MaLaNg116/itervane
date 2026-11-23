@@ -13,7 +13,8 @@ import type { Transaction } from '../service/access.js';
 import { ExecutionLost, type ExecutionScope, type TaskRow } from './authority.js';
 import type { ExecutionCoordinator } from './coordinator.js';
 import { projectVerificationEvidence } from './verification-evidence.js';
-import { prepareFormalVerificationInput, readLinkedHealthRegression } from './verification-input.js';
+import { readLinkedHealthBasis } from '../service/operations-repair-proposals.js';
+import { prepareFormalVerificationInput } from './verification-input.js';
 
 export type RescanRunner = Pick<QualifiedInspectionClient, 'observe' | 'verify'>;
 type Attempt = typeof formalRescanAttempts.$inferSelect;
@@ -104,7 +105,7 @@ async function requireReservation(tx: Transaction, task: TaskRow, { request, att
     .where(and(eq(repositories.id, request.repositoryId), eq(repositories.projectId, request.projectId))).for('share');
   if (active?.state !== 'reserved' || repo?.origin !== request.origin) throw new ExecutionLost();
   const regression = basis.document.healthRegression;
-  if (regression && JSON.stringify(await readLinkedHealthRegression(tx, task)) !== JSON.stringify(regression)) throw new ExecutionLost();
+  if (regression && JSON.stringify((await readLinkedHealthBasis(tx, task))?.regression) !== JSON.stringify(regression)) throw new ExecutionLost();
 }
 
 /** Reserve before dispatch and publish only a receipt bound to the current authorized execution. */

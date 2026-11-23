@@ -8,6 +8,7 @@ import {
 import { canonicalRepairObservation, sha256, verifyQualifiedRepairObservation, type QualifiedInspectionClient } from '@itervane/runner';
 import { formalRepairInputs, repositories } from '../persistence/schema.js';
 import { DomainError, parseInput } from '../service/errors.js';
+import { requireCurrentLinkedHealthRepair } from '../service/operations-repair-proposals.js';
 import { ExecutionLost, type ExecutionScope } from './authority.js';
 import type { ExecutionCoordinator } from './coordinator.js';
 import { repairBasis, repairTargets, type RepairPolicy } from './repair-execution.js';
@@ -24,12 +25,14 @@ export async function observeFormalRepairTargets(coordinator: ExecutionCoordinat
   const findingIds = parseInput(findingsSchema, rawFindingIds);
   const { input, scan, origin } = await coordinator.withLease(scope, (tx, { task }) => repairBasis(tx, task, scope));
   if (findingIds.some(id => !input.document.findingIds.includes(id))) throw new DomainError('forbidden');
-  const { targets: found, npmRepairs } = repairTargets(scan, findingIds, options.npmApprovals);
+  const { healthReproduction } = input.document;
+  const { targets: found, npmRepairs } = repairTargets(scan, findingIds, options.npmApprovals, healthReproduction);
   const targets = parseInput(repairTargetsSchema, found);
   const { taskId, runId, projectId, generation, source } = input.document;
   const baseSnapshotSha256 = input.document.inspection.snapshotSha256;
   const workspace = { version: 1 as const, operationId: randomUUID(), repairInputSha256: input.sha256,
-    source, baseSnapshotSha256, protectedPaths: options.protectedPaths.slice(), ...(npmRepairs.length ? { npmRepairs } : {}) };
+    source, baseSnapshotSha256, protectedPaths: options.protectedPaths.slice(), ...(npmRepairs.length ? { npmRepairs } : {}),
+    ...(healthReproduction ? { healthReproductionSha256: healthReproduction.receiptSha256 } : {}) };
   const command = canonicalRepairObservation({ workspace, targets });
   const status = qualifiedInspectionStatusSchema.safeParse(await options.runner.observe(signal).catch(() => null)).data;
   signal?.throwIfAborted();
@@ -44,7 +47,8 @@ export async function observeFormalRepairTargets(coordinator: ExecutionCoordinat
   let denied: { error: unknown } | undefined;
   const requireCurrent = async () => {
     signal?.throwIfAborted();
-    await coordinator.withLease(scope, async tx => {
+    await coordinator.withLease(scope, async (tx, { task }) => {
+      if (input.retry && 'kind' in input.retry) await requireCurrentLinkedHealthRepair(tx, task, input.retry);
       const [stored] = await tx.select({ sha256: formalRepairInputs.sha256 }).from(formalRepairInputs)
         .where(eq(formalRepairInputs.runId, runId));
       const [repo] = await tx.select({ url: repositories.url }).from(repositories)

@@ -2,6 +2,7 @@ import { createFormalRepair } from '@itervane/agent';
 import type { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { DomainError } from '../service/errors.js';
 import { prepareFormalRepairInput } from '../service/formal-repair.js';
+import { requireCurrentLinkedHealthRepair } from '../service/operations-repair-proposals.js';
 import type { ExecutionScope } from './authority.js';
 import { GuardedCheckpointer } from './checkpointer.js';
 import type { ExecutionCoordinator } from './coordinator.js';
@@ -20,8 +21,11 @@ export async function runFormalRepair(coordinator: ExecutionCoordinator, scope: 
   const execution = new FormalRepairExecution(coordinator, options);
   const repair = createFormalRepair({
     input, audit: input.audit, model: model.adapter, providerSha256: model.providerSha256, checkpointer,
-    ...(input.retry ? { previousVerification: input.retry.previous } : {}),
-    authorize: (_agent, active) => coordinator.withLease(scope, async () => !active.aborted),
+    ...(input.retry && !('kind' in input.retry) ? { previousVerification: input.retry.previous } : {}),
+    authorize: (_agent, active) => coordinator.withLease(scope, async (tx, { task }) => {
+      if (input.retry && 'kind' in input.retry) await requireCurrentLinkedHealthRepair(tx, task, input.retry);
+      return !active.aborted;
+    }),
     readTargets: (ids, active) => observeFormalRepairTargets(coordinator, scope, ids, options, active),
     apply: (proposal, active) => execution.apply(scope, proposal, active),
   });

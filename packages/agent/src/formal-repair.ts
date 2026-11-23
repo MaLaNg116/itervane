@@ -47,12 +47,14 @@ function compileProposal(call: ApplyCall, observation: RepairObservation) {
     if (!editableRepairTarget(target)) return;
     const { file, range } = target;
     if (template && (!range || !target.templates.includes(template.templateId))) return;
-    if (target.npm) {
-      const pair = observation.targets.flatMap((peer, index) => peer.findingId === target.findingId && peer.npm ? [index] : []);
+    const npm = 'npm' in target ? target.npm : undefined;
+    if (npm) {
+      const pair = observation.targets.flatMap((peer, index) =>
+        peer.findingId === target.findingId && 'npm' in peer && peer.npm ? [index] : []);
       if (template || edits || pair.length !== 2 || !pair.every(index => selectedTargets.has(index))) return;
     }
     const replacements = template && range ? [{ startByte: range.startByte, endByte: range.endByte, replacement: '' }]
-      : target.npm?.edits ?? edits;
+      : npm?.edits ?? edits;
     if (!replacements || replacements.some(edit => edit.startByte < (range?.startByte ?? 0) || edit.endByte > (range?.endByte ?? file.bytes)
       || (range && edit.startByte === range.endByte))) return;
     const change = files.get(target.path);
@@ -73,17 +75,24 @@ export function createFormalRepair({ input, audit: rawAudit, checkpointer, model
   const document = formalRepairInputSchema.parse(input.document);
   const audit = formalAuditResultSchema.parse(rawAudit);
   const { checklist } = audit;
-  const { taskId, runId, projectId, generation, source, locale, catalogSha256, inspection } = document;
+  const { taskId, runId, projectId, generation, source, locale, catalogSha256, inspection, healthReproduction } = document;
   const { snapshotSha256 } = inspection;
   const previousVerification = formalRepairRetryContextSchema.optional().parse(previous);
   if (previousVerification && (generation < 2 || previousVerification.previousRunId === runId
       || previousVerification.candidateManifestSha256 === snapshotSha256)) throw new Error('formal_repair_retry_binding');
+  if (healthReproduction && (generation !== 2 || previousVerification || checklist?.findings.length !== 0
+      || healthReproduction.previousRunId === runId || healthReproduction.subjectManifestSha256 !== snapshotSha256
+      || !audit.evidence.some(item => item.kind === 'health_reproduction' && checklist.evidenceIds.includes(item.id)
+        && JSON.stringify(item.reproduction) === JSON.stringify(healthReproduction)))) {
+    throw new Error('formal_health_repair_binding');
+  }
+  const targetIds = healthReproduction ? [healthReproduction.receiptSha256] : checklist?.findings.map(finding => finding.id);
   if (input.sha256 !== sha256(JSON.stringify(document)) || document.audit.resultSha256 !== sha256(JSON.stringify(audit))
     || audit.status !== 'completed' || checklist?.coverage !== 'complete' || checklist.hypotheses.length
     || audit.checkpointId !== document.audit.checkpointId || audit.inputSha256 !== document.audit.inputSha256
     || audit.taskId !== taskId || audit.runId !== runId || audit.projectId !== projectId || audit.generation !== generation
     || audit.locale !== locale || audit.catalogSha256 !== catalogSha256 || audit.inspectionSha256 !== inspection.receiptSha256
-    || audit.snapshotSha256 !== snapshotSha256 || JSON.stringify(document.findingIds) !== JSON.stringify(checklist.findings.map(finding => finding.id))) {
+    || audit.snapshotSha256 !== snapshotSha256 || JSON.stringify(document.findingIds) !== JSON.stringify(targetIds)) {
     throw new Error('formal_repair_audit_binding');
   }
   const findings = checklist.findings.map(({ id, ruleId, severity, certainty, scanner }) => ({ id, ruleId, severity, certainty, scanner }));
@@ -113,7 +122,8 @@ export function createFormalRepair({ input, audit: rawAudit, checkpointer, model
         requireReceipt(receipt);
         const { observation } = receipt.snapshot;
         if (observation.operationId !== receipt.scope.operationId || observation.repairInputSha256 !== input.sha256
-          || observation.targets.some(target => !findings.some(finding => finding.id === target.findingId && finding.scanner === target.scanner))) {
+          || observation.targets.some(target => 'kind' in target ? target.findingId !== healthReproduction?.receiptSha256
+            : !findings.some(finding => finding.id === target.findingId && finding.scanner === target.scanner))) {
           throw new Error('formal_repair_observation_binding');
         }
         return { ...base, data: { kind: 'repair_targets', actionSha256, receiptSha256: sha256(JSON.stringify(receipt)), observation } };
@@ -139,6 +149,7 @@ export function createFormalRepair({ input, audit: rawAudit, checkpointer, model
   const harness = createFormalRepairHarness({ model, checkpointer, host }, {
     inputSha256: input.sha256, providerSha256: shaSchema.parse(providerSha256), findings,
     ...(previousVerification ? { previousVerification } : {}),
+    ...(healthReproduction ? { healthReproduction } : {}),
   });
   return { run: (options?: AgentRunOptions) => harness.run(spec, options) };
 }

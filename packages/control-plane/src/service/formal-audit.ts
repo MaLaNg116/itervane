@@ -13,7 +13,9 @@ import { DomainError, parseInput } from './errors.js';
 import { prepareFormalRepairInput } from './formal-repair.js';
 import { currentInspectionAttempt, inspectionCoverage, readInspectionEvidence } from './inspection-evidence.js';
 import { readInspectionPlan } from './inspections.js';
-import { matchesLinkedRepairSource, readLinkedOperationsRepair } from './operations-repair-proposals.js';
+import { matchesLinkedRepairSource, readLinkedHealthBasis, readLinkedOperationsRepair, requireCurrentLinkedHealthRepair }
+  from './operations-repair-proposals.js';
+import { readRepairRetry } from './repair-retry.js';
 
 // The current Worker calls this under its authorized lease before yielding to the audit stage.
 export async function prepareFormalAuditInput(tx: Transaction, task: TaskRow, scope: ExecutionScope) {
@@ -29,21 +31,28 @@ export async function prepareFormalAuditInput(tx: Transaction, task: TaskRow, sc
   const previous = stored ? formalAuditInputSchema.parse(stored.document) : null;
   const catalog = previous?.catalog ?? catalogSnapshot();
   if (!validCatalog(catalog)) throw new Error('formal_audit_catalog_integrity');
+  const retry = await readRepairRetry(tx, task, scope);
+  if (retry && (retry.baseSnapshotSha256 !== evidence.receipt.snapshot.manifestSha256 || retry.catalogSha256 !== catalog.sha256)) {
+    throw new DomainError('conflict');
+  }
+  const continuation = retry && 'kind' in retry ? retry : undefined;
+  if (continuation) await requireCurrentLinkedHealthRepair(tx, task, continuation);
   const document = formalAuditInputSchema.parse({
     version: 1, taskId: task.id, runId: scope.runId, projectId: task.projectId, generation: scope.generation,
     source: { repositoryId: task.repositoryId, commit: task.commit }, dataClass: task.dataClass, locale: task.locale,
     purposeSha256: sha256(task.purpose), catalog,
     inspection: { requestId: attempt.requestId, receiptSha256: evidence.sha256, planSha256: plan.sha256,
       snapshotSha256: evidence.receipt.snapshot.manifestSha256 },
+    ...(continuation ? { healthReproduction: continuation.previous } : {}),
   });
   const hash = sha256(JSON.stringify(document));
   if (stored && previous) {
     if (stored.sha256 !== hash || stored.sha256 !== sha256(JSON.stringify(previous))) throw new Error('formal_audit_input_integrity');
-    return { sha256: stored.sha256, document: previous, inspection: evidence.receipt };
+    return { sha256: stored.sha256, document: previous, inspection: evidence.receipt, continuation };
   }
   await tx.insert(formalAuditInputs).values({ runId: scope.runId, taskId: task.id, projectId: task.projectId,
     inspectionRequestId: attempt.requestId, preparedFence: scope.fence, workerId: scope.workerId, sha256: hash, document });
-  return { sha256: hash, document, inspection: evidence.receipt };
+  return { sha256: hash, document, inspection: evidence.receipt, continuation };
 }
 
 type PreparedAudit = Awaited<ReturnType<typeof prepareFormalAuditInput>>;
@@ -58,6 +67,10 @@ function auditResult(prepared: PreparedAudit, report: FormalAuditReport, provide
       return { id, kind: data.kind, scanner, version, policySha256, databaseSha256, totalFindings, findingIds: findings.map(item => item.id) };
     }
     if (data.kind === 'rule') return { id, kind: data.kind, ruleId: data.ruleId, sha256: data.sha256 };
+    if (data.kind === 'health_reproduction' && document.healthReproduction
+        && JSON.stringify(data.reproduction) === JSON.stringify(document.healthReproduction)) {
+      return { id, kind: data.kind, reproduction: data.reproduction };
+    }
     throw new Error('formal_audit_evidence_origin');
   });
   const admitted = new Map(evidence.map(item => [item.id, item]));
@@ -65,7 +78,7 @@ function auditResult(prepared: PreparedAudit, report: FormalAuditReport, provide
     || new Set(report.trace.map(item => item.evidenceId)).size !== admitted.size
     || report.trace.some(item => {
       const kind = admitted.get(item.evidenceId)?.kind;
-      return item.role !== 'audit' || !kind || item.tool !== (kind === 'scan' ? 'read_scan' : 'read_rule');
+      return item.role !== 'audit' || !kind || item.tool !== (kind === 'scan' ? 'read_scan' : kind === 'rule' ? 'read_rule' : 'read_health_reproduction');
     })) throw new Error('formal_audit_checkpoint_trace');
   const checklist = report.audit ? {
     ...report.audit,
@@ -89,18 +102,20 @@ export async function publishFormalAudit(tx: Transaction, task: TaskRow, scope: 
   signal.throwIfAborted();
   const [pointer] = await tx.select().from(formalAuditRuntime).where(eq(formalAuditRuntime.runId, scope.runId));
   if (!pointer || pointer.checkpointId !== report.checkpointId || pointer.inputSha256 !== prepared.sha256) throw new DomainError('unavailable');
+  if (prepared.continuation) await requireCurrentLinkedHealthRepair(tx, task, prepared.continuation);
   const document = auditResult(prepared, report, provider);
   const hash = sha256(JSON.stringify(document));
   await tx.insert(formalAuditResults).values({ runId: scope.runId, inputSha256: prepared.sha256, checkpointId: pointer.checkpointId,
     finalizedFence: scope.fence, workerId: scope.workerId, sha256: hash, document });
   const completed = document.status === 'completed';
-  const handoff = completed ? await prepareFormalRepairInput(tx, task, scope) : undefined;
+  const blockedReproduction = completed && Boolean(document.checklist?.findings.length) && Boolean(await readLinkedHealthBasis(tx, task));
+  const handoff = completed && !blockedReproduction ? await prepareFormalRepairInput(tx, task, scope) : undefined;
   const findings = handoff?.document.findingIds.length ?? 0;
   const next = allowRepair && findings > 0 ? 'repair_pending'
-    : allowVerification && completed && findings === 0 ? 'verification_pending' : null;
-  const reason = next ?? (completed ? 'audit_ready' : 'audit_needs_human');
+    : allowVerification && completed && findings === 0 && !blockedReproduction ? 'verification_pending' : null;
+  const reason = next ?? (blockedReproduction ? 'operations_reproduction_unavailable' : completed ? 'audit_ready' : 'audit_needs_human');
   await tx.update(runRuntime).set({ reason, resumePending: false, waitingForTaskId: null }).where(eq(runRuntime.runId, scope.runId));
-  await appendEvent(tx, task, 'task.audit_recorded', next ? 'running' : completed ? 'waiting_input' : 'needs_human', {
+  await appendEvent(tx, task, 'task.audit_recorded', next ? 'running' : completed && !blockedReproduction ? 'waiting_input' : 'needs_human', {
     workerId: scope.workerId, reason, audit: { runId: scope.runId, auditResultSha256: hash },
   });
   if (!next) await clearSlot(tx);

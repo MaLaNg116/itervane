@@ -1,10 +1,10 @@
-import { freezeOperationsRepairSchema, idSchema, operationsRepairProposalSchema, type OperationsRepairProposal,
-  type QualifiedInspectionReceipt } from '@itervane/contracts';
+import { freezeOperationsRepairSchema, idSchema, operationsHealthBindingSchema, operationsHealthSignalSchema, operationsRepairProposalSchema,
+  type LinkedHealthRepair, type OperationsRepairProposal, type QualifiedInspectionReceipt } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { and, eq } from 'drizzle-orm';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import type { Database } from '../persistence/database.js';
-import { operationsIncidentDiagnoses, operationsRepairAdmissions, operationsRepairProposals, releaseCandidates, releaseOperations, repositories,
+import { operationsHealthSamples, operationsIncidentDiagnoses, operationsRepairAdmissions, operationsRepairProposals, releaseCandidates, releaseOperations, repositories,
   tasks } from '../persistence/schema.js';
 import { requireActor, requireProjectAccess, requireStoredActor, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
@@ -42,6 +42,32 @@ export async function readLinkedOperationsRepair(tx: Transaction, task: TaskRow)
   return { admission, frozen };
 }
 
+export async function readLinkedHealthBasis(tx: Transaction, task: TaskRow) {
+  const linked = await readLinkedOperationsRepair(tx, task);
+  const incident = linked?.frozen.incident;
+  if (!linked || !incident) return;
+  const [sample] = await tx.select().from(operationsHealthSamples).where(eq(operationsHealthSamples.sequence, incident.sampleSequence));
+  const { target, diagnosis } = linked.frozen;
+  const bindingSha256 = sha256(JSON.stringify(target));
+  if (!sample || sample.incidentId !== incident.id || sample.environmentId !== target.environmentId
+      || sample.bindingSha256 !== bindingSha256
+      || sha256(JSON.stringify(operationsHealthBindingSchema.parse(sample.binding))) !== bindingSha256) throw new DomainError('version_conflict');
+  const signal = operationsHealthSignalSchema.parse(sample.signal);
+  if (signal.status !== 'unhealthy' || signal.reason !== 'application_unhealthy') return;
+  const { binding, target: releaseTarget } = await readHealthProbeTarget(tx, target);
+  if (sha256(JSON.stringify(binding)) !== bindingSha256) throw new DomainError('version_conflict');
+  return { grantId: linked.admission.grantId, verificationProfileSha256: releaseTarget.verificationProfileSha256,
+    regression: { proposalId: linked.admission.proposalId, diagnosisSha256: diagnosis.sha256,
+      publicationProofSha256: target.publicationProofSha256, incidentId: incident.id, sampleSequence: incident.sampleSequence,
+      sampleEvidenceSha256: signal.evidenceSha256 } };
+}
+
+export async function requireCurrentLinkedHealthRepair(tx: Transaction, task: TaskRow, continuation: LinkedHealthRepair) {
+  const basis = await readLinkedHealthBasis(tx, task);
+  if (!basis || basis.verificationProfileSha256 !== continuation.verificationProfileSha256
+      || JSON.stringify(basis.regression) !== JSON.stringify(continuation.previous.regression)) throw new DomainError('version_conflict');
+}
+
 export function matchesLinkedRepairSource({ source }: OperationsRepairProposal, receipt: QualifiedInspectionReceipt) {
   if (receipt.originSha256 !== source.originSha256 || receipt.scope.repositoryId !== source.git.repositoryId) return false;
   const { materializedFrom } = receipt.scope;
@@ -51,13 +77,14 @@ export function matchesLinkedRepairSource({ source }: OperationsRepairProposal, 
     && receipt.snapshot.materializedCandidateSha256 === source.deployedSnapshotSha256;
 }
 
-export async function requireLinkedRepairReleaseTarget(tx: Transaction, task: TaskRow, environmentId: string, grantId: string) {
+export async function requireLinkedRepairReleaseTarget(tx: Transaction, task: TaskRow, environmentId: string, grantId: string,
+  ownReleaseOperationId?: string) {
   const linked = await readLinkedOperationsRepair(tx, task);
   if (!linked) return;
   if (linked.admission.grantId !== grantId) throw new DomainError('forbidden');
   const { target } = linked.frozen;
   if (target.environmentId !== environmentId) throw new DomainError('version_conflict');
-  const { binding } = await readHealthProbeTarget(tx, target);
+  const { binding } = await readHealthProbeTarget(tx, target, ownReleaseOperationId);
   if (sha256(JSON.stringify(binding)) !== sha256(JSON.stringify(target))) throw new DomainError('version_conflict');
 }
 
