@@ -228,6 +228,10 @@ jobs:
                 (map(.executionId) | unique | length) == 3 and (map(.diagnosisRunId) | unique | length) == 3 and
                 all(.currentOperationId == $second.operationId and .requestedOperationId == $first.operationId and
                   .writes == 0 and .originalContainerRetained and .slotReleased and .httpMcpAgreement))' "$report" >/dev/null
+            jq -e '.dualVersion as $versions | .restoreAuthorization.health as $health |
+              $health.releaseOperationId == $versions.currentOperationId and $health.containerId == $versions.currentContainerId and
+              $health.signals == ["healthy", "runtime_stopped", "healthy", "application_unhealthy", "probe_identity", "healthy"] and
+              $health.samples == 6 and $health.incidents == 2 and $health.unknownPreserved and $health.eachRecovered' "$report" >/dev/null
           fi
           if [[ "$NATIVE_SCENARIO" == protected-release-restore ]]; then
             jq -e '.dualVersion.first.release as $first | .dualVersion.second.release as $second | .restoration as $restored |

@@ -23,12 +23,13 @@ import {
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier } from '../../src/auth/identity.js';
-import { restoreWorkerConfig, runtimeConfig, workerConfig } from '../../src/config.js';
+import { healthWorkerConfig, restoreWorkerConfig, runtimeConfig, workerConfig } from '../../src/config.js';
 import { formalReleaseQueue } from '../../src/persistence/database.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel } from '../../src/runtime/formal-audit.js';
 import { FormalReleaseCoordinator } from '../../src/runtime/formal-release-claim.js';
 import { createInstalledApi } from '../../src/runtime/installed-api.js';
+import { createInstalledHealthWorker } from '../../src/runtime/installed-health-worker.js';
 import { createInstalledRestoreWorker } from '../../src/runtime/installed-restore-worker.js';
 import { KomodoReleaseClient } from '../../src/runtime/release-komodo.js';
 import { createKeycloakRolloutTokenSource, ReleaseRolloutVerifier } from '../../src/runtime/release-rollout.js';
@@ -52,6 +53,7 @@ import { openNativeWhiskersRestartScope } from '../../../portal/test/native/whis
 import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from './audit-provider.js';
 import { proveKnownKomodoRecovery, proveUnknownKomodoDispatch, recoverRecordedReleaseForRollout } from './komodo-release-proof.js';
 import type { KomodoInterruption, runKomodoReleaseFixture } from './komodo-release-worker.js';
+import { proveInstalledHealthProbe } from './health-proof.js';
 import type { RegistryImportMarker } from './release-recovery.js';
 import { temporaryRegistry } from './registry-fixture.js';
 import { openProtectedIngress } from './protected-ingress.js';
@@ -1127,6 +1129,32 @@ async function probe() {
               return observed;
             };
             const stopped = second.proof.runtime;
+            const exerciseHealth = async (fail: boolean) => {
+              const result = await target.exerciseFixtureHealth(stopped.imageReference, stopped.configDigest, standardRuntimePort, fail);
+              equal(result.containerId, stopped.containerId);
+            };
+            const startHealthyFixture = async () => {
+              await target.setOwnedContainerRunning(true, { containerId: stopped.containerId, reference: stopped.imageReference,
+                configDigest: stopped.configDigest });
+              await exerciseHealth(false);
+            };
+            const verifyHealth = () => {
+              phase = 'operations_native_health_probe';
+              return proveInstalledHealthProbe({
+                database: db.storage, caFile: ingress.caFile, environmentId: environment.id, releaseOperationId: second.report.operationId,
+                containerId: stopped.containerId,
+                install: () => createInstalledHealthWorker(db.storage, healthWorkerConfig({
+                  DATABASE_URL: db.runtimeUrl, ITERVANE_OPERATIONS_ENVIRONMENT_ID: environment.id,
+                  ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollment.fingerprint, ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: mapping.fingerprint,
+                  ITERVANE_HEALTH_KOMODO_READER_ID: readerCredentials.actorId, ITERVANE_HEALTH_KOMODO_READER_KEY: readerCredentials.key,
+                  ITERVANE_HEALTH_KOMODO_READER_SECRET: readerCredentials.secret, ITERVANE_HEALTH_PROBE_SECRET: ingress.probeSecret,
+                })),
+                stopContainer: () => stopFixture(stopped), startContainer: startHealthyFixture, failHealth: () => exerciseHealth(true),
+                async restoreHealth() { await stopFixture(stopped); await startHealthyFixture(); },
+                stopIdentity: ingress.stopIdentity, startIdentity: ingress.startIdentity,
+              });
+            };
+            const health = restoreAuthorityRun ? await verifyHealth() : undefined;
             phase = 'operations_native_restore_stop_bound_fixture';
             await stopFixture(stopped);
             const baseline = await reader.inspectStoppedRuntime(boundTarget, second.report, target.endpoint.network, authorizeRead);
@@ -1166,7 +1194,7 @@ async function probe() {
               const targetChanged = await proveDenied('target_changed');
               const anonymous = await ingress.anonymousHealthStatus();
               ok(anonymous === 401 || anonymous === 403);
-              return { authorization: { revoked, expired, targetChanged, anonymousStatus: anonymous, distinctKomodoReader: true } };
+              return { authorization: { revoked, expired, targetChanged, anonymousStatus: anonymous, distinctKomodoReader: true, health } };
             }
 
             const { accepted, ...stoppedDiagnosis } = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, stoppedPublication, {
@@ -1293,6 +1321,7 @@ async function probe() {
           return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256, release: first.report,
             dualVersion: { first: { release: first.report, build: after }, second: { release: second.report, build: next.after },
               currentOperationId: latest.releaseOperationId, previousOperationId: latest.previous.releaseOperationId,
+              currentContainerId: latest.containerId,
               applicationId: application.id, environmentId: environment.id, mappingSha256: mapping.fingerprint,
               sameTarget: true, sameProtectedIngress: true },
             ...(restoration ? { restoration: { ...restoration, whiskersCleanup: true } }

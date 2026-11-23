@@ -38,6 +38,11 @@ export class OperationsHealthJournal {
     });
   }
 
+  authorizeProbe(probe: HealthProbe) {
+    const bindingSha256 = sha256(JSON.stringify(probe.binding));
+    return this.database.db.transaction(tx => this.requireCurrentBinding(tx, bindingSha256));
+  }
+
   // Only the installed observer submits these normalized results.
   recordProbe(rawProbe: unknown, rawSignal: unknown) {
     const probe = parseInput(healthProbeSchema, rawProbe);
@@ -45,8 +50,7 @@ export class OperationsHealthJournal {
     const { sequence, binding, startedAt } = probe;
     const bindingSha256 = sha256(JSON.stringify(binding));
     return this.database.db.transaction(async tx => {
-      const current = await this.readCurrentTarget(tx);
-      if (bindingSha256 !== sha256(JSON.stringify(current.binding))) throw new DomainError('version_conflict');
+      await this.requireCurrentBinding(tx, bindingSha256);
       const [prior] = await tx.select().from(operationsHealthSamples).where(eq(operationsHealthSamples.sequence, sequence));
       if (prior) {
         if (prior.environmentId !== binding.environmentId || prior.bindingSha256 !== bindingSha256 ||
@@ -70,6 +74,11 @@ export class OperationsHealthJournal {
       });
       return { sequence, incidentId, replayed: false };
     });
+  }
+
+  private async requireCurrentBinding(tx: Transaction, bindingSha256: string) {
+    const current = await this.readCurrentTarget(tx);
+    if (bindingSha256 !== sha256(JSON.stringify(current.binding))) throw new DomainError('version_conflict');
   }
 
   private async readCurrentTarget(tx: Transaction) {
