@@ -4,7 +4,7 @@ import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import { cancelTaskSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, freezeFormalReleaseSchema, freezeOperationsProposalSchema,
-  idSchema, listQuerySchema, preauditInputSchema,
+  idSchema, listQuerySchema, operationsIncidentScopeSchema, preauditInputSchema,
   resumeTaskSchema, ruleIdSchema, ruleQuerySchema, startOperationsTaskSchema, startTaskSchema, translate, type Locale } from '@itervane/contracts';
 import { assertVerifiedIdentity, AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
 import { canonicalPublicUrl, type OperationsWorkflowScope } from './config.js';
@@ -20,6 +20,7 @@ import { VerificationViewService } from './service/verification-view.js';
 import { FormalReleaseService } from './service/formal-release.js';
 import { PreauditService, RuleService } from './service/preaudits.js';
 import { OperationsObservationViewService } from './service/operations-observation-view.js';
+import { OperationsIncidentsViewService } from './service/operations-incidents-view.js';
 import { OperationsProposalViewService } from './service/operations-proposal-view.js';
 import { OperationsRestartViewService } from './service/operations-restart-view.js';
 import { OperationsRestoreViewService } from './service/operations-restore-view.js';
@@ -30,6 +31,7 @@ const versionInput = cancelTaskSchema.extend({ taskId: idSchema }).strict();
 const resumeInput = resumeTaskSchema.extend({ taskId: idSchema }).strict();
 const releaseRequestInput = freezeFormalReleaseSchema.extend({ taskId: idSchema });
 const operationsProposalInput = freezeOperationsProposalSchema.extend({ taskId: idSchema });
+const incidentListInput = operationsIncidentScopeSchema.extend({ limit: listQuerySchema.shape.limit });
 const eventsInput = listQuerySchema.extend({ taskId: idSchema }).strict();
 const ruleListInput = ruleQuerySchema.extend({ projectId: idSchema }).strict();
 const ruleGetInput = ruleListInput.extend({ ruleId: ruleIdSchema }).strict();
@@ -58,6 +60,8 @@ const coreSpecs = [
 const operationsSpecs = [
   { name: 'start_operations_diagnosis', key: 'mcp.operations_start', input: startOperationsTaskSchema, write: true },
   { name: 'get_operations_result', key: 'mcp.operations_result', input: taskIdInput, write: false },
+  { name: 'list_operations_incidents', key: 'mcp.operations_incidents', input: incidentListInput, write: false },
+  { name: 'get_task_incident', key: 'mcp.task_incident', input: taskIdInput, write: false },
 ] as const;
 const proposalSpecs = [
   { name: 'get_operations_proposal', key: 'mcp.operations_proposal', input: taskIdInput, write: false },
@@ -83,6 +87,7 @@ export function createMcpEndpoint(database: Database, config: IdentityConfig & {
   const release = new FormalReleaseService(database);
   const rules = new RuleService(database); const preaudits = new PreauditService(database);
   const operations = new OperationsObservationViewService(database);
+  const incidents = operationsApi ? new OperationsIncidentsViewService(database, operationsApi) : undefined;
   const allowedHosts = new Set([new URL(publicUrl).hostname, 'localhost', '127.0.0.1', '[::1]']);
   const requiredScope = (body: unknown) => {
     const parsed = z.object({ method: z.string(), params: z.object({ name: z.string() }).passthrough().optional() }).passthrough().safeParse(body);
@@ -121,6 +126,15 @@ export function createMcpEndpoint(database: Database, config: IdentityConfig & {
             output = await service.admitOperations(identity, args, operationsApi); break;
           }
           case 'get_operations_result': output = await operations.get(identity, taskIdInput.parse(args).taskId, locale); break;
+          case 'list_operations_incidents': {
+            if (!incidents) throw new DomainError('not_found');
+            const { projectId, environmentId, limit } = incidentListInput.parse(args);
+            output = await incidents.list(identity, { projectId, environmentId }, { limit }, locale); break;
+          }
+          case 'get_task_incident': {
+            if (!incidents) throw new DomainError('not_found');
+            output = await incidents.forTask(identity, taskIdInput.parse(args).taskId, locale); break;
+          }
           case 'get_operations_proposal': {
             if (!proposalViews) throw new DomainError('not_found');
             output = await proposalViews.get(identity, taskIdInput.parse(args).taskId, locale); break;
