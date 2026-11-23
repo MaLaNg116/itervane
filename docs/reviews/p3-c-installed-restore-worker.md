@@ -10,3 +10,5 @@
 运行前按安装角色执行 `pnpm db:migrate`，在恢复进程注入登记的环境与发布指纹、Komodo 双身份和健康探针凭证。部署配置说明与变量见示例。 [环境变量](../../.env.example)
 
 TypeScript、248 项单元和 20 项 PostgreSQL 17.12 专项通过。双语事件继续使用现有消息契约。门户人工提交、MCP 回执与同一应用双版本实际恢复由 C2d4b 和 C2d4c 验收，恢复提交入口在双版本联验通过后启用。 [托管检查](https://github.com/MaLaNg116/itervane/pull/113/checks)
+
+固定代码的原生装机首轮在离线扫描器输入校验中止。用原提交复跑受影响作业后，九项 KVM 检查全部通过。原生装机场景验证了登记目标失配被拒、读写身份分开以及队列无任务时保持空闲。 [首轮准备失败](https://github.com/MaLaNg116/itervane/actions/runs/45032419249/job/137238693334) · [原生装机与九项 KVM](https://github.com/MaLaNg116/itervane/actions/runs/45032419249/attempts/2)

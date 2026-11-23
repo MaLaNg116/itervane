@@ -7,7 +7,7 @@ import { usePortal, useRemote, useText } from '../context.js';
 import { Disclosure } from '../motion.js';
 import { Button } from '../ui/button.js';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '../ui/dialog.js';
-import { OperationsRestartExecution } from './task-operations-restart.js';
+import { OperationsExecution } from './task-operations-execution.js';
 
 const decisionText = {
   confirm: { button: 'operationsApprove', result: 'releaseApproved' },
@@ -84,7 +84,7 @@ export function OperationsProposal({ task }: { task: Pick<TaskDto, 'id' | 'runId
             setPending({ proposalId: proposal.id, fingerprint: proposal.fingerprint, expectedVersion: version, action, idempotencyKey: crypto.randomUUID() });
           }}>{t(decisionText[action].button)}</Button>)}
       </div>}
-      {proposal.kind === 'restart' && <OperationsRestartExecution key={proposal.id} task={task} proposal={proposal} decisionBusy={busy} />}
+      <OperationsExecution key={proposal.id} task={task} proposal={proposal} decisionBusy={busy} />
     </>}
     {failure && !decision && <Failure error={failure} locale={locale} />}
     <Dialog open={!!decision} onOpenChange={open => { if (!open && !submit.isPending) setPending(null); }}>

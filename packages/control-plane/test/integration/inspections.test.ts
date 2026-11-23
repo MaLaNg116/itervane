@@ -15,7 +15,8 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   formalReleaseCandidateDtoSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, formalReleaseTargetSchema, formalReleaseViewSchema, formalRepairRetryContextSchema,
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
   operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartExecutionViewSchema, operationsRestartRecoveryProofSchema,
-  operationsRestartRequestSchema, operationsRestartSubmissionSchema, operationsRestorePlanSchema, operationsRestoreRecoveryProofSchema, taskDtoSchema, translate,
+  operationsRestartRequestSchema, operationsRestartSubmissionSchema, operationsRestoreExecutionViewSchema, operationsRestorePlanSchema, operationsRestoreRecoveryProofSchema,
+  operationsSubmissionSchema, taskDtoSchema, translate,
   verificationViewSchema,
   whiskersRestartImageDigest,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
@@ -2901,7 +2902,7 @@ it('binds a rollback intent and read-only takeover to the approved image after a
   expect(await database.storage.db.select({ state: operationsExecutions.state }).from(operationsExecutions)).toEqual([{ state: 'reserved' }]);
 });
 
-async function queuedRestore(prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>, expiresSoon = false) {
+async function restoreExecutionCandidate(prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>, expiresSoon = false) {
   const earlier = prepared ?? await installedOperationsFixture();
   task = (await earlier.taskService.admit(identity, { projectId: earlier.scope.projectId, source: task.source, purpose: 'Publish a newer image',
     dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
@@ -2917,16 +2918,22 @@ async function queuedRestore(prepared?: Awaited<ReturnType<typeof installedOpera
   const owner = await decisionIdentity();
   const decisions = new OperationsDecisionService(database.storage, installed, operationsPortal);
   const decision = { fingerprint: proposal.fingerprint };
+  return { earlier, next, current, diagnosed, installed, proposal, owner, decisions, decision };
+}
+
+async function queuedRestore(prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>, expiresSoon = false) {
+  const candidate = await restoreExecutionCandidate(prepared, expiresSoon);
+  const { installed, proposal, owner, decisions, decision } = candidate;
   await decisions.decide(owner, proposal.id, { ...decision, action: 'confirm', expectedVersion: 0, idempotencyKey: randomUUID() });
   const { execution, schedule } = await new OperationsExecutionAdmission(database.storage, installed)
     .enqueue({ ...decision, proposalId: proposal.id, decisionVersion: 1 });
   const executor = new OperationsExecutionCoordinator(coordinator, installed);
-  return { earlier, next, current, proposal, owner, decisions, decision, execution, schedule, executor };
+  return { ...candidate, execution, schedule, executor };
 }
 
 async function dispatchedRestore(outcome: 'acknowledged' | 'reply_lost' | 'prior_receipt' | 'approval_revoked',
   prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
-  const { earlier, next, current, proposal, owner, decisions, decision, execution, schedule, executor } = await queuedRestore(prepared);
+  const { earlier, next, current, diagnosed, installed, proposal, owner, decisions, decision, execution, schedule, executor } = await queuedRestore(prepared);
   const scope = await executor.claim(await fetchOperationsWakeup(operationsRestoreQueue), randomUUID(), 'rollback');
   if (!scope) throw new Error('Expected a restore lease');
   const { deploymentId, serverId, runtimeConfigSha256 } = next.target;
@@ -2980,8 +2987,137 @@ async function dispatchedRestore(outcome: 'acknowledged' | 'reply_lost' | 'prior
     .toBe('reserved');
   const successor = await executor.claim(await fetchOperationsWakeup(operationsRestoreQueue), randomUUID(), 'rollback');
   if (!successor) throw new Error('Expected a read-only restore lease');
-  return { earlier, current, executor, scope, successor, execution, schedule, config, ack, sends };
+  return { earlier, current, diagnosed, installed, proposal, executor, scope, successor, execution, schedule, config, ack, sends };
 }
+
+it('shares authorized bilingual restore receipts through HTTP and MCP', async () => {
+  const { earlier, current, diagnosed, installed, proposal, executor, successor, execution, schedule, ack } = await dispatchedRestore('acknowledged');
+  const publicUrl = 'http://127.0.0.1:4330';
+  const config = { ...issuer.config, publicUrl, portalClientId: operationsPortal, operationsApi: installed };
+  const app = createApi(database.storage, config, { logger: false });
+  const client = new Client({ name: 'restore-receipt-test', version: '0.0.0' });
+  try {
+    const subject = 'restore-receipt-viewer';
+    const principalId = randomUUID();
+    await database.storage.db.insert(principals).values({ id: principalId, issuer: config.issuer, subject });
+    const authorization = `Bearer ${await issuer.token(subject)}`;
+    const url = `/v1/tasks/${diagnosed.id}/operations-restore`;
+    const fetchView = (locale: 'en' | 'zh-CN') => app.inject({ url, headers: { authorization, 'accept-language': locale } });
+    expect((await fetchView('en')).statusCode).toBe(404);
+    await database.storage.db.insert(projectMembers).values({ principalId, projectId: diagnosed.projectId, role: 'viewer' });
+    const before = await fetchView('en');
+    expect(before.statusCode).toBe(200);
+    expect(operationsRestoreExecutionViewSchema.parse(before.json())).toMatchObject({ action: null,
+      execution: { state: 'running', environmentHeld: true, nativeUpdateId: ack.updateId, recovery: { state: 'observing', proof: null } } });
+
+    const runtime = { ...earlier.runtime, containerId: sha256('recovered for public receipt test') };
+    await expect(executor.settleRestoreRecovery(successor, { update: { ...ack, status: 'Complete', success: true }, runtime })).resolves.toBe('verified');
+    const [proof] = await database.storage.db.select().from(operationsRestoreRecoveries);
+    const views = await Promise.all((['en', 'zh-CN'] as const).map(async locale => {
+      const result = await fetchView(locale);
+      expect(result.statusCode).toBe(200);
+      const view = operationsRestoreExecutionViewSchema.parse(result.json());
+      expect(view).toMatchObject({ taskId: diagnosed.id, runId: diagnosed.runId, locale, action: null,
+        execution: { id: execution.id, taskId: schedule.taskId, runId: schedule.runId, proposalId: proposal.id,
+          releaseOperationId: current.binding.decision.operationId, nativeUpdateId: ack.updateId, state: 'succeeded', environmentHeld: false,
+          message: translate(locale, 'reason.operations_restore_recovery_verified'),
+          restore: { operationId: earlier.operationId, manifestDigest: earlier.image.manifestDigest },
+          recovery: { state: 'verified', failure: null, proof: { proofSha256: proof?.proofSha256, version: runtime.version,
+            verifiedAt: proof?.completedAt?.toISOString() } } },
+      });
+      for (const value of [runtime.containerId, runtime.imageReference, runtime.network, ack.actorId, earlier.registration.whiskers.origin]) {
+        expect(JSON.stringify(view)).not.toContain(value);
+      }
+      return view;
+    }));
+    const endpoint = await app.listen({ host: '127.0.0.1', port: 0 });
+    const token = await issuer.token(subject, { aud: `${publicUrl}/mcp`, scope: 'itervane:read' });
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', endpoint), {
+      requestInit: { headers: { authorization: `Bearer ${token}`, 'accept-language': 'zh-CN' } },
+    }));
+    expect((await client.listTools()).tools.filter(tool => tool.name.includes('restore'))).toEqual([
+      expect.objectContaining({ name: 'get_operations_restore', annotations: expect.objectContaining({ readOnlyHint: true }) }),
+    ]);
+    const call = { name: 'get_operations_restore', arguments: { taskId: diagnosed.id } };
+    expect((await client.callTool(call)).structuredContent).toEqual(views[1]);
+    await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
+    expect((await fetchView('zh-CN')).statusCode).toBe(404);
+    expect(await client.callTool(call)).toMatchObject({ isError: true, structuredContent: { error: { code: 'not_found' } } });
+  } finally {
+    await client.close();
+    await app.close();
+  }
+}, 45_000);
+
+it('queues one version restore through the approved human portal and cancels it before dispatch', async () => {
+  const { installed, proposal, owner, decisions, decision, current, diagnosed } = await restoreExecutionCandidate();
+  const restoreTarget = { environmentId: installed.environmentId, mappingSha256: current.binding.manifest.target.mappingSha256 };
+  const config = { ...issuer.config, portalClientId: operationsPortal, operationsApi: installed };
+  const app = createApi(database.storage, config, { logger: false, operationsRestoreTarget: restoreTarget });
+  const disabled = createApi(database.storage, config, { logger: false });
+  const mismatched = createApi(database.storage, config, { logger: false,
+    operationsRestoreTarget: { ...restoreTarget, mappingSha256: sha256('old registered mapping') } });
+  try {
+    const portal = { authorization: `Bearer ${await issuer.token('owner', { azp: operationsPortal })}`, 'accept-language': 'zh-CN' };
+    const assistant = { authorization: `Bearer ${await issuer.token('owner')}` };
+    const url = `/v1/tasks/${diagnosed.id}/operations-restore`;
+    const view = async (server = app) => operationsRestoreExecutionViewSchema.parse((await server.inject({ url, headers: portal })).json());
+    const endpoint = `/v1/operations/proposals/${proposal.id}/restore`;
+    const payload = { fingerprint: proposal.fingerprint, decisionVersion: 1 };
+    const post = (server = app, headers = portal, body: object = payload) => server.inject({ method: 'POST', url: endpoint, headers, payload: body });
+    expect(await view()).toMatchObject({ execution: null, action: null });
+    expect((await post()).statusCode).toBe(409);
+    await decisions.decide(owner, proposal.id, { ...decision, action: 'confirm', expectedVersion: 0, idempotencyKey: randomUUID() });
+    expect((await view()).action).toEqual({ kind: 'enqueue', proposalId: proposal.id, ...payload });
+    expect((await view(disabled)).action).toBeNull();
+    expect((await post(disabled)).statusCode).toBe(404);
+    expect((await view(mismatched)).action).toBeNull();
+    expect((await post(mismatched)).statusCode).toBe(409);
+    expect((await post(app, { ...portal, ...assistant })).statusCode).toBe(403);
+    expect((await post(app, portal, { ...payload, restoreOperationId: randomUUID() })).statusCode).toBe(400);
+    expect((await post(app, portal, { ...payload, fingerprint: sha256('unapproved proposal') })).statusCode).toBe(409);
+    expect(await database.storage.db.select().from(operationsExecutions)).toEqual([]);
+
+    const responses = await Promise.all([post(), post()]);
+    expect(responses.map(response => response.statusCode).sort()).toEqual([200, 202]);
+    const receipts = responses.map(response => operationsSubmissionSchema.parse(response.json()));
+    const executionId = receipts[0]!.executionId;
+    expect(receipts).toEqual(expect.arrayContaining([{ executionId, replayed: true }, { executionId, replayed: false }]));
+    expect(await database.storage.db.select().from(operationsExecutionSchedules)).toMatchObject([{ executionId, wakeupJobId: executionId }]);
+    expect((await database.storage.boss.findJobs(operationsRestoreQueue, { id: executionId }))[0]?.state).toBe('created');
+    expect(await database.storage.boss.findJobs(operationsExecutionQueue, { id: executionId })).toEqual([]);
+    expect(await view()).toMatchObject({ execution: { id: executionId, state: 'queued', environmentHeld: true }, action: null });
+    await decisions.decide(owner, proposal.id, { ...decision, action: 'revoke', expectedVersion: 1, idempotencyKey: randomUUID() });
+    expect(await view()).toMatchObject({ execution: { id: executionId, state: 'cancelled', environmentHeld: false }, action: null });
+    expect((await post()).statusCode).toBe(409);
+  } finally { await Promise.all([app.close(), disabled.close(), mismatched.close()]); }
+}, 45_000);
+
+it.each(['grant', 'publication'] as const)('rejects restore submission after its approved %s changes', async changed => {
+  const { earlier, installed, proposal, owner, decisions, decision, current, diagnosed } = await restoreExecutionCandidate();
+  await decisions.decide(owner, proposal.id, { ...decision, action: 'confirm', expectedVersion: 0, idempotencyKey: randomUUID() });
+  const app = createApi(database.storage, { ...issuer.config, portalClientId: operationsPortal, operationsApi: installed },
+    { logger: false, operationsRestoreTarget: { environmentId: installed.environmentId, mappingSha256: current.binding.manifest.target.mappingSha256 } });
+  try {
+    const headers = { authorization: `Bearer ${await issuer.token('owner', { azp: operationsPortal })}` };
+    if (changed === 'grant') {
+      const [grant] = await database.storage.db.delete(workspaceMembers).returning();
+      if (!grant) throw new Error('Expected original workspace grant');
+      await database.storage.db.insert(workspaceMembers).values({ principalId: grant.principalId, workspaceId: grant.workspaceId });
+    } else {
+      task = (await earlier.taskService.admit(identity, { projectId: earlier.scope.projectId, source: task.source,
+        purpose: 'Replace the approved runtime', dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
+      const next = await queuedFormalRelease({ existingTarget: earlier.target, imageVariant: 'replacement after restore approval' });
+      await finishTestRollout(await parkForRollout(next, true, 'c'.repeat(24)), 'standard-v4');
+    }
+    const url = `/v1/tasks/${diagnosed.id}/operations-restore`;
+    expect((await app.inject({ url, headers })).json()).toMatchObject({ execution: null, action: null });
+    const rejected = await app.inject({ method: 'POST', url: `/v1/operations/proposals/${proposal.id}/restore`, headers,
+      payload: { ...decision, decisionVersion: 1 } });
+    expect(rejected.statusCode).toBe(changed === 'grant' ? 403 : 409);
+    expect(await database.storage.db.select().from(operationsExecutions)).toEqual([]);
+  } finally { await app.close(); }
+}, 45_000);
 
 it.each(['legacy', 'missing'] as const)('routes a %s restore wakeup and takes over through the reader', async kind => {
   const { earlier, current, executor, schedule, execution } = await queuedRestore();

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { idSchema, operationsProposalSchema, operationsRestartEnqueueInputSchema, type OperationsRestartWriterProof } from '@itervane/contracts';
+import { idSchema, operationsEnqueueInputSchema, operationsProposalSchema, type OperationsProposal, type OperationsRestartWriterProof } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { desc, eq } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
@@ -14,11 +14,14 @@ import { lockEnvironmentForEffect, requireNoOperationsHold } from './environment
 import { DomainError, parseInput } from './errors.js';
 import { readOperationsProposal, readOperationsProposalBasis } from './operations-proposals.js';
 import { requireOperationsRestartWriter } from './operations-restart-installations.js';
+import { readInstalledOperationsEnrollment } from './operations-targets.js';
+import type { InstalledReleaseTarget } from './release-targets.js';
 import { databaseNow } from './releases.js';
 
-const executionInput = operationsRestartEnqueueInputSchema.extend({ proposalId: idSchema });
+const executionInput = operationsEnqueueInputSchema.extend({ proposalId: idSchema });
 export type RestartOperatorScope = Readonly<{ clientId: string; writer: OperationsRestartWriterProof }>;
-type RestartOperator = RestartOperatorScope & { identity: VerifiedIdentity };
+export type RestoreOperatorScope = Readonly<{ clientId: string; restoreTarget: InstalledReleaseTarget }>;
+type OperationsOperator = (RestartOperatorScope | RestoreOperatorScope) & { identity: VerifiedIdentity };
 
 type ProposalRow = typeof operationsProposals.$inferSelect;
 type DiagnosisTask = typeof tasks.$inferSelect;
@@ -51,6 +54,14 @@ export async function requireOperationsExecutionApproval(tx: Transaction, task: 
   return { frozen, decision, now, whiskers: basis.whiskers, publishedVersion: basis.publishedVersion, restorePlan: basis.restorePlan };
 }
 
+export async function requireRestoreSubmissionTarget(tx: Transaction, frozen: OperationsProposal, installed: InstalledReleaseTarget) {
+  if (frozen.action.kind !== 'rollback') throw new DomainError('unsupported_state');
+  if (frozen.target.environmentId !== installed.environmentId || frozen.target.mappingSha256 !== installed.mappingSha256) {
+    throw new DomainError('version_conflict');
+  }
+  await readInstalledOperationsEnrollment(tx, { ...installed, enrollmentSha256: frozen.target.enrollmentSha256 });
+}
+
 export class OperationsExecutionAdmission {
   constructor(private readonly database: Database, private readonly installation: OperationsEnrollmentScope) {}
 
@@ -62,7 +73,7 @@ export class OperationsExecutionAdmission {
     });
   }
 
-  async enqueue(raw: unknown, operator?: RestartOperator) {
+  async enqueue(raw: unknown, operator?: OperationsOperator) {
     const input = parseInput(executionInput, raw);
     return this.database.db.transaction(async tx => {
       const { execution, frozen, decision, task } = await this.reserveApproved(tx, input, operator);
@@ -75,7 +86,7 @@ export class OperationsExecutionAdmission {
   }
 
   private async reserveApproved(tx: Transaction, { proposalId, fingerprint, decisionVersion }: z.infer<typeof executionInput>,
-    operator?: RestartOperator) {
+    operator?: OperationsOperator) {
     const [proposal] = await tx.select().from(operationsProposals).where(eq(operationsProposals.id, proposalId));
     if (!proposal) throw new DomainError('not_found');
     const task = await lockOperationsDiagnosisTask(tx, proposal);
@@ -89,8 +100,11 @@ export class OperationsExecutionAdmission {
     const { frozen, whiskers, decision, now } = await requireOperationsExecutionApproval(tx, task, proposal, this.installation, decisionVersion);
     if (operator && actor) {
       if (actor.principalId !== decision.actorId || actor.workspaceGrantId !== decision.grantId) throw new DomainError('forbidden');
-      if (frozen.action.kind !== 'restart') throw new DomainError('unsupported_state');
-      await requireOperationsRestartWriter(tx, frozen.target, whiskers, operator.writer);
+      if ('restoreTarget' in operator) await requireRestoreSubmissionTarget(tx, frozen, operator.restoreTarget);
+      else {
+        if (frozen.action.kind !== 'restart') throw new DomainError('unsupported_state');
+        await requireOperationsRestartWriter(tx, frozen.target, whiskers, operator.writer);
+      }
       const readyAt = await databaseNow(tx, now);
       if (operator.identity.expiresAt * 1_000 <= readyAt.getTime()) throw new DomainError('unauthenticated');
       if (proposal.validUntil <= readyAt) throw new DomainError('unsupported_state');
