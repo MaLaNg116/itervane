@@ -37,7 +37,8 @@ import { formalReleaseQueue, operationsExecutionQueue, operationsRestoreQueue, q
 import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, formalReleaseSteps, formalRepairAttempts, formalRepairInputs, formalRepairOperations, formalRepairResults, formalRepairRetries,
   formalRepairRuntime, formalRescanAttempts, formalVerificationInputs, formalVerificationResults, formalVerificationRuntime, inspectionAttempts,
   operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
-  operationsDiagnosisRuntime, operationsExecutionIntents, operationsExecutions, operationsExecutionSchedules, operationsObservations,
+  operationsDiagnosisRuntime, operationsExecutionIntents, operationsExecutions, operationsExecutionSchedules, operationsHealthSamples,
+  operationsIncidents, operationsObservations,
   operationsProposals, operationsRequests, operationsRestartInstallations, operationsRestartRecoveries, operationsRestartRequests, operationsRestartResumes,
   operationsRestoreRecoveries, operationsRestoreSteps, operationsTargets,
   principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
@@ -87,6 +88,7 @@ import { FormalReleaseService } from '../../src/service/formal-release.js';
 import { readOperationsDeployment } from '../../src/service/operations-deployment.js';
 import { OperationsDecisionService } from '../../src/service/operations-decisions.js';
 import { OperationsExecutionAdmission } from '../../src/service/operations-execution-admission.js';
+import { OperationsHealthJournal } from '../../src/service/operations-health.js';
 import { OperationsObservationViewService } from '../../src/service/operations-observation-view.js';
 import { OperationsProposalService, readOperationsProposal } from '../../src/service/operations-proposals.js';
 import { changeOperationsRestartInstallation } from '../../src/service/operations-restart-installations.js';
@@ -2143,6 +2145,135 @@ async function installedOperationsFixture() {
   const enrollment = await registerOperationsTarget(database.storage, registration);
   return { ...submitted, scope, registration, enrollment, runtime, image };
 }
+
+function healthInstallation({ scope, enrollment, registration }: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  return { environmentId: scope.environmentId, enrollmentSha256: enrollment.fingerprint, mappingSha256: registration.releaseTargetSha256 };
+}
+
+const stoppedHealth = { status: 'unhealthy', reason: 'runtime_stopped', evidenceSha256: sha256('stopped health fixture') } as const;
+const recoveredHealth = { status: 'healthy', evidenceSha256: sha256('protected health fixture') } as const;
+const unavailableHealth = { status: 'unavailable', reason: 'probe_identity', evidenceSha256: sha256('probe identity fixture') } as const;
+
+it('deduplicates concurrent health samples, preserves uncertainty and recovers the same incident', async () => {
+  const fixture = await installedOperationsFixture();
+  const installation = healthInstallation(fixture);
+  const journal = new OperationsHealthJournal(database.storage, installation);
+  const peer = new OperationsHealthJournal(database.storage, installation);
+  const { probe } = await journal.prepareProbe();
+  const concurrent = await Promise.all([journal.recordProbe(probe, stoppedHealth), peer.recordProbe(probe, stoppedHealth)]);
+  const { incidentId } = concurrent[0]!;
+  expect(incidentId).toBeTypeOf('string');
+  expect(concurrent).toEqual(expect.arrayContaining([
+    { sequence: probe.sequence, incidentId, replayed: false }, { sequence: probe.sequence, incidentId, replayed: true },
+  ]));
+  await expect(journal.recordProbe(probe, recoveredHealth)).rejects.toMatchObject({ code: 'idempotency_conflict' });
+  const [initial] = await database.storage.db.select().from(operationsHealthSamples);
+  expect(initial).toMatchObject({ sequence: probe.sequence, incidentId, signal: stoppedHealth,
+    binding: { ...probe.binding, releaseOperationId: fixture.operationId, restoreExecutionId: null } });
+  expect(initial?.recordedAt.getTime()).toBeGreaterThanOrEqual(Date.parse(probe.startedAt));
+  await expect(database.storage.db.update(operationsHealthSamples).set({ signal: recoveredHealth })
+    .where(eq(operationsHealthSamples.sequence, probe.sequence))).rejects.toMatchObject({
+    cause: { code: '23514', message: 'operations_health_sample_is_immutable' },
+  });
+
+  const older = (await journal.prepareProbe()).probe;
+  const newer = (await peer.prepareProbe()).probe;
+  expect(newer.sequence).toBeGreaterThan(older.sequence);
+  await expect(peer.recordProbe(newer, stoppedHealth)).resolves.toMatchObject({ incidentId, replayed: false });
+  await expect(journal.recordProbe(older, recoveredHealth)).rejects.toMatchObject({ code: 'version_conflict' });
+  const unknown = (await journal.prepareProbe()).probe;
+  await expect(journal.recordProbe(unknown, unavailableHealth)).resolves.toMatchObject({ incidentId });
+  expect(await database.storage.db.select().from(operationsIncidents)).toMatchObject([
+    { id: incidentId, unhealthySamples: 2, closedAt: null, closedReason: null },
+  ]);
+
+  const failedWrite = (await journal.prepareProbe()).probe;
+  await database.admin.query(`ALTER TABLE itervane.operations_health_samples ADD CONSTRAINT health_fixture_reject_observation
+    CHECK (signal->>'evidenceSha256' <> '${recoveredHealth.evidenceSha256}')`);
+  try {
+    await expect(journal.recordProbe(failedWrite, recoveredHealth)).rejects.toMatchObject({
+      cause: { code: '23514', constraint: 'health_fixture_reject_observation' },
+    });
+    expect(await database.storage.db.select().from(operationsIncidents)).toMatchObject([{ id: incidentId, closedAt: null }]);
+    expect(await database.storage.db.select().from(operationsHealthSamples)).toHaveLength(3);
+  } finally { await database.admin.query('ALTER TABLE itervane.operations_health_samples DROP CONSTRAINT health_fixture_reject_observation'); }
+  await expect(journal.recordProbe(failedWrite, recoveredHealth)).resolves.toMatchObject({ incidentId, replayed: false });
+  expect(await database.storage.db.select().from(operationsIncidents)).toMatchObject([
+    { id: incidentId, unhealthySamples: 2, closedAt: expect.any(Date), closedReason: 'recovered' },
+  ]);
+  const fresh = await journal.recordProbe((await journal.prepareProbe()).probe, stoppedHealth);
+  expect(fresh.incidentId).not.toBe(incidentId);
+  expect(await database.storage.db.select().from(operationsIncidents)).toHaveLength(2);
+}, 45_000);
+
+it('rejects health samples after scope, rollout or enrollment changes', async () => {
+  const fixture = await installedOperationsFixture();
+  const installation = healthInstallation(fixture);
+  const journal = new OperationsHealthJournal(database.storage, installation);
+  const { probe } = await journal.prepareProbe();
+  await expect(journal.recordProbe({ ...probe, binding: { ...probe.binding, projectId: randomUUID() } }, stoppedHealth))
+    .rejects.toMatchObject({ code: 'version_conflict' });
+  await expect(new OperationsHealthJournal(database.storage, { ...installation, mappingSha256: sha256('wrong rollout mapping') }).prepareProbe())
+    .rejects.toMatchObject({ code: 'version_conflict' });
+  const { incidentId } = await journal.recordProbe(probe, stoppedHealth);
+  const delayed = (await journal.prepareProbe()).probe;
+  task = (await fixture.taskService.admit(identity, { projectId: fixture.scope.projectId, source: task.source,
+    purpose: 'Replace the unhealthy instance', dataClass: 'synthetic', locale: 'en', idempotencyKey: randomUUID() })).task;
+  const next = await queuedFormalRelease({ existingTarget: fixture.target, imageVariant: 'new instance for health observation' });
+  await expect(journal.prepareProbe()).rejects.toMatchObject({ code: 'conflict' });
+  await expect(journal.recordProbe(delayed, recoveredHealth)).rejects.toMatchObject({ code: 'conflict' });
+  await finishTestRollout(await parkForRollout(next, true, 'd'.repeat(24)), 'standard-v3');
+  await expect(journal.recordProbe(delayed, recoveredHealth)).rejects.toMatchObject({ code: 'version_conflict' });
+  const fresh = (await journal.prepareProbe()).probe;
+  expect(fresh.binding.releaseOperationId).toBe(next.operationId);
+  await expect(journal.recordProbe(fresh, unavailableHealth)).resolves.toMatchObject({ incidentId: null });
+  expect(await database.storage.db.select().from(operationsIncidents)).toMatchObject([{ id: incidentId, closedAt: null }]);
+  await expect(journal.recordProbe((await journal.prepareProbe()).probe, recoveredHealth)).resolves.toMatchObject({ incidentId: null });
+  expect(await database.storage.db.select().from(operationsIncidents)).toMatchObject([
+    { id: incidentId, closedReason: 'target_changed', binding: { releaseOperationId: fixture.operationId } },
+  ]);
+
+  const beforeRotation = (await journal.prepareProbe()).probe;
+  const enrollment = await registerOperationsTarget(database.storage, { ...fixture.registration,
+    whiskers: { ...fixture.registration.whiskers, serverId: 'health-rotation' } });
+  await expect(journal.prepareProbe()).rejects.toMatchObject({ code: 'unavailable' });
+  const rotated = new OperationsHealthJournal(database.storage, { ...installation, enrollmentSha256: enrollment.fingerprint });
+  await expect(rotated.recordProbe(beforeRotation, stoppedHealth)).rejects.toMatchObject({ code: 'version_conflict' });
+  expect((await rotated.prepareProbe()).probe.binding).toMatchObject({ releaseOperationId: next.operationId, enrollmentRevision: enrollment.revision });
+}, 60_000);
+
+it('fences health samples during a held restore and binds a new incident to the verified replacement instance', async () => {
+  const original = await installedOperationsFixture();
+  const journal = new OperationsHealthJournal(database.storage, healthInstallation(original));
+  const archived = (await journal.prepareProbe()).probe;
+  const previous = await journal.recordProbe(archived, stoppedHealth);
+  const stale = (await journal.prepareProbe()).probe;
+  const { executor, successor, execution, ack } = await dispatchedRestore('acknowledged', original);
+  await expect(journal.prepareProbe()).rejects.toMatchObject({ code: 'conflict' });
+  await expect(journal.recordProbe(stale, recoveredHealth)).rejects.toMatchObject({ code: 'conflict' });
+  expect(await database.storage.db.select().from(operationsHealthSamples)).toHaveLength(1);
+
+  const runtime = { ...original.runtime, containerId: sha256('restored health fixture instance') };
+  await expect(executor.settleRestoreRecovery(successor, { update: { ...ack, status: 'Complete', success: true }, runtime }))
+    .resolves.toBe('verified');
+  const current = (await journal.prepareProbe()).probe;
+  expect(current.binding).toMatchObject({ releaseOperationId: original.operationId, restoreExecutionId: execution.id,
+    manifestDigest: original.image.manifestDigest, containerId: runtime.containerId });
+  expect(current.binding.publicationProofSha256).not.toBe(stale.binding.publicationProofSha256);
+  await expect(journal.recordProbe(stale, recoveredHealth)).rejects.toMatchObject({ code: 'version_conflict' });
+  const replacement = await journal.recordProbe(current, stoppedHealth);
+  expect(replacement.incidentId).not.toBe(previous.incidentId);
+  expect(await database.storage.db.select().from(operationsIncidents)).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: previous.incidentId, closedReason: 'target_changed', binding: archived.binding }),
+    expect.objectContaining({ id: replacement.incidentId, closedAt: null, binding: current.binding }),
+  ]));
+
+  const [latest] = await database.storage.db.select().from(operationsHealthSamples).where(eq(operationsHealthSamples.sequence, current.sequence));
+  const another = (await journal.prepareProbe()).probe;
+  await expect(database.storage.db.insert(operationsHealthSamples).values({ ...latest!, sequence: another.sequence, incidentId: previous.incidentId }))
+    .rejects.toMatchObject({ cause: { code: '23503', constraint: 'operations_health_sample_incident_fk' } });
+  expect(await database.storage.db.select().from(operationsHealthSamples)).toHaveLength(2);
+}, 60_000);
 
 it('reads the current and preceding verified releases only for the frozen operations scope', async () => {
   const fixture = await installedOperationsFixture();

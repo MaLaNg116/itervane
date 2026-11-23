@@ -1,10 +1,11 @@
 import { sql } from 'drizzle-orm';
-import { boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
   agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairInput, type FormalRepairResult, type FormalRepairRetry,
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
   type OperationsDiagnosisObservation, type OperationsDiagnosisReceipt, type OperationsDiagnosisSection,
+  type OperationsHealthBinding, type OperationsHealthSignal,
   type OperationsObservationReceipt, type OperationsProposal, type OperationsRequestBinding, type OperationsRestartBaseline,
   type OperationsRestartInstallation, type OperationsRestartRecoveryFailure, type OperationsRestartRecoveryProof, type OperationsRestartRequest,
   type OperationsRestorePlan, type OperationsRestoreRecoveryFailure, type OperationsRestoreRecoveryProof,
@@ -783,6 +784,56 @@ export const operationsRestartRecoveries = domain.table('operations_restart_reco
         OR (${t.attempt} = 3 AND ${t.failure} IN ('unhealthy', 'unavailable', 'lease_expired') AND ${t.proof} IS NULL)
       ))
     ))) IS TRUE`),
+]);
+
+export const operationsHealthProbeSequence = domain.sequence('operations_health_probe_sequence', { maxValue: Number.MAX_SAFE_INTEGER });
+
+export const operationsIncidents = domain.table('operations_incidents', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  environmentId: uuid('environment_id').notNull().references(() => environments.id),
+  bindingSha256: text('binding_sha256').notNull(),
+  binding: jsonb('binding').$type<OperationsHealthBinding>().notNull(),
+  openedAt: timestamp('opened_at', { withTimezone: true }).notNull(),
+  lastUnhealthyAt: timestamp('last_unhealthy_at', { withTimezone: true }).notNull(),
+  unhealthySamples: integer('unhealthy_samples').notNull(),
+  closedAt: timestamp('closed_at', { withTimezone: true }),
+  closedReason: text('closed_reason').$type<'recovered' | 'target_changed'>(),
+}, t => [
+  unique('operations_incident_scope').on(t.id, t.environmentId, t.bindingSha256),
+  uniqueIndex('operations_incident_active_environment').on(t.environmentId).where(sql`${t.closedAt} IS NULL`),
+  check('operations_incident_binding', sql`(${t.bindingSha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.binding}->>'version' = '1' AND ${t.binding}->>'environmentId' = ${t.environmentId}::text
+    AND octet_length(${t.binding}::text) <= 2048) IS TRUE`),
+  check('operations_incident_lifecycle', sql`(${t.unhealthySamples} > 0 AND ${t.lastUnhealthyAt} >= ${t.openedAt} AND (
+    (${t.closedAt} IS NULL AND ${t.closedReason} IS NULL)
+    OR (${t.closedAt} >= ${t.lastUnhealthyAt} AND ${t.closedReason} IN ('recovered', 'target_changed'))
+  )) IS TRUE`),
+]);
+
+export const operationsHealthSamples = domain.table('operations_health_samples', {
+  sequence: bigint('sequence', { mode: 'number' }).primaryKey(),
+  environmentId: uuid('environment_id').notNull().references(() => environments.id),
+  bindingSha256: text('binding_sha256').notNull(),
+  binding: jsonb('binding').$type<OperationsHealthBinding>().notNull(),
+  signal: jsonb('signal').$type<OperationsHealthSignal>().notNull(),
+  incidentId: uuid('incident_id'),
+  probeStartedAt: timestamp('probe_started_at', { withTimezone: true }).notNull(),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull(),
+}, t => [
+  index('operations_health_samples_environment_sequence').on(t.environmentId, t.sequence),
+  foreignKey({ name: 'operations_health_sample_incident_fk', columns: [t.incidentId, t.environmentId, t.bindingSha256],
+    foreignColumns: [operationsIncidents.id, operationsIncidents.environmentId, operationsIncidents.bindingSha256] }),
+  check('operations_health_sample_binding', sql`(${t.sequence} > 0 AND ${t.bindingSha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.binding}->>'version' = '1' AND ${t.binding}->>'environmentId' = ${t.environmentId}::text
+    AND octet_length(${t.binding}::text) <= 2048 AND ${t.recordedAt} >= ${t.probeStartedAt}) IS TRUE`),
+  check('operations_health_sample_signal', sql`(${t.signal}->>'evidenceSha256' ~ '^[a-f0-9]{64}$'
+    AND octet_length(${t.signal}::text) <= 512 AND (
+      (${t.signal}->>'status' = 'healthy' AND NOT (${t.signal} ? 'reason'))
+      OR (${t.signal}->>'status' = 'unhealthy' AND ${t.incidentId} IS NOT NULL
+        AND ${t.signal}->>'reason' IN ('runtime_stopped', 'application_unhealthy'))
+      OR (${t.signal}->>'status' = 'unavailable'
+        AND ${t.signal}->>'reason' IN ('ingress_unavailable', 'probe_identity', 'komodo_unavailable', 'target_changed'))
+    )) IS TRUE`),
 ]);
 
 export const formalReleaseSteps = domain.table('formal_release_steps', {
