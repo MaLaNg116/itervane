@@ -7,3 +7,5 @@
 3. 以独立的人工批准发布修复后的镜像，核对两次 Komodo 更新、镜像摘要和容器版本。再通过健康 Worker 获取针对新实例的两次 200，确认旧事件随发布替换关闭。宿主独立重算两份实际 OCI 工件，要求任务、进程、容器及暂存目录完成清理。 [恢复核对](https://github.com/MaLaNg116/itervane/blob/814513978bdebdb333ac1821dd2b2fbb140d8568/packages/control-plane/test/native/worker-inspection.ts#L1203) · [工件断言](https://github.com/MaLaNg116/itervane/blob/814513978bdebdb333ac1821dd2b2fbb140d8568/.github/workflows/native-runner.yml#L226)
 
 本地 TypeScript 与托管工作流语法验证通过。完整原生场景随 PR 接受托管验收。该场景使用真实 KVM、PostgreSQL、OCI Registry、Komodo、Whiskers 和 Keycloak 保护入口，平台登录使用签名 OIDC 夹具，Agent 使用真实 Anthropic 协议适配器及确定性模型。提案确认走正式领域服务，C3-D 将同一能力开放给双语门户和外部 MCP。 [托管检查](https://github.com/MaLaNg116/itervane/pull/129/checks)
+
+首轮已执行到复现、修复与复验结果比对。检查发现旧断言把续测失败归入常规基线失败，并漏掉 Agent 对镜像未生成状态的读取。补正后按实际基线回执判断完整观察顺序。 [首轮运行](https://github.com/MaLaNg116/itervane/actions/runs/45129684390/job/137542086519)
