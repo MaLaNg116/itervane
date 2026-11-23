@@ -8,4 +8,4 @@
 
 本地 TypeScript、253 项单元、72 项 Linux Runner 宿主测试、3 项真实回环 HTTP 测试、两条工作流语法检查通过。PostgreSQL 17.12 的 23 项相关用例通过，加入结果发布时的关联复核后复跑 6 项专项，覆盖已复现、健康、响应无法核实、缺失回执及授权撤销。真库用例使用签名 OIDC、确定性模型、Whiskers 与 Runner 回执夹具。
 
-托管 `standard-build` 场景分别启动正常和带连续健康缺陷的固定源码，检查首次 200、续测结果、独立 VM 回执与清理。该场景使用真实 KVM 和本机应用，通过测试账本提供诊断来源。托管结果随 PR 更新，已部署受保护应用、Whiskers、Komodo 和真实 Agent 的联验由 C3-C3c 接续。 [托管断言](https://github.com/MaLaNg116/itervane/blob/f53d14dbfe4a475397ca8f07c939d40dc6904f05/.github/workflows/native-runner.yml#L185) · [固定缺陷源码](https://github.com/MaLaNg116/itervane/commit/bd2d14e3485d30429740d4403ac0bd36fc40420d)
+托管 `standard-build` 场景分别启动正常和带连续健康缺陷的固定源码，核对首次 200、续测 200 与同版本 503，两台 VM 均确认清理。该场景使用真实 KVM 和本机应用，通过测试账本提供诊断来源。受保护应用的既有重启场景首次只报告了失败阶段，同一提交的专项复跑记录了正常恢复、进程中断后接管和两次独立审批。#127 的 17 项托管检查通过后合入 `3827f7a`。应用修复后实际重新发布的联验由 C3-C3c 接续。 [续测结果](https://github.com/MaLaNg116/itervane/actions/runs/45119057618/job/137508396710) · [重启复跑](https://github.com/MaLaNg116/itervane/actions/runs/45119057618/job/137523604929) · [固定缺陷源码](https://github.com/MaLaNg116/itervane/commit/bd2d14e3485d30429740d4403ac0bd36fc40420d)
