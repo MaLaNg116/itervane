@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { verificationBaselineFailuresSchema, verificationComparisonCountsSchema } from './formal-verification-evidence.js';
 import { sha256Schema } from './inspection.js';
+import { operationsHealthRegressionSchema } from './operations-repair.js';
 import { idSchema, sourceRefSchema } from './primitives.js';
 
 const retryFailureSchema = z.discriminatedUnion('outcome', [
@@ -21,10 +22,24 @@ export const formalRepairRetryContextSchema = z.strictObject({
 });
 export type FormalRepairRetryContext = z.infer<typeof formalRepairRetryContextSchema>;
 
-export const formalRepairRetrySchema = z.strictObject({
+const repairContinuation = z.strictObject({
   version: z.literal(1), taskId: idSchema, projectId: idSchema, runId: idSchema, generation: z.int().min(2),
   source: sourceRefSchema, baseSnapshotSha256: sha256Schema, catalogSha256: sha256Schema,
   verificationProfileSha256: sha256Schema, repairPolicySha256: sha256Schema,
+});
+export const formalRepairRetrySchema = repairContinuation.extend({
   previous: formalRepairRetryContextSchema,
 }).refine(retry => retry.runId !== retry.previous.previousRunId && retry.baseSnapshotSha256 !== retry.previous.candidateManifestSha256);
 export type FormalRepairRetry = z.infer<typeof formalRepairRetrySchema>;
+
+export const linkedHealthRepairContextSchema = z.strictObject({
+  previousRunId: idSchema, verificationResultSha256: sha256Schema, receiptSha256: sha256Schema,
+  subjectManifestSha256: sha256Schema, regression: operationsHealthRegressionSchema,
+});
+export type LinkedHealthRepairContext = z.infer<typeof linkedHealthRepairContextSchema>;
+export const linkedHealthRepairSchema = repairContinuation.extend({
+  kind: z.literal('linked_health'), generation: z.literal(2), previous: linkedHealthRepairContextSchema,
+}).refine(repair => repair.runId !== repair.previous.previousRunId && repair.baseSnapshotSha256 === repair.previous.subjectManifestSha256);
+export const formalRepairContinuationSchema = z.union([formalRepairRetrySchema, linkedHealthRepairSchema]);
+export type FormalRepairContinuation = z.infer<typeof formalRepairContinuationSchema>;
+export type LinkedHealthRepair = z.infer<typeof linkedHealthRepairSchema>;

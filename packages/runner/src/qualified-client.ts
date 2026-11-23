@@ -267,20 +267,24 @@ export function verifyQualifiedRepairObservation(receipt: QualifiedRepairObserva
   const { observation } = receipt.snapshot;
   if (observation.operationId !== request.operationId || observation.repairInputSha256 !== request.repairInputSha256
       || observation.baseSnapshotSha256 !== request.baseSnapshotSha256 || observation.targets.length !== command.targets.length
-      || observation.targets.some(({ findingId, path, scanner, line, status }, index) => {
+      || observation.targets.some((observed, index) => {
         const target = command.targets[index]!;
-        return target.findingId !== findingId || target.path !== path || target.scanner !== scanner || target.line !== line
-          || protectedRepairPath(path, command.workspace.protectedPaths) !== (status === 'protected');
+        if (target.findingId !== observed.findingId || target.path !== observed.path || target.line !== observed.line
+            || protectedRepairPath(observed.path, command.workspace.protectedPaths) !== (observed.status === 'protected')) return true;
+        if ('kind' in observed) return !('kind' in target) || (observed.sourceText !== undefined
+          && sha256(observed.sourceText) !== observed.file?.sha256);
+        return !('scanner' in target) || observed.scanner !== target.scanner;
       })) throw new Error('runner_repair_observation_binding');
-  for (const { findingId, path, npm } of observation.targets) {
-    if (!npm) continue;
+  for (const target of observation.targets) {
+    if (!('npm' in target) || !target.npm) continue;
+    const { findingId, path, npm } = target;
     const scope = command.workspace.npmRepairs?.find(entry => entry.findingId === findingId);
     if (!scope) throw new Error('runner_repair_npm_binding');
     const paths = npmRepairPaths(scope.lockPath);
     const { name, installedVersion, fixedVersion, integrity } = scope.approval;
     if (!paths.some(expected => expected === path) || npm.name !== name || npm.installedVersion !== installedVersion
       || npm.fixedVersion !== fixedVersion || !paths.every(expected => observation.targets.some(peer => peer.findingId === findingId
-        && peer.path === expected && peer.npm))) throw new Error('runner_repair_npm_binding');
+        && peer.path === expected && 'npm' in peer && peer.npm))) throw new Error('runner_repair_npm_binding');
     const version = JSON.stringify(fixedVersion);
     const replacements = npm.edits.map(edit =>
       edit.startByte === edit.endByte && edit.replacement === `, "integrity": ${JSON.stringify(integrity)}` ? JSON.stringify(integrity) : edit.replacement);
