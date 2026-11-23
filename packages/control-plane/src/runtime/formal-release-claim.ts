@@ -9,6 +9,7 @@ import { environments, formalReleaseSteps, formalReleaseTargets, releaseCandidat
 import { requireStoredActor, type Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
 import { describeVerifiedRelease, latestReleaseCandidate, readReleaseManifest } from '../service/formal-release.js';
+import { requireLinkedRepairReleaseTarget } from '../service/operations-repair-proposals.js';
 import { readReleaseTarget, type InstalledReleaseTarget } from '../service/release-targets.js';
 import { databaseNow } from '../service/releases.js';
 import { readPublishedVerification } from '../service/verification-result.js';
@@ -146,6 +147,11 @@ async function verifyAuthority(tx: Transaction, task: TaskRow, release: LockedRe
   }
 
   const { target, mapping } = await verifyTarget(tx, task, release, manifest, workerOrigin, installed);
+  try { await requireLinkedRepairReleaseTarget(tx, task, target.environmentId, access.grantId, operation.id); }
+  catch (error) {
+    if (error instanceof DomainError) throw new ReleaseAuthorityRejected('release_target_changed');
+    throw error;
+  }
   const proof = await readPublishedVerification(tx, task, { runId: candidate.runId, generation: task.generation });
   const evidence = proof ? describeVerifiedRelease(proof, target, mapping) : null;
   if (!evidence) throw new ReleaseAuthorityRejected('release_evidence_changed');
