@@ -21,6 +21,7 @@ import { FormalReleaseService } from './service/formal-release.js';
 import { PreauditService, RuleService } from './service/preaudits.js';
 import { OperationsObservationViewService } from './service/operations-observation-view.js';
 import { OperationsProposalViewService } from './service/operations-proposal-view.js';
+import { OperationsRestartViewService } from './service/operations-restart-view.js';
 import { OperationsProposalService } from './service/operations-proposals.js';
 
 const taskIdInput = z.object({ taskId: idSchema }).strict();
@@ -60,12 +61,14 @@ const operationsSpecs = [
 const proposalSpecs = [
   { name: 'get_operations_proposal', key: 'mcp.operations_proposal', input: taskIdInput, write: false },
   { name: 'request_operations_proposal', key: 'mcp.request_operations_proposal', input: operationsProposalInput, write: true },
+  { name: 'get_operations_execution', key: 'mcp.operations_execution', input: taskIdInput, write: false },
 ] as const;
 
 export function createMcpEndpoint(database: Database, config: IdentityConfig & { publicUrl?: string; operationsApi?: OperationsWorkflowScope }, onerror: () => void) {
   const { operationsApi } = config;
   const proposals = operationsApi?.diagnosisProviderSha256 ? new OperationsProposalService(database, operationsApi) : undefined;
   const proposalViews = operationsApi?.diagnosisProviderSha256 ? new OperationsProposalViewService(database, operationsApi) : undefined;
+  const restartViews = operationsApi?.diagnosisProviderSha256 ? new OperationsRestartViewService(database, operationsApi) : undefined;
   const specs = [...coreSpecs, ...(operationsApi ? operationsSpecs : []), ...(proposals ? proposalSpecs : [])];
   const publicUrl = canonicalPublicUrl(config.publicUrl ?? 'http://127.0.0.1:4310');
   const resource = `${publicUrl}/mcp`; const metadataUrl = `${publicUrl}/.well-known/oauth-protected-resource/mcp`;
@@ -118,6 +121,10 @@ export function createMcpEndpoint(database: Database, config: IdentityConfig & {
           case 'get_operations_proposal': {
             if (!proposalViews) throw new DomainError('not_found');
             output = await proposalViews.get(identity, taskIdInput.parse(args).taskId, locale); break;
+          }
+          case 'get_operations_execution': {
+            if (!restartViews) throw new DomainError('not_found');
+            output = await restartViews.get(identity, taskIdInput.parse(args).taskId, locale); break;
           }
           case 'request_operations_proposal': {
             if (!proposals || !proposalViews) throw new DomainError('not_found');

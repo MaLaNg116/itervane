@@ -1,20 +1,24 @@
 import { randomUUID } from 'node:crypto';
-import { idSchema, operationsProposalSchema, sha256Schema } from '@itervane/contracts';
+import { idSchema, operationsProposalSchema, operationsRestartEnqueueInputSchema, type OperationsRestartWriterProof } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { desc, eq } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
+import type { VerifiedIdentity } from '../auth/identity.js';
 import type { OperationsEnrollmentScope } from '../config.js';
 import type { Database } from '../persistence/database.js';
 import { operationsDecisions, operationsExecutions, operationsExecutionSchedules, operationsProposals, operationsRequests, tasks } from '../persistence/schema.js';
 import { scheduleOperationsExecution } from '../runtime/operations-execution-queue.js';
-import { requireProjectAccess, requireStoredActor, type Transaction } from './access.js';
+import { isHumanWorkspaceOwner, requireActor, requireProjectAccess, requireStoredActor, type Transaction } from './access.js';
 import { lockEnvironmentForEffect, requireNoOperationsHold } from './environment-effects.js';
 import { DomainError, parseInput } from './errors.js';
 import { readOperationsProposal, readOperationsProposalBasis } from './operations-proposals.js';
+import { requireOperationsRestartWriter } from './operations-restart-installations.js';
 import { databaseNow } from './releases.js';
 
-const executionInput = z.strictObject({ proposalId: idSchema, fingerprint: sha256Schema, decisionVersion: z.literal(1) });
+const executionInput = operationsRestartEnqueueInputSchema.extend({ proposalId: idSchema });
+export type RestartOperatorScope = Readonly<{ clientId: string; writer: OperationsRestartWriterProof }>;
+type RestartOperator = RestartOperatorScope & { identity: VerifiedIdentity };
 
 type ProposalRow = typeof operationsProposals.$inferSelect;
 type DiagnosisTask = typeof tasks.$inferSelect;
@@ -58,10 +62,10 @@ export class OperationsExecutionAdmission {
     });
   }
 
-  async enqueue(raw: unknown) {
+  async enqueue(raw: unknown, operator?: RestartOperator) {
     const input = parseInput(executionInput, raw);
     return this.database.db.transaction(async tx => {
-      const { execution, frozen, decision, task } = await this.reserveApproved(tx, input);
+      const { execution, frozen, decision, task } = await this.reserveApproved(tx, input, operator);
       const [scheduled] = await tx.select().from(operationsExecutionSchedules)
         .where(eq(operationsExecutionSchedules.executionId, execution.id));
       if (scheduled) return { execution, schedule: scheduled, replayed: true };
@@ -70,13 +74,27 @@ export class OperationsExecutionAdmission {
     });
   }
 
-  private async reserveApproved(tx: Transaction, { proposalId, fingerprint, decisionVersion }: z.infer<typeof executionInput>) {
+  private async reserveApproved(tx: Transaction, { proposalId, fingerprint, decisionVersion }: z.infer<typeof executionInput>,
+    operator?: RestartOperator) {
     const [proposal] = await tx.select().from(operationsProposals).where(eq(operationsProposals.id, proposalId));
     if (!proposal) throw new DomainError('not_found');
-    if (proposal.fingerprint !== fingerprint) throw new DomainError('version_conflict');
     const task = await lockOperationsDiagnosisTask(tx, proposal);
     await lockEnvironmentForEffect(tx, proposal.environmentId);
-    const { frozen, decision, now } = await requireOperationsExecutionApproval(tx, task, proposal, this.installation, decisionVersion);
+    const actor = operator && await requireActor(tx, operator.identity);
+    if (operator && actor) {
+      const { project } = await requireProjectAccess(tx, actor, task.projectId, true);
+      if (!isHumanWorkspaceOwner(operator.identity, actor, project.workspaceId, operator.clientId)) throw new DomainError('forbidden');
+    }
+    if (proposal.fingerprint !== fingerprint) throw new DomainError('version_conflict');
+    const { frozen, whiskers, decision, now } = await requireOperationsExecutionApproval(tx, task, proposal, this.installation, decisionVersion);
+    if (operator && actor) {
+      if (actor.principalId !== decision.actorId || actor.workspaceGrantId !== decision.grantId) throw new DomainError('forbidden');
+      if (frozen.action.kind !== 'restart') throw new DomainError('unsupported_state');
+      await requireOperationsRestartWriter(tx, frozen.target, whiskers, operator.writer);
+      const readyAt = await databaseNow(tx);
+      if (operator.identity.expiresAt * 1_000 <= readyAt.getTime()) throw new DomainError('unauthenticated');
+      if (proposal.validUntil <= readyAt) throw new DomainError('unsupported_state');
+    }
     const [existing] = await tx.select().from(operationsExecutions).where(eq(operationsExecutions.proposalId, proposalId));
     if (existing) {
       if (existing.state !== 'reserved') throw new DomainError('unsupported_state');
