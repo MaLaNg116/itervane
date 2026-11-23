@@ -1,9 +1,10 @@
-import { freezeOperationsRepairSchema, idSchema, operationsRepairProposalSchema } from '@itervane/contracts';
+import { freezeOperationsRepairSchema, idSchema, operationsRepairProposalSchema, type OperationsRepairProposal,
+  type QualifiedInspectionReceipt } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { and, eq } from 'drizzle-orm';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import type { Database } from '../persistence/database.js';
-import { operationsIncidentDiagnoses, operationsRepairProposals, releaseCandidates, releaseOperations, repositories,
+import { operationsIncidentDiagnoses, operationsRepairAdmissions, operationsRepairProposals, releaseCandidates, releaseOperations, repositories,
   tasks } from '../persistence/schema.js';
 import { requireActor, requireProjectAccess, requireStoredActor, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
@@ -25,6 +26,39 @@ export function readOperationsRepairProposal(row: ProposalRow) {
       || document.proposedBy !== row.proposedBy || document.grantId !== row.grantId || Date.parse(document.validUntil) !== row.validUntil.getTime()
       || sha256(JSON.stringify(document)) !== row.fingerprint) throw new Error('operations_repair_proposal_integrity');
   return document;
+}
+
+export async function readLinkedOperationsRepair(tx: Transaction, task: TaskRow) {
+  const [entry] = await tx.select({ admission: operationsRepairAdmissions, proposal: operationsRepairProposals })
+    .from(operationsRepairAdmissions).innerJoin(operationsRepairProposals, eq(operationsRepairProposals.id, operationsRepairAdmissions.proposalId))
+    .where(eq(operationsRepairAdmissions.taskId, task.id));
+  if (!entry) return undefined;
+  const { admission, proposal } = entry;
+  const frozen = readOperationsRepairProposal(proposal);
+  const requestSha256 = sha256(JSON.stringify({ proposalId: proposal.id, fingerprint: proposal.fingerprint, sourceCommit: task.commit, locale: task.locale }));
+  if (frozen.target.projectId !== task.projectId || frozen.source.git.repositoryId !== task.repositoryId || frozen.source.dataClass !== task.dataClass
+      || admission.sourceCommit !== task.commit || admission.actorId !== task.requestedBy || admission.requestSha256 !== requestSha256
+      || task.requestHash !== requestSha256) throw new DomainError('version_conflict');
+  return { admission, frozen };
+}
+
+export function matchesLinkedRepairSource({ source }: OperationsRepairProposal, receipt: QualifiedInspectionReceipt) {
+  if (receipt.originSha256 !== source.originSha256 || receipt.scope.repositoryId !== source.git.repositoryId) return false;
+  const { materializedFrom } = receipt.scope;
+  if (source.patchSha256 === null) return !materializedFrom && receipt.scope.commit === source.git.commit
+    && receipt.snapshot.manifestSha256 === source.originalSnapshotSha256;
+  return materializedFrom?.commit === source.git.commit && materializedFrom.baseSnapshotSha256 === source.originalSnapshotSha256
+    && receipt.snapshot.materializedCandidateSha256 === source.deployedSnapshotSha256;
+}
+
+export async function requireLinkedRepairReleaseTarget(tx: Transaction, task: TaskRow, environmentId: string, grantId: string) {
+  const linked = await readLinkedOperationsRepair(tx, task);
+  if (!linked) return;
+  if (linked.admission.grantId !== grantId) throw new DomainError('forbidden');
+  const { target } = linked.frozen;
+  if (target.environmentId !== environmentId) throw new DomainError('version_conflict');
+  const { binding } = await readHealthProbeTarget(tx, target);
+  if (sha256(JSON.stringify(binding)) !== sha256(JSON.stringify(target))) throw new DomainError('version_conflict');
 }
 
 async function readRepairSource(tx: Transaction, scope: {

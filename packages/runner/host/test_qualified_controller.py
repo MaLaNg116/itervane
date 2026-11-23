@@ -52,6 +52,23 @@ def verification_request():
 
 
 class ControllerTest(unittest.TestCase):
+    def test_materialized_source_coordinates_are_bounded_to_an_inspection_request(self):
+        basis = {"commit": "d" * 40, "baseSnapshotSha256": "e" * 64}
+        data = {**request(), "materializedFrom": basis}
+
+        def frame(value):
+            return json.dumps(value).encode("ascii") + b"\n"
+
+        self.assertEqual(controller.parse_request(frame(data)), data)
+        for wrong in (
+            {**data, "materializedFrom": {**basis, "commit": data["commit"]}},
+            {**data, "materializedFrom": {**basis, "baseSnapshotSha256": "short"}},
+            {**data, "materializedFrom": {**basis, "unexpected": "value"}},
+            {**repair_request(), "commandBytes": 100, "commandSha256": "f" * 64, "materializedFrom": basis},
+        ):
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                controller.parse_request(frame(wrong))
+
     def test_member_and_exact_origin_are_required_before_launch(self):
         launch = Mock()
         observe = Mock()

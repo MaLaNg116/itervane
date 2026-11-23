@@ -44,7 +44,9 @@ export const qualifiedInspectionScopeSchema = z.strictObject({
   version: z.literal(1), requestId: uuid, taskId: uuid, runId: uuid, projectId: uuid, repositoryId: uuid,
   generation: counter, fence: counter, planSha256: sha256Schema, workspaceSha256: sha256Schema, commit: gitId,
 });
-export const qualifiedInspectionRequestSchema = qualifiedInspectionScopeSchema.extend({ origin: z.string().min(1).max(768) });
+export const materializedSourceBasisSchema = z.strictObject({ commit: gitId, baseSnapshotSha256: sha256Schema });
+export const qualifiedInspectionJobScopeSchema = qualifiedInspectionScopeSchema.extend({ materializedFrom: materializedSourceBasisSchema.optional() });
+export const qualifiedInspectionRequestSchema = qualifiedInspectionJobScopeSchema.extend({ origin: z.string().min(1).max(768) });
 export const qualifiedInspectionStatusSchema = z.strictObject({
   kind: z.literal('status'), version: z.literal(1), workspaceSha256: sha256Schema,
   imageSha256: sha256Schema, state: z.enum(['idle', 'blocked']),
@@ -56,14 +58,17 @@ export const qualifiedRunnerRejectionSchema = z.strictObject({
 });
 export const qualifiedInspectionResponseSchema = z.discriminatedUnion('kind', [
   z.strictObject({
-    kind: z.literal('receipt'), scope: qualifiedInspectionScopeSchema, domainId: uuid, imageSha256: sha256Schema,
+    kind: z.literal('receipt'), scope: qualifiedInspectionJobScopeSchema, domainId: uuid, imageSha256: sha256Schema,
     originSha256: sha256Schema, commitSha256: sha256Schema, cleanupConfirmed: z.literal(true),
-    sessionVerified: z.literal(true), snapshot: qualifiedInspectionSnapshotSchema.extend({ reports: qualifiedScanReportsSchema }),
-  }),
+    sessionVerified: z.literal(true), snapshot: qualifiedInspectionSnapshotSchema.extend({
+      reports: qualifiedScanReportsSchema, materializedCandidateSha256: sha256Schema.optional(),
+    }),
+  }).refine(receipt => Boolean(receipt.scope.materializedFrom) === Boolean(receipt.snapshot.materializedCandidateSha256)),
   qualifiedRunnerRejectionSchema,
 ]);
 export type QualifiedInspectionRequest = z.infer<typeof qualifiedInspectionRequestSchema>;
-export type QualifiedInspectionScope = z.infer<typeof qualifiedInspectionScopeSchema>;
+export type MaterializedSourceBasis = z.infer<typeof materializedSourceBasisSchema>;
+export type QualifiedInspectionScope = z.infer<typeof qualifiedInspectionJobScopeSchema>;
 export type QualifiedInspectionStatus = z.infer<typeof qualifiedInspectionStatusSchema>;
 export type QualifiedInspectionResponse = z.infer<typeof qualifiedInspectionResponseSchema>;
 export type QualifiedInspectionReceipt = Extract<QualifiedInspectionResponse, { kind: 'receipt' }>;

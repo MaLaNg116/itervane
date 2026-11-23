@@ -51,6 +51,7 @@ BUILD_PROFILE = "buildProfileSha256"
 RUN_BASELINE = "runStandardBaseline"
 OCI_INPUTS = "ociInputsSha256"
 RETAIN_IMAGE = "retainStandardImage"
+MATERIALIZED_SOURCE = "materializedFrom"
 PEER = struct.Struct("3i")
 
 
@@ -82,6 +83,8 @@ def parse_request(line):
     verification = operation == VERIFY_SOURCE
     build = verification and BUILD_PROFILE in data
     fields = VERIFY_FIELDS if verification else REPAIR_FIELDS if repair else FIELDS
+    if not repair and not verification and MATERIALIZED_SOURCE in data:
+        fields = fields | {MATERIALIZED_SOURCE}
     if build:
         fields = fields | {BUILD_PROFILE}
         if RUN_BASELINE in data:
@@ -110,6 +113,13 @@ def parse_request(line):
     for name, pattern in patterns.items():
         if not isinstance(data[name], str) or not pattern.fullmatch(data[name]):
             raise ValueError("invalid fixed reference")
+    if MATERIALIZED_SOURCE in fields:
+        basis = data[MATERIALIZED_SOURCE]
+        if (not isinstance(basis, dict) or basis.keys() != {"commit", "baseSnapshotSha256"}
+            or not isinstance(basis["commit"], str) or not COMMIT.fullmatch(basis["commit"])
+            or basis["commit"] == data["commit"] or not isinstance(basis["baseSnapshotSha256"], str)
+            or not IMAGE_DIGEST.fullmatch(basis["baseSnapshotSha256"])):
+            raise ValueError("invalid materialized source reference")
     if repair or verification:
         limit = MAX_VERIFICATION_COMMAND if verification else MAX_REPAIR_COMMAND
         if type(data["commandBytes"]) is not int or not 0 < data["commandBytes"] <= limit:
@@ -330,7 +340,10 @@ def response_for(request, result):
             and snapshot.get("manifestSha256") == evidence.get("baseSnapshotSha256") == request["baseSnapshotSha256"]
             and evidence.get("repairInputSha256") == request["repairInputSha256"] and evidence.get("operationId") == request["operationId"]
         )
-        if repair_matches and (not verification or verification_proof_matches(request, snapshot, result.imageSha256)):
+        materialized = snapshot.get("materializedCandidateSha256")
+        materialized_matches = (isinstance(materialized, str) and bool(IMAGE_DIGEST.fullmatch(materialized))
+                                if MATERIALIZED_SOURCE in request else "materializedCandidateSha256" not in snapshot)
+        if repair_matches and materialized_matches and (not verification or verification_proof_matches(request, snapshot, result.imageSha256)):
             kind = ("verification_receipt" if verification else "repair_observation" if observation
                     else "repair_receipt" if repair else "receipt")
             return {
@@ -550,9 +563,11 @@ def main():
             if not workspace_idle(libvirt, root, image, fingerprint):
                 return Result("pending_cleanup")
             storage = artifact_store if RETAIN_IMAGE in request else None
+            materialized = (json.dumps(request[MATERIALIZED_SOURCE], separators=(",", ":")).encode("ascii")
+                            if MATERIALIZED_SOURCE in request else None)
             job = SourceProbe(SourceGateway(origin, request["commit"]), repository_id=request["repositoryId"],
                               repair_command=None if verification else command, repair_observation=request.get("operation") == OBSERVE_REPAIR,
-                              verification_command=command if verification else None, artifact_store=storage)
+                              verification_command=command if verification else None, artifact_store=storage, materialized_source=materialized)
             try:
                 result = probe(libvirt, libvirt_qemu, root, image, digest, cancelled, "inspect", True, source_override=job)
                 if storage is None or job.pending_archive is None:

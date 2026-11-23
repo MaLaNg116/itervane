@@ -105,7 +105,9 @@ export function verifyQualifiedInspectionReceipt(receipt: QualifiedInspectionRec
   scope: QualifiedInspectionScope, binding: { imageSha256: string; originSha256: string },
   profiles: readonly InspectionPlan['scanners'][number][] = scannerProfiles) {
   const { snapshot } = receipt;
-  if (Object.entries(scope).some(([key, value]) => receipt.scope[key as keyof typeof scope] !== value)
+  const { materializedFrom, ...coordinates } = scope;
+  if (Object.entries(coordinates).some(([key, value]) => receipt.scope[key as keyof typeof coordinates] !== value)
+      || JSON.stringify(receipt.scope.materializedFrom) !== JSON.stringify(materializedFrom)
       || receipt.imageSha256 !== binding.imageSha256 || receipt.originSha256 !== binding.originSha256
       || receipt.domainId !== snapshot.runId || snapshot.commit !== scope.commit || snapshot.repositoryId !== scope.repositoryId) {
     throw new Error('runner_receipt_binding');

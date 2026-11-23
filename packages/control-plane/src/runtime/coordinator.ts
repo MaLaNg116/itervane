@@ -7,6 +7,7 @@ import { formalRepairRetries, operationsExecutionSchedules, runRuntime, taskRuns
 import { requireProjectAccess, requireStoredActor, type Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
 import { requireIncidentDiagnosisAuthority } from '../service/operations-incident-monitor.js';
+import { readLinkedOperationsRepair } from '../service/operations-repair-proposals.js';
 import { readOperationsDiagnosis, readOperationsRequest } from '../service/operations-requests.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, enqueue, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope, type TaskRow } from './authority.js';
@@ -15,7 +16,8 @@ import { recoverClaimedRelease, recoverKomodoLease, recoverRegistryLease } from 
 
 export type CurrentExecution = { task: TaskRow; run: typeof taskRuns.$inferSelect; runtime: typeof runRuntime.$inferSelect;
   operationsRequest: Awaited<ReturnType<typeof readOperationsRequest>> | undefined;
-  operationsDiagnosis: Awaited<ReturnType<typeof readOperationsDiagnosis>> };
+  operationsDiagnosis: Awaited<ReturnType<typeof readOperationsDiagnosis>>;
+  linkedRepair: Awaited<ReturnType<typeof readLinkedOperationsRepair>> };
 
 export async function authorizeRun(tx: Transaction, task: TaskRow, runId: string, role?: CurrentExecution['run']['role']) {
   const access = await requireProjectAccess(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
@@ -24,12 +26,15 @@ export async function authorizeRun(tx: Transaction, task: TaskRow, runId: string
     if (operationsRequest.document.grantId !== access.grantId) throw new DomainError('forbidden');
     const operationsDiagnosis = await readOperationsDiagnosis(tx, task, runId, operationsRequest);
     await requireIncidentDiagnosisAuthority(tx, runId, task.requestedBy, operationsRequest.document, operationsDiagnosis?.providerSha256);
-    return { ...access, operationsRequest, operationsDiagnosis };
-  } else if (task.generation !== 1) {
+    return { ...access, operationsRequest, operationsDiagnosis, linkedRepair: undefined };
+  }
+  const linked = await readLinkedOperationsRepair(tx, task);
+  if (linked && linked.admission.grantId !== access.grantId) throw new DomainError('forbidden');
+  if (task.generation !== 1) {
     const [retry] = await tx.select({ grantId: formalRepairRetries.grantId }).from(formalRepairRetries).where(eq(formalRepairRetries.runId, runId));
     if (retry && retry.grantId !== access.grantId) throw new DomainError('forbidden');
   }
-  return { ...access, operationsRequest: undefined, operationsDiagnosis: undefined };
+  return { ...access, operationsRequest: undefined, operationsDiagnosis: undefined, linkedRepair: linked };
 }
 
 export class ExecutionCoordinator {
@@ -45,7 +50,7 @@ export class ExecutionCoordinator {
       if (runtime.reason?.startsWith('release_') || runtime.reason?.startsWith('operations_execution_')) throw new ExecutionLost();
       const access = options.authorize === false ? undefined : await authorizeRun(tx, task, scope.runId, run.role);
       const result = await action(tx, { task, run, runtime, operationsRequest: access?.operationsRequest,
-        operationsDiagnosis: access?.operationsDiagnosis });
+        operationsDiagnosis: access?.operationsDiagnosis, linkedRepair: access?.linkedRepair });
       await assertLeaseLive(tx, slot.leaseUntil);
       return result;
     });

@@ -15,6 +15,7 @@ import { appendEvent, type TaskRow } from '../runtime/authority.js';
 import { blockQueuedRelease, enqueueReleaseOperation } from '../runtime/release-queue.js';
 import { isHumanWorkspaceOwner, requireActor, requireProject, requireProjectAccess, requireStoredActor, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
+import { requireLinkedRepairReleaseTarget } from './operations-repair-proposals.js';
 import { readFormalReleaseOperationResult } from './release-result.js';
 import { readReleaseTarget } from './release-targets.js';
 import { databaseNow } from './releases.js';
@@ -186,9 +187,10 @@ export class FormalReleaseService {
     const { environmentId, expectedVersion } = parseInput(freezeFormalReleaseSchema, raw);
     return this.database.db.transaction(async tx => {
       const { actor, task } = await visibleTask(tx, identity, taskId, true);
-      await requireProject(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
+      const { grantId } = await requireProjectAccess(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
       const run = await currentRun(tx, task);
       if (!run || !canPrepare(task, run)) throw new DomainError('unsupported_state');
+      await requireLinkedRepairReleaseTarget(tx, task, environmentId, grantId);
 
       const [environment] = await tx.select({ id: environments.id }).from(environments).where(and(eq(environments.id, environmentId),
         eq(environments.projectId, task.projectId))).for('share');
@@ -326,7 +328,8 @@ export class FormalReleaseService {
       } else if (status !== 'pending') throw new DomainError('unsupported_state');
 
       if (input.action === 'confirm') {
-        await requireProject(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
+        const { grantId } = await requireProjectAccess(tx, await requireStoredActor(tx, task.requestedBy), task.projectId, true);
+        await requireLinkedRepairReleaseTarget(tx, task, row.environmentId, grantId);
         const verification = await readPublishedVerification(tx, task, { runId: row.runId, generation: task.generation });
         if (!verification?.result.archiveVerification || verification.row.sha256 !== manifest.verification.resultSha256
             || verification.row.receiptSha256 !== manifest.verification.receiptSha256) throw new DomainError('unsupported_state');

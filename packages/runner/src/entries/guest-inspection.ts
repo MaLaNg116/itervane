@@ -1,10 +1,10 @@
 import { lstatSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { qualifiedGuestRepairIssueSchema, verificationProofByteLimit } from '@itervane/contracts';
+import { materializedSourceBasisSchema, qualifiedGuestRepairIssueSchema, verificationProofByteLimit } from '@itervane/contracts';
 import { scanGuestImage } from '../guest-image-scan.js';
 import { repairQualifiedGuestSnapshot } from '../guest-repair.js';
 import { observeQualifiedRepairTargets } from '../guest-repair-observation.js';
-import { publishGuestSnapshot } from '../guest-snapshot.js';
+import { publishGuestSnapshot, readBoundedFile } from '../guest-snapshot.js';
 import { stageGuestStandardBuild, STANDARD_BUILD_INPUT, STANDARD_BUILD_TOOLS } from '../guest-standard-build.js';
 import { publishGuestVerificationSource, verificationCommandName } from '../guest-verification-source.js';
 import {
@@ -33,13 +33,16 @@ if (command === 'snapshot' && args.length === 5) {
   const repair = lstatSync(join(INSPECTION_SOURCE, 'repair-command.json'), { throwIfNoEntry: false }) !== undefined;
   const observeRepair = lstatSync(join(INSPECTION_SOURCE, 'repair-observation.json'), { throwIfNoEntry: false }) !== undefined;
   const verification = lstatSync(join(INSPECTION_SOURCE, verificationCommandName), { throwIfNoEntry: false }) !== undefined;
+  const materializedSource = join(INSPECTION_SOURCE, 'materialized-source.json');
+  const materialized = lstatSync(materializedSource, { throwIfNoEntry: false }) !== undefined;
   let receipt: object;
   try {
-    if ([repair, observeRepair, verification].filter(Boolean).length > 1) throw new Error('repair-integrity');
+    if ([repair, observeRepair, verification, materialized].filter(Boolean).length > 1) throw new Error('scan-integrity');
+    const materializedFrom = materialized ? materializedSourceBasisSchema.parse(JSON.parse(readBoundedFile(materializedSource, 512).toString('utf8'))) : undefined;
     receipt = verification ? await inspectVerificationSnapshots(INSPECTION_SOURCE, INSPECTION_TOOLS)
       : observeRepair ? observeQualifiedRepairTargets(INSPECTION_SOURCE)
       : repair ? repairQualifiedGuestSnapshot(INSPECTION_SOURCE, INSPECTION_OUTPUT)
-      : await inspectGuestSnapshot(join(INSPECTION_SOURCE, 'ready'), INSPECTION_TOOLS);
+      : await inspectGuestSnapshot(join(INSPECTION_SOURCE, 'ready'), INSPECTION_TOOLS, materializedFrom);
   }
   catch (error) {
     const message = error instanceof Error ? error.message : '';

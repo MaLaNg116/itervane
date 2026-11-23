@@ -3,7 +3,7 @@ import { bigint, boolean, check, foreignKey, index, integer, jsonb, pgSchema, pr
 import {
   agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairInput, type FormalRepairResult, type FormalRepairRetry,
-  type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
+  type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan, type MaterializedSourceBasis,
   type OperationsDiagnosisObservation, type OperationsDiagnosisReceipt, type OperationsDiagnosisSection,
   type OperationsHealthBinding, type OperationsHealthSignal,
   type OperationsObservationReceipt, type OperationsProposal, type OperationsRepairProposal, type OperationsRequestBinding, type OperationsRestartBaseline,
@@ -154,6 +154,7 @@ export const inspectionAttempts = domain.table('inspection_attempts', {
   generation: integer('generation').notNull(), fence: integer('fence').notNull(), workerId: uuid('worker_id').notNull(),
   planSha256: text('plan_sha256').notNull(), originSha256: text('origin_sha256').notNull(), imageSha256: text('image_sha256').notNull(),
   workspaceSha256: text('workspace_sha256'),
+  materializedFrom: jsonb('materialized_from').$type<MaterializedSourceBasis>(),
   state: text('state').$type<'reserved' | 'closed' | 'uncertain' | 'recorded'>().notNull().default('reserved'),
   settledFence: integer('settled_fence'), settledAt: timestamp('settled_at', { withTimezone: true }),
   receiptSha256: text('receipt_sha256'), receipt: jsonb('receipt').$type<QualifiedInspectionReceipt>(),
@@ -170,6 +171,10 @@ export const inspectionAttempts = domain.table('inspection_attempts', {
   check('inspection_attempt_coordinates', sql`
     ${t.generation} > 0 AND ${t.fence} > 0 AND ${t.commit} ~ '^[a-f0-9]{40}$'
     AND ${t.planSha256} ~ '^[a-f0-9]{64}$' AND ${t.originSha256} ~ '^[a-f0-9]{64}$' AND ${t.imageSha256} ~ '^[a-f0-9]{64}$'`),
+  check('inspection_attempt_materialized_binding', sql`((${t.materializedFrom} IS NULL OR (
+    ${t.materializedFrom}->>'commit' ~ '^[a-f0-9]{40}$' AND ${t.materializedFrom}->>'commit' <> ${t.commit}
+    AND ${t.materializedFrom}->>'baseSnapshotSha256' ~ '^[a-f0-9]{64}$' AND octet_length(${t.materializedFrom}::text) <= 512))
+    AND (${t.state} <> 'recorded' OR ${t.receipt}#>'{scope,materializedFrom}' IS NOT DISTINCT FROM ${t.materializedFrom})) IS TRUE`),
   check('inspection_attempt_state', sql`(
     (${t.state} = 'reserved' AND ${t.settledFence} IS NULL AND ${t.settledAt} IS NULL)
     OR (${t.state} IN ('closed', 'uncertain', 'recorded') AND ${t.settledFence} >= ${t.fence} AND ${t.settledAt} IS NOT NULL)
@@ -911,6 +916,18 @@ export const operationsRepairProposals = domain.table('operations_repair_proposa
       OR (${t.incidentId} IS NOT NULL AND ${t.sampleSequence} > 0 AND ${t.document}#>>'{incident,id}' = ${t.incidentId}::text
         AND ${t.document}#>>'{incident,sampleSequence}' = ${t.sampleSequence}::text))
     AND octet_length(${t.document}::text) <= 8192) IS TRUE`),
+]);
+
+export const operationsRepairAdmissions = domain.table('operations_repair_admissions', {
+  proposalId: uuid('proposal_id').primaryKey().references(() => operationsRepairProposals.id),
+  taskId: uuid('task_id').notNull(), runId: uuid('run_id').notNull(),
+  actorId: uuid('actor_id').notNull().references(() => principals.id), grantId: uuid('grant_id').notNull(),
+  requestSha256: text('request_sha256').notNull(), sourceCommit: text('source_commit').notNull(),
+  selfConfirmed: boolean('self_confirmed').notNull(), confirmedAt: timestamp('confirmed_at', { withTimezone: true }).notNull(),
+}, t => [
+  unique('operations_repair_admission_per_task').on(t.taskId),
+  foreignKey({ name: 'operations_repair_admission_task_fk', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
+  check('operations_repair_admission_binding', sql`${t.requestSha256} ~ '^[a-f0-9]{64}$' AND ${t.sourceCommit} ~ '^([a-f0-9]{40}|[a-f0-9]{64})$'`),
 ]);
 
 export const formalReleaseSteps = domain.table('formal_release_steps', {

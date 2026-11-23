@@ -4,7 +4,7 @@ import { constants, lstatSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { qualifiedGuestVerificationProofSchema, sha256Schema } from '@itervane/contracts';
+import { qualifiedGuestVerificationProofSchema, repairCandidateManifestSchema, sha256Schema, type MaterializedSourceBasis } from '@itervane/contracts';
 import { z } from 'zod';
 import { exerciseGuestRepair } from './guest-repair-fixture.js';
 import { readGuestCandidate } from './guest-repair.js';
@@ -157,9 +157,10 @@ function summarize(scan: ScanSummary) {
 }
 
 /** Runs from the sealed scan service after its kernel boundary checks. */
-export async function inspectGuestSnapshot(ready: string, tools: string) {
+export async function inspectGuestSnapshot(ready: string, tools: string, materializedFrom?: MaterializedSourceBasis) {
   const { runId, mode, manifest } = readGuestSnapshot(ready);
   if (mode !== 'qualified' && mode !== 'fixture') throw new Error('scan-boundary');
+  if (materializedFrom && (mode !== 'qualified' || materializedFrom.commit === manifest.source.commit)) throw new Error('scan-integrity');
   const { inputs, inputsSha256 } = await verifyGuestInspectionInputs(tools);
   const output = mkdtempSync(join(tmpdir(), 'itervane-raw-scan-'));
   try {
@@ -180,7 +181,14 @@ export async function inspectGuestSnapshot(ready: string, tools: string) {
       runId, commit: manifest.source.commit, tree: manifest.tree, manifestSha256: manifest.sha256,
       files: manifest.files.length, totalBytes: manifest.totalBytes, inputsSha256, readOnly: true, offline: true,
     };
-    if (mode === 'qualified') return { ...proof, repositoryId: manifest.source.repositoryId, reports: [gitleaks, trivy] };
+    if (mode === 'qualified') {
+      const candidate = materializedFrom && repairCandidateManifestSchema.parse({ version: 1,
+        source: { repositoryId: manifest.source.repositoryId, commit: materializedFrom.commit },
+        baseSnapshotSha256: materializedFrom.baseSnapshotSha256, files: manifest.files, totalBytes: manifest.totalBytes,
+      });
+      return { ...proof, repositoryId: manifest.source.repositoryId, reports: [gitleaks, trivy],
+        ...(candidate ? { materializedCandidateSha256: sha256(JSON.stringify(candidate)) } : {}) };
+    }
     if (trivy.status !== 'completed') throw new Error('scan-trivy');
     fixtureControls(gitleaks, trivy);
     let repair: ReturnType<typeof exerciseGuestRepair>;
