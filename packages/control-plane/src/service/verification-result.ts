@@ -42,7 +42,7 @@ export async function readPublishedVerification(tx: Transaction, task: TaskRow, 
       || JSON.stringify(evidence) !== JSON.stringify(result.evidence)) {
     throw new Error('formal_verification_result_integrity');
   }
-  return { row, input, result, evidence };
+  return { row, input, result, evidence, originSha256: receipt.originSha256 };
 }
 
 function recordedObservations(report: FormalVerificationReport, evidence: FormalVerificationEvidence) {

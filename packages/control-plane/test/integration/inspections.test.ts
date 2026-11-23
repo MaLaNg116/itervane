@@ -21,14 +21,14 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   whiskersRestartImageDigest,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
   type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type OperationsDiagnosisObservation, type OperationsDiagnosisSection,
-  type OperationsRestartInstallation,
+  type OperationsHealthSignal, type OperationsRestartInstallation,
   type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
 import { canonicalRepairCommand, canonicalRepairObservation, canonicalVerificationCommand, prepareQualifiedVerificationRequest,
   scannerProfiles, sha256, verifyQualifiedVerificationReceipt } from '@itervane/runner';
 import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../verification/src/agent/npm-repair-fixture.js';
-import { operationsDecision, scriptedOperations } from '../../../verification/src/agent/operations-fixture.js';
+import { chooseOperationsSection, operationsDecision, scriptedOperations } from '../../../verification/src/agent/operations-fixture.js';
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
@@ -39,9 +39,9 @@ import { formalAuditInputs, formalAuditResults, formalReleaseRolloutAttempts, fo
   operationsDecisions, operationsDiagnosisInputs, operationsDiagnosisReads, operationsDiagnosisResults,
   operationsDiagnosisRuntime, operationsExecutionIntents, operationsExecutions, operationsExecutionSchedules, operationsHealthSamples,
   operationsIncidentDiagnoses, operationsIncidentMonitors, operationsIncidents, operationsObservations,
-  operationsProposals, operationsRequests, operationsRestartInstallations, operationsRestartRecoveries, operationsRestartRequests, operationsRestartResumes,
+  operationsProposals, operationsRepairProposals, operationsRequests, operationsRestartInstallations, operationsRestartRecoveries, operationsRestartRequests, operationsRestartResumes,
   operationsRestoreRecoveries, operationsRestoreSteps, operationsTargets,
-  principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, runRuntime,
+  principals, projectMembers, releaseCandidates, releaseDecisions, releaseOperations, repositories, runRuntime,
   taskEvents, taskRuns, tasks as taskRecords, workspaceMembers } from '../../src/persistence/schema.js';
 import { ExecutionCoordinator } from '../../src/runtime/coordinator.js';
 import { configuredAuditModel, runFormalAudit } from '../../src/runtime/formal-audit.js';
@@ -93,6 +93,7 @@ import { changeOperationsIncidentMonitor } from '../../src/service/operations-in
 import { OperationsIncidentScheduler } from '../../src/service/operations-incident-scheduler.js';
 import { OperationsObservationViewService } from '../../src/service/operations-observation-view.js';
 import { OperationsProposalService, readOperationsProposal } from '../../src/service/operations-proposals.js';
+import { OperationsRepairProposalService, readOperationsRepairProposal } from '../../src/service/operations-repair-proposals.js';
 import { changeOperationsRestartInstallation } from '../../src/service/operations-restart-installations.js';
 import { freezeOperationsRequest, readOperationsDiagnosis, readOperationsRequest } from '../../src/service/operations-requests.js';
 import { readOperationsObservationTarget, readOperationsReleaseEvidence, registerOperationsTarget } from '../../src/service/operations-targets.js';
@@ -2165,7 +2166,7 @@ async function incidentMonitorFixture(fixture?: Awaited<ReturnType<typeof instal
   const { monitorId } = await changeOperationsIncidentMonitor(database.storage, registration);
   const journal = new OperationsHealthJournal(database.storage, installation);
   const makeScheduler = (id = monitorId) => new OperationsIncidentScheduler(database.storage, { ...installation, monitorId: id });
-  const sample = async (signal: typeof stoppedHealth | typeof recoveredHealth | typeof unavailableHealth = stoppedHealth) =>
+  const sample = async (signal: OperationsHealthSignal = stoppedHealth) =>
     journal.recordProbe((await journal.prepareProbe()).probe, signal);
   return { application, installation, worker, registration, monitorId, journal, makeScheduler, sample };
 }
@@ -2203,7 +2204,9 @@ it('admits one incident diagnosis in concurrent polls and recovers its original 
 
 it('rolls back the incident task, queue wakeup and trigger link when admission cannot commit', async () => {
   const fixture = await incidentMonitorFixture();
-  const sample = await fixture.sample();
+  const { probe } = await fixture.journal.prepareProbe();
+  const startedAt = new Date(Date.parse(probe.startedAt) - 1_000).toISOString();
+  const sample = await fixture.journal.recordProbe({ ...probe, startedAt }, stoppedHealth);
   const current = await database.admin.query('SELECT count(*)::int AS count FROM itervane_queue.job WHERE name=$1', [queueName]);
   const [monitor] = await database.storage.db.select().from(operationsIncidentMonitors);
   if (!monitor) throw new Error('Expected a monitored diagnosis actor');
@@ -2221,7 +2224,8 @@ it('rolls back the incident task, queue wakeup and trigger link when admission c
   } finally {
     await database.admin.query('ALTER TABLE itervane.operations_incident_diagnoses DROP CONSTRAINT incident_fixture_reject_attempt');
   }
-  expect(await fixture.makeScheduler().tick()).toMatchObject({
+  const retried = await fixture.makeScheduler().tick();
+  expect(retried, JSON.stringify(retried)).toMatchObject({
     status: 'queued', attempt: 1, incidentId: sample.incidentId, sampleSequence: sample.sequence,
   });
 }, 45_000);
@@ -3077,12 +3081,25 @@ it('rolls back diagnosis settlement on event failure and replays the published c
   } finally { whiskers.restore(); }
 });
 
-async function settleProposalDiagnosis(kind: 'restart' | 'rollback' | 'observe',
-  prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
-  const context = await startDiagnosis(prepared);
-  const { fixture, installed, scope } = context;
-  const adapter = kind === 'restart' ? scriptedRestartDiagnosis() : scriptedOperations();
-  const whiskers = scopedWhiskers(fixture, undefined, kind === 'observe' ? 'running' : 'exited');
+const repairDiagnosisSections = ['container', 'release', 'logs'] as const;
+const scriptedRepairDiagnosis: ModelAdapter = { protocol: 'anthropic', async complete({ conversation }) {
+  const message = conversation[0];
+  if (message?.kind !== 'user') throw new Error('Missing diagnosis context');
+  const { observations } = JSON.parse(message.text) as { observations: { id: string; data: { section: OperationsDiagnosisSection } }[] };
+  const missing = repairDiagnosisSections.find(section => !observations.some(item => item.data.section === section));
+  if (missing) return chooseOperationsSection(missing);
+  const logs = observations.find(item => item.data.section === 'logs')!;
+  const release = observations.find(item => item.data.section === 'release')!;
+  return operationsDecision('finish_role', { hypotheses: [{ code: 'application_error', evidenceIds: [logs.id] }],
+    recommendation: { code: 'investigate_code', evidenceIds: [logs.id, release.id] } });
+} };
+
+type ProposalDiagnosisKind = 'restart' | 'rollback' | 'observe' | 'investigate';
+
+async function settleProposalRun(kind: ProposalDiagnosisKind, fixture: Awaited<ReturnType<typeof installedOperationsFixture>>,
+  installed: ReturnType<typeof diagnosisInstallation>, scope: ExecutionScope) {
+  const adapter = kind === 'investigate' ? scriptedRepairDiagnosis : kind === 'restart' ? scriptedRestartDiagnosis() : scriptedOperations();
+  const whiskers = scopedWhiskers(fixture, undefined, kind === 'observe' || kind === 'investigate' ? 'running' : 'exited');
   const saver = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
   try {
     await runFormalOperations(coordinator, scope, saver, installed, { adapter, providerSha256: installed.diagnosisProviderSha256 },
@@ -3091,8 +3108,94 @@ async function settleProposalDiagnosis(kind: 'restart' | 'rollback' | 'observe',
   const [diagnosis] = await database.storage.db.select().from(operationsDiagnosisResults)
     .where(eq(operationsDiagnosisResults.runId, scope.runId));
   if (!diagnosis) throw new Error('Expected a settled diagnosis');
+  return diagnosis;
+}
+
+async function settleProposalDiagnosis(kind: ProposalDiagnosisKind, prepared?: Awaited<ReturnType<typeof installedOperationsFixture>>) {
+  const context = await startDiagnosis(prepared);
+  const { fixture, installed, scope } = context;
+  const diagnosis = await settleProposalRun(kind, fixture, installed, scope);
   return { ...context, diagnosis, service: new OperationsProposalService(database.storage, installed) };
 }
+
+it('freezes one linked repair proposal with verified source and the original health trigger', async () => {
+  const fixture = await incidentMonitorFixture();
+  const sample = await fixture.sample({ status: 'unhealthy', reason: 'application_unhealthy', evidenceSha256: sha256('application fixture failure') });
+  const queued = await fixture.makeScheduler().tick();
+  if (queued.status !== 'queued') throw new Error('Expected scheduled diagnosis');
+  const lease = await claimOperations(fixture.worker);
+  if (!lease) throw new Error('Expected scheduled lease');
+  const diagnosis = await settleProposalRun('investigate', fixture.application, fixture.worker, lease);
+  const service = new OperationsRepairProposalService(database.storage, fixture.installation);
+  const input = { diagnosisSha256: diagnosis.sha256 };
+  const before = await database.storage.db.select({ id: taskRecords.id }).from(taskRecords);
+  const attempts = await Promise.all([service.freeze(identity, queued.taskId, input), service.freeze(identity, queued.taskId, input)]);
+  expect(attempts.map(item => item.replayed).sort()).toEqual([false, true]);
+  expect(attempts[0]!.proposal.id).toBe(attempts[1]!.proposal.id);
+  const proposal = attempts[0]!.proposal;
+  const { manifest, fingerprint, id } = fixture.application.approval;
+  const document = readOperationsRepairProposal(proposal);
+  expect(document).toMatchObject({ diagnosis: { taskId: queued.taskId, runId: queued.runId, sha256: diagnosis.sha256 },
+    target: { releaseOperationId: fixture.application.operationId, containerId: fixture.application.runtime.containerId,
+      mappingSha256: fixture.installation.mappingSha256, enrollmentSha256: fixture.installation.enrollmentSha256 },
+    incident: { id: sample.incidentId, sampleSequence: sample.sequence },
+    source: { candidateId: id, candidateSha256: fingerprint, git: manifest.source, releaseTaskId: manifest.taskId,
+      originalSnapshotSha256: manifest.originalSnapshotSha256, deployedSnapshotSha256: manifest.repairedSnapshotSha256,
+      patchSha256: manifest.diffSha256, originSha256: sha256(origin) } });
+  expect(Date.parse(document.validUntil)).toBe(diagnosis.createdAt.getTime() + fixture.application.target.approvalTtlSeconds * 1_000);
+  expect(JSON.stringify(document)).not.toContain('local-log-canary-value');
+  expect(await database.storage.db.select().from(operationsRepairProposals)).toHaveLength(1);
+  expect((await database.storage.db.select({ id: taskRecords.id }).from(taskRecords)).map(row => row.id).sort()).toEqual(before.map(row => row.id).sort());
+  await expect(database.storage.db.delete(operationsRepairProposals).where(eq(operationsRepairProposals.id, proposal.id)))
+    .rejects.toMatchObject({ cause: { code: '23514', message: 'operations_repair_proposal_is_immutable' } });
+}, 45_000);
+
+it('checks linked repair permissions and proposal input without inventing an event for manual diagnosis', async () => {
+  const { task: diagnosisTask, diagnosis, fixture } = await settleProposalDiagnosis('investigate');
+  const service = new OperationsRepairProposalService(database.storage, healthInstallation(fixture));
+  const input = { diagnosisSha256: diagnosis.sha256 };
+  const [principal] = await database.storage.db.insert(principals).values({ issuer: issuer.config.issuer, subject: 'repair-proposal-reader' }).returning();
+  const reader = await createIdentityVerifier(issuer.config)(await issuer.token('repair-proposal-reader'));
+  await expect(service.freeze(reader, diagnosisTask.id, input)).rejects.toMatchObject({ code: 'not_found' });
+  await database.storage.db.insert(projectMembers).values({ projectId: fixture.scope.projectId, principalId: principal!.id, role: 'viewer' });
+  await expect(service.freeze(reader, diagnosisTask.id, input)).rejects.toMatchObject({ code: 'forbidden' });
+  await expect(service.freeze(identity, diagnosisTask.id, { ...input, repositoryId: randomUUID() })).rejects.toMatchObject({ code: 'invalid_input' });
+  await expect(service.freeze(identity, diagnosisTask.id, { diagnosisSha256: sha256('other run') })).rejects.toMatchObject({ code: 'version_conflict' });
+  await database.storage.db.update(projectMembers).set({ role: 'maintainer' }).where(eq(projectMembers.principalId, principal!.id));
+  const proposal = await service.freeze(reader, diagnosisTask.id, input);
+  expect(readOperationsRepairProposal(proposal.proposal).incident).toBeNull();
+  await database.storage.db.update(projectMembers).set({ role: 'viewer' }).where(eq(projectMembers.principalId, principal!.id));
+  await expect(service.freeze(identity, diagnosisTask.id, input)).rejects.toMatchObject({ code: 'forbidden' });
+  const observation = await settleProposalDiagnosis('observe', fixture);
+  await expect(service.freeze(identity, observation.task.id, { diagnosisSha256: observation.diagnosis.sha256 }))
+    .rejects.toMatchObject({ code: 'unsupported_state' });
+  expect(await database.storage.db.select().from(operationsRepairProposals)).toHaveLength(1);
+}, 45_000);
+
+it('rejects a linked repair proposal when the repository or current publication has changed', async () => {
+  const { task: diagnosisTask, diagnosis, fixture } = await settleProposalDiagnosis('investigate');
+  const service = new OperationsRepairProposalService(database.storage, healthInstallation(fixture));
+  const input = { diagnosisSha256: diagnosis.sha256 };
+  const repositoryFilter = eq(repositories.id, diagnosisTask.source.repositoryId);
+  await database.storage.db.update(repositories).set({ url: 'https://source.example.invalid/replaced.git' }).where(repositoryFilter);
+  await expect(service.freeze(identity, diagnosisTask.id, input)).rejects.toMatchObject({ code: 'version_conflict' });
+  await database.storage.db.update(repositories).set({ url: origin }).where(repositoryFilter);
+  const replacement = await (await competingPublication(fixture)).confirm();
+  await finishTestRollout(await parkForRollout(replacement, true, 'd'.repeat(24)), 'standard-v3');
+  await expect(service.freeze(identity, diagnosisTask.id, input)).rejects.toMatchObject({ code: 'version_conflict' });
+  expect(await database.storage.db.select().from(operationsRepairProposals)).toHaveLength(0);
+}, 45_000);
+
+it('rejects a linked repair proposal after the diagnosis confirmation window', async () => {
+  const fixture = await installedOperationsFixture();
+  await database.admin.query(`ALTER TABLE itervane.operations_diagnosis_results
+    ALTER COLUMN created_at SET DEFAULT clock_timestamp() - interval '1 day'`);
+  const saved = await settleProposalDiagnosis('investigate', fixture).finally(() =>
+    database.admin.query('ALTER TABLE itervane.operations_diagnosis_results ALTER COLUMN created_at SET DEFAULT now()'));
+  const service = new OperationsRepairProposalService(database.storage, healthInstallation(fixture));
+  await expect(service.freeze(identity, saved.task.id, { diagnosisSha256: saved.diagnosis.sha256 })).rejects.toMatchObject({ code: 'unsupported_state' });
+  expect(await database.storage.db.select().from(operationsRepairProposals)).toHaveLength(0);
+}, 45_000);
 
 it('freezes one immutable restart proposal from the settled diagnosis under concurrent requests', async () => {
   const current = await settleProposalDiagnosis('restart');

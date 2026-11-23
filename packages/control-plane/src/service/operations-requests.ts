@@ -1,12 +1,11 @@
-import { operationsDiagnosisInputSchema, operationsRequestBindingSchema } from '@itervane/contracts';
+import { operationsDiagnosisInputSchema, operationsRequestBindingSchema, type OperationsRequestBinding } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { eq } from 'drizzle-orm';
 import { operationsDiagnosisInputs, operationsRequests, tasks } from '../persistence/schema.js';
 import type { Transaction } from './access.js';
 import { DomainError } from './errors.js';
-import type { readOperationsObservationTarget } from './operations-targets.js';
 
-export function freezeOperationsRequest(target: Awaited<ReturnType<typeof readOperationsObservationTarget>>) {
+export function freezeOperationsRequest(target: Omit<OperationsRequestBinding, 'version'>) {
   const document = operationsRequestBindingSchema.strip().parse({ ...target, version: 1 });
   return { document, sha256: sha256(JSON.stringify(document)) };
 }

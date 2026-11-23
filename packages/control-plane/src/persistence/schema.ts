@@ -6,7 +6,7 @@ import {
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan,
   type OperationsDiagnosisObservation, type OperationsDiagnosisReceipt, type OperationsDiagnosisSection,
   type OperationsHealthBinding, type OperationsHealthSignal,
-  type OperationsObservationReceipt, type OperationsProposal, type OperationsRequestBinding, type OperationsRestartBaseline,
+  type OperationsObservationReceipt, type OperationsProposal, type OperationsRepairProposal, type OperationsRequestBinding, type OperationsRestartBaseline,
   type OperationsRestartInstallation, type OperationsRestartRecoveryFailure, type OperationsRestartRecoveryProof, type OperationsRestartRequest,
   type OperationsRestorePlan, type OperationsRestoreRecoveryFailure, type OperationsRestoreRecoveryProof,
   type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt,
@@ -884,6 +884,33 @@ export const operationsIncidentDiagnoses = domain.table('operations_incident_dia
     foreignColumns: [operationsIncidentMonitors.id, operationsIncidentMonitors.environmentId] }),
   foreignKey({ name: 'operations_incident_diagnosis_task_fk', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
   check('operations_incident_diagnosis_budget', sql`${t.attempt} BETWEEN 1 AND 3`),
+]);
+
+export const operationsRepairProposals = domain.table('operations_repair_proposals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  diagnosisRunId: uuid('diagnosis_run_id').notNull().references(() => operationsDiagnosisResults.runId),
+  environmentId: uuid('environment_id').notNull().references(() => environments.id),
+  releaseOperationId: uuid('release_operation_id').notNull().references(() => releaseOperations.id),
+  candidateId: uuid('candidate_id').notNull().references(() => releaseCandidates.id),
+  incidentId: uuid('incident_id'), sampleSequence: bigint('sample_sequence', { mode: 'number' }),
+  proposedBy: uuid('proposed_by').notNull().references(() => principals.id), grantId: uuid('grant_id').notNull(),
+  fingerprint: text('fingerprint').notNull(), document: jsonb('document').$type<OperationsRepairProposal>().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull(), validUntil: timestamp('valid_until', { withTimezone: true }).notNull(),
+}, t => [
+  unique('operations_repair_proposal_per_diagnosis').on(t.diagnosisRunId),
+  index('operations_repair_proposal_incident').on(t.incidentId),
+  foreignKey({ name: 'operations_repair_proposal_sample_fk', columns: [t.sampleSequence, t.incidentId],
+    foreignColumns: [operationsHealthSamples.sequence, operationsHealthSamples.incidentId] }),
+  check('operations_repair_proposal_binding', sql`(${t.fingerprint} ~ '^[a-f0-9]{64}$' AND ${t.validUntil} > ${t.createdAt}
+    AND ${t.document}->>'version' = '1' AND ${t.document}#>>'{diagnosis,runId}' = ${t.diagnosisRunId}::text
+    AND ${t.document}#>>'{target,environmentId}' = ${t.environmentId}::text
+    AND ${t.document}#>>'{target,releaseOperationId}' = ${t.releaseOperationId}::text
+    AND ${t.document}#>>'{source,candidateId}' = ${t.candidateId}::text
+    AND ${t.document}->>'proposedBy' = ${t.proposedBy}::text AND ${t.document}->>'grantId' = ${t.grantId}::text
+    AND ((${t.incidentId} IS NULL AND ${t.sampleSequence} IS NULL AND ${t.document}->'incident' = 'null'::jsonb)
+      OR (${t.incidentId} IS NOT NULL AND ${t.sampleSequence} > 0 AND ${t.document}#>>'{incident,id}' = ${t.incidentId}::text
+        AND ${t.document}#>>'{incident,sampleSequence}' = ${t.sampleSequence}::text))
+    AND octet_length(${t.document}::text) <= 8192) IS TRUE`),
 ]);
 
 export const formalReleaseSteps = domain.table('formal_release_steps', {

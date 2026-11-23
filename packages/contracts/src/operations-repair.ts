@@ -1,0 +1,22 @@
+import { z } from 'zod';
+import { taskDtoSchema } from './control-plane.js';
+import { sha256Schema } from './inspection.js';
+import { operationsHealthBindingSchema } from './operations-health.js';
+import { idSchema, sourceRefSchema } from './primitives.js';
+
+export const freezeOperationsRepairSchema = z.strictObject({ diagnosisSha256: sha256Schema });
+
+export const operationsRepairProposalSchema = z.strictObject({
+  version: z.literal(1),
+  diagnosis: z.strictObject({ taskId: idSchema, runId: idSchema, sha256: sha256Schema }),
+  target: operationsHealthBindingSchema,
+  incident: z.strictObject({ id: idSchema, sampleSequence: z.int().positive() }).nullable(),
+  source: z.strictObject({
+    candidateId: idSchema, candidateSha256: sha256Schema, releaseTaskId: idSchema,
+    git: sourceRefSchema, dataClass: taskDtoSchema.shape.dataClass, originSha256: sha256Schema,
+    originalSnapshotSha256: sha256Schema, deployedSnapshotSha256: sha256Schema, patchSha256: sha256Schema.nullable(),
+  }).refine(source => (source.originalSnapshotSha256 === source.deployedSnapshotSha256) === (source.patchSha256 === null)),
+  proposedBy: idSchema, grantId: idSchema, validUntil: z.iso.datetime({ precision: 3 }),
+});
+
+export type OperationsRepairProposal = z.infer<typeof operationsRepairProposalSchema>;

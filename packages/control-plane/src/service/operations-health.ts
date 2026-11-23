@@ -105,7 +105,7 @@ export async function readHealthProbeTarget(tx: Transaction, { environmentId, en
     publicationProofSha256: current.proofSha256, containerId: current.containerId, manifestDigest: current.manifestDigest,
     configDigest: current.configDigest,
   });
-  return { binding, target: current.releaseTarget, version: current.version };
+  return { binding, target: current.releaseTarget, version: current.version, publication: current };
 }
 
 async function recordIncidentSignal(tx: Transaction, binding: HealthProbe['binding'], bindingSha256: string,
