@@ -16,7 +16,7 @@ digest=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1])
 node=$(command -v node)
 case "$scenario" in
   regression) features=(--enable-repair --enable-verification) ;;
-  standard-build) features=(--enable-verification --enable-standard-build --enable-standard-baseline) ;;
+  standard-build) features=(--enable-repair --enable-verification --enable-standard-build --enable-standard-baseline) ;;
   standard-oci|protected-release|protected-release-npm|protected-release-drift|protected-release-faults|protected-release-operations|protected-release-restore|protected-release-restore-authorization)
     artifacts="$directory/artifacts"
     sudo -n install -d -m 0700 -o "$runner" -g "$runner" "$artifacts"
