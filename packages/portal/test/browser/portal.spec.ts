@@ -4,8 +4,9 @@ import { test as base, expect, type Page } from '@playwright/test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { admissionDtoSchema, catalogDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema, formalReleaseDecisionResultSchema,
   formalReleaseViewSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema, operationsObservationViewSchema, operationsProposalViewSchema,
+  operationsRestartContinueInputSchema, operationsRestartEnqueueInputSchema, operationsRestartExecutionViewSchema,
   preauditDtoSchema, releaseDecisionInputSchema, sourceInspectionDtoSchema, taskDtoSchema, translate, verificationViewSchema,
-  type FormalReleaseCandidateDto, type Locale, type TaskDto } from '@itervane/contracts';
+  type FormalReleaseCandidateDto, type Locale, type OperationsRestartExecutionView, type TaskDto } from '@itervane/contracts';
 import { browserStack } from './stack.js';
 
 type Stack = Awaited<ReturnType<typeof browserStack>>;
@@ -737,6 +738,168 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
   await stack.database.admin.query('DELETE FROM itervane.project_members WHERE project_id=$1', [project.id]);
   await expect(panel).toHaveCount(0);
   await expect(page.getByText(receiptSha256, { exact: true })).toHaveCount(0);
+  await expectMotionCsp(page);
+});
+
+test('queues a restart, revalidates continuation, and displays bilingual recovery receipts', async ({ page, stack }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await observeMotion(page, stack.origin);
+  const project = await seedProject(stack);
+  const authorization = authorizationFrom(page);
+  await login(page, stack);
+  await expect(page.getByRole('link', { name: project.title, exact: true })).toBeVisible();
+  const admitted = await admit(stack, authorization(), project);
+  const expired = await admit(stack, authorization(), project);
+  await Promise.all([paused(stack, admitted.id), paused(stack, expired.id)]);
+  const observedAt = new Date().toISOString();
+  const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+  const manifestDigest = `sha256:${digest('verified image')}`;
+  const proofSha256 = digest('verified recovery');
+  type Receipt = NonNullable<OperationsRestartExecutionView['execution']>;
+  let phase: Receipt['state'] | null = null;
+  let version = 5;
+  let hasPortalAuthority = true;
+  let expiredNeedsReview = false;
+  const queuedRequests: unknown[] = [];
+  const continuationRequests: unknown[] = [];
+  const show = (request: { headers: () => Record<string, string> }): Locale => request.headers()['accept-language'] === 'zh-CN' ? 'zh-CN' : 'en';
+
+  async function mount(task: TaskDto, pastDeadline: boolean) {
+    const path = `${stack.origin}/v1/tasks/${task.id}`;
+    const runId = task.runId;
+    const releaseOperationId = randomUUID();
+    const applicationId = randomUUID();
+    const environmentId = randomUUID();
+    const executionId = randomUUID();
+    const executionTaskId = randomUUID();
+    const executionRunId = randomUUID();
+    const proposalId = randomUUID();
+    const fingerprint = digest(proposalId);
+    const approvalId = randomUUID().replaceAll('-', '');
+    const callSha256 = digest(approvalId);
+    const evidenceId = digest('recorded container fact');
+    const releaseEvidenceId = digest('recorded release fact');
+    const decision = { version: 1, action: 'confirm', actorId: randomUUID(), selfConfirmed: true, decidedAt: observedAt };
+    const taskVersion = task.version + 2;
+    await page.route(path, async route => {
+      const response = await route.fetch();
+      return response.ok() ? route.fulfill({ json: taskDtoSchema.parse({ ...task, version: taskVersion,
+        state: 'succeeded', workflow: 'operations' }) }) : route.fulfill({ response });
+    });
+    await page.route(`${path}/operations`, route => {
+      const locale = show(route.request());
+      return route.fulfill({ json: operationsObservationViewSchema.parse({
+        version: 1, taskId: task.id, runId, taskVersion, applicationId, environmentId, releaseOperationId,
+        state: 'succeeded', observation: { state: 'exited', stateLabel: translate(locale, 'operations.container.exited'), observedAt, receiptSha256: digest('observation') },
+        diagnosis: { receiptSha256: digest('diagnosis'), previousReleaseOperationId: null, hypotheses: [],
+          recommendation: { code: 'review_restart', message: translate(locale, 'operations.proposal_confirmed'), evidenceIds: [evidenceId, releaseEvidenceId] },
+          facts: [
+            { section: 'container', evidenceId, proofSha256: digest('container proof'), result: { state: 'exited', observedAt } },
+            { section: 'release', evidenceId: releaseEvidenceId, proofSha256: digest('release proof'),
+              result: { current: { operationId: releaseOperationId, manifestDigest, verifiedAt: observedAt }, previous: null } },
+          ] },
+        reason: 'operations_diagnosed', reasonMessage: translate(locale, 'reason.operations_diagnosed'),
+        message: translate(locale, 'task.operations_observed'), locale,
+      }) });
+    });
+    await page.route(`${path}/operations-proposal`, route => {
+      const locale = show(route.request());
+      const status = pastDeadline ? 'expired' : 'confirmed';
+      return route.fulfill({ json: operationsProposalViewSchema.parse({ taskId: task.id, runId, taskVersion, locale, draft: null,
+        proposal: { id: proposalId, fingerprint, kind: 'restart', status, message: translate(locale, `operations.proposal_${status}`),
+          validUntil: new Date(Date.parse(observedAt) + (pastDeadline ? -60_000 : 180_000)).toISOString(),
+          current: { operationId: releaseOperationId, manifestDigest }, restore: null, actions: [], decisions: [decision] },
+      }) });
+    });
+    await page.route(`${path}/operations-execution`, route => {
+      const locale = show(route.request());
+      const state = pastDeadline ? expiredNeedsReview ? 'needs_human' : 'reconciling' : phase;
+      const reason = state === 'needs_human' ? 'operations_restart_recovery_manual'
+        : pastDeadline ? 'operations_restart_approval_expired' : state === 'waiting_approval' ? 'operations_execution_native_approval'
+        : state === 'succeeded' ? 'operations_restart_recovery_verified' : state === 'reconciling' ? 'operations_execution_reconciling'
+          : 'operations_execution_queued';
+      const execution = state ? { id: executionId, taskId: executionTaskId, runId: executionRunId, taskVersion: version, proposalId, releaseOperationId,
+        state, reason, message: translate(locale, `reason.${reason}`), environmentHeld: state !== 'succeeded',
+        nativeApprovalId: state === 'queued' ? null : approvalId,
+        recovery: state === 'succeeded' ? { state: 'verified', failure: null, proofSha256 }
+          : state === 'needs_human' ? { state: 'manual_review', failure: 'native_unconfirmed', proofSha256: null } : null } : null;
+      const action = pastDeadline || !hasPortalAuthority ? null : state === null ? { kind: 'enqueue', proposalId, fingerprint, decisionVersion: 1 }
+        : state === 'waiting_approval' ? { kind: 'continue', executionId, expectedVersion: version, approvalId, callSha256 } : null;
+      return route.fulfill({ json: operationsRestartExecutionViewSchema.parse({ taskId: task.id, runId, locale, execution, action }) });
+    });
+    if (!pastDeadline) {
+      await page.route(`${stack.origin}/v1/operations/proposals/${proposalId}/execution`, route => {
+        queuedRequests.push(operationsRestartEnqueueInputSchema.parse(route.request().postDataJSON()));
+        phase = 'queued';
+        return route.fulfill({ status: 202, json: { executionId, replayed: false } });
+      });
+      await page.route(`${stack.origin}/v1/operations/executions/${executionId}/continue`, route => {
+        continuationRequests.push(operationsRestartContinueInputSchema.parse(route.request().postDataJSON()));
+        if (continuationRequests.length === 1) return route.abort('failed');
+        phase = 'reconciling';
+        return route.fulfill({ status: 202, json: { executionId, replayed: false } });
+      });
+    }
+    return { approvalId, callSha256, fingerprint, destination: `${stack.origin}/#/tasks/${task.id}` };
+  }
+  const current = await mount(admitted, false);
+  await page.goto(current.destination);
+  const execution = page.getByTestId('operations-restart-execution');
+  const queue = execution.getByRole('button', { name: 'Queue restart', exact: true });
+  await queue.click();
+  const queueDialog = page.getByRole('dialog', { name: 'Queue this approved restart?' });
+  await expect(queueDialog.getByText(manifestDigest, { exact: true })).toBeVisible();
+  await queueDialog.getByRole('button', { name: 'Go back', exact: true }).click();
+  expect(queuedRequests).toEqual([]);
+  await queue.click();
+  await queueDialog.getByRole('button', { name: 'Queue restart', exact: true }).click();
+  await expect(execution.getByRole('status')).toHaveText(translate('en', 'reason.operations_execution_queued'));
+  expect(queuedRequests).toEqual([{ fingerprint: current.fingerprint, decisionVersion: 1 }]);
+
+  phase = 'waiting_approval';
+  await language(page, 'zh-CN');
+  await expect(execution.getByText(current.approvalId, { exact: true })).toBeVisible();
+  const resume = execution.getByRole('button', { name: '续发重启', exact: true });
+  await resume.click();
+  const resumeDialog = page.getByRole('dialog', { name: '续发本次重启请求？' });
+  await expect(resumeDialog.getByText(current.approvalId, { exact: true })).toBeVisible();
+  hasPortalAuthority = false;
+  await expect(resumeDialog).toHaveCount(0);
+  await expect(resume).toHaveCount(0);
+  expect(continuationRequests).toEqual([]);
+  version++;
+  hasPortalAuthority = true;
+  await resume.click();
+  const submit = resumeDialog.getByRole('button', { name: '续发重启', exact: true });
+  await submit.click();
+  await expect(resumeDialog.getByRole('alert')).toBeVisible();
+  await submit.click();
+  await expect(execution.getByRole('status')).toHaveText(translate('zh-CN', 'reason.operations_execution_reconciling'));
+  expect(continuationRequests).toHaveLength(2);
+  expect(continuationRequests[0]).toEqual({ approvalId: current.approvalId, callSha256: current.callSha256, expectedVersion: version, idempotencyKey: expect.any(String) });
+  expect(continuationRequests[1]).toEqual(continuationRequests[0]);
+  phase = 'succeeded';
+  await expect(execution.getByRole('status')).toHaveText(translate('zh-CN', 'reason.operations_restart_recovery_verified'));
+  const disclosures = (await motionProbe(page)).disclosures;
+  await execution.locator('summary').filter({ hasText: '重启回执' }).press('Enter');
+  await expect(execution.getByText(proofSha256, { exact: true })).toBeVisible();
+  await expect.poll(async () => (await motionProbe(page)).disclosures).toBeGreaterThan(disclosures);
+  await expect(execution.getByText('已释放', { exact: true })).toBeVisible();
+
+  const past = await mount(expired, true);
+  await page.goto(past.destination);
+  await expect(execution.getByRole('status')).toHaveText(translate('zh-CN', 'reason.operations_restart_approval_expired'));
+  await expect(resume).toHaveCount(0);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await language(page, 'en');
+  await expect(execution.getByRole('status')).toHaveText(translate('en', 'reason.operations_restart_approval_expired'));
+  const motion = (await motionProbe(page)).disclosures;
+  await execution.locator('summary').filter({ hasText: 'Restart receipt' }).press('Enter');
+  await expect(execution.getByText('Held by this execution', { exact: true })).toBeVisible();
+  expect((await motionProbe(page)).disclosures).toBe(motion);
+  expiredNeedsReview = true;
+  await expect(execution.getByRole('status')).toHaveText(translate('en', 'reason.operations_restart_recovery_manual'));
+  await expect(execution.getByRole('button', { name: 'Resume restart', exact: true })).toHaveCount(0);
   await expectMotionCsp(page);
 });
 
