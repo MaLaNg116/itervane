@@ -3,7 +3,7 @@ import { sha256 } from '@itervane/runner';
 import { and, eq } from 'drizzle-orm';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import type { Database } from '../persistence/database.js';
-import { operationsIncidentDiagnoses, operationsRepairProposals, releaseCandidates, releaseOperations, repositories,
+import { operationsIncidentDiagnoses, operationsRepairAdmissions, operationsRepairProposals, releaseCandidates, releaseOperations, repositories,
   tasks } from '../persistence/schema.js';
 import { requireActor, requireProjectAccess, requireStoredActor, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
@@ -25,6 +25,20 @@ export function readOperationsRepairProposal(row: ProposalRow) {
       || document.proposedBy !== row.proposedBy || document.grantId !== row.grantId || Date.parse(document.validUntil) !== row.validUntil.getTime()
       || sha256(JSON.stringify(document)) !== row.fingerprint) throw new Error('operations_repair_proposal_integrity');
   return document;
+}
+
+export async function readLinkedOperationsRepair(tx: Transaction, task: TaskRow) {
+  const [entry] = await tx.select({ admission: operationsRepairAdmissions, proposal: operationsRepairProposals })
+    .from(operationsRepairAdmissions).innerJoin(operationsRepairProposals, eq(operationsRepairProposals.id, operationsRepairAdmissions.proposalId))
+    .where(eq(operationsRepairAdmissions.taskId, task.id));
+  if (!entry) return undefined;
+  const { admission, proposal } = entry;
+  const frozen = readOperationsRepairProposal(proposal);
+  const requestSha256 = sha256(JSON.stringify({ proposalId: proposal.id, fingerprint: proposal.fingerprint, sourceCommit: task.commit, locale: task.locale }));
+  if (frozen.target.projectId !== task.projectId || frozen.source.git.repositoryId !== task.repositoryId || frozen.source.dataClass !== task.dataClass
+      || admission.sourceCommit !== task.commit || admission.actorId !== task.requestedBy || admission.requestSha256 !== requestSha256
+      || task.requestHash !== requestSha256) throw new DomainError('version_conflict');
+  return { admission, frozen };
 }
 
 async function readRepairSource(tx: Transaction, scope: {

@@ -24,7 +24,7 @@ function presentTask(task: typeof tasks.$inferSelect, run: Pick<typeof taskRuns.
     state: task.state, version: task.version, locale: task.locale, createdAt: task.createdAt.toISOString() });
 }
 
-async function taskView(tx: Transaction, taskId: string) {
+export async function taskView(tx: Transaction, taskId: string) {
   const [row] = await tx.select({ task: tasks, run: { id: taskRuns.id, role: taskRuns.role } }).from(tasks)
     .innerJoin(taskRuns, and(eq(taskRuns.taskId, tasks.id), eq(taskRuns.generation, tasks.generation))).where(eq(tasks.id, taskId));
   if (!row) throw new DomainError('not_found');
@@ -53,7 +53,8 @@ async function replayAdmission(tx: Transaction, scope: Pick<TaskAdmission, 'proj
 export class TaskService {
   constructor(private readonly database: Database) {}
 
-  private async insertTask(tx: Transaction, values: TaskAdmission, operations?: OperationsAdmission) {
+  // The caller supplies values after the source and actor are authorized in this transaction.
+  async insertAuthorizedTask(tx: Transaction, values: TaskAdmission, operations?: OperationsAdmission) {
     const taskId = randomUUID(); const runId = randomUUID();
     const [task] = await tx.insert(tasks).values({ ...values, id: taskId })
       .onConflictDoNothing({ target: [tasks.projectId, tasks.requestedBy, tasks.requestKey] }).returning();
@@ -94,7 +95,7 @@ export class TaskService {
       const [repository] = await tx.select().from(repositories)
         .where(and(eq(repositories.id, input.source.repositoryId), eq(repositories.projectId, input.projectId))).for('share');
       if (!repository) throw new DomainError('not_found');
-      return this.insertTask(tx, { projectId: input.projectId,
+      return this.insertAuthorizedTask(tx, { projectId: input.projectId,
         repositoryId: repository.id, requestedBy: actor.principalId, commit: input.source.commit, purpose: input.purpose,
         dataClass: input.dataClass, locale: input.locale, requestKey: input.idempotencyKey, requestHash: hash });
     });
@@ -126,7 +127,7 @@ export class TaskService {
   insertAuthorizedOperations(tx: Transaction, target: OperationsTarget,
     { requestedBy, requestKey, requestHash, locale, providerSha256, incident }:
     Pick<TaskAdmission, 'requestedBy' | 'requestKey' | 'requestHash'> & { locale: Locale; providerSha256: string | undefined; incident?: true }) {
-    return this.insertTask(tx, { projectId: target.projectId, requestedBy, requestKey, requestHash, locale,
+    return this.insertAuthorizedTask(tx, { projectId: target.projectId, requestedBy, requestKey, requestHash, locale,
       repositoryId: target.source.repositoryId, commit: target.source.commit, dataClass: target.dataClass,
       purpose: translate(locale, incident ? 'operations.incident.purpose' : 'operations.task.purpose'),
     }, { request: freezeOperationsRequest(target), providerSha256 });

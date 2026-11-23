@@ -456,6 +456,13 @@
       "when": 1795407193386,
       "tag": "0064_operations_repair_proposals",
       "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1795408520622,
+      "tag": "0065_operations_repair_admissions",
+      "breakpoints": true
     }
   ]
 }

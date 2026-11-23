@@ -1,10 +1,14 @@
 import { z } from 'zod';
 import { taskDtoSchema } from './control-plane.js';
+import { localeSchema } from './i18n.js';
 import { sha256Schema } from './inspection.js';
 import { operationsHealthBindingSchema } from './operations-health.js';
 import { idSchema, sourceRefSchema } from './primitives.js';
 
 export const freezeOperationsRepairSchema = z.strictObject({ diagnosisSha256: sha256Schema });
+export const confirmOperationsRepairSchema = z.strictObject({
+  fingerprint: sha256Schema, commit: sourceRefSchema.shape.commit.optional(), locale: localeSchema.default('en'),
+});
 
 export const operationsRepairProposalSchema = z.strictObject({
   version: z.literal(1),

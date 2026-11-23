@@ -913,6 +913,18 @@ export const operationsRepairProposals = domain.table('operations_repair_proposa
     AND octet_length(${t.document}::text) <= 8192) IS TRUE`),
 ]);
 
+export const operationsRepairAdmissions = domain.table('operations_repair_admissions', {
+  proposalId: uuid('proposal_id').primaryKey().references(() => operationsRepairProposals.id),
+  taskId: uuid('task_id').notNull(), runId: uuid('run_id').notNull(),
+  actorId: uuid('actor_id').notNull().references(() => principals.id), grantId: uuid('grant_id').notNull(),
+  requestSha256: text('request_sha256').notNull(), sourceCommit: text('source_commit').notNull(),
+  selfConfirmed: boolean('self_confirmed').notNull(), confirmedAt: timestamp('confirmed_at', { withTimezone: true }).notNull(),
+}, t => [
+  unique('operations_repair_admission_per_task').on(t.taskId),
+  foreignKey({ name: 'operations_repair_admission_task_fk', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
+  check('operations_repair_admission_binding', sql`${t.requestSha256} ~ '^[a-f0-9]{64}$' AND ${t.sourceCommit} ~ '^([a-f0-9]{40}|[a-f0-9]{64})$'`),
+]);
+
 export const formalReleaseSteps = domain.table('formal_release_steps', {
   operationId: uuid('operation_id').notNull().references(() => releaseOperations.id),
   kind: text('kind').$type<'archive' | 'registry' | 'komodo_config' | 'komodo_dispatch'>().notNull(),

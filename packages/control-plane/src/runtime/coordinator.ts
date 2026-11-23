@@ -7,6 +7,7 @@ import { formalRepairRetries, operationsExecutionSchedules, runRuntime, taskRuns
 import { requireProjectAccess, requireStoredActor, type Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
 import { requireIncidentDiagnosisAuthority } from '../service/operations-incident-monitor.js';
+import { readLinkedOperationsRepair } from '../service/operations-repair-proposals.js';
 import { readOperationsDiagnosis, readOperationsRequest } from '../service/operations-requests.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, enqueue, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope, type TaskRow } from './authority.js';
@@ -25,7 +26,10 @@ export async function authorizeRun(tx: Transaction, task: TaskRow, runId: string
     const operationsDiagnosis = await readOperationsDiagnosis(tx, task, runId, operationsRequest);
     await requireIncidentDiagnosisAuthority(tx, runId, task.requestedBy, operationsRequest.document, operationsDiagnosis?.providerSha256);
     return { ...access, operationsRequest, operationsDiagnosis };
-  } else if (task.generation !== 1) {
+  }
+  const linked = await readLinkedOperationsRepair(tx, task);
+  if (linked && linked.admission.grantId !== access.grantId) throw new DomainError('forbidden');
+  if (task.generation !== 1) {
     const [retry] = await tx.select({ grantId: formalRepairRetries.grantId }).from(formalRepairRetries).where(eq(formalRepairRetries.runId, runId));
     if (retry && retry.grantId !== access.grantId) throw new DomainError('forbidden');
   }
