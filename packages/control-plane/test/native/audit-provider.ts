@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage } from 'node:http';
 import { agentText, type AgentEvidence } from '@itervane/agent';
-import { formalRepairRetryContextSchema } from '@itervane/contracts';
+import { formalRepairRetryContextSchema, linkedHealthRepairContextSchema } from '@itervane/contracts';
 import { verificationFixtureCall } from '../../../verification/src/agent/verification-fixture.js';
 import { npmReleaseApproval } from '../../../verification/src/native/npm-release-fixture.js';
+import { correctSyntheticHealthApp } from './health-repair.js';
 
 export const auditFixtureKey = 'itervane-native-fixture';
 export const auditFixtureModel = 'itervane-native-audit';
@@ -20,12 +21,13 @@ async function auditContext(request: IncomingMessage) {
   const first = payload.messages?.[0];
   if (payload.model !== auditFixtureModel || first?.role !== 'user' || typeof first.content !== 'string') throw new Error('invalid fixture envelope');
   const context = JSON.parse(first.content) as { observations: AgentEvidence[]; source?: unknown; role?: unknown; goal?: unknown;
-    handoff?: { findings?: Array<{ id: string; scanner: string; ruleId: string }>; previousVerification?: unknown } };
+    completionNeeds?: string[];
+    handoff?: { findings?: Array<{ id: string; scanner: string; ruleId: string }>; previousVerification?: unknown; healthReproduction?: unknown } };
   if (context.source !== undefined || !Array.isArray(context.observations)) throw new Error('invalid fixture context');
   return context;
 }
 
-function selectTool(observations: AgentEvidence[]) {
+function selectTool(observations: AgentEvidence[], completionNeeds: readonly string[] = []) {
   const scans = observations.flatMap(item => item.data.kind === 'scan' ? [{ ...item.data, id: item.id }] : []);
   const secrets = scans.find(scan => scan.scanner === 'gitleaks');
   if (!secrets) return { name: 'read_scan', input: { scanner: 'gitleaks' } };
@@ -33,6 +35,7 @@ function selectTool(observations: AgentEvidence[]) {
     return { name: 'read_rule', input: { ruleId: 'bounded-review-context' } };
   }
   if (!scans.some(scan => scan.scanner === 'trivy')) return { name: 'read_scan', input: { scanner: 'trivy' } };
+  if (completionNeeds.includes('health_reproduction')) return { name: 'read_health_reproduction', input: {} };
   return { name: 'finish_role', input: {
     summary: '已核对隔离扫描的证据和覆盖。', evidenceIds: observations.map(item => item.id),
     explanations: scans.flatMap(scan => scan.findings.map(item => ({ findingId: item.id,
@@ -42,7 +45,7 @@ function selectTool(observations: AgentEvidence[]) {
   } };
 }
 
-function selectOperations(observations: AgentEvidence[]) {
+function selectOperations(observations: AgentEvidence[], linkedHealth: boolean) {
   const readings = observations.flatMap(({ id, data }) => data.kind === 'operations_section' ? [{ id, data }] : []);
   const runtime = readings.find(item => item.data.section === 'container')?.data;
   const stopped = runtime?.section === 'container' && (runtime.result.state === 'exited' || runtime.result.state === 'dead');
@@ -55,9 +58,32 @@ function selectOperations(observations: AgentEvidence[]) {
   const release = readings.find(item => item.data.section === 'release')?.data;
   const rollback = stopped && release?.section === 'release' && release.result.previous !== null;
   const evidenceIds = readings.filter(item => item.data.section === 'container' || item.data.section === 'release').map(item => item.id);
+  const logs = readings.find(item => item.data.section === 'logs');
+  if (linkedHealth && !stopped && logs?.data.section === 'logs' && logs.data.result.errorLines > 0) {
+    const cited = [...evidenceIds, logs.id];
+    return { name: 'finish_role', input: { hypotheses: [{ code: 'application_error', evidenceIds: cited }],
+      recommendation: { code: 'investigate_code', evidenceIds: cited } } };
+  }
   const code = rollback ? 'review_rollback' : stopped ? 'review_restart' : 'continue_observation';
   return { name: 'finish_role', input: { hypotheses: rollback ? [{ code: 'release_regression', evidenceIds }] : [],
     recommendation: { code, evidenceIds } } };
+}
+
+function selectLinkedHealthRepair(observations: AgentEvidence[], handoff: Awaited<ReturnType<typeof auditContext>>['handoff']) {
+  const candidate = observations.find(item => item.data.kind === 'repair_candidate');
+  if (candidate) return { name: 'finish_role', input: { evidenceId: candidate.id, summary: '已修复连续健康请求的计数缺陷。' } };
+  if (observations.some(item => item.data.kind === 'repair_failure')) return { name: 'request_human', input: {} };
+  const reproduction = linkedHealthRepairContextSchema.parse(handoff?.healthReproduction);
+  const observation = observations.find(item => item.data.kind === 'repair_targets');
+  if (observation?.data.kind !== 'repair_targets') return { name: 'read_repair_targets', input: { findingIds: [reproduction.receiptSha256] } };
+  const [target] = observation.data.observation.targets;
+  if (!target || !('kind' in target) || target.findingId !== reproduction.receiptSha256 || !target.range || !target.sourceText) {
+    throw new Error('linked_health_repair_fixture_target');
+  }
+  const { startByte, endByte } = target.range;
+  return { name: 'apply_repair_patch', input: { observationId: observation.id, targets: [{ targetIndex: 0,
+    edits: [{ startByte, endByte, replacement: correctSyntheticHealthApp(target.sourceText) }],
+  }] } };
 }
 
 function selectRetryRepair(observations: AgentEvidence[], handoff: Awaited<ReturnType<typeof auditContext>>['handoff']) {
@@ -97,7 +123,7 @@ function selectDependencyRepair(observations: AgentEvidence[], handoff: Awaited<
   return { name: 'apply_repair_patch', input: { observationId: observed.id, targets: targets.map((_, targetIndex) => ({ targetIndex })) } };
 }
 
-export async function auditProtocolFixture(options: { repairRetry?: boolean; dependencyRepair?: boolean } = {}) {
+export async function auditProtocolFixture(options: { repairRetry?: boolean; dependencyRepair?: boolean; linkedHealth?: boolean } = {}) {
   let failAfterObservation = false;
   const calls: string[] = [];
   const server = createServer(async (request, response) => {
@@ -106,7 +132,7 @@ export async function auditProtocolFixture(options: { repairRetry?: boolean; dep
       if (request.method !== 'POST' || request.url !== '/v1/messages' || request.headers.authorization !== `Bearer ${auditFixtureKey}`) {
         throw new Error('unexpected fixture request');
       }
-      const { observations, role, goal, handoff } = await auditContext(request);
+      const { observations, role, goal, handoff, completionNeeds } = await auditContext(request);
       if (failAfterObservation && observations.length) {
         calls.push('unavailable');
         response.writeHead(503).end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'fixture unavailable' } }));
@@ -114,9 +140,10 @@ export async function auditProtocolFixture(options: { repairRetry?: boolean; dep
       }
       const locale = goal === agentText('zh-CN').formalVerification.goal ? 'zh-CN' : 'en';
       const selected = role === 'verify' ? verificationFixtureCall(observations, locale)
-        : role === 'operations' ? selectOperations(observations)
+        : role === 'operations' ? selectOperations(observations, options.linkedHealth === true)
+        : role === 'repair' && options.linkedHealth ? selectLinkedHealthRepair(observations, handoff)
         : role === 'repair' && options.dependencyRepair ? selectDependencyRepair(observations, handoff)
-        : role === 'repair' && options.repairRetry ? selectRetryRepair(observations, handoff) : selectTool(observations);
+        : role === 'repair' && options.repairRetry ? selectRetryRepair(observations, handoff) : selectTool(observations, completionNeeds);
       calls.push(selected.name);
       response.end(JSON.stringify({
         id: `msg_fixture_${calls.length}`, type: 'message', role: 'assistant', model: auditFixtureModel,

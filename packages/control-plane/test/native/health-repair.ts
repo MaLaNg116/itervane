@@ -3,6 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { standardHealthRepairPath, type FormalVerificationInput, type QualifiedInspectionReceipt, type RepairPatch } from '@itervane/contracts';
 import { canonicalRepairCommand, sha256, type QualifiedInspectionClient } from '@itervane/runner';
 
+export function correctSyntheticHealthApp(sourceText: string) {
+  const counter = /^  let healthRequests = 0;\n/m;
+  const returning503 = /^    if \(\+\+healthRequests > 1\) \{\n[\s\S]*?^    \}\n/m;
+  ok(counter.test(sourceText) && returning503.test(sourceText) && sourceText.includes('fixture-health-repeat'));
+  return sourceText.replace(counter, '').replace(returning503, '');
+}
+
 export async function repairNativeHealthFixture(runner: QualifiedInspectionClient, original: QualifiedInspectionReceipt,
   input: FormalVerificationInput, runAuthority: { fence: number; origin: string; authorize: () => Promise<void>; signal: AbortSignal },
   healthReproductionSha256: string) {
@@ -29,11 +36,7 @@ export async function repairNativeHealthFixture(runner: QualifiedInspectionClien
   notEqual(observation.domainId, original.domainId);
 
   // This fixture corrects only its known counting defect using the bytes returned by the VM.
-  const sourceText = target.sourceText;
-  const counter = /^  let healthRequests = 0;\n/m;
-  const returning503 = /^    if \(\+\+healthRequests > 1\) \{\n[\s\S]*?^    \}\n/m;
-  ok(counter.test(sourceText) && returning503.test(sourceText) && sourceText.includes('fixture-health-repeat'));
-  const replacement = sourceText.replace(counter, '').replace(returning503, '');
+  const replacement = correctSyntheticHealthApp(target.sourceText);
   const patch: RepairPatch = { version: 1, baseSnapshotSha256: workspace.baseSnapshotSha256, files: [{
     path, beforeSha256: target.file.sha256, edits: [{ startByte: target.range.startByte, endByte: target.range.endByte, replacement }],
   }] };

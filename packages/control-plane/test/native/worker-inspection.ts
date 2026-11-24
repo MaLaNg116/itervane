@@ -55,6 +55,7 @@ import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from './audi
 import { proveKnownKomodoRecovery, proveUnknownKomodoDispatch, recoverRecordedReleaseForRollout } from './komodo-release-proof.js';
 import type { KomodoInterruption, runKomodoReleaseFixture } from './komodo-release-worker.js';
 import { proveInstalledHealthProbe } from './health-proof.js';
+import { confirmNativeLinkedHealthRepair } from './linked-health-proof.js';
 import type { RegistryImportMarker } from './release-recovery.js';
 import { temporaryRegistry } from './registry-fixture.js';
 import { openProtectedIngress } from './protected-ingress.js';
@@ -76,6 +77,7 @@ const standardBuildCommit = '3a719ca44f306d30cdf2d27e9a6d3b954ed656f0';
 const standardLockDriftCommit = '03e5d18a27d23960f040c0d5d70afefac15ec46e';
 const standardHealthRegressionCommit = '1eac5c8776c6e81613cfb5adf6edd2cd6b163ba3';
 const standardHealthFollowupDefectCommit = 'bd2d14e3485d30429740d4403ac0bd36fc40420d';
+const nativeLinkedHealthCommit = '5d72c2fd9558d708441dc258496842698b09f630';
 const repairRetryCommit = '39e9b7f34fdd01ec55fe4dda5358ffce5d68cbf8';
 const dependencyReleaseCommit = '37ac62431fd9bf7b2a6c0f4b3f15d5d5f1f030b8';
 const runtimeFaultCommit = '5b9db1015069be891233231a7b947831ac46fe39';
@@ -313,9 +315,10 @@ async function probe() {
   const driftRun = buildMode === 'protected-release-drift';
   const faultRun = buildMode === 'protected-release-faults';
   const operationsRun = buildMode === 'protected-release-operations';
+  const linkedHealthRun = buildMode === 'protected-release-linked-health';
   const restoreAuthorityRun = buildMode === 'protected-release-restore-authorization';
   const restoreRun = buildMode === 'protected-release-restore' || restoreAuthorityRun;
-  const protectedRun = buildMode === 'protected-release' || dependencyRun || driftRun || faultRun || operationsRun || restoreRun;
+  const protectedRun = buildMode === 'protected-release' || dependencyRun || driftRun || faultRun || operationsRun || restoreRun || linkedHealthRun;
   const ociRun = buildMode === 'standard-oci' || protectedRun;
   const buildRun = buildMode === 'standard-build' || buildMode === 'standard-build-missing-cache' || ociRun;
   if (process.platform !== 'linux' || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted' || process.env.DATABASE_URL
@@ -444,6 +447,7 @@ async function probe() {
     if (build) {
       const audit = auditProvider = await auditProtocolFixture({
         repairRetry: ociRun && !dependencyRun && !driftRun && !faultRun && !restoreRun, dependencyRepair: dependencyRun,
+        linkedHealth: linkedHealthRun,
       });
       const automaticProfile = build.oci ? standardVerificationProfileSchema.parse({
         id: 'isolated-rescan-fixture', baselineSha256: build.baseline, policySha256: sha256(JSON.stringify(scannerProfiles)),
@@ -486,12 +490,14 @@ async function probe() {
             archive: image.archive });
         }
         const sections = result.observations.map(item => item.section);
-        deepStrictEqual(sections, failed ? ['baseline', 'source', 'build'] : ['baseline', 'image', 'source', 'build']);
+        deepStrictEqual(sections, result.evidence.baseline.status === 'passed'
+          ? ['baseline', 'image', 'source', 'build'] : ['baseline', 'source', 'build']);
         const [last] = (await db.admin.query(`SELECT type,detail FROM itervane.task_events
           WHERE task_id=$1 AND type='task.verification_recorded' AND detail->>'runId'=$2 ORDER BY sequence DESC LIMIT 1`,
           [task.id, task.runId])).rows;
         equal(last?.type, 'task.verification_recorded');
-        equal(last?.detail?.reason, failed ? 'verification_checks_failed' : 'verification_observed');
+        equal(last?.detail?.reason, failed ? input.healthRegression && subject === 'original'
+          ? 'operations_reproduction_observed' : 'verification_checks_failed' : 'verification_observed');
         equal(last?.detail?.verificationResultSha256, stored.result_sha);
         const [attempts] = (await db.admin.query('SELECT count(*)::int AS count FROM itervane.formal_rescan_attempts WHERE run_id=$1', [task.runId])).rows;
         equal(attempts?.count, 1);
@@ -651,7 +657,8 @@ async function probe() {
           const current = taskDtoSchema.parse(await request(`/v1/tasks/${after.taskId}`));
           return { current, after, generation: 1 };
         };
-        const prepared = driftRun || fault || restoreRun ? await cleanReleaseFixture()
+        const prepared = linkedHealthRun ? await cleanReleaseFixture(nativeLinkedHealthCommit)
+          : driftRun || fault || restoreRun ? await cleanReleaseFixture()
           : dependencyRun ? await dependencyFixture(automaticProfile) : await repairRetryFixture(automaticProfile);
         const { current, after, generation } = prepared;
         phase = fault ? `protected_release_${fault}_target` : 'protected_release_target';
@@ -963,7 +970,8 @@ async function probe() {
               version: proof.runtime.version, updateId: proof.update.updateId, healthStatus: proof.runtime.healthStatus,
               anonymousStatus: proof.runtime.anonymousStatus, approvalDeniedWithoutPortal: true, httpMcpAgreement: true,
               model: 'scripted_anthropic_fixture', controlPlaneIdentity: 'signed_oidc_fixture', ingressIdentity: 'native_keycloak',
-              repairCategory: restoreRun ? null : dependencyRun ? 'npm_dependency' : 'synthetic_secret',
+              repairCategory: linkedHealthRun ? generation === 1 && task.id === current.id ? null : 'application_health'
+                : restoreRun ? null : dependencyRun ? 'npm_dependency' : 'synthetic_secret',
               stagedFilesRemaining: false },
           };
         };
@@ -976,7 +984,8 @@ async function probe() {
         const { providerSha256 } = configuredAuditModel(configuration);
 
         const verifyInstalledDiagnosis = async <T>(enrollmentSha256: string, readKey: string, publication: NativeDiagnosisPublication,
-          acceptance?: NativeDiagnosisAcceptance<T> | { kind: 'monitor'; taskId: string; previousOperationId: string }) => {
+          acceptance?: NativeDiagnosisAcceptance<T> | { kind: 'monitor'; taskId: string; previousOperationId: string }
+            | { kind: 'health_repair'; taskId: string }) => {
           phase = 'operations_formal_installation';
           const installed = { ITERVANE_OPERATIONS_ENVIRONMENT_ID: environment.id, ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollmentSha256,
             ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: providerSha256 };
@@ -1012,7 +1021,8 @@ async function probe() {
             deepStrictEqual(await http(`/v1/tasks/${publication.taskId}/operations-option`), {
               option: { projectId: project.id, environmentId: environment.id, releaseOperationId: publication.operationId, diagnosis: true },
             });
-            const diagnosis = acceptance?.kind === 'monitor' ? taskDtoSchema.parse(await http(`/v1/tasks/${acceptance.taskId}`))
+            const diagnosis = acceptance?.kind === 'monitor' || acceptance?.kind === 'health_repair'
+              ? taskDtoSchema.parse(await http(`/v1/tasks/${acceptance.taskId}`))
               : admissionDtoSchema.parse((await reader.callTool({
                 name: 'start_operations_diagnosis', arguments: { projectId: project.id, environmentId: environment.id,
                   expectedReleaseOperationId: publication.operationId, idempotencyKey: randomUUID(), locale: 'zh-CN' },
@@ -1039,9 +1049,11 @@ async function probe() {
             phase = 'operations_formal_worker_stop';
             await worker.stop('TERM'); worker = undefined;
             phase = 'operations_formal_model_trace';
-            const expectedSections = acceptance ? ['container', 'release'] : ['container', 'release', 'logs', 'metrics'];
-            const previous = acceptance && acceptance.kind !== 'restart' ? acceptance.previousOperationId : null;
-            const recommendation = previous ? 'review_rollback' : acceptance ? 'review_restart' : 'continue_observation';
+            const stopped = acceptance && acceptance.kind !== 'health_repair';
+            const expectedSections = stopped ? ['container', 'release'] : ['container', 'release', 'logs', 'metrics'];
+            const previous = acceptance?.kind === 'monitor' || acceptance?.kind === 'rollback' ? acceptance.previousOperationId : null;
+            const recommendation = acceptance?.kind === 'health_repair' ? 'investigate_code'
+              : previous ? 'review_rollback' : stopped ? 'review_restart' : 'continue_observation';
             deepStrictEqual(audit.calls.slice(initialCalls), [...expectedSections.map(() => 'read_operations'), 'finish_role']);
 
             phase = 'operations_formal_evidence';
@@ -1070,7 +1082,7 @@ async function probe() {
               deepStrictEqual(operationsObservationViewSchema.parse(result), response);
               equal(response.releaseOperationId, publication.operationId);
               equal(response.diagnosis?.receiptSha256, row.sha256);
-              equal(response.observation?.state, acceptance ? 'exited' : 'running');
+              equal(response.observation?.state, stopped ? 'exited' : 'running');
               equal(response.diagnosis?.recommendation.code, recommendation);
               const release = response.diagnosis?.facts.find(fact => fact.section === 'release');
               equal(release?.result.current.operationId, publication.operationId);
@@ -1087,11 +1099,155 @@ async function probe() {
               withEnglishReader: read => withEnglishReader(read, endpoint) }) : undefined;
             return { runId: diagnosis.runId, releaseOperationId: publication.operationId, sha256: row.sha256,
               recommendation, previousReleaseOperationId: previous, restoreExecutionId: row.restore_id, accepted,
-              sections: receipt.reads.map(item => item.section), matchedPublishedTarget: true, httpMcpAgreement: true, model: 'scripted_anthropic_fixture' };
+              sections: receipt.reads.map(item => item.section), matchedPublishedTarget: true, httpMcpAgreement: true, model: 'scripted_anthropic_fixture',
+              ...(acceptance?.kind === 'health_repair' ? { logErrorLines: zh.diagnosis?.facts.find(fact => fact.section === 'logs')?.result.errorLines } : {}) };
           } finally {
             try { await reader.close(); } finally { await diagnosisApi.close(); }
           }
         };
+
+        const verifyNativeLinkedHealth = async () => {
+          phase = 'linked_health_installation';
+          const native = await openNativeWhiskersReadScope();
+          const trusted = getCACertificates('default');
+          try {
+            const certificates = readFileSync(ingress.caFile, 'utf8').match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g);
+            ok(certificates?.length === 2);
+            setDefaultCACertificates([...trusted, ...certificates]);
+            const enrollment = await registerOperationsTarget(db.storage, { environmentId: environment.id,
+              releaseTargetRevision: mapping.revision, releaseTargetSha256: mapping.fingerprint,
+              whiskers: { origin: native.origin, serverId: native.serverId } });
+            const installation = { environmentId: environment.id, enrollmentSha256: enrollment.fingerprint, mappingSha256: mapping.fingerprint };
+            const readerCredentials = await target.provisionRestartReader();
+            notEqual(readerCredentials.actorId, target.credentials.actorId);
+            const { monitorId } = await changeOperationsIncidentMonitor(db.storage, {
+              action: 'register', ...installation, expectedActiveId: null, providerSha256, locale: 'zh-CN',
+              validUntil: new Date(Date.now() + 3_600_000).toISOString(),
+            });
+            const health = await createInstalledHealthWorker(db.storage, healthWorkerConfig({
+              DATABASE_URL: db.runtimeUrl, ITERVANE_OPERATIONS_ENVIRONMENT_ID: environment.id,
+              ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollment.fingerprint, ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: mapping.fingerprint,
+              ITERVANE_HEALTH_KOMODO_READER_ID: readerCredentials.actorId, ITERVANE_HEALTH_KOMODO_READER_KEY: readerCredentials.key,
+              ITERVANE_HEALTH_KOMODO_READER_SECRET: readerCredentials.secret, ITERVANE_HEALTH_PROBE_SECRET: ingress.probeSecret,
+              ITERVANE_HEALTH_INCIDENT_MONITOR_ID: monitorId,
+            }));
+            phase = 'linked_health_live_failure';
+            const failed = await health.tick();
+            ok(failed.status === 'recorded' && failed.outcome.status === 'unhealthy' && failed.incidentId);
+            equal(failed.outcome.reason, 'application_unhealthy');
+            const queued = failed.diagnosis;
+            ok(queued?.status === 'queued');
+            equal(queued.incidentId, failed.incidentId);
+            equal(queued.sampleSequence, failed.sequence);
+
+            const diagnosis = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, firstPublication, {
+              kind: 'health_repair', taskId: queued.taskId,
+            });
+            equal(diagnosis.runId, queued.runId);
+            ok(diagnosis.logErrorLines && diagnosis.logErrorLines > 0);
+
+            phase = 'linked_health_authorized_repair';
+            const verifyIdentity = createIdentityVerifier(oidc.config);
+            const accepted = await confirmNativeLinkedHealthRepair(db.storage, installation, {
+              taskId: queued.taskId, diagnosisSha256: diagnosis.sha256, incidentId: failed.incidentId, sampleSequence: failed.sequence,
+              originalOperationId: operationId, originalCommit: nativeLinkedHealthCommit, portalClientId,
+              portalOwner: await verifyIdentity(await oidc.token('owner', { azp: portalClientId })), apiOwner: await verifyIdentity(await oidc.token()),
+            });
+            const repairCalls = audit.calls.length;
+            worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, audit.baseURL, automaticProfile, true);
+            phase = 'linked_health_wait_for_verified_candidate';
+            const repairedTask = await poll(async () => {
+              const next = taskDtoSchema.parse(await request(`/v1/tasks/${accepted.task.id}`));
+              if (next.state === 'needs_human' || next.state === 'failed' || next.state === 'reconciling') {
+                const { rows: [status] } = await db.admin.query<{ reason: string | null }>('SELECT reason FROM itervane.run_runtime WHERE run_id=$1', [next.runId]);
+                console.error(JSON.stringify({ phase, state: next.state, reason: taskEventReasonSchema.safeParse(status?.reason).data ?? null,
+                  modelCalls: audit.calls.slice(repairCalls) }));
+                throw new Error('linked_health_repair_unverified');
+              }
+              return next.state === 'waiting_input' && next.runId !== accepted.task.runId ? next : undefined;
+            }, 550_000, 'linked_health_verified');
+            await worker.stop('TERM'); worker = undefined;
+            phase = 'linked_health_read_original_reproduction';
+            const before = await recordedVerification(accepted.task, true);
+            phase = 'linked_health_read_repaired_verification';
+            const after = await recordedVerification(repairedTask, false, 'repair');
+            phase = 'linked_health_read_scoped_patch';
+            const change = formalRepairDtoSchema.parse(await request(`/v1/tasks/${repairedTask.id}/repair`));
+            ok(change.status === 'recorded' && change.result.status === 'candidate_ready');
+            equal(change.result.generation, 2);
+            const { patchSha256 } = change.result.candidate;
+            equal(patchSha256, after.patchSha256);
+            const patch = formalRepairPatchDtoSchema.parse(await request(`/v1/tasks/${repairedTask.id}/repair/patch?expectedSha256=${change.sha256}`));
+            equal(patch.taskId, repairedTask.id);
+            equal(patch.runId, repairedTask.runId);
+            equal(patch.resultSha256, change.sha256);
+            equal(patch.patchSha256, after.patchSha256);
+            equal(patch.patch.files.length, 1);
+            equal(patch.patch.files[0]?.path, 'server/app.mjs');
+            equal(change.result.candidate.manifestSha256, after.targetManifestSha256);
+            equal(after.baseSnapshotSha256, before.baseSnapshotSha256);
+            equal(after.reviewTrial.input.document.healthReproduction?.receiptSha256, before.receiptSha256);
+            equal(before.reviewTrial.input.document.healthRegression?.sampleSequence, failed.sequence);
+            equal(before.reviewTrial.input.document.healthRegression?.sampleEvidenceSha256, failed.outcome.evidenceSha256);
+            const originalBaseline = before.reviewTrial.evidence.baseline;
+            const replacementBaseline = after.reviewTrial.evidence.baseline;
+            ok(originalBaseline.status === 'passed' && replacementBaseline.status === 'passed');
+            equal(originalBaseline.healthFollowup?.status, 'unhealthy');
+            equal(replacementBaseline.healthFollowup?.status, 'passed');
+            notEqual(before.domainId, after.domainId);
+            ok(before.cleanupConfirmed && after.cleanupConfirmed);
+            const calls = audit.calls.slice(repairCalls);
+            for (const name of ['read_health_reproduction', 'read_repair_targets', 'apply_repair_patch']) equal(calls.filter(call => call === name).length, 1);
+
+            phase = 'linked_health_publish_repair';
+            const repairedApproval = await approve(repairedTask, after, change.result.generation, mapping.fingerprint);
+            notEqual(repairedApproval.candidate.id, candidate.id);
+            const second = await publish(repairedTask, repairedApproval);
+            notEqual(second.proof.operationId, operationId);
+            notEqual(second.proof.manifestDigest, first.proof.manifestDigest);
+            notEqual(second.proof.runtime.containerId, first.proof.runtime.containerId);
+            notEqual(second.proof.runtime.version, first.proof.runtime.version);
+            phase = 'linked_health_observe_recovery';
+            const samples: number[] = [];
+            for (let read = 0; read < 2; read++) {
+              const next = await health.tick();
+              ok(next.status === 'recorded' && next.outcome.status === 'healthy');
+              const [record] = (await db.admin.query<{ operation_id: string; container_id: string }>(`
+                SELECT binding->>'releaseOperationId' AS operation_id,binding->>'containerId' AS container_id
+                FROM itervane.operations_health_samples WHERE sequence=$1`, [next.sequence])).rows;
+              equal(record?.operation_id, second.proof.operationId);
+              equal(record?.container_id, second.proof.runtime.containerId);
+              samples.push(next.sequence);
+            }
+            const [incident] = (await db.admin.query('SELECT closed_reason,closed_at FROM itervane.operations_incidents WHERE id=$1',
+              [failed.incidentId])).rows;
+            ok(incident?.closed_at);
+            equal(incident.closed_reason, 'target_changed');
+            return {
+              incidentId: failed.incidentId, sampleSequence: failed.sequence, diagnosis, originalVersion: first.report.version,
+              originalContainerId: first.proof.runtime.containerId, originalReleaseOperationId: operationId,
+              proposalId: accepted.proposalId, proposalFingerprint: accepted.proposalFingerprint, confirmationReplay: accepted.replayed,
+              deniedApiOwner: accepted.deniedApiOwner, deniedStaleFingerprint: accepted.deniedStaleFingerprint, release: second.report,
+              recoveredContainerId: second.proof.runtime.containerId, healthySamples: samples, closedReason: incident.closed_reason,
+              originalRunId: accepted.task.runId, repairedRunId: repairedTask.runId,
+              before: { domainId: before.domainId, receiptSha256: before.receiptSha256, health: originalBaseline.healthFollowup, cleanupConfirmed: true },
+              after: { domainId: after.domainId, receiptSha256: after.receiptSha256, health: replacementBaseline.healthFollowup, cleanupConfirmed: true,
+                candidateManifestSha256: after.targetManifestSha256, patchSha256: patch.patchSha256, changedPath: patch.patch.files[0]!.path },
+              verifiedBuild: { build: after.build, archiveVerification: after.archiveVerification },
+              modelCalls: calls, readOnlyKomodo: true, whiskersCleanup: true,
+            };
+          } finally {
+            setDefaultCACertificates(trusted);
+            try { await worker?.stop('TERM'); worker = undefined; }
+            finally { await native.close(); }
+          }
+        };
+        if (linkedHealthRun) {
+          const initial = await recordedVerification(current, false);
+          return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
+            release: first.report, initialBuild: { build: initial.build, archiveVerification: initial.archiveVerification },
+            linkedHealth: await verifyNativeLinkedHealth() };
+        }
 
         const verifyNativeRestore = async (second: Awaited<ReturnType<typeof publish>>) => {
           phase = 'operations_native_restore_enrollment';

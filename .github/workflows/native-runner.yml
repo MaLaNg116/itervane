@@ -51,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm, protected-release-drift, protected-release-faults, protected-release-operations, protected-release-restore, protected-release-restore-authorization]
+        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm, protected-release-drift, protected-release-faults, protected-release-operations, protected-release-restore, protected-release-restore-authorization, protected-release-linked-health]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -223,6 +223,22 @@ jobs:
             exit 0
           fi
           jq -e '.release.healthStatus == 200 and .release.httpMcpAgreement == true' "$report" >/dev/null
+          if [[ "$NATIVE_SCENARIO" == protected-release-linked-health ]]; then
+            jq -e '.release as $original | .linkedHealth as $proof |
+              $proof.originalReleaseOperationId == $original.operationId and $proof.diagnosis.releaseOperationId == $original.operationId and
+              $proof.diagnosis.recommendation == "investigate_code" and $proof.diagnosis.logErrorLines > 0 and $proof.diagnosis.httpMcpAgreement and
+              $proof.confirmationReplay and $proof.deniedApiOwner and $proof.deniedStaleFingerprint and
+              $proof.originalRunId != $proof.repairedRunId and $proof.before.domainId != $proof.after.domainId and
+              $proof.before.health.status == "unhealthy" and $proof.before.health.statusCode == 503 and
+              $proof.after.health.status == "passed" and $proof.after.health.statusCode == 200 and
+              $proof.before.cleanupConfirmed and $proof.after.cleanupConfirmed and $proof.after.changedPath == "server/app.mjs" and
+              ($proof.after.patchSha256 | test("^[a-f0-9]{64}$")) and
+              $proof.originalContainerId != $proof.recoveredContainerId and $proof.release.operationId != $original.operationId and
+              $proof.release.version != $original.version and $proof.release.manifestDigest != $original.manifestDigest and
+              $proof.release.approvalDeniedWithoutPortal and $proof.release.healthStatus == 200 and $proof.release.httpMcpAgreement and
+              ($proof.healthySamples | length) == 2 and $proof.closedReason == "target_changed" and $proof.readOnlyKomodo and $proof.whiskersCleanup' "$report" >/dev/null
+            test -s .reports/p0/runner-linked-health-oci-artifact.json
+          fi
           if [[ "$NATIVE_SCENARIO" == protected-release-npm ]]; then
             jq -e '.release.repairCategory == "npm_dependency" and .dependency.advisoryId != null' "$report" >/dev/null
           fi
@@ -367,6 +383,7 @@ jobs:
             .reports/p0/runner-restore-oci-artifact.json
             .reports/p0/runner-drift-oci-artifact.json
             .reports/p0/runner-faults-oci-artifact.json
+            .reports/p0/runner-linked-health-oci-artifact.json
             .reports/p0/runner-oci-artifact.json
             .reports/p0/runner-retry-oci-artifact.json
           if-no-files-found: error
