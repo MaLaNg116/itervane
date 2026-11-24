@@ -161,8 +161,10 @@ class LifecycleTest(unittest.TestCase):
     def test_rejects_substituted_cpu_and_implicit_fallback_before_resuming_guest(self):
         for change in (
             lambda domain: domain.remove(domain.find("cpu")),
-            lambda domain: setattr(domain.find("cpu/model"), "text", "qemu64"),
+            lambda domain: setattr(domain.find("cpu/model"), "text", "Nehalem"),
             lambda domain: domain.find("cpu/model").set("fallback", "allow"),
+            lambda domain: domain.find("cpu").remove(domain.find("cpu/feature[@name='ssse3']")),
+            lambda domain: domain.find("cpu/feature[@name='vmx']").set("policy", "require"),
         ):
             with self.subTest(change=change):
                 self.libvirt.profile_change = change
