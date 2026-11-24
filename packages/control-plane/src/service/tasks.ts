@@ -16,6 +16,7 @@ import { readOperationsObservationTarget } from './operations-targets.js';
 import { appendEvent, enqueue, lockSlot } from '../runtime/authority.js';
 import { blockQueuedRelease } from '../runtime/release-queue.js';
 import { databaseNow } from './releases.js';
+import { recordTaskRuleSnapshot } from './task-rule-snapshots.js';
 
 function presentTask(task: typeof tasks.$inferSelect, run: Pick<typeof taskRuns.$inferSelect, 'id' | 'role'>) {
   return taskDtoSchema.parse({ id: task.id, projectId: task.projectId, requestedBy: task.requestedBy, runId: run.id,
@@ -84,6 +85,7 @@ export class TaskService {
     }
     if (extraction) await tx.insert(ruleExtractionAdmissions).values({ ...extraction, runId, taskId, projectId: task.projectId });
     if (validation) await tx.insert(candidateValidationAdmissions).values({ ...validation, runId, taskId, projectId: task.projectId });
+    if (run.role === 'audit' || run.role === 'operations') await recordTaskRuleSnapshot(tx, task, run.role === 'audit' ? 'delivery' : 'operations');
     await enqueue(tx, this.database, task, runId);
     await tx.insert(taskEvents).values({ taskId, sequence: 1, type: 'task.accepted', state: 'queued', actorId: task.requestedBy });
     return { task: presentTask(task, run), replayed: false };

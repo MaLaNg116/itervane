@@ -23,4 +23,4 @@ export const taskRuleSnapshotViewSchema = z.strictObject({
   taskId: idSchema, locale: localeSchema, message: z.string(), snapshot: z.strictObject({
     sha256: sha256Schema, document: taskRuleSnapshotSchema, recordedAt: z.iso.datetime(),
   }).nullable(),
-});
+}).refine(({ taskId, snapshot }) => snapshot === null || snapshot.document.taskId === taskId);
