@@ -278,6 +278,10 @@ jobs:
               $proof.ruleExtraction.validation.domainId != $proof.before.domainId and
               $proof.ruleExtraction.validation.domainId != $proof.after.domainId and
               $proof.ruleExtraction.validation.matches == [1,0,0] and $proof.ruleExtraction.validation.cleanupConfirmed and
+              ($proof.ruleExtraction as $learning | $learning.publication as $published |
+                $published.kind == "code_rule" and $published.action == "publish" and $published.sequence == 1 and $published.deniedWithoutPortal and
+                $published.validationId == $learning.validation.id and $published.validationSha256 == $learning.validation.sha256 and
+                ($published.reviewSha256 | test("^[a-f0-9]{64}$"))) and
               $proof.originalContainerId != $proof.recoveredContainerId and $proof.release.operationId != $original.operationId and
               $proof.release.version != $original.version and $proof.release.manifestDigest != $original.manifestDigest and
               $proof.release.approvalDeniedWithoutPortal and $proof.release.healthStatus == 200 and $proof.release.httpMcpAgreement and
@@ -405,6 +409,10 @@ jobs:
               .operations.restart.ruleExtraction.validation.candidateId == .operations.restart.ruleExtraction.resultId and
               .operations.restart.ruleExtraction.validation.result.scenarios.stale == "stop_target_drift" and
               .operations.restart.ruleExtraction.validation.result.scenarios.unapproved == "await_approval" and
+              (.operations.restart.ruleExtraction as $learning | $learning.publication as $published |
+                $published.kind == "runbook" and $published.action == "publish" and $published.sequence == 1 and $published.deniedWithoutPortal and
+                $published.validationId == $learning.validation.id and $published.validationSha256 == $learning.validation.sha256 and
+                ($published.reviewSha256 | test("^[a-f0-9]{64}$"))) and
               .operations.restart.environmentReleased and .operations.restart.slotReleased and .operations.restart.httpMcpAgreement' "$report" >/dev/null
             jq -e '.operations.restart as $verified | $verified.interrupted as $interrupted |
               $interrupted.releaseOperationId == .release.operationId and

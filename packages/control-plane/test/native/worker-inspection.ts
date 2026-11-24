@@ -18,6 +18,7 @@ import {
   qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
   repositoryDtoSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sha256Schema, sourceInspectionDtoSchema,
   candidateValidationViewSchema, codeRuleValidationProfileSchema, ruleExtractionViewSchema,
+  rulePackageActivationResultSchema, rulePackageActivationViewSchema, rulePackageImportResultSchema,
   qualifiedImageArchiveSchema, qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
   taskDtoSchema, taskEventDtoSchema, taskEventReasonSchema, translate,
   type FormalAuditResult, type Locale, type NpmUpgradeApproval, type StandardVerificationProfile, type TaskDto,
@@ -1014,15 +1015,17 @@ async function probe() {
           };
           const config = runtimeConfig({
             DATABASE_URL: db.runtimeUrl, ITERVANE_OIDC_ISSUER: oidc.config.issuer, ITERVANE_OIDC_AUDIENCE: oidc.config.audience,
-            ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_RULE_EXTRACTION_PROVIDER_SHA256: providerSha256, ...validationConfig,
+            ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_PORTAL_CLIENT_ID: portalClientId,
+            ITERVANE_RULE_EXTRACTION_PROVIDER_SHA256: providerSha256, ...validationConfig,
           });
           const { app: extractionApi } = await createInstalledApi(db.storage, config, { logger: false });
           let extractionWorker: Awaited<ReturnType<typeof startScopedWorker>> | undefined;
           try {
             const endpoint = await extractionApi.listen({ host: '127.0.0.1', port: 0 });
-            const call = async (path: string, body?: object) => {
+            const call = async (path: string, body?: object, portal = false) => {
               const response = await fetch(endpoint + path, {
-                headers: { Authorization: await authorization(), 'Accept-Language': 'zh-CN', ...(body ? { 'content-type': 'application/json' } : {}) },
+                headers: { Authorization: portal ? `Bearer ${await oidc.token('owner', { azp: portalClientId })}` : await authorization(),
+                  'Accept-Language': 'zh-CN', ...(body ? { 'content-type': 'application/json' } : {}) },
                 signal: AbortSignal.timeout(5_000), ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}),
               });
               if (!response.ok) {
@@ -1069,7 +1072,12 @@ async function probe() {
             equal(repeatedValidation.task.id, validated.task.id);
             const final = await poll(async () => {
               const view = candidateValidationViewSchema.parse(await call(`/v1/tasks/${validated.task.id}/candidate-validation`));
-              if (view.state === 'needs_human' || view.state === 'failed') throw new Error('fixture_candidate_validation_failed');
+              if (view.state === 'needs_human' || view.state === 'failed') {
+                const evidence = view.result?.document.evidence;
+                if (evidence?.kind === 'code_rule') console.error('Unavailable linked rule samples', evidence.receipt.proof.result.samples
+                  .filter(sample => sample.status === 'unavailable').map(({ name, reason, detail }) => ({ name, reason, detail })));
+                throw new Error('fixture_candidate_validation_failed');
+              }
               return view.result ?? undefined;
             }, 150_000, 'candidate_validation');
             const { status, evidence } = final.document;
@@ -1082,8 +1090,37 @@ async function probe() {
                 matches: evidence.receipt.proof.result.samples.map(sample => sample.status === 'checked' ? sample.matches : null),
               } : { result: evidence.result }),
             };
+            phase = 'learning_candidate_publication';
+            const draftPath = `/v1/projects/${item.origin.projectId}/rule-candidates/${checked.id}/package-drafts`;
+            const packageInput = { packageKey: extraction.result.candidate.key,
+              version: '1.0.0', scope: 'workspace', validationId: final.id, validationSha256: final.sha256,
+              source: { name: 'Itervane native fixture', license: 'Apache-2.0' },
+              text: { en: { title: 'Verified fixture candidate', description: 'Prepared from a verified case.' },
+                'zh-CN': { title: '已验证的样例候选', description: '来自已核验案例。' } } };
+            await rejects(call(draftPath, packageInput), /fixture_extraction_http_403/);
+            const { version } = rulePackageImportResultSchema.parse(await call(draftPath, packageInput, true));
+            ok(version.document.kind !== 'design_skill');
+            equal(version.document.validation.id, final.id);
+            equal(version.document.validation.sha256, final.sha256);
+            const packagePath = `/v1/rule-packages/${version.packageId}`;
+            const activationPath = `${packagePath}/activation`;
+            const reviewed = rulePackageImportResultSchema.parse(await call(`${packagePath}/versions/${version.versionId}/review`, {
+              versionSha256: version.sha256, checks: { sourceAndLicense: true, scopeAndGuidance: true, validationEvidence: true },
+            }, true));
+            ok(reviewed.version.review?.outcome === 'accepted');
+            const activated = rulePackageActivationResultSchema.parse(await call(activationPath, { action: 'publish',
+              versionId: version.versionId, versionSha256: version.sha256, reviewSha256: reviewed.version.review.sha256,
+              expectedSequence: 0, idempotencyKey: randomUUID() }, true));
+            equal(activated.replayed, false);
+            const { current } = rulePackageActivationViewSchema.parse(await call(activationPath, undefined, true));
+            ok(current && current.sequence === 1 && current.action === 'publish');
+            equal(current.versionId, version.versionId);
+            equal(current.versionSha256, version.sha256);
+            equal(current.reviewSha256, reviewed.version.review.sha256);
+            const publication = { ...current, kind: version.kind, validationId: version.document.validation.id,
+              validationSha256: version.document.validation.sha256, packageId: version.packageId, deniedWithoutPortal: true };
             return { caseId: item.id, caseSha256: item.sha256, taskId: admitted.task.id, resultId: checked.id, resultSha256: checked.sha256,
-              candidateKind: expectedKind, candidateSemanticSha256, usage, actions, validation, model: 'scripted_anthropic_fixture' };
+              candidateKind: expectedKind, candidateSemanticSha256, usage, actions, validation, publication, model: 'scripted_anthropic_fixture' };
           } finally {
             try { await extractionWorker?.stop('TERM'); } finally { await extractionApi.close(); }
           }
