@@ -52,9 +52,11 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env) {
   }
   if (restoreEnabled && !hasDiagnosisAndPortal) throw new Error('operations_restore_api_requires_formal_diagnosis_and_portal');
   const restoreApi = restoreEnabled ? operationsEffectTarget(env) : undefined;
+  const ruleExtractionProviderSha256 = sha256Schema.optional().parse(env.ITERVANE_RULE_EXTRACTION_PROVIDER_SHA256);
   return { ...config, publicUrl: canonicalPublicUrl(env.ITERVANE_PUBLIC_URL ?? `http://127.0.0.1:${config.port}`),
     ...(portalClientId ? { portalClientId } : {}), ...(operationsApi ? { operationsApi } : {}),
-    ...(restartApiInstallationFile ? { restartApiInstallationFile } : {}), ...(restoreApi ? { restoreApi } : {}) };
+    ...(restartApiInstallationFile ? { restartApiInstallationFile } : {}), ...(restoreApi ? { restoreApi } : {}),
+    ...(ruleExtractionProviderSha256 ? { ruleExtractionProviderSha256 } : {}) };
 }
 
 function sharedWorkerConfig(env: NodeJS.ProcessEnv) {
