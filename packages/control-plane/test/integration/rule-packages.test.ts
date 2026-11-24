@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
-import { apiErrorSchema, designSkillPackageSchema, rulePackageActivationResultSchema, rulePackageActivationViewSchema, rulePackageDetailSchema,
-  rulePackageImportResultSchema, rulePackagePageSchema } from '@itervane/contracts';
+import { admissionDtoSchema, apiErrorSchema, designSkillPackageSchema, rulePackageActivationResultSchema, rulePackageActivationViewSchema,
+  rulePackageDetailSchema, rulePackageImportResultSchema, rulePackagePageSchema, taskRuleSnapshotViewSchema } from '@itervane/contracts';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier } from '../../src/auth/identity.js';
 import { RulePackageService } from '../../src/service/rule-packages.js';
@@ -287,3 +287,49 @@ it('guards activation records and validates a version belongs to the selected pa
     .rejects.toMatchObject({ code: '23514', message: 'rule_package_activation_sequence' });
   expect(rulePackageActivationViewSchema.parse((await get(path)).json()).current?.versionId).toBe(first.versionId);
 }, 45_000);
+
+it('freezes the complete active rule set at admission and preserves it through replay, rollback and withdrawal', async () => {
+  const identity = await createIdentityVerifier(issuer.config)(token);
+  const resources = new ResourceService(database.storage);
+  const other = await resources.createProject(identity, { slug: 'second-design-project', name: 'Second design project' });
+  const repositoryA = await resources.registerRepository(identity, projectId, { name: 'First source', url: 'https://example.invalid/first.git' });
+  const repositoryB = await resources.registerRepository(identity, other.id, { name: 'Second source', url: 'https://example.invalid/second.git' });
+  const human = await humanToken();
+  const first = await acceptDraft(await addDraft(), human);
+  const second = await acceptDraft(await addDraft('1.1.0'), human);
+  const globalDraft = rulePackageImportResultSchema.parse((await post({ ...design(), packageKey: 'workspace-guidance',
+    scope: { kind: 'workspace' } })).json()).version;
+  const global = await acceptDraft(globalDraft, human);
+  const publish = (draft: Draft, sequence: number, action = 'publish') => post({ ...publishInput(draft, sequence), action }, 'en', human, activationPath(draft));
+  const begin = (id: string, repositoryId: string, idempotencyKey = randomUUID()) => post({ projectId: id, purpose: 'Review test source',
+    source: { repositoryId, commit: 'b'.repeat(40) }, dataClass: 'synthetic', idempotencyKey }, 'en', token, '/v1/tasks');
+  const taskFrom = (response: Awaited<ReturnType<typeof begin>>) => admissionDtoSchema.parse(response.json()).task;
+  const snapshot = async (taskId: string) => taskRuleSnapshotViewSchema.parse((await get(`/v1/tasks/${taskId}/rule-snapshot`)).json()).snapshot!;
+  const firstRequest = randomUUID();
+  expect((await publish(first, 0)).statusCode).toBe(201);
+  expect((await publish(global, 0)).statusCode).toBe(201);
+  const initialTask = taskFrom(await begin(projectId, repositoryA.id, firstRequest));
+  const initial = await snapshot(initialTask.id);
+  expect(initial.document.entries).toMatchObject([{ versionId: first.versionId, versionSha256: first.sha256,
+    reviewSha256: first.review?.sha256, sequence: 1 }, { versionId: global.versionId, sequence: 1 }]);
+  const otherTask = taskFrom(await begin(other.id, repositoryB.id));
+  expect((await snapshot(otherTask.id)).document.entries).toMatchObject([{ versionId: global.versionId }]);
+  expect((await get(`/v1/tasks/${initialTask.id}/rule-snapshot`, 'zh-CN')).json().message).not.toBe((await get(`/v1/tasks/${initialTask.id}/rule-snapshot`)).json().message);
+
+  const [published, racingTask] = await Promise.all([publish(second, 1), begin(projectId, repositoryA.id)]);
+  expect(published.statusCode).toBe(201);
+  const [racing] = (await snapshot(taskFrom(racingTask).id)).document.entries;
+  expect([first.versionId, second.versionId]).toContain(racing?.versionId);
+  expect(racing?.sequence).toBe(racing?.versionId === first.versionId ? 1 : 2);
+  expect((await snapshot(taskFrom(await begin(projectId, repositoryA.id)).id)).document.entries[0]).toMatchObject({ versionId: second.versionId, sequence: 2 });
+  expect(taskFrom(await begin(projectId, repositoryA.id, firstRequest))).toEqual(initialTask);
+
+  expect((await publish(first, 2, 'rollback')).statusCode).toBe(201);
+  expect((await snapshot(taskFrom(await begin(projectId, repositoryA.id)).id)).document.entries[0]).toMatchObject({ versionId: first.versionId, sequence: 3 });
+  expect((await post({ action: 'withdraw', expectedSequence: 3, idempotencyKey: randomUUID(), versionId: first.versionId,
+    versionSha256: first.sha256 }, 'en', human, activationPath(first))).statusCode).toBe(201);
+  expect((await snapshot(taskFrom(await begin(projectId, repositoryA.id)).id)).document.entries).toMatchObject([{ versionId: global.versionId }]);
+  expect(await snapshot(initialTask.id)).toEqual(initial);
+  await expect(database.storage.pool.query('UPDATE itervane.task_rule_snapshots SET document=document WHERE task_id=$1', [initialTask.id]))
+    .rejects.toMatchObject({ code: '23514', message: 'task_rule_snapshot_is_immutable' });
+}, 60_000);
