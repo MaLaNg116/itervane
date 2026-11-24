@@ -505,6 +505,13 @@
       "when": 1795512737771,
       "tag": "0071_rule_package_drafts",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1795513417362,
+      "tag": "0072_rule_package_publication",
+      "breakpoints": true
     }
   ]
 }

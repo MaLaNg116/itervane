@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
-import { rulePackageDetailSchema, rulePackageImportResultSchema, rulePackagePageSchema } from '@itervane/contracts';
+import { apiErrorSchema, rulePackageActivationResultSchema, rulePackageActivationViewSchema, rulePackageDetailSchema,
+  rulePackageImportResultSchema, rulePackagePageSchema } from '@itervane/contracts';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier } from '../../src/auth/identity.js';
 import { RulePackageService } from '../../src/service/rule-packages.js';
@@ -17,7 +18,7 @@ let projectId: string;
 beforeAll(async () => {
   database = await databaseFixture();
   issuer = await identityFixture();
-  api = createApi(database.storage, issuer.config, { logger: false });
+  api = createApi(database.storage, { ...issuer.config, portalClientId }, { logger: false });
 });
 beforeEach(async () => {
   await database.reset();
@@ -29,6 +30,7 @@ beforeEach(async () => {
 afterAll(async () => { await api?.close(); await issuer?.close(); await database?.close(); });
 
 const library = '/v1/rule-packages';
+const portalClientId = 'itervane-rules-test-portal';
 function design(version = '1.0.0') {
   return {
     formatVersion: 1, kind: 'design_skill', packageKey: 'accessible-demo', version,
@@ -44,8 +46,8 @@ function design(version = '1.0.0') {
   };
 }
 
-const post = (payload: object, locale: 'en' | 'zh-CN' = 'en', actor = token) => api.inject({
-  method: 'POST', url: library, payload, headers: { authorization: `Bearer ${actor}`, 'accept-language': locale },
+const post = (payload: object, locale: 'en' | 'zh-CN' = 'en', actor = token, url = library) => api.inject({
+  method: 'POST', url, payload, headers: { authorization: `Bearer ${actor}`, 'accept-language': locale },
 });
 const get = (url: string, locale: 'en' | 'zh-CN' = 'en', actor = token) => api.inject({
   method: 'GET', url, headers: { authorization: `Bearer ${actor}`, 'accept-language': locale },
@@ -58,7 +60,7 @@ const statusCounts = async () => (await database.admin.query(`
 
 it('canonically imports one draft under concurrent submissions and reads immutable bilingual history', async () => {
   const input = design();
-  const equivalent = { ...input, resources: [...input.resources].reverse(),
+  const equivalent = { ...input, scope: { kind: 'project', projectId: projectId.toUpperCase() }, resources: [...input.resources].reverse(),
     skill: { ...input.skill, content: input.skill.content.replace(/\r\n/g, '\n') } };
   const [first, second] = await Promise.all([post(input), post(equivalent, 'zh-CN')]);
   expect([first.statusCode, second.statusCode].sort()).toEqual([200, 201]);
@@ -161,3 +163,126 @@ it('guards draft history and rolls back the package when PostgreSQL refuses its 
     expect(await statusCounts()).toEqual({ packages: 1, versions: 1, tasks: 0 });
   } finally { await database.admin.query('ALTER TABLE itervane.rule_package_versions DROP CONSTRAINT rule_test_rollback'); }
 });
+
+type Draft = ReturnType<typeof rulePackageDetailSchema.parse>;
+const draftPath = (draft: Draft) => `${library}/${draft.packageId}/versions/${draft.versionId}`;
+const activationPath = (draft: Draft) => `${library}/${draft.packageId}/activation`;
+const checks = { sourceAndLicense: true, scopeAndGuidance: true, designResources: true };
+const humanToken = () => issuer.token('owner', { azp: portalClientId });
+const reviewInput = (draft: Draft) => ({ versionSha256: draft.sha256, checks });
+const addDraft = async (version?: string, packageKey?: string) => rulePackageImportResultSchema.parse(
+  (await post({ ...design(version), ...(packageKey ? { packageKey } : {}) })).json()).version;
+async function acceptDraft(draft: Draft, human: string) {
+  const result = await post(reviewInput(draft), 'en', human, `${draftPath(draft)}/review`);
+  expect(result.statusCode).toBe(201);
+  const reviewed = rulePackageImportResultSchema.parse(result.json()).version;
+  expect(reviewed.review?.outcome).toBe('accepted');
+  return reviewed;
+}
+const publishInput = (draft: Draft, expectedSequence: number) => ({
+  action: 'publish', versionId: draft.versionId, versionSha256: draft.sha256,
+  reviewSha256: draft.review!.sha256, expectedSequence, idempotencyKey: randomUUID(),
+});
+
+it('records a localized review once from the authorized portal and keeps old grants as history', async () => {
+  const draft = await addDraft();
+  const path = `${draftPath(draft)}/review`;
+  const human = await humanToken();
+  const input = reviewInput(draft);
+  expect((await post(input, 'en', token, path)).statusCode).toBe(403);
+  expect((await post({ ...input, versionSha256: '0'.repeat(64) }, 'en', human, path)).statusCode).toBe(409);
+  const submitted = await Promise.all([post(input, 'en', human, path),
+    post(input, 'zh-CN', human, path.replace(draft.versionId, draft.versionId.toUpperCase()))]);
+  expect(submitted.map(response => response.statusCode).sort()).toEqual([200, 201]);
+  const [en, zh] = submitted.map(response => rulePackageImportResultSchema.parse(response.json()).version);
+  expect(en!.reviewState).toBe('accepted');
+  expect(en!.review).toEqual(zh!.review);
+  expect(en!.reviewMessage).not.toBe(zh!.reviewMessage);
+  expect((await post({ ...input, note: 'Different review evidence' }, 'en', human, path)).statusCode).toBe(409);
+  expect(rulePackagePageSchema.parse((await get(library)).json()).items[0]?.reviewState).toBe('accepted');
+  expect(en!.review?.versionSha256).toBe(draft.sha256);
+  expect((await database.admin.query('SELECT count(*)::int AS n FROM itervane.rule_package_reviews')).rows[0]?.n).toBe(1);
+
+  const former = en!.review!;
+  await database.admin.query('UPDATE itervane.workspace_members SET grant_id=$1', [randomUUID()]);
+  expect(rulePackageDetailSchema.parse((await get(draftPath(draft))).json())).toMatchObject({ reviewState: 'draft', review: null });
+  const renew = await acceptDraft(draft, human);
+  expect(renew.review?.id).not.toBe(former.id);
+  expect((await database.admin.query('SELECT sha256 FROM itervane.rule_package_reviews WHERE id=$1', [former.id])).rows[0]?.sha256).toBe(former.sha256);
+  await expect(database.storage.pool.query('UPDATE itervane.rule_package_reviews SET document=document WHERE id=$1', [former.id]))
+    .rejects.toMatchObject({ code: '23514', message: 'rule_package_review_is_immutable' });
+}, 45_000);
+
+it('keeps rejected or out-of-date proof from becoming active', async () => {
+  const draft = await addDraft();
+  const human = await humanToken();
+  const path = `${draftPath(draft)}/review`;
+  const incomplete = { ...reviewInput(draft), checks: { ...checks, designResources: false } };
+  expect((await post(incomplete, 'en', human, path)).statusCode).toBe(400);
+  const rejected = rulePackageImportResultSchema.parse((await post({ ...incomplete, note: 'Describe the token scale.' }, 'en', human, path)).json()).version;
+  expect(rejected).toMatchObject({ reviewState: 'changes_requested', review: { checks: { designResources: false } } });
+  const result = await post(publishInput(rejected, 0), 'en', human, activationPath(rejected));
+  expect(apiErrorSchema.parse(result.json()).error.code).toBe('unsupported_state');
+  const accepted = await acceptDraft(await addDraft('1.1.0'), human);
+  const publish = publishInput(accepted, 0);
+  expect((await post(publish, 'en', token, activationPath(accepted))).statusCode).toBe(403);
+  expect(apiErrorSchema.parse((await post({ ...publish, reviewSha256: 'a'.repeat(64) }, 'en', human, activationPath(accepted))).json()).error.code)
+    .toBe('version_conflict');
+  await database.admin.query('UPDATE itervane.workspace_members SET grant_id=$1', [randomUUID()]);
+  expect(apiErrorSchema.parse((await post(publish, 'en', human, activationPath(accepted))).json()).error.code).toBe('unsupported_state');
+  expect(rulePackageActivationViewSchema.parse((await get(activationPath(draft))).json())).toMatchObject({ sequence: 0, current: null, history: [] });
+}, 45_000);
+
+it('serializes publication, restores an earlier active version and retains evidence after withdrawal', async () => {
+  const human = await humanToken();
+  const v1 = await acceptDraft(await addDraft(), human);
+  const v2 = await acceptDraft(await addDraft('1.1.0'), human);
+  const neverPublished = await acceptDraft(await addDraft('1.2.0'), human);
+  const path = activationPath(v1);
+  const first = publishInput(v1, 0);
+  const competing = await Promise.all([post(first, 'en', human, path), post(first, 'zh-CN', human, path)]);
+  expect(competing.map(response => response.statusCode).sort()).toEqual([200, 201]);
+  const [published, translated] = competing.map(response => rulePackageActivationResultSchema.parse(response.json()));
+  expect(published!.state).toMatchObject({ sequence: 1, current: { versionId: v1.versionId, action: 'publish' } });
+  expect(published!.operation.message).not.toBe(translated!.operation.message);
+  const invalidRollback = { ...publishInput(neverPublished, 1), action: 'rollback' };
+  expect(apiErrorSchema.parse((await post(invalidRollback, 'en', human, path)).json()).error.code).toBe('unsupported_state');
+  const publishV2 = publishInput(v2, 1);
+  const race = await Promise.all([post(publishV2, 'en', human, path), post({ ...publishV2, idempotencyKey: randomUUID() }, 'en', human, path)]);
+  expect(race.map(response => response.statusCode).sort()).toEqual([201, 409]);
+  const retryFirst = rulePackageActivationResultSchema.parse((await post(first, 'en', human, path)).json());
+  expect(retryFirst).toMatchObject({ replayed: true, operation: { sequence: 1, versionId: v1.versionId },
+    state: { sequence: 2, current: { versionId: v2.versionId } } });
+  expect(apiErrorSchema.parse((await post({ ...first, expectedSequence: 2 }, 'en', human, path)).json()).error.code).toBe('idempotency_conflict');
+
+  const rollback = { ...publishInput(v1, 2), action: 'rollback' };
+  const restored = rulePackageActivationResultSchema.parse((await post(rollback, 'zh-CN', human, path)).json());
+  expect(restored.state).toMatchObject({ sequence: 3, current: { action: 'rollback', versionId: v1.versionId, reviewSha256: v1.review?.sha256 } });
+  const withdraw = { action: 'withdraw', expectedSequence: 3, idempotencyKey: randomUUID(), versionId: v1.versionId, versionSha256: v1.sha256 };
+  const removed = rulePackageActivationResultSchema.parse((await post(withdraw, 'zh-CN', human, path)).json());
+  expect(removed.state).toMatchObject({ sequence: 4, current: null, history: [
+    { action: 'withdraw', versionId: v1.versionId }, { action: 'rollback', versionId: v1.versionId },
+    { action: 'publish', versionId: v2.versionId }, { action: 'publish', versionId: v1.versionId },
+  ] });
+  expect(rulePackageActivationViewSchema.parse((await get(path, 'zh-CN')).json())).toEqual(removed.state);
+  expect(rulePackageDetailSchema.parse((await get(draftPath(v2))).json()).review?.sha256).toBe(v2.review?.sha256);
+  expect(await statusCounts()).toEqual({ packages: 1, versions: 3, tasks: 0 });
+}, 45_000);
+
+it('guards activation records and validates a version belongs to the selected package', async () => {
+  const human = await humanToken();
+  const first = await acceptDraft(await addDraft(), human);
+  const other = await acceptDraft(await addDraft('1.0.0', 'other-design'), human);
+  const path = activationPath(first);
+  expect((await post(publishInput(other, 0), 'en', human, path)).statusCode).toBe(404);
+  expect((await post(publishInput(first, 0), 'en', human, path)).statusCode).toBe(201);
+  const runtime = database.storage.pool;
+  await expect(runtime.query('DELETE FROM itervane.rule_package_activations WHERE package_id=$1', [first.packageId]))
+    .rejects.toMatchObject({ code: '23514', message: 'rule_package_activation_is_immutable' });
+  await expect(runtime.query(`
+    INSERT INTO itervane.rule_package_activations(package_id, sequence, version_id, version_sha256, action, recorded_by, grant_id, request_key, request_sha256)
+    SELECT package_id, 3, version_id, version_sha256, 'withdraw', recorded_by, grant_id, $2, request_sha256
+    FROM itervane.rule_package_activations WHERE package_id=$1 AND sequence=1`, [first.packageId, randomUUID()]))
+    .rejects.toMatchObject({ code: '23514', message: 'rule_package_activation_sequence' });
+  expect(rulePackageActivationViewSchema.parse((await get(path)).json()).current?.versionId).toBe(first.versionId);
+}, 45_000);

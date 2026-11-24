@@ -24,6 +24,7 @@ import { FormalReleaseService } from './service/formal-release.js';
 import { VerificationViewService } from './service/verification-view.js';
 import { PreauditService, RuleService } from './service/preaudits.js';
 import { RulePackageService } from './service/rule-packages.js';
+import { RulePackageActivationService } from './service/rule-package-activations.js';
 import { OperationsObservationViewService } from './service/operations-observation-view.js';
 import { OperationsIncidentsViewService } from './service/operations-incidents-view.js';
 import { OperationsIncidentStopService } from './service/operations-incident-stop.js';
@@ -49,6 +50,7 @@ const candidateParam = z.strictObject({ candidateId: idSchema });
 const proposalParam = z.strictObject({ proposalId: idSchema });
 const executionParam = z.strictObject({ executionId: idSchema });
 const rulePackageVersionParam = z.strictObject({ packageId: idSchema, versionId: idSchema });
+const rulePackageParam = z.strictObject({ packageId: idSchema });
 const identity = (request: FastifyRequest) => {
   if (!request.verifiedIdentity) throw new AuthenticationError();
   return request.verifiedIdentity;
@@ -66,7 +68,8 @@ export function createApi(database: Database, config: ApiConfig,
   const release = new FormalReleaseService(database, config.portalClientId);
   const verification = new VerificationViewService(database);
   const rules = new RuleService(database); const preaudits = new PreauditService(database);
-  const ruleLibrary = new RulePackageService(database);
+  const ruleLibrary = new RulePackageService(database, config.portalClientId);
+  const ruleActivations = new RulePackageActivationService(database, config.portalClientId);
   const app = Fastify({
     logger: options.logger === false ? false : { level: 'info' },
     logController: new LogController({ disableRequestLogging: true }), requestIdHeader: false, genReqId: () => randomUUID(),
@@ -144,6 +147,20 @@ export function createApi(database: Database, config: ApiConfig,
   app.get('/v1/rule-packages/:packageId/versions/:versionId', async request => {
     const { packageId, versionId } = parseInput(rulePackageVersionParam, request.params);
     return ruleLibrary.get(identity(request), packageId, versionId, request.locale);
+  });
+  app.post('/v1/rule-packages/:packageId/versions/:versionId/review', async (request, reply) => {
+    const { packageId, versionId } = parseInput(rulePackageVersionParam, request.params);
+    const result = await ruleLibrary.review(identity(request), packageId, versionId, request.body, request.locale);
+    return reply.code(result.replayed ? 200 : 201).send(result);
+  });
+  app.get('/v1/rule-packages/:packageId/activation', async request => {
+    const { packageId } = parseInput(rulePackageParam, request.params);
+    return ruleActivations.get(identity(request), packageId, request.locale);
+  });
+  app.post('/v1/rule-packages/:packageId/activation', async (request, reply) => {
+    const { packageId } = parseInput(rulePackageParam, request.params);
+    const result = await ruleActivations.change(identity(request), packageId, request.body, request.locale);
+    return reply.code(result.replayed ? 200 : 201).send(result);
   });
   app.get('/v1/projects/:projectId/rules', async request => {
     const { projectId } = parseInput(projectParam, request.params);
