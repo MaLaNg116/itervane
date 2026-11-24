@@ -1,5 +1,6 @@
 import fcntl
 import hashlib
+import io
 import json
 import os
 import tempfile
@@ -173,6 +174,19 @@ class LifecycleTest(unittest.TestCase):
                 self.assertEqual((result.code, result.profileIssue), ("profile_rejected", "cpu-model"))
                 self.assertTrue(result.cleanupConfirmed)
                 self.assertNotIn("resume", self.libvirt.events)
+
+    def test_lifecycle_cli_preserves_the_public_result_shape(self):
+        with (
+            patch.object(runner.signal, "signal"),
+            patch.object(runner.os, "umask"),
+            patch.object(runner, "check_kvm", side_effect=runner.Rejected("kvm_unavailable")),
+            patch("sys.stdout", new_callable=io.StringIO) as output,
+        ):
+            runner.main()
+        payload = json.loads(output.getvalue())
+        self.assertEqual(set(payload), {"code", "runId", "imageSha256", "profileIssue", "cleanupConfirmed", "job", "jobIssue",
+                                        "sessionVerified", "source", "inspection"})
+        self.assertEqual(payload["code"], "kvm_unavailable")
 
     def test_approved_job_channel_is_distinct_from_the_heartbeat_channel(self):
         with patch.object(runner.ProbeJob, "run", return_value="job_passed") as run:
