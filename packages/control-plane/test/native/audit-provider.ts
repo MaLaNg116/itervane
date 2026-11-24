@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage } from 'node:http';
 import { agentText, type AgentEvidence } from '@itervane/agent';
 import { formalRepairRetryContextSchema, linkedHealthRepairContextSchema } from '@itervane/contracts';
 import { verificationFixtureCall } from '../../../verification/src/agent/verification-fixture.js';
+import { extractionFixtureCall } from '../../../verification/src/agent/rule-extraction-fixture.js';
 import { npmReleaseApproval } from '../../../verification/src/native/npm-release-fixture.js';
 import { correctSyntheticHealthApp } from './health-repair.js';
 
@@ -140,6 +141,7 @@ export async function auditProtocolFixture(options: { repairRetry?: boolean; dep
       }
       const locale = goal === agentText('zh-CN').formalVerification.goal ? 'zh-CN' : 'en';
       const selected = role === 'verify' ? verificationFixtureCall(observations, locale)
+        : role === 'rule-extraction' ? extractionFixtureCall(observations)
         : role === 'operations' ? selectOperations(observations, options.linkedHealth === true)
         : role === 'repair' && options.linkedHealth ? selectLinkedHealthRepair(observations, handoff)
         : role === 'repair' && options.dependencyRepair ? selectDependencyRepair(observations, handoff)
