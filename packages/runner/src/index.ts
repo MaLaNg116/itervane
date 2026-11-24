@@ -5,4 +5,6 @@ export * from './qualified-client.js';
 export * from './repair-command.js';
 export * from './verification-command.js';
 export * from './rule-validation-command.js';
+export * from './published-code-rules.js';
+export * from './published-code-scan.js';
 export * from './verification-scan-comparison.js';
