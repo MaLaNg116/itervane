@@ -20,6 +20,7 @@ export * from './qualified-standard-image.js';
 export * from './qualified-standard-build.js';
 export * from './qualified-verification.js';
 export * from './preaudit.js';
+export * from './rule-packages.js';
 export * from './release.js';
 export * from './operations.js';
 export * from './operations-diagnosis.js';
