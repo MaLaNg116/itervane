@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { bigint, boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
-  agentRoles, taskStates, type CandidateValidationPlan, type CandidateValidationRecord, type RulePackageDocument,
+  agentRoles, taskStates, type CandidateValidationPlan, type CandidateValidationRecord, type RulePackageDocument, type TaskRuleSnapshot,
   type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
   type LearningCaseDocument, type LearningCaseFacts,
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairContinuation, type FormalRepairInput, type FormalRepairResult,
@@ -165,6 +165,18 @@ export const taskRuns = domain.table('task_runs', {
   generation: integer('generation').notNull(), role: agentRole('role').notNull(),
   state: taskState('state').notNull().default('queued'), wakeupJobId: uuid('wakeup_job_id'), createdAt: createdAt(),
 }, t => [unique('task_run_generation_unique').on(t.taskId, t.generation), unique('task_run_task_pair').on(t.id, t.taskId), check('run_generation_positive', sql`${t.generation} > 0`)]);
+
+export const taskRuleSnapshots = domain.table('task_rule_snapshots', {
+  taskId: uuid('task_id').primaryKey(), projectId: uuid('project_id').notNull(),
+  purpose: text('purpose').$type<TaskRuleSnapshot['purpose']>().notNull(), sha256: text('sha256').notNull(),
+  document: jsonb('document').$type<TaskRuleSnapshot>().notNull(), createdAt: createdAt(),
+}, t => [
+  foreignKey({ name: 'task_rule_snapshot_project_fk', columns: [t.taskId, t.projectId], foreignColumns: [tasks.id, tasks.projectId] }),
+  check('task_rule_snapshot_binding', sql`(${t.sha256} ~ '^[a-f0-9]{64}$' AND ${t.purpose} IN ('delivery', 'operations')
+    AND ${t.document}->>'version' = '1' AND ${t.document}->>'taskId' = ${t.taskId}::text
+    AND ${t.document}->>'projectId' = ${t.projectId}::text AND ${t.document}->>'purpose' = ${t.purpose}
+    AND jsonb_typeof(${t.document}->'entries') = 'array' AND octet_length(${t.document}::text) <= 24576) IS TRUE`),
+]);
 
 export const learningCases = domain.table('learning_cases', {
   id: uuid('id').primaryKey().defaultRandom(), projectId: uuid('project_id').notNull(),
