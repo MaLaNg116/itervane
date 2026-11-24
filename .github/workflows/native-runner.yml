@@ -228,6 +228,8 @@ jobs:
               $proof.originalReleaseOperationId == $original.operationId and $proof.diagnosis.releaseOperationId == $original.operationId and
               $proof.diagnosis.recommendation == "investigate_code" and $proof.diagnosis.logErrorLines > 0 and $proof.diagnosis.httpMcpAgreement and
               $proof.confirmationReplay and $proof.deniedApiOwner and $proof.deniedStaleFingerprint and
+              ($proof.incidentInterfaces | .httpMcpAgreement and .bilingual and .stopReplay and .stopDeniedWithoutPortal and .stopBoundToRelease and
+                .stopReason == "operator_stopped" and .stoppedSampleSequence > $proof.sampleSequence and .linkedTaskId == $proof.release.taskId) and
               $proof.originalRunId != $proof.repairedRunId and $proof.before.domainId != $proof.after.domainId and
               $proof.before.health.status == "unhealthy" and $proof.before.health.statusCode == 503 and
               $proof.after.health.status == "passed" and $proof.after.health.statusCode == 200 and

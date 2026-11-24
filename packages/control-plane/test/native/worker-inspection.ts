@@ -66,7 +66,7 @@ type NativeDiagnosisPublication = {
   taskId: string; operationId: string; containerId: string; restoreExecutionId?: string;
 };
 type NativeDiagnosisAcceptance<T> = (
-  { kind: 'restart'; installationFile: string } | { kind: 'rollback'; previousOperationId: string }
+  { kind: 'restart'; installationFile: string } | { kind: 'rollback'; previousOperationId: string } | { kind: 'health_repair'; taskId: string }
 ) & { verify: (diagnosis: TaskDto, diagnosisSha256: string, readers: DiagnosisReaders) => Promise<T> };
 
 const execute = promisify(execFile);
@@ -984,8 +984,7 @@ async function probe() {
         const { providerSha256 } = configuredAuditModel(configuration);
 
         const verifyInstalledDiagnosis = async <T>(enrollmentSha256: string, readKey: string, publication: NativeDiagnosisPublication,
-          acceptance?: NativeDiagnosisAcceptance<T> | { kind: 'monitor'; taskId: string; previousOperationId: string }
-            | { kind: 'health_repair'; taskId: string }) => {
+          acceptance?: NativeDiagnosisAcceptance<T> | { kind: 'monitor'; taskId: string; previousOperationId: string }) => {
           phase = 'operations_formal_installation';
           const installed = { ITERVANE_OPERATIONS_ENVIRONMENT_ID: environment.id, ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollmentSha256,
             ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: providerSha256 };
@@ -1139,20 +1138,19 @@ async function probe() {
             ok(queued?.status === 'queued');
             equal(queued.incidentId, failed.incidentId);
             equal(queued.sampleSequence, failed.sequence);
+            const incidentId = failed.incidentId;
 
-            const diagnosis = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, firstPublication, {
-              kind: 'health_repair', taskId: queued.taskId,
+            const { accepted, ...diagnosis } = await verifyInstalledDiagnosis(enrollment.fingerprint, native.readKey, firstPublication, {
+              kind: 'health_repair', taskId: queued.taskId, verify: (diagnosed, diagnosisSha256, readers) => confirmNativeLinkedHealthRepair({
+                diagnosis: diagnosed, diagnosisSha256, readers, incidentId, sampleSequence: failed.sequence,
+                environmentId: environment.id, originalOperationId: operationId, originalCommit: nativeLinkedHealthCommit,
+                repeatSample: () => health.tick(), markPhase: stage => { phase = stage; },
+              }),
             });
+            ok(accepted);
             equal(diagnosis.runId, queued.runId);
             ok(diagnosis.logErrorLines && diagnosis.logErrorLines > 0);
 
-            phase = 'linked_health_authorized_repair';
-            const verifyIdentity = createIdentityVerifier(oidc.config);
-            const accepted = await confirmNativeLinkedHealthRepair(db.storage, installation, {
-              taskId: queued.taskId, diagnosisSha256: diagnosis.sha256, incidentId: failed.incidentId, sampleSequence: failed.sequence,
-              originalOperationId: operationId, originalCommit: nativeLinkedHealthCommit, portalClientId,
-              portalOwner: await verifyIdentity(await oidc.token('owner', { azp: portalClientId })), apiOwner: await verifyIdentity(await oidc.token()),
-            });
             const repairCalls = audit.calls.length;
             worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, audit.baseURL, automaticProfile, true);
             phase = 'linked_health_wait_for_verified_candidate';
@@ -1228,6 +1226,7 @@ async function probe() {
               originalContainerId: first.proof.runtime.containerId, originalReleaseOperationId: operationId,
               proposalId: accepted.proposalId, proposalFingerprint: accepted.proposalFingerprint, confirmationReplay: accepted.replayed,
               deniedApiOwner: accepted.deniedApiOwner, deniedStaleFingerprint: accepted.deniedStaleFingerprint, release: second.report,
+              incidentInterfaces: accepted.incidentInterfaces,
               recoveredContainerId: second.proof.runtime.containerId, healthySamples: samples, closedReason: incident.closed_reason,
               originalRunId: accepted.task.runId, repairedRunId: repairedTask.runId,
               before: { domainId: before.domainId, receiptSha256: before.receiptSha256, health: originalBaseline.healthFollowup, cleanupConfirmed: true },
