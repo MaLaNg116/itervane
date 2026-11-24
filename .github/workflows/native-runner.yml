@@ -211,7 +211,14 @@ jobs:
             ([.correct,.wrong] | all(.cleanupConfirmed and .sessionVerified)) and
             .sourceRevision == env.GITHUB_SHA and (.sourceTree | test("^[a-f0-9]{40}$")) and .stagingEmpty and
             .denied.code == "lease_lost" and .denied.cleanup == "not_started" and
-            .mismatched.code == "not_ready" and .mismatched.cleanup == "not_started"
+            .mismatched.code == "not_ready" and .mismatched.cleanup == "not_started" and
+            .published.commit == "5d72c2fd9558d708441dc258496842698b09f630" and
+            .published.imageSha256 == .profile.runnerImageSha256 and .published.cleanupConfirmed and .published.sessionVerified and
+            .published.domainId != .correct.domainId and .published.domainId != .wrong.domainId and
+            (.published.manifestSha256 | test("^[a-f0-9]{64}$")) and (.published.evidenceSha256 | test("^[a-f0-9]{64}$")) and
+            .published.scannerStatuses == ["completed", "completed"] and (.published.fileCounts[0] > 0) and
+            (.published.findings | any(.path == "server/app.mjs" and .ruleKey == "published-health-javascript")) and
+            .published.denied == {code: "lease_lost", cleanup: "not_started", domainId: null}
           ' .reports/p0/runner-rule-samples.json >/dev/null
       - name: Require native reproduction, bounded repair and independent health receipts
         if: matrix.scenario == 'standard-build'

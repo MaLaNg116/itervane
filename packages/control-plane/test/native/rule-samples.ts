@@ -1,7 +1,8 @@
 import { deepStrictEqual, equal, notEqual, ok } from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { codeRuleCandidateSchema, codeRuleValidationProfileSchema } from '@itervane/contracts';
-import { QualifiedInspectionClient, sha256 } from '@itervane/runner';
+import { codeRuleCandidateSchema, codeRuleValidationProfileSchema, qualifiedInspectionRequestSchema } from '@itervane/contracts';
+import { canonicalPublishedInspectionCommand, createInspectionPlan, QualifiedInspectionClient, sha256 } from '@itervane/runner';
+import { publishedCodeRuleFixture } from '../../../runner/test/helpers/published-code-rule.js';
 
 const [socketPath, rawUid, imageSha256, engineInputsSha256] = process.argv.slice(2);
 if (!socketPath || !imageSha256) throw new Error('Expected the qualified runner and sealed image');
@@ -71,4 +72,38 @@ equal(mismatched.cleanup, 'not_started');
 equal(mismatched.domainId, null);
 ok((await runner.observe())?.state === 'idle');
 
-console.log(JSON.stringify({ profile, correct, wrong, denied, mismatched }));
+const publishedCommand = canonicalPublishedInspectionCommand(publishedCodeRuleFixture(profile));
+const destination = publishedCommand.rules.input.snapshot.document;
+const source = { repositoryId: randomUUID(), commit: '5d72c2fd9558d708441dc258496842698b09f630' };
+const scanRunId = randomUUID();
+const plan = createInspectionPlan({ taskId: destination.taskId, runId: scanRunId, requestedSource: source });
+const sourceRequest = qualifiedInspectionRequestSchema.parse({
+  version: 1, taskId: destination.taskId, projectId: destination.projectId, runId: scanRunId, origin: 'https://github.com/MaLaNg116/itervane.git',
+  ...source, generation: 1, fence: 1, workspaceSha256: idle.workspaceSha256, planSha256: plan.sha256, requestId: randomUUID(),
+  publishedCode: publishedCommand.binding,
+});
+const sourceDenied = await runner.inspect(sourceRequest, async () => { throw new Error('test lease unavailable'); }, undefined, publishedCommand);
+ok(sourceDenied.kind === 'rejected');
+equal(sourceDenied.code, 'lease_lost');
+equal(sourceDenied.cleanup, 'not_started');
+const scanned = await runner.inspect({ ...sourceRequest, requestId: randomUUID() }, authorize, undefined, publishedCommand);
+if (scanned.kind !== 'receipt') throw new Error(JSON.stringify({ code: scanned.code, cleanup: scanned.cleanup }));
+const proof = scanned.snapshot.publishedCode;
+ok(proof);
+const observations = proof.scan.document.reports;
+equal(observations[0]?.status, 'checked', JSON.stringify(observations.map(item => item.status === 'unavailable' ? item.reason : item.status)));
+const findings = observations.flatMap(report => report.status === 'checked' ? report.findings : []);
+ok(findings.some(finding => finding.path === 'server/app.mjs' && finding.ruleKey === 'published-health-javascript'));
+ok(scanned.snapshot.reports.every(report => report.status === 'completed'));
+notEqual(scanned.domainId, correct.domainId);
+notEqual(scanned.domainId, wrong.domainId);
+ok((await runner.observe())?.state === 'idle');
+const published = {
+  commit: source.commit, domainId: scanned.domainId, manifestSha256: proof.manifest.sha256, evidenceSha256: proof.scan.sha256,
+  imageSha256: scanned.imageSha256, cleanupConfirmed: scanned.cleanupConfirmed, sessionVerified: scanned.sessionVerified,
+  fileCounts: proof.scan.document.basis.batches.map(batch => batch.fileCount),
+  findings: findings.map(({ path, ruleKey }) => ({ path, ruleKey })),
+  scannerStatuses: scanned.snapshot.reports.map(report => report.status),
+  denied: { code: sourceDenied.code, cleanup: sourceDenied.cleanup, domainId: sourceDenied.domainId },
+};
+console.log(JSON.stringify({ profile, correct, wrong, denied, mismatched, published }));

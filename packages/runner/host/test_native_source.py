@@ -111,6 +111,21 @@ class SourceExchangeTest(unittest.TestCase):
             self.exchange([*self.acquire_and_close, (b"M", proof), (b"N", inconsistent)])
         self.assertIsNone(self.probe.inspection)
 
+    def test_published_rules_follow_closed_source_and_bind_the_scanner_receipt(self):
+        command = b'{"version":1}'
+        self.probe = SourceProbe(self.relay, repository_id=RUN, published_code_command=command)
+        objects = RECEIPT.pack(self.identity, self.commit, b"t" * 20, b"d" * 32, 2)
+        proof = {"runId": RUN, "repositoryId": RUN, "commit": self.commit.hex(), "tree": (b"t" * 20).hex(), "files": 2,
+                 "publishedCode": {"commandSha256": hashlib.sha256(command).hexdigest()}}
+        code, guest = self.exchange([*self.acquire_and_close, (b"M", objects), (b"N", json.dumps(proof).encode())])
+        self.assertEqual(code, "inspection_passed")
+        self.assertEqual(guest.receive({b"U": QUALIFIED_START.size})[1], QUALIFIED_START.pack(self.identity, self.commit, self.identity))
+        for expected in (b"o", b"o", b""):
+            self.assertEqual(guest.receive({b"O": 1})[1], expected)
+        self.assertEqual(guest.receive({b"X": len(CLOSED)})[1], CLOSED)
+        self.assertEqual(guest.receive({b"W": len(command)})[1], command)
+        self.assertEqual(self.probe.inspection, proof)
+
     def test_repair_payload_follows_egress_denial_and_fixed_object_proof(self):
         command = b"{}"
         self.probe = SourceProbe(self.relay, repository_id=RUN, repair_command=command)
