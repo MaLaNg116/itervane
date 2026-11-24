@@ -1,8 +1,10 @@
 import { z } from 'zod';
+import { auditModelProtocolSchema } from './formal-audit.js';
+import { localeSchema } from './i18n.js';
 import { sha256Schema } from './inspection.js';
 import { learningCaseCategorySchema, learningCaseDocumentSchema } from './learning-cases.js';
 import { limitedTextSchema, ruleIdSchema } from './preaudit.js';
-import { idSchema } from './primitives.js';
+import { idSchema, taskStateSchema } from './primitives.js';
 
 const shortText = limitedTextSchema.pipe(z.string().trim().max(480));
 const localized = z.strictObject({ title: shortText, appliesTo: shortText, limitation: shortText });
@@ -61,3 +63,27 @@ export const formalRuleExtractionResultSchema = z.strictObject({
   caseId: idSchema, caseSha256: sha256Schema, knowledgeSha256: sha256Schema, result: finishRuleExtractionInputSchema,
 });
 export type FormalRuleExtractionResult = z.infer<typeof formalRuleExtractionResultSchema>;
+
+export const startRuleExtractionSchema = z.strictObject({
+  caseSha256: sha256Schema, locale: localeSchema.default('en'), idempotencyKey: z.string().min(1).max(128),
+});
+export const ruleExtractionInputSchema = z.strictObject({
+  version: z.literal(1), taskId: idSchema, runId: idSchema, projectId: idSchema, generation: z.literal(1),
+  source: learningCaseReferenceSchema, knowledge: learningKnowledgeSchema, knowledgeSha256: sha256Schema,
+  providerSha256: sha256Schema,
+});
+export type RuleExtractionInput = z.infer<typeof ruleExtractionInputSchema>;
+export const ruleExtractionResultRecordSchema = z.strictObject({
+  version: z.literal(1), taskId: idSchema, runId: idSchema, projectId: idSchema, generation: z.literal(1),
+  inputSha256: sha256Schema, checkpointId: idSchema, provider: auditModelProtocolSchema, extraction: formalRuleExtractionResultSchema,
+  usage: z.strictObject({ turns: z.int().min(1).max(8), toolCalls: z.literal(2), tokens: z.int().min(0).max(18_000) }),
+  candidateSemanticSha256: sha256Schema.nullable(),
+}).refine(value => (value.extraction.result.outcome === 'candidate') === (value.candidateSemanticSha256 !== null));
+export type RuleExtractionResultRecord = z.infer<typeof ruleExtractionResultRecordSchema>;
+
+export const ruleExtractionViewSchema = z.strictObject({
+  taskId: idSchema, runId: idSchema, source: learningCaseReferenceSchema, locale: localeSchema,
+  state: taskStateSchema, result: z.strictObject({ id: idSchema, sha256: sha256Schema,
+    document: ruleExtractionResultRecordSchema, recordedAt: z.iso.datetime() }).nullable(),
+  message: z.string(),
+}).refine(({ state, result }) => (state === 'succeeded') === (result !== null));
