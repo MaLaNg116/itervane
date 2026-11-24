@@ -24,6 +24,7 @@ export * from './release.js';
 export * from './operations.js';
 export * from './operations-diagnosis.js';
 export * from './operations-health.js';
+export * from './operations-incidents.js';
 export * from './operations-proposal.js';
 export * from './operations-repair.js';
 export { idSchema, sourceRefSchema, taskStateSchema, agentRoleSchema, taskStates, agentRoles, serviceOriginSchema } from './primitives.js';

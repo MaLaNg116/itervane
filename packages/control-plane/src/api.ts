@@ -24,6 +24,7 @@ import { FormalReleaseService } from './service/formal-release.js';
 import { VerificationViewService } from './service/verification-view.js';
 import { PreauditService, RuleService } from './service/preaudits.js';
 import { OperationsObservationViewService } from './service/operations-observation-view.js';
+import { OperationsIncidentsViewService } from './service/operations-incidents-view.js';
 import { OperationsDecisionService } from './service/operations-decisions.js';
 import { OperationsProposalViewService } from './service/operations-proposal-view.js';
 import { OperationsProposalService } from './service/operations-proposals.js';
@@ -180,6 +181,7 @@ export function createApi(database: Database, config: ApiConfig,
   });
   if (operationsApi) {
     const operations = new OperationsObservationViewService(database);
+    const incidents = new OperationsIncidentsViewService(database, operationsApi);
     app.post('/v1/operations/diagnoses', async (request, reply) => {
       const result = admissionDtoSchema.parse(await tasks.admitOperations(identity(request), request.body, operationsApi));
       return reply.code(result.replayed ? 200 : 202).send(result);
@@ -191,6 +193,12 @@ export function createApi(database: Database, config: ApiConfig,
     app.get('/v1/tasks/:taskId/operations-option', async request => {
       const { taskId } = parseInput(taskParam, request.params);
       return operationsLaunchViewSchema.parse(await operations.getLaunchOption(identity(request), taskId, operationsApi));
+    });
+    app.get('/v1/projects/:projectId/environments/:environmentId/operations-incidents', async request =>
+      incidents.list(identity(request), request.params, request.query, request.locale));
+    app.get('/v1/tasks/:taskId/operations-incident', async request => {
+      const { taskId } = parseInput(taskParam, request.params);
+      return incidents.forTask(identity(request), taskId, request.locale);
     });
   }
   if (operationsApi?.diagnosisProviderSha256) {

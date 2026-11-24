@@ -16,7 +16,7 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
   operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartExecutionViewSchema, operationsRestartRecoveryProofSchema,
   operationsRestartRequestSchema, operationsRestartSubmissionSchema, operationsRestoreExecutionViewSchema, operationsRestorePlanSchema, operationsRestoreRecoveryProofSchema,
-  operationsSubmissionSchema, standardHealthRepairPath, taskDtoSchema, translate,
+  operationsIncidentsViewSchema, operationsSubmissionSchema, standardHealthRepairPath, taskDtoSchema, taskIncidentViewSchema, translate,
   verificationViewSchema,
   whiskersRestartImageDigest,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
@@ -3375,6 +3375,61 @@ async function confirmIncidentReproduction() {
     { fingerprint: proposal.fingerprint, locale: 'zh-CN' });
   return { application, diagnosis, proposal, sample, evidenceSha256, linked, portal };
 }
+
+it('projects the authorized incident history and task associations in both locales', async () => {
+  const { application, sample, linked, diagnosis, proposal } = await confirmIncidentReproduction();
+  const operationsApi = diagnosisInstallation(application);
+  const api = createApi(database.storage, { ...issuer.config, operationsApi }, { logger: false });
+  const viewerId = randomUUID();
+  const viewerSubject = 'incident-project-viewer';
+  await database.storage.db.insert(principals).values({ id: viewerId, issuer: issuer.config.issuer, subject: viewerSubject });
+  await database.storage.db.insert(projectMembers).values({ projectId: application.scope.projectId, principalId: viewerId, role: 'viewer' });
+  const token = await issuer.token(viewerSubject);
+  const scope = application.scope;
+  const url = `/v1/projects/${scope.projectId}/environments/${scope.environmentId}/operations-incidents`;
+  const context = (taskId: string) => `/v1/tasks/${taskId}/operations-incident`;
+  const get = (url: string, locale = 'en', bearer = token) => api.inject({
+    url, headers: { authorization: `Bearer ${bearer}`, 'Accept-Language': locale },
+  });
+  try {
+    const [english, chinese] = await Promise.all([get(url), get(url + '?limit=1', 'zh-CN')]);
+    expect(english.statusCode).toBe(200);
+    expect(chinese.statusCode).toBe(200);
+    expect(chinese.headers['content-language']).toBe('zh-CN');
+    expect(chinese.headers['cache-control']).toBe('no-store');
+    const en = operationsIncidentsViewSchema.parse(english.json());
+    const zh = operationsIncidentsViewSchema.parse(chinese.json());
+    expect(en).toMatchObject({ ...scope, locale: 'en', items: [{ id: sample.incidentId, closedAt: null, diagnosisStop: null,
+      latestSample: { sequence: sample.sequence, signal: { status: 'unhealthy', reason: 'application_unhealthy' } },
+      diagnoses: [{ taskId: diagnosis.document.taskId, runId: diagnosis.runId, sampleSequence: sample.sequence, state: 'succeeded' }],
+      repairs: [{ proposalId: proposal.id, diagnosisRunId: diagnosis.runId, taskId: linked.id, state: 'queued' }],
+    }] });
+    expect(zh.items[0]?.message).not.toBe(en.items[0]?.message);
+    expect(zh.latestHealth?.message).not.toBe(en.latestHealth?.message);
+    expect(JSON.stringify(zh)).not.toMatch(/containerId|grantId|enrollmentSha256|configDigest|publicationProofSha256/);
+    const taskViews = await Promise.all([get(context(diagnosis.document.taskId), 'zh-CN'), get(context(linked.id)), get(context(task.id))]);
+    expect(taskViews.map(result => result.statusCode)).toEqual([200, 200, 200]);
+    expect(taskIncidentViewSchema.parse(taskViews[0]!.json())).toMatchObject({ relatedAs: 'diagnosis', incident: zh.items[0] });
+    expect(taskIncidentViewSchema.parse(taskViews[1]!.json())).toMatchObject({ relatedAs: 'linked_repair', incident: en.items[0] });
+    expect(taskIncidentViewSchema.parse(taskViews[2]!.json())).toMatchObject({ relatedAs: null, incident: null });
+
+    const journal = new OperationsHealthJournal(database.storage, healthInstallation(application));
+    const recovered = await journal.recordProbe((await journal.prepareProbe()).probe, recoveredHealth);
+    const unavailable = await journal.recordProbe((await journal.prepareProbe()).probe, unavailableHealth);
+    const history = operationsIncidentsViewSchema.parse((await get(url, 'zh-CN')).json());
+    expect(history).toMatchObject({ latestHealth: { sequence: unavailable.sequence, signal: { status: 'unavailable' } }, items: [{
+      id: sample.incidentId, closedReason: 'recovered', latestSample: { sequence: recovered.sequence, signal: { status: 'healthy' } },
+    }] });
+
+    const stranger = await new ResourceService(database.storage).createProject(identity, { name: 'Other incident scope', slug: 'other-incident-scope' });
+    expect((await get(url.replace(scope.projectId, stranger.id), 'en', await issuer.token())).statusCode).toBe(404);
+    expect((await get(url.replace(scope.environmentId, randomUUID()))).statusCode).toBe(404);
+    expect((await get(url + '?limit=101')).statusCode).toBe(400);
+    await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, viewerId));
+    expect((await get(url)).statusCode).toBe(404);
+    expect((await get(context(linked.id))).statusCode).toBe(404);
+  } finally { await api.close(); }
+}, 45_000);
 
 it.each(['unhealthy', 'passed', 'unavailable', 'missing', 'revoked'] as const)
   ('settles a verified linked health reproduction (%s) with bounded evidence', async outcome => {
