@@ -1177,7 +1177,10 @@ async function probe() {
             equal(change.result.generation, 2);
             const { patchSha256 } = change.result.candidate;
             equal(patchSha256, after.patchSha256);
-            const patch = formalRepairPatchDtoSchema.parse(await request(`/v1/tasks/${repairedTask.id}/repair/patch?expectedSha256=${patchSha256}`));
+            const patch = formalRepairPatchDtoSchema.parse(await request(`/v1/tasks/${repairedTask.id}/repair/patch?expectedSha256=${change.sha256}`));
+            equal(patch.taskId, repairedTask.id);
+            equal(patch.runId, repairedTask.runId);
+            equal(patch.resultSha256, change.sha256);
             equal(patch.patchSha256, after.patchSha256);
             equal(patch.patch.files.length, 1);
             equal(patch.patch.files[0]?.path, 'server/app.mjs');
