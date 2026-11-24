@@ -12,12 +12,12 @@ export function readPackageMetadata(form: FormData) {
   };
 }
 
-export function RulePackageFields({ defaultKey }: { defaultKey?: string }) {
+export function RulePackageFields() {
   const t = useText();
   return <>
     <div className="form-columns">
       <FormField label={t('packageKey')} hint={t('packageKeyHint')}>{props =>
-        <Input {...props} name="packageKey" defaultValue={defaultKey} required maxLength={64} pattern="[a-z][a-z0-9\-]{0,63}" autoComplete="off" />}
+        <Input {...props} name="packageKey" required maxLength={64} pattern="[a-z][a-z0-9\-]{0,63}" autoComplete="off" />}
       </FormField>
       <FormField label={t('version')} hint={t('packageVersionHint')}>{props =>
         <Input {...props} name="version" required defaultValue="1.0.0" maxLength={32} autoComplete="off" />}

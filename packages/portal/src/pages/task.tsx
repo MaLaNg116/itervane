@@ -17,6 +17,7 @@ import { TaskVerification } from './task-verification.js';
 import { TaskRelease } from './task-release.js';
 import { TaskOperations } from './task-operations.js';
 import { TaskIncident } from './task-incidents.js';
+import { TaskCandidateValidation, TaskRuleExtraction } from './task-learning.js';
 
 const controlText = {
   cancel: { title: 'cancelTitle', help: 'cancelHelp', confirm: 'confirmCancel' },
@@ -38,6 +39,7 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
   const access = useRemote(`/v1/projects/${task.projectId}/access`, projectAccessDtoSchema, { poll: true });
   const events = useRemote(`/v1/tasks/${task.id}/events?limit=100`, z.object({ items: taskEventDtoSchema.array() }).strict(), { poll: true, localized: true });
   const operations = task.workflow === 'operations';
+  const learning = task.workflow === 'rule-extraction' || task.workflow === 'rule-validation';
   const [confirmation, setConfirmation] = useState<{ action: keyof typeof controlText; expectedVersion: number } | null>(null);
   const returnButton = useRef<HTMLButtonElement>(null);
   const inFlight = useRef(false);
@@ -86,10 +88,12 @@ function TaskContent({ task }: { task: z.infer<typeof taskDtoSchema> }) {
       {events.isPending ? <Loading locale={locale} /> : events.error ? <Failure error={events.error} locale={locale} retry={() => { void events.refetch(); }} />
         : events.data.items.length ? <ActivityTimeline items={events.data.items} /> : <p className="muted">{t('emptyEvents')}</p>}
     </Panel>
-    {operations ? <TaskOperations task={task} /> : <TaskInspection taskId={task.id} />}
+    {task.workflow === 'rule-extraction' ? <TaskRuleExtraction task={task} canWrite={canWrite} />
+      : task.workflow === 'rule-validation' ? <TaskCandidateValidation taskId={task.id} canPublish={access.data?.role === 'owner'} />
+        : operations ? <TaskOperations task={task} /> : <TaskInspection taskId={task.id} />}
     </div>
-    <TaskIncident key={task.id} task={task} />
-    {!operations && <>
+    {!learning && <TaskIncident key={task.id} task={task} />}
+    {!learning && !operations && <>
       <TaskAudit taskId={task.id} />
       <TaskRepair taskId={task.id} canWrite={canWrite} disabled={control.isPending}
         onResume={() => setConfirmation({ action: 'repair', expectedVersion: task.version })} />
