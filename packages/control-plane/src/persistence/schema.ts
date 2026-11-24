@@ -13,7 +13,7 @@ import {
   type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
   type ReleaseKomodoCompletion, type ReleaseKomodoConfiguration, type ReleaseKomodoIntent, type ReleaseKomodoUpdate,
-  type ReleaseRolloutFailure, type ReleaseRolloutProof,
+  type ReleaseRolloutFailure, type ReleaseRolloutProof, type RulePackageReviewRecord,
 } from '@itervane/contracts';
 
 export const domain = pgSchema('itervane');
@@ -72,6 +72,39 @@ export const rulePackageVersions = domain.table('rule_package_versions', {
     AND ${t.document}#>>'{scope,kind}' = CASE WHEN ${t.projectId} IS NULL THEN 'workspace' ELSE 'project' END
     AND (${t.document}#>>'{scope,projectId}') IS NOT DISTINCT FROM ${t.projectId}::text
     AND octet_length(${t.document}::text) <= 61440) IS TRUE`),
+]);
+
+export const rulePackageReviews = domain.table('rule_package_reviews', {
+  id: uuid('id').primaryKey().defaultRandom(), versionId: uuid('version_id').notNull().references(() => rulePackageVersions.id),
+  versionSha256: text('version_sha256').notNull(), sha256: text('sha256').notNull(),
+  reviewedBy: uuid('reviewed_by').notNull().references(() => principals.id), grantId: uuid('grant_id').notNull(),
+  outcome: text('outcome').$type<RulePackageReviewRecord['outcome']>().notNull(),
+  document: jsonb('document').$type<RulePackageReviewRecord>().notNull(), createdAt: createdAt(),
+}, t => [
+  unique('rule_package_review_grant').on(t.versionId, t.grantId),
+  check('rule_package_review_document', sql`(${t.sha256} ~ '^[a-f0-9]{64}$' AND ${t.versionSha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.outcome} IN ('accepted', 'changes_requested') AND ${t.document}->>'formatVersion' = '1'
+    AND ${t.document}->>'kind' = 'design_review' AND ${t.document}->>'outcome' = ${t.outcome}
+    AND ${t.document}->>'versionId' = ${t.versionId}::text AND ${t.document}->>'versionSha256' = ${t.versionSha256}
+    AND ${t.document}->>'reviewedBy' = ${t.reviewedBy}::text AND ${t.document}->>'grantId' = ${t.grantId}::text
+    AND octet_length(${t.document}::text) <= 8192) IS TRUE`),
+]);
+
+export const rulePackageActivations = domain.table('rule_package_activations', {
+  packageId: uuid('package_id').notNull().references(() => rulePackages.id), sequence: integer('sequence').notNull(),
+  versionId: uuid('version_id').notNull().references(() => rulePackageVersions.id), versionSha256: text('version_sha256').notNull(),
+  reviewId: uuid('review_id').references(() => rulePackageReviews.id), reviewSha256: text('review_sha256'),
+  action: text('action').$type<'publish' | 'rollback' | 'withdraw'>().notNull(),
+  recordedBy: uuid('recorded_by').notNull().references(() => principals.id), grantId: uuid('grant_id').notNull(),
+  requestKey: uuid('request_key').notNull(), requestSha256: text('request_sha256').notNull(), createdAt: createdAt(),
+}, t => [
+  primaryKey({ columns: [t.packageId, t.sequence] }),
+  unique('rule_package_activation_request').on(t.packageId, t.requestKey),
+  check('rule_package_activation_binding', sql`(${t.sequence} > 0 AND ${t.versionSha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.requestSha256} ~ '^[a-f0-9]{64}$' AND CASE WHEN ${t.action} = 'withdraw'
+      THEN ${t.reviewId} IS NULL AND ${t.reviewSha256} IS NULL
+      ELSE ${t.action} IN ('publish', 'rollback') AND ${t.reviewId} IS NOT NULL AND ${t.reviewSha256} ~ '^[a-f0-9]{64}$'
+    END) IS TRUE`),
 ]);
 
 export const projectMembers = domain.table('project_members', {
