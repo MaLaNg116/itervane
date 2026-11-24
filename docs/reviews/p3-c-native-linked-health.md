@@ -13,3 +13,5 @@
 第二轮已核对两次 VM 回执和修复候选，补丁导出缺少 `expectedSha256`。第三轮把候选补丁摘要用于该字段，接口因结果版本不匹配返回 409。最终测试沿用门户的版本绑定，使用修复结果外层 `sha256` 导出，再分别核对任务、运行、结果摘要、补丁摘要和唯一路径。 [第二轮运行](https://github.com/MaLaNg116/itervane/actions/runs/45132969172/job/137552606867) · [第三轮运行](https://github.com/MaLaNg116/itervane/actions/runs/45136609101/job/137564425311)
 
 同轮版本恢复场景在初始隔离扫描返回 `inspection_failed`。新的托管运行会一并复验该场景。 [恢复回归](https://github.com/MaLaNg116/itervane/actions/runs/45136609101/job/137564425302)
+
+最终关联修复场景固定于 `e1975c3c5481c59659259815e08d556202ec2e1b`。下载报告确认唯一补丁文件为 `server/app.mjs`，两台 VM 独立复现 503 与复验 200 并完成清理。两份 OCI 归档各自核验，重新审批的容器发布后有两次健康样本，原事件按目标变化关闭。模型为确定性 Anthropic 协议夹具，平台身份使用签名 OIDC，应用入口使用真实 Keycloak。 [原生联验](https://github.com/MaLaNg116/itervane/actions/runs/45364333612/job/138342029866) · [证据工件](https://github.com/MaLaNg116/itervane/actions/runs/45364333612/artifacts/14908630633)

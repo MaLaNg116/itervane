@@ -16,7 +16,8 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
   operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartExecutionViewSchema, operationsRestartRecoveryProofSchema,
   operationsRestartRequestSchema, operationsRestartSubmissionSchema, operationsRestoreExecutionViewSchema, operationsRestorePlanSchema, operationsRestoreRecoveryProofSchema,
-  operationsIncidentsViewSchema, operationsIncidentStopResultSchema, operationsRepairViewSchema, operationsSubmissionSchema, standardHealthRepairPath, taskDtoSchema,
+  learningCaseCaptureResultSchema, learningCasesViewSchema, operationsIncidentsViewSchema, operationsIncidentStopResultSchema,
+  operationsRepairViewSchema, operationsSubmissionSchema, standardHealthRepairPath, taskDtoSchema,
   taskIncidentViewSchema, translate,
   verificationViewSchema,
   whiskersRestartImageDigest,
@@ -84,6 +85,7 @@ import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
 import { requireActor } from '../../src/service/access.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
 import { InspectionService, prepareInspection } from '../../src/service/inspections.js';
+import { LearningCaseService } from '../../src/service/learning-cases.js';
 import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
 import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { FormalReleaseService } from '../../src/service/formal-release.js';
@@ -3774,14 +3776,30 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
     const passed = outcome === 'recovered';
     expect(after.current).toMatchObject({ runId: queued.runId, outcome: passed ? 'observed' : 'checks_failed',
       baseline: { healthFollowup: { status: passed ? 'passed' : 'unhealthy' } } });
+    if (after.current.status !== 'recorded') throw new Error('Missing repair verification');
+    const cases = new LearningCaseService(database.storage);
+    const evidence = { runId: changed.runId, evidenceSha256: after.current.resultSha256 };
     const releases = new FormalReleaseService(database.storage, portal);
-    const freeze = releases.freeze(identity, linked.id, { environmentId: application.scope.environmentId, expectedVersion: changed.version }, 'zh-CN');
+    const freeze = () => releases.freeze(identity, linked.id, { environmentId: application.scope.environmentId, expectedVersion: changed.version }, 'zh-CN');
     if (!passed) {
       expect(changed.state).toBe('needs_human');
-      await expect(freeze).rejects.toMatchObject({ code: 'unsupported_state' });
+      await expect(freeze()).rejects.toMatchObject({ code: 'unsupported_state' });
+      await expect(cases.capture(identity, linked.id, evidence, 'en')).rejects.toMatchObject({ code: 'unsupported_state' });
       return;
     }
-    const { candidate: release } = await freeze;
+    await expect(cases.capture(identity, linked.id, { ...evidence, runId: linked.runId }, 'en')).rejects.toMatchObject({ code: 'version_conflict' });
+    await expect(cases.capture(identity, linked.id, { ...evidence, evidenceSha256: sha256('old result') }, 'en'))
+      .rejects.toMatchObject({ code: 'version_conflict' });
+    const [english, chinese] = await Promise.all([cases.capture(identity, linked.id, evidence, 'en'), cases.capture(identity, linked.id, evidence, 'zh-CN')]);
+    expect([english.replayed, chinese.replayed].sort()).toEqual([false, true]);
+    expect(english.item.document).toEqual(chinese.item.document);
+    expect(english.item.title).not.toBe(chinese.item.title);
+    expect(english.item.document).toMatchObject({ taskId: linked.id, runId: changed.runId, generation: 2,
+      facts: { category: 'reproduced_health_failure', originalHealthStatus: 503, repairedHealthStatus: 200 } });
+    expect(JSON.stringify(english.item)).not.toContain('export const secondHealth');
+    await expect(database.storage.pool.query('UPDATE itervane.learning_cases SET document=document'))
+      .rejects.toMatchObject({ code: '23514', message: 'learning_case_is_immutable' });
+    const { candidate: release } = await freeze();
     expect(release.manifest.repairedSnapshotSha256).toBe(candidate?.candidateManifestSha256);
     const approver = await createIdentityVerifier(issuer.config)(await issuer.token('owner', { azp: portal }));
     const approved = await releases.decide(approver, release.id, { action: 'confirm', fingerprint: release.fingerprint,
@@ -5787,6 +5805,9 @@ it('queues and resumes a restart through the bound human portal, once per reques
 it('projects a redacted verified restart receipt under current HTTP and read-only MCP project access', async () => {
   const { action, runtime, approval, binding, claimRecovery, outcomeEvidence } = await restartAwaitingRecovery();
   const { scope } = await claimRecovery();
+  const cases = new LearningCaseService(database.storage);
+  await expect(cases.capture(identity, action.diagnosed.id, { runId: action.diagnosed.runId, evidenceSha256: sha256('unsettled') }, 'en'))
+    .rejects.toMatchObject({ code: 'unsupported_state' });
   await expect(runtime.settleRestartRecovery(scope, outcomeEvidence)).resolves.toBe('verified');
   const publicUrl = 'http://127.0.0.1:4330';
   const config = { ...issuer.config, publicUrl, portalClientId: operationsPortal, operationsApi: action.installed };
@@ -5807,6 +5828,22 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
     expect(response.statusCode).toBe(200);
     const view = operationsRestartExecutionViewSchema.parse(response.json());
     const [proof] = await database.storage.db.select().from(operationsRestartRecoveries);
+    const captureUrl = `/v1/tasks/${action.diagnosed.id}/learning-case`;
+    const payload = { runId: action.diagnosed.runId, evidenceSha256: proof!.proofSha256! };
+    expect((await app.inject({ url: captureUrl, method: 'POST', headers: http, payload })).statusCode).toBe(403);
+    const ownerHttp = { authorization: `Bearer ${await issuer.token()}` };
+    const captured = await app.inject({ url: captureUrl, method: 'POST', headers: ownerHttp, payload });
+    expect(captured.statusCode).toBe(201);
+    const { item } = learningCaseCaptureResultSchema.parse(captured.json());
+    expect(item.document).toMatchObject({ projectId, evidenceSha256: proof?.proofSha256, facts: { category: 'recovered_stopped_instance',
+      actionTaskId: scope.taskId, executionId: action.execution.id, releaseOperationId: action.fixture.operationId,
+      sameInstance: true, healthStatus: 200 } });
+    const listing = `/v1/projects/${projectId}/learning-cases?category=recovered_stopped_instance`;
+    const scopedCases = await app.inject({ url: listing, headers: http });
+    expect(scopedCases.statusCode).toBe(200);
+    expect(learningCasesViewSchema.parse(scopedCases.json()).items).toMatchObject([{ id: item.id, sha256: item.sha256, locale: 'zh-CN' }]);
+    await expect(database.storage.pool.query('DELETE FROM itervane.learning_cases WHERE id=$1', [item.id]))
+      .rejects.toMatchObject({ code: '23514', message: 'learning_case_is_immutable' });
     expect(view).toMatchObject({ taskId: action.diagnosed.id, locale: 'zh-CN', action: null, execution: {
       id: action.execution.id, taskId: scope.taskId, runId: scope.runId, proposalId: action.proposal.id,
       releaseOperationId: action.fixture.operationId, nativeApprovalId: approval.approvalId, state: 'succeeded', environmentHeld: false,
@@ -5815,6 +5852,7 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
     } });
     for (const value of [action.fixture.registration.whiskers.origin, action.fixture.runtime.containerId, approval.callSha256, operationsFixtureKey]) {
       expect(JSON.stringify(view)).not.toContain(value);
+      expect(JSON.stringify(item)).not.toContain(value);
     }
     const endpoint = await app.listen({ host: '127.0.0.1', port: 0 });
     const token = await issuer.token(subject, { aud: `${publicUrl}/mcp`, scope: 'itervane:read' });
@@ -5831,6 +5869,7 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
     expect((await reader.callTool(call)).structuredContent).toEqual(view);
     await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
     expect((await app.inject({ url, headers: http })).statusCode).toBe(404);
+    expect((await app.inject({ url: listing, headers: http })).statusCode).toBe(404);
     expect(await reader.callTool(call)).toMatchObject({ isError: true, structuredContent: { error: { code: 'not_found' } } });
   } finally {
     await Promise.all([reader.close(), writer.close()]);

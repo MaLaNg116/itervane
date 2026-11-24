@@ -12,7 +12,8 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import {
   admissionDtoSchema, applicationDtoSchema, auditFindingsPerScan, environmentDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema,
   formalRepairDtoSchema, formalRepairPatchDtoSchema, formalReleaseResultSchema, formalReleaseViewSchema, idSchema, komodoResourceIdSchema, projectDtoSchema,
-  formalRepairRetrySchema, formalVerificationInputSchema, formalVerificationResultSchema, operationsDiagnosisReceiptSchema,
+  formalRepairRetrySchema, formalVerificationInputSchema, formalVerificationResultSchema, learningCaseCaptureResultSchema,
+  learningCaseViewSchema, operationsDiagnosisReceiptSchema,
   operationsObservationReceiptSchema, operationsObservationViewSchema, operationsRestartInstallationSchema,
   qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
   repositoryDtoSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sha256Schema, sourceInspectionDtoSchema,
@@ -374,6 +375,24 @@ async function probe() {
         throw new Error(`fixture_http_${response.status}`);
       }
       return response.json() as Promise<unknown>;
+    };
+    const captureNativeLearningCase = async (task: Pick<TaskDto, 'id' | 'runId' | 'projectId'>, evidenceSha256: string) => {
+      const path = `/v1/tasks/${task.id}/learning-case`;
+      const input = { runId: task.runId, evidenceSha256 };
+      const captured = learningCaseCaptureResultSchema.parse(await request(path, input, false, 'zh-CN'));
+      const replay = learningCaseCaptureResultSchema.parse(await request(path, input, false, 'en'));
+      const { item } = captured;
+      equal(captured.replayed, false);
+      equal(replay.replayed, true);
+      deepStrictEqual(replay.item.document, item.document);
+      equal(replay.item.id, item.id);
+      equal(replay.item.sha256, item.sha256);
+      notEqual(replay.item.title, item.title);
+      deepStrictEqual(learningCaseViewSchema.parse(await request(`/v1/projects/${task.projectId}/learning-cases/${item.id}`)), replay.item);
+      equal(item.document.taskId, task.id);
+      equal(item.document.runId, task.runId);
+      equal(item.document.evidenceSha256, evidenceSha256);
+      return { id: item.id, sha256: item.sha256, origin: item.document };
     };
     const project = projectDtoSchema.parse(await request('/v1/projects', { name: 'Native inspection fixture', slug: 'native-inspection' }));
     const repository = repositoryDtoSchema.parse(await request(`/v1/projects/${project.id}/repositories`, { name: 'Fixed source', url: origin }));
@@ -1221,6 +1240,15 @@ async function probe() {
               [failed.incidentId])).rows;
             ok(incident?.closed_at);
             equal(incident.closed_reason, 'target_changed');
+            phase = 'linked_health_capture_learning_case';
+            const learningCase = await captureNativeLearningCase(repairedTask, after.verificationResultSha256);
+            const facts = learningCase.origin.facts;
+            ok(facts.category === 'reproduced_health_failure');
+            equal(facts.originalHealthStatus, 503);
+            equal(facts.repairedHealthStatus, 200);
+            equal(facts.patchSha256, patch.patchSha256);
+            equal(facts.verificationReceiptSha256, after.receiptSha256);
+            equal(facts.reproductionSha256, before.receiptSha256);
             return {
               incidentId: failed.incidentId, sampleSequence: failed.sequence, diagnosis, originalVersion: first.report.version,
               originalContainerId: first.proof.runtime.containerId, originalReleaseOperationId: operationId,
@@ -1233,7 +1261,7 @@ async function probe() {
               after: { domainId: after.domainId, receiptSha256: after.receiptSha256, health: replacementBaseline.healthFollowup, cleanupConfirmed: true,
                 candidateManifestSha256: after.targetManifestSha256, patchSha256: patch.patchSha256, changedPath: patch.patch.files[0]!.path },
               verifiedBuild: { build: after.build, archiveVerification: after.archiveVerification },
-              modelCalls: calls, readOnlyKomodo: true, whiskersCleanup: true,
+              modelCalls: calls, readOnlyKomodo: true, whiskersCleanup: true, learningCase,
             };
           } finally {
             setDefaultCACertificates(trusted);
@@ -1694,7 +1722,16 @@ async function probe() {
                   } : undefined);
                   ok(worker);
                   await worker.stop('TERM'); worker = undefined;
-                  return accepted;
+                  if (interrupted) return accepted;
+                  phase = 'operations_capture_learning_case';
+                  const learningCase = await captureNativeLearningCase(diagnosis, accepted.proofSha256);
+                  const facts = learningCase.origin.facts;
+                  ok(facts.category === 'recovered_stopped_instance');
+                  equal(facts.diagnosisSha256, diagnosisSha256);
+                  equal(facts.executionId, accepted.executionId);
+                  equal(facts.releaseOperationId, operationId);
+                  equal(facts.healthStatus, 200);
+                  return { ...accepted, learningCase };
                 },
               });
               ok(result.accepted);

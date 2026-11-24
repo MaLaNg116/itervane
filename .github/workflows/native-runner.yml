@@ -235,6 +235,10 @@ jobs:
               $proof.after.health.status == "passed" and $proof.after.health.statusCode == 200 and
               $proof.before.cleanupConfirmed and $proof.after.cleanupConfirmed and $proof.after.changedPath == "server/app.mjs" and
               ($proof.after.patchSha256 | test("^[a-f0-9]{64}$")) and
+              $proof.learningCase.origin.taskId == $proof.release.taskId and $proof.learningCase.origin.runId == $proof.repairedRunId and
+              $proof.learningCase.origin.facts.category == "reproduced_health_failure" and
+              $proof.learningCase.origin.facts.patchSha256 == $proof.after.patchSha256 and
+              $proof.learningCase.origin.facts.reproductionSha256 == $proof.before.receiptSha256 and
               $proof.originalContainerId != $proof.recoveredContainerId and $proof.release.operationId != $original.operationId and
               $proof.release.version != $original.version and $proof.release.manifestDigest != $original.manifestDigest and
               $proof.release.approvalDeniedWithoutPortal and $proof.release.healthStatus == 200 and $proof.release.httpMcpAgreement and
@@ -350,6 +354,10 @@ jobs:
               .operations.restart.blockedBeforeApproval and .operations.restart.distinctKomodoReader and
               .operations.restart.restoreWorker.separateReadIdentity and .operations.restart.restoreWorker.mismatchedMappingDenied and
               .operations.restart.restoreWorker.idleWithoutWork and
+              .operations.restart.learningCase.origin.runId == .operations.restart.diagnosisRunId and
+              .operations.restart.learningCase.origin.evidenceSha256 == .operations.restart.proofSha256 and
+              .operations.restart.learningCase.origin.facts.category == "recovered_stopped_instance" and
+              .operations.restart.learningCase.origin.facts.sameInstance and .operations.restart.learningCase.origin.facts.healthStatus == 200 and
               .operations.restart.environmentReleased and .operations.restart.slotReleased and .operations.restart.httpMcpAgreement' "$report" >/dev/null
             jq -e '.operations.restart as $verified | $verified.interrupted as $interrupted |
               $interrupted.releaseOperationId == .release.operationId and

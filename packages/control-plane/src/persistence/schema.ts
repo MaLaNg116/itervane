@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import { bigint, boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
   agentRoles, taskStates, type DesignSkillPackage, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
+  type LearningCaseDocument, type LearningCaseFacts,
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairContinuation, type FormalRepairInput, type FormalRepairResult,
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan, type MaterializedSourceBasis,
   type OperationsDiagnosisObservation, type OperationsDiagnosisReceipt, type OperationsDiagnosisSection,
@@ -157,6 +158,27 @@ export const taskRuns = domain.table('task_runs', {
   generation: integer('generation').notNull(), role: agentRole('role').notNull(),
   state: taskState('state').notNull().default('queued'), wakeupJobId: uuid('wakeup_job_id'), createdAt: createdAt(),
 }, t => [unique('task_run_generation_unique').on(t.taskId, t.generation), unique('task_run_task_pair').on(t.id, t.taskId), check('run_generation_positive', sql`${t.generation} > 0`)]);
+
+export const learningCases = domain.table('learning_cases', {
+  id: uuid('id').primaryKey().defaultRandom(), projectId: uuid('project_id').notNull(),
+  taskId: uuid('task_id').notNull(), runId: uuid('run_id').notNull(),
+  category: text('category').$type<LearningCaseFacts['category']>().notNull(),
+  evidenceSha256: text('evidence_sha256').notNull(), sha256: text('sha256').notNull(),
+  capturedBy: uuid('captured_by').notNull().references(() => principals.id), grantId: uuid('grant_id').notNull(),
+  document: jsonb('document').$type<LearningCaseDocument>().notNull(), createdAt: createdAt(),
+}, t => [
+  foreignKey({ name: 'learning_case_task_project_fk', columns: [t.taskId, t.projectId], foreignColumns: [tasks.id, tasks.projectId] }),
+  foreignKey({ name: 'learning_case_run_task_fk', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
+  unique('learning_case_run_unique').on(t.runId),
+  index('learning_case_project_history').on(t.projectId, t.createdAt, t.id),
+  index('learning_case_similar_history').on(t.projectId, t.category, t.createdAt, t.id),
+  check('learning_case_document', sql`(${t.sha256} ~ '^[a-f0-9]{64}$' AND ${t.evidenceSha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.category} IN ('resolved_source_findings', 'reproduced_health_failure', 'recovered_stopped_instance')
+    AND ${t.document}->>'version' = '1' AND ${t.document}->>'projectId' = ${t.projectId}::text
+    AND ${t.document}->>'taskId' = ${t.taskId}::text AND ${t.document}->>'runId' = ${t.runId}::text
+    AND ${t.document}->>'evidenceSha256' = ${t.evidenceSha256} AND ${t.document}#>>'{facts,category}' = ${t.category}
+    AND octet_length(${t.document}::text) <= 4096) IS TRUE`),
+]);
 
 export const taskEvents = domain.table('task_events', {
   taskId: uuid('task_id').notNull().references(() => tasks.id), sequence: integer('sequence').notNull(),
