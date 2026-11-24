@@ -500,7 +500,13 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
         return rejected("lease_lost", request["requestId"])
     with LiveConnection(connection, stopping) as live:
         result = launch(request, origin, live.cancelled, command)
-    return response_for(request, result)
+    response = response_for(request, result)
+    if response["kind"] == "rejected":
+        diagnostics = {"code": result.code, "profile": result.profileIssue, "job": result.jobIssue}
+        safe = {key: value for key, value in diagnostics.items()
+                if value is not None and re.fullmatch(r"[a-z0-9_-]{1,96}", value)}
+        print("itervane-domain-result " + json.dumps(safe, separators=(",", ":")), file=sys.stderr, flush=True)
+    return response
 
 
 def socket_parent(path):

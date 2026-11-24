@@ -41,7 +41,13 @@ sudo -n systemd-run --quiet --unit="$unit" --uid="$runner" --gid="$runner" \
   --setenv="XDG_CONFIG_HOME=/home/$runner/.config" --setenv="XDG_CACHE_HOME=/home/$runner/.cache" --setenv=LANG=C.UTF-8 \
   /usr/bin/python3 -I -B "$directory/code/packages/runner/host/qualified_controller.py" \
   "$sock" "$stage" "$directory/probe.raw" "$digest" "$(id -u "$worker")" "${features[@]}" https://github.com/MaLaNg116/itervane.git
-trap 'sudo -n systemctl stop "$unit"' EXIT
+stop_session() {
+  sudo -n systemctl stop "$unit"
+  if [[ "$1" -ne 0 ]]; then
+    sudo -n journalctl --unit "$unit" --grep '^itervane-domain-result ' --lines 20 --output cat --no-pager >&2 || true
+  fi
+}
+trap 'stop_session "$?"' EXIT
 for attempt in {1..100}; do
   if sudo -n test -S "$sock"; then break; fi
   sleep 0.1
