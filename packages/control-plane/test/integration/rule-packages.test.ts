@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
-import { apiErrorSchema, rulePackageActivationResultSchema, rulePackageActivationViewSchema, rulePackageDetailSchema,
+import { apiErrorSchema, designSkillPackageSchema, rulePackageActivationResultSchema, rulePackageActivationViewSchema, rulePackageDetailSchema,
   rulePackageImportResultSchema, rulePackagePageSchema } from '@itervane/contracts';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier } from '../../src/auth/identity.js';
@@ -69,8 +69,9 @@ it('canonically imports one draft under concurrent submissions and reads immutab
   expect(one).toMatchObject({ reviewState: 'draft', text: input.text.en });
   expect(two).toMatchObject({ packageId: one.packageId, versionId: one.versionId, sha256: one.sha256, text: input.text['zh-CN'] });
   expect(one.reviewMessage).not.toBe(two.reviewMessage);
-  expect(one.document.resources.map(item => item.path)).toEqual(['assets/tokens.json', 'references/Keyboard.md']);
-  expect(one.document.skill.content).toBe(equivalent.skill.content);
+  const document = designSkillPackageSchema.parse(one.document);
+  expect(document.resources.map(item => item.path)).toEqual(['assets/tokens.json', 'references/Keyboard.md']);
+  expect(document.skill.content).toBe(equivalent.skill.content);
   expect((await post({ ...input, skill: { ...input.skill, content: 'Different guidance.' } })).statusCode).toBe(409);
 
   const nextResponse = await post(design('1.1.0'));

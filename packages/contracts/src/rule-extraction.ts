@@ -20,7 +20,7 @@ export const codeRuleCandidateSchema = z.strictObject({
   samples: z.strictObject({ violation: sampleText, corrected: sampleText, lookalike: sampleText })
     .refine(samples => new Set(Object.values(samples).map(value => value.trim())).size === 3),
 });
-const runbookCandidate = z.strictObject({
+export const runbookCandidateSchema = z.strictObject({
   ...candidateBase, kind: z.literal('runbook'),
   action: z.literal('restart_current_publication'),
   when: z.strictObject({ observedStates: z.array(z.enum(['exited', 'dead'])).min(1).max(2)
@@ -37,7 +37,7 @@ const runbookCandidate = z.strictObject({
   }),
 }).refine(value => [value.samples.eligible, value.samples.stale, value.samples.unapproved]
   .every(sample => value.when.observedStates.includes(sample.observedState)));
-export const learningCandidateSchema = z.discriminatedUnion('kind', [codeRuleCandidateSchema, runbookCandidate]);
+export const learningCandidateSchema = z.discriminatedUnion('kind', [codeRuleCandidateSchema, runbookCandidateSchema]);
 export type LearningCandidate = z.infer<typeof learningCandidateSchema>;
 
 export const learningCaseReferenceSchema = z.strictObject({ caseId: idSchema, sha256: sha256Schema });
