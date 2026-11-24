@@ -23,6 +23,7 @@ export * from './preaudit.js';
 export * from './rule-packages.js';
 export * from './task-rule-snapshots.js';
 export * from './published-code-scan.js';
+export * from './published-code-rule-set.js';
 export * from './learning-cases.js';
 export * from './rule-extraction.js';
 export * from './rule-validation.js';

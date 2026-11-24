@@ -3,6 +3,15 @@ import { idSchema, sourceRefSchema } from './primitives.js';
 
 export const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 export const sourceContentLimits = Object.freeze({ maxFiles: 5000, maxFileBytes: 2097152, maxSourceBytes: 33554432 });
+export const sourceManifestSchema = z.strictObject({
+  version: z.literal(1), source: sourceRefSchema, objectFormat: z.enum(['sha1', 'sha256']), tree: sourceRefSchema.shape.commit,
+  files: z.array(z.strictObject({
+    path: z.string().min(1).max(240), mode: z.enum(['100644', '100755']),
+    bytes: z.int().min(0).max(sourceContentLimits.maxFileBytes), sha256: sha256Schema,
+  })).max(sourceContentLimits.maxFiles),
+  totalBytes: z.int().min(0).max(sourceContentLimits.maxSourceBytes), sha256: sha256Schema,
+});
+export type SourceManifest = z.infer<typeof sourceManifestSchema>;
 export const retrySourceInspectionReasonSchema = z.enum(['runner_unavailable', 'inspection_reconciling', 'inspection_failed']);
 export const sourceInspectionPauseReasonSchema = z.enum([
   ...retrySourceInspectionReasonSchema.options, 'inspection_unsupported', 'inspection_source_mismatch', 'inspection_ready', 'inspection_incomplete',

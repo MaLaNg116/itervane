@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { sourceRefSchema } from '@itervane/contracts';
+import { sourceRefSchema, type SourceManifest } from '@itervane/contracts';
 import { sha256, sourceLimits } from './profiles.js';
 
 export class SourceInputError extends Error {
@@ -14,10 +14,7 @@ export function sourcePath(value: unknown): string {
 }
 type FileInput = { path: string; mode: string; content: Uint8Array };
 type Node = { kind: 'tree'; children: Map<string, Node> } | { kind: 'blob'; mode: string; oid: string };
-export type SourceManifest = {
-  version: 1; source: { repositoryId: string; commit: string }; objectFormat: 'sha1' | 'sha256'; tree: string;
-  files: { path: string; mode: '100644' | '100755'; bytes: number; sha256: string }[]; totalBytes: number; sha256: string;
-};
+export type { SourceManifest } from '@itervane/contracts';
 
 /** Receives bytes only. Fetching, checkout, archive extraction and execution are deliberately absent. */
 export function verifySourceSnapshot(raw: { source: unknown; commitObject: Uint8Array; files: readonly FileInput[] }): SourceManifest {

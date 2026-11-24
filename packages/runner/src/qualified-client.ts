@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
-  npmRegistryTarball, npmRepairPaths,
+  npmRegistryTarball, npmRepairPaths, publishedInspectionProofByteLimit,
   qualifiedInspectionRequestSchema, qualifiedInspectionResponseSchema, qualifiedInspectionStatusSchema, qualifiedRunnerRejectionSchema,
   qualifiedRepairObservationRequestSchema, qualifiedRepairObservationResponseSchema,
   qualifiedRepairRequestSchema, qualifiedRepairResponseSchema, sha256Schema,
@@ -24,6 +24,7 @@ import { scannerProfiles, sha256 } from './profiles.js';
 import { canonicalRepairCommand, canonicalRepairObservation, protectedRepairPath } from './repair-command.js';
 import { scanFindingId } from './scan-finding-id.js';
 import { sourcePath } from './snapshot.js';
+import { requirePublishedInspectionCommand, verifyPublishedInspectionProof, type PublishedInspectionCommand } from './published-inspection-command.js';
 import { canonicalVerificationCommand } from './verification-command.js';
 import { canonicalRuleValidationCommand, prepareQualifiedRuleValidationRequest, verifyQualifiedRuleValidationReceipt, type RuleValidationCoordinates } from './rule-validation-command.js';
 
@@ -106,16 +107,18 @@ async function verifySocket(address: QualifiedControllerAddress) {
 
 export function verifyQualifiedInspectionReceipt(receipt: QualifiedInspectionReceipt,
   scope: QualifiedInspectionScope, binding: { imageSha256: string; originSha256: string },
-  profiles: readonly InspectionPlan['scanners'][number][] = scannerProfiles) {
+  profiles: readonly InspectionPlan['scanners'][number][] = scannerProfiles, command?: PublishedInspectionCommand) {
   const { snapshot } = receipt;
-  const { materializedFrom, ...coordinates } = scope;
+  const { materializedFrom, publishedCode, ...coordinates } = scope;
   if (Object.entries(coordinates).some(([key, value]) => receipt.scope[key as keyof typeof coordinates] !== value)
       || JSON.stringify(receipt.scope.materializedFrom) !== JSON.stringify(materializedFrom)
+      || JSON.stringify(receipt.scope.publishedCode) !== JSON.stringify(publishedCode)
       || receipt.imageSha256 !== binding.imageSha256 || receipt.originSha256 !== binding.originSha256
       || receipt.domainId !== snapshot.runId || snapshot.commit !== scope.commit || snapshot.repositoryId !== scope.repositoryId) {
     throw new Error('runner_receipt_binding');
   }
   verifyReportBindings(snapshot.reports, snapshot.manifestSha256, profiles);
+  verifyPublishedInspectionProof(receipt, command);
 }
 
 function verifyReportBindings(reports: QualifiedInspectionReceipt['snapshot']['reports'], manifestSha256: string,
@@ -408,17 +411,18 @@ export class QualifiedInspectionClient {
   }
 
   async inspect(
-    rawRequest: QualifiedInspectionRequest, authorize: () => Promise<void>, signal?: AbortSignal,
+    rawRequest: QualifiedInspectionRequest, authorize: () => Promise<void>, signal?: AbortSignal, command?: PublishedInspectionCommand,
   ): Promise<QualifiedInspectionResponse> {
     const request = qualifiedInspectionRequestSchema.parse(rawRequest);
+    requirePublishedInspectionCommand(request, this.imageSha256, command);
     return this.execute(request, authorize, signal, line => {
       const response = qualifiedInspectionResponseSchema.parse(JSON.parse(line));
       if (response.kind === 'receipt') {
         const { origin, ...scope } = request;
-        verifyQualifiedInspectionReceipt(response, scope, { imageSha256: this.imageSha256, originSha256: sha256(origin) });
+        verifyQualifiedInspectionReceipt(response, scope, { imageSha256: this.imageSha256, originSha256: sha256(origin) }, scannerProfiles, command);
       }
       return response;
-    });
+    }, command?.bytes, command ? publishedInspectionProofByteLimit + 8192 : responseLimit);
   }
 
   async repair(rawRequest: RepairCoordinates, workspace: RepairWorkspace, patch: RepairPatch,
