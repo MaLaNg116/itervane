@@ -6,6 +6,7 @@ import { Disclosure } from '../motion.js';
 import { Badge } from '../ui/badge.js';
 import { Button } from '../ui/button.js';
 import { Table } from '../ui/table.js';
+import { RulePackageActivation, RulePackageReview } from './rule-package-review.js';
 
 const kindLabels = { design_skill: 'packageDesign', code_rule: 'packageCodeRule', runbook: 'packageRunbook' } as const;
 const versionHash = (packageId: string, versionId: string) => `#/rule-packages/${packageId}/versions/${versionId}`;
@@ -42,8 +43,10 @@ export function RulePackagePage({ packageId, versionId }: { packageId: string; v
   const { locale } = usePortal();
   const t = useText();
   const packagePath = `/v1/rule-packages/${packageId}`;
-  const revision = useRemote(`${packagePath}/versions/${versionId}`, rulePackageDetailSchema, { localized: true, poll: true });
-  const activations = useRemote(`${packagePath}/activation`, rulePackageActivationViewSchema, { localized: true, poll: true });
+  const revision = useRemote(`${packagePath}/versions/${versionId}`, rulePackageDetailSchema,
+    { localized: true, poll: true, keepOnLocaleChange: true });
+  const activations = useRemote(`${packagePath}/activation`, rulePackageActivationViewSchema,
+    { localized: true, poll: true, keepOnLocaleChange: true });
   const error = revision.error ?? activations.error;
   if (error) return <Failure error={error} locale={locale} retry={() => { void revision.refetch(); void activations.refetch(); }} />;
   if (!revision.data || !activations.data) return <Loading locale={locale} />;
@@ -79,6 +82,7 @@ export function RulePackagePage({ packageId, versionId }: { packageId: string; v
         </Disclosure>
       </>}
     </Panel>
+    <RulePackageReview version={version} />
     <Panel title={t('packageActivationHistory')}>
       {current ? <p><a href={versionHash(packageId, current.versionId)}>{t('packageActive')}</a></p> : <p>{t('packageInactive')}</p>}
       {history.length > 0 && <ol className="grid list-none gap-3 p-0">
@@ -87,6 +91,7 @@ export function RulePackagePage({ packageId, versionId }: { packageId: string; v
           <span className="muted ml-2"><time dateTime={entry.recordedAt}>{formatTime(entry.recordedAt, locale)}</time></span>
         </li>)}
       </ol>}
+      <RulePackageActivation version={version} activation={activations.data} />
     </Panel>
   </>;
 }
