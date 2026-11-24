@@ -2,11 +2,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { test as base, expect, type Page } from '@playwright/test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { admissionDtoSchema, catalogDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema, formalReleaseDecisionResultSchema,
+import { admissionDtoSchema, catalogDtoSchema, confirmOperationsRepairSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema, formalReleaseDecisionResultSchema,
   formalReleaseViewSchema, formalRepairDtoSchema, formalRepairPatchDtoSchema, operationsObservationViewSchema, operationsProposalViewSchema,
   operationsEnqueueInputSchema, operationsRestartContinueInputSchema, operationsRestartEnqueueInputSchema, operationsRestartExecutionViewSchema,
-  operationsRestoreExecutionViewSchema,
-  preauditDtoSchema, releaseDecisionInputSchema, sourceInspectionDtoSchema, taskDtoSchema, translate, verificationViewSchema,
+  operationsIncidentStopResultSchema, operationsIncidentsViewSchema, operationsRepairViewSchema, operationsRestoreExecutionViewSchema,
+  preauditDtoSchema, releaseDecisionInputSchema, sourceInspectionDtoSchema, stopOperationsIncidentDiagnosisSchema, taskDtoSchema,
+  taskIncidentViewSchema, translate, verificationViewSchema,
   type FormalReleaseCandidateDto, type Locale, type OperationsRestartExecutionView, type TaskDto } from '@itervane/contracts';
 import { browserStack } from './stack.js';
 
@@ -1007,6 +1008,165 @@ test('rechecks a version restore confirmation and displays its bilingual receipt
   await expect.poll(async () => (await motionProbe(page)).disclosures).toBeGreaterThan(disclosures);
   await expect(execution.getByRole('button', { name: '提交版本恢复', exact: true })).toHaveCount(0);
   await expectMotionCsp(page);
+});
+
+test('follows the bilingual health event, stops diagnosis and confirms the fixed repair source', async ({ page, stack }) => {
+  const project = await seedProject(stack);
+  const authorization = authorizationFrom(page);
+  await login(page, stack);
+  await expect(page.getByRole('link', { name: project.title, exact: true })).toBeVisible();
+  const delivery = await admit(stack, authorization(), project);
+  const diagnosis = taskDtoSchema.parse({ ...await admit(stack, authorization(), project), workflow: 'operations', state: 'succeeded' });
+  const linked = await admit(stack, authorization(), project);
+  const { candidate, target } = frozenReleaseFixture(delivery);
+  const scope = { projectId: project.id, environmentId: target.environmentId };
+  const releaseOperationId = randomUUID();
+  const restoreExecutionId = randomUUID();
+  const incidentId = randomUUID();
+  const proposalId = randomUUID();
+  const sampleTime = new Date().toISOString();
+  const materializedCommit = 'e'.repeat(40);
+  const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+  const diagnosisSha256 = hash('verified application diagnosis');
+  const fingerprint = hash('frozen linked repair');
+  const containerEvidence = hash('container');
+  const releaseEvidence = hash('release');
+  const api = `${stack.origin}/v1`;
+  const releasePath = `${api}/tasks/${delivery.id}`;
+  const diagnosisPath = `${api}/tasks/${diagnosis.id}`;
+  const historyPath = `${api}/projects/${scope.projectId}/environments/${scope.environmentId}/operations-incidents`;
+  const localeFor = (request: { headers: () => Record<string, string> }): Locale => request.headers()['accept-language'] === 'zh-CN' ? 'zh-CN' : 'en';
+  const stops: unknown[] = [];
+  const prepares: unknown[] = [];
+  const approvals: unknown[] = [];
+  let mayConfirm = true;
+  const latestSample = (locale: Locale) => ({ sequence: 7, recordedAt: sampleTime, releaseOperationId, restoreExecutionId,
+    signal: { status: 'unhealthy' as const, reason: 'application_unhealthy' as const, evidenceSha256: hash('unhealthy sample') },
+    message: translate(locale, 'operations.health.application_unhealthy') });
+  const incident = (locale: Locale) => ({ id: incidentId, releaseOperationId, restoreExecutionId, openedAt: sampleTime, lastUnhealthyAt: sampleTime,
+    unhealthySamples: 2, closedAt: null, closedReason: null, latestSample: latestSample(locale), message: translate(locale, 'operations.incident.open'),
+    diagnosisStop: stops.length ? { at: sampleTime, reason: 'operator_stopped' as const, message: translate(locale, 'operations.incident.operator_stopped') } : null,
+    diagnoses: [{ taskId: diagnosis.id, runId: diagnosis.runId, attempt: 1, sampleSequence: 7, state: 'succeeded' as const, stateLabel: translate(locale, 'state.succeeded') }],
+    repairs: approvals.length ? [{ proposalId, diagnosisRunId: diagnosis.runId, taskId: linked.id, state: 'queued' as const }] : [],
+  });
+  await page.route(releasePath, async route => {
+    const response = await route.fetch();
+    return response.ok() ? route.fulfill({ json: { ...delivery, state: 'succeeded' } }) : route.fulfill({ response });
+  });
+  await page.route(`${releasePath}/release`, route => {
+    const locale = localeFor(route.request());
+    return route.fulfill({ json: formalReleaseViewSchema.parse({ taskId: delivery.id, taskVersion: delivery.version, runId: delivery.runId,
+      candidate: { ...candidate, status: 'confirmed', operationId: releaseOperationId }, candidateTarget: target, availableTargets: [], actions: [],
+      result: { operationId: releaseOperationId, candidateId: candidate.id, updateId: 'a'.repeat(24), status: 'verified', locale,
+        message: translate(locale, 'release.operation.verified_formal'), evidence: { checkedAt: sampleTime,
+          manifestDigest: candidate.manifest.image.manifestDigest, configDigest: candidate.manifest.image.configDigest,
+          version: 'standard-v2', healthy: true, accessProtected: true } },
+    }) });
+  });
+  await page.route(historyPath, route => {
+    const locale = localeFor(route.request());
+    return route.fulfill({ json: operationsIncidentsViewSchema.parse({ version: 1, ...scope, locale, latestHealth: latestSample(locale), items: [incident(locale)] }) });
+  });
+  await page.route(diagnosisPath, async route => {
+    const response = await route.fetch();
+    return response.ok() ? route.fulfill({ json: diagnosis }) : route.fulfill({ response });
+  });
+  await page.route(`${diagnosisPath}/operations`, route => {
+    const locale = localeFor(route.request());
+    return route.fulfill({ json: operationsObservationViewSchema.parse({
+      version: 1, taskId: diagnosis.id, runId: diagnosis.runId, taskVersion: diagnosis.version, state: diagnosis.state,
+      applicationId: target.applicationId, environmentId: scope.environmentId, releaseOperationId,
+      observation: { state: 'running', stateLabel: translate(locale, 'operations.container.running'), observedAt: sampleTime, receiptSha256: hash('observed') },
+      diagnosis: { receiptSha256: diagnosisSha256, previousReleaseOperationId: null, hypotheses: [], recommendation: {
+        code: 'investigate_code', message: locale === 'zh-CN' ? '排查导致此故障的源码。' : 'Investigate the source of this failure.',
+        evidenceIds: [containerEvidence, releaseEvidence],
+      }, facts: [
+        { section: 'container', evidenceId: containerEvidence, proofSha256: hash('container proof'), result: { state: 'running', observedAt: sampleTime } },
+        { section: 'release', evidenceId: releaseEvidence, proofSha256: hash('release proof'), result: {
+          current: { operationId: releaseOperationId, manifestDigest: candidate.manifest.image.manifestDigest, verifiedAt: sampleTime }, previous: null,
+        } },
+      ] }, locale, message: translate(locale, 'task.operations_observed'), reason: 'operations_diagnosed', reasonMessage: translate(locale, 'reason.operations_diagnosed'),
+    }) });
+  });
+  await page.route(`${diagnosisPath}/operations-incident`, route => {
+    const locale = localeFor(route.request());
+    return route.fulfill({ json: taskIncidentViewSchema.parse({ version: 1, taskId: diagnosis.id, locale, relatedAs: 'diagnosis',
+      incident: incident(locale), stopDiagnosis: stops.length ? null : scope }) });
+  });
+  await page.route(`${api}/tasks/${linked.id}/operations-incident`, route => {
+    const locale = localeFor(route.request());
+    return route.fulfill({ json: taskIncidentViewSchema.parse({ version: 1, taskId: linked.id, locale, relatedAs: 'linked_repair', incident: incident(locale) }) });
+  });
+  await page.route(`${historyPath}/${incidentId}/stop-diagnosis`, route => {
+    stops.push(stopOperationsIncidentDiagnosisSchema.parse(route.request().postDataJSON()));
+    const locale = localeFor(route.request());
+    return route.fulfill({ json: operationsIncidentStopResultSchema.parse({ incidentId, stoppedAt: sampleTime, replayed: false,
+      locale, reason: 'operator_stopped', message: translate(locale, 'operations.incident.operator_stopped') }) });
+  });
+  await page.route(`${diagnosisPath}/operations-repair`, route => {
+    const request = route.request();
+    if (request.method() === 'POST') prepares.push(request.postDataJSON());
+    const locale = localeFor(request);
+    const status = approvals.length ? 'confirmed' : 'pending';
+    return route.fulfill({ json: operationsRepairViewSchema.parse({ taskId: diagnosis.id, runId: diagnosis.runId, taskVersion: diagnosis.version, locale,
+      draft: prepares.length ? null : { diagnosisSha256 }, proposal: prepares.length ? {
+        id: proposalId, fingerprint, status, validUntil: new Date(Date.parse(sampleTime) + 300_000).toISOString(), incidentId,
+        message: translate(locale, `operations.linked_repair.${status}`), mayConfirm: mayConfirm && status === 'pending',
+        target: { environmentId: scope.environmentId, releaseOperationId, restoreExecutionId }, source: { ...diagnosis.source, requiresMaterializedCommit: true },
+        linkedTask: approvals.length ? { taskId: linked.id, runId: linked.runId, state: 'queued', stateLabel: translate(locale, 'state.queued') } : null,
+      } : null,
+    }) });
+  });
+  await page.route(`${api}/operations/repair-proposals/${proposalId}/confirm`, route => {
+    approvals.push(confirmOperationsRepairSchema.parse(route.request().postDataJSON()));
+    return route.fulfill({ status: 202, json: { task: { ...linked, source: { ...linked.source, commit: materializedCommit } }, replayed: false } });
+  });
+
+  await page.goto(`${stack.origin}/#/tasks/${delivery.id}`);
+  page.setDefaultTimeout(8_000);
+  const history = page.getByTestId('release-health-history');
+  await expect(history.getByRole('status')).toHaveText(translate('en', 'operations.health.application_unhealthy'));
+  await history.locator('summary').filter({ hasText: 'Health event history' }).press('Enter');
+  await history.getByRole('link', { name: 'Diagnosis attempt 1' }).click();
+  const card = page.getByTestId('task-health-incident');
+  await card.getByRole('button', { name: 'Stop automatic diagnosis' }).click();
+  const stop = page.getByRole('dialog', { name: 'Stop automatic diagnosis for this incident?' });
+  await expect(stop.getByText(restoreExecutionId, { exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(stop).toHaveCount(0);
+  expect(stops).toEqual([]);
+
+  await language(page, 'zh-CN');
+  await card.getByRole('button', { name: '停止自动诊断', exact: true }).click();
+  await page.getByRole('dialog', { name: '停止此事件的自动诊断？' }).getByRole('button', { name: '停止自动诊断', exact: true }).click();
+  await expect(card.getByText(translate('zh-CN', 'operations.incident.operator_stopped'), { exact: true })).toBeVisible();
+  await expect(card.getByRole('button', { name: '停止自动诊断', exact: true })).toHaveCount(0);
+  expect(stops).toEqual([{ expectedReleaseOperationId: releaseOperationId, expectedRestoreExecutionId: restoreExecutionId }]);
+
+  const repair = page.getByTestId('operations-linked-repair');
+  await repair.getByRole('button', { name: '准备关联修复' }).click();
+  await repair.getByRole('button', { name: '提交关联修复' }).click();
+  expect(prepares).toEqual([{ diagnosisSha256 }]);
+  const confirm = page.getByRole('dialog', { name: '为此版本提交修复任务？' });
+  const commit = confirm.getByRole('textbox', { name: '包含已部署补丁的提交' });
+  const queue = confirm.getByRole('button', { name: '提交关联修复' });
+  await commit.fill(diagnosis.source.commit);
+  await expect(queue).toBeDisabled();
+  mayConfirm = false;
+  await expect(confirm).toHaveCount(0);
+  expect(approvals).toEqual([]);
+  mayConfirm = true;
+  await repair.getByRole('button', { name: '提交关联修复' }).click();
+  await commit.fill(materializedCommit);
+  await expect(queue).toBeEnabled();
+  await queue.press('Enter');
+  await expect(repair.getByRole('link', { name: '关联修复任务' })).toHaveAttribute('href', `#/tasks/${linked.id}`);
+  expect(approvals).toEqual([{ fingerprint, locale: 'zh-CN', commit: materializedCommit }]);
+  await language(page, 'en');
+  await expect(repair.getByText(translate('en', 'operations.linked_repair.confirmed'), { exact: true })).toBeVisible();
+  await repair.getByRole('link', { name: 'Linked repair task' }).click();
+  await expect(page).toHaveURL(new RegExp(`#/tasks/${linked.id}$`));
+  await expect(card.getByRole('link', { name: 'Diagnosis attempt 1' })).toHaveAttribute('href', `#/tasks/${diagnosis.id}`);
 });
 
 for (const locale of ['en', 'zh-CN'] as const) test(`real OIDC and task lifecycle in ${locale}`, async ({ page, stack }) => {
