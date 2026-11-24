@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { sha256Schema } from './inspection.js';
 import { idSchema } from './primitives.js';
 import { ruleIdSchema } from './preaudit.js';
+import { qualifiedRunnerRejectionSchema } from './qualified-inspection.js';
+import { codeRuleCandidateSchema } from './rule-extraction.js';
 
 export const ruleSampleKinds = ['violation', 'corrected', 'lookalike'] as const;
 export const ruleSampleKindSchema = z.enum(ruleSampleKinds);
@@ -35,6 +37,30 @@ export const codeRuleSampleResultSchema = z.strictObject({
   samples: z.array(codeRuleSampleObservationSchema).length(3),
 });
 export type CodeRuleSampleResult = z.infer<typeof codeRuleSampleResultSchema>;
+
+export const codeRuleValidationCommandSchema = z.strictObject({
+  version: z.literal(1), basis: codeRuleValidationBasisSchema, candidate: codeRuleCandidateSchema,
+});
+export const ruleValidationCommandByteLimit = 32 * 1024;
+export const ruleValidationProofByteLimit = 8 * 1024;
+export const qualifiedRuleValidationRequestSchema = z.strictObject({
+  version: z.literal(1), operation: z.literal('validate_rule_samples'),
+  requestId: z.uuidv4(), taskId: z.uuidv4(), runId: z.uuidv4(), projectId: z.uuidv4(),
+  generation: z.int().min(1).max(2_147_483_647), fence: z.int().min(1).max(2_147_483_647),
+  workspaceSha256: sha256Schema, runnerImageSha256: sha256Schema, basisSha256: sha256Schema, engineInputsSha256: sha256Schema,
+  commandSha256: sha256Schema, commandBytes: z.int().min(1).max(ruleValidationCommandByteLimit),
+});
+export type QualifiedRuleValidationRequest = z.infer<typeof qualifiedRuleValidationRequestSchema>;
+export const qualifiedGuestRuleValidationProofSchema = z.strictObject({
+  version: z.literal(1), commandSha256: sha256Schema, result: codeRuleSampleResultSchema,
+});
+export const qualifiedRuleValidationResponseSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('rule_samples_receipt'), scope: qualifiedRuleValidationRequestSchema, domainId: z.uuidv4(),
+    imageSha256: sha256Schema, cleanupConfirmed: z.literal(true), sessionVerified: z.literal(true), proof: qualifiedGuestRuleValidationProofSchema }),
+  qualifiedRunnerRejectionSchema,
+]);
+export type QualifiedRuleValidationResponse = z.infer<typeof qualifiedRuleValidationResponseSchema>;
+export type QualifiedRuleValidationReceipt = Extract<QualifiedRuleValidationResponse, { kind: 'rule_samples_receipt' }>;
 
 export const runbookSelectionContextSchema = z.strictObject({
   observedState: z.enum(['exited', 'dead', 'running', 'unknown']),
