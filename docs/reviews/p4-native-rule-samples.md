@@ -7,3 +7,5 @@
 3. 客户端重算三份样例的完整性及通过判据。原生 CI 场景分两个域验证通过和误报，并核对提前失去授权及错误映像时没有启动域。 [原生脚本](https://github.com/MaLaNg116/itervane/blob/fbb869d155ba6cbb959a110f4bb4d8103680b545/packages/control-plane/test/native/rule-samples.ts#L35)
 
 本地 TypeScript、274 项单元、WSL 75 项主机用例及 Bash、工作流解析通过。正式样例的 VM 验收见托管检查。C2c 把该回执加入候选验证任务、全局单槽和人工审核发布资格。 [托管检查](https://github.com/MaLaNg116/itervane/pull/142/checks)
+
+首次托管运行完成映像准备、来宾交互和清理，首条规则回执的结论是 `unavailable`。测试输出已增加各样例的归一化失败原因，以便从下一次运行分辨引擎、超时和覆盖问题。 [首次运行](https://github.com/MaLaNg116/itervane/actions/runs/45406958411/job/138490150493)

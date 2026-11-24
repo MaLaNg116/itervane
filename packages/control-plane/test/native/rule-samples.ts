@@ -32,13 +32,23 @@ const coordinates = (fence: number) => ({
 });
 const reference = { candidateId: randomUUID(), extractionResultSha256: sha256('trusted native sample candidate') };
 const authorize = async () => {};
+function checkedSummary(result: Awaited<ReturnType<QualifiedInspectionClient['validateRuleSamples']>>) {
+  return result.kind === 'rejected' ? { code: result.code, cleanup: result.cleanup } : {
+    status: result.proof.result.status, samples: result.proof.result.samples.map(sample => sample.status === 'checked'
+      ? { sample: sample.name, matches: sample.matches } : { sample: sample.name, reason: sample.reason }),
+  };
+}
 const correct = await runner.validateRuleSamples(coordinates(1), candidate, reference, profile, authorize);
-ok(correct.kind === 'rule_samples_receipt', 'Expected the guest rule samples proof');
+const correctSummary = JSON.stringify(checkedSummary(correct));
+ok(correct.kind === 'rule_samples_receipt', correctSummary);
+console.error('Expected passing rule samples', correctSummary);
 equal(correct.proof.result.status, 'passed');
 deepStrictEqual(correct.proof.result.samples.map(item => item.status === 'checked' ? item.matches : null), [1, 0, 0]);
 const falsePositive = { ...candidate, samples: { ...candidate.samples, lookalike: 'other.status(503).json({ maintenance: true });' } };
 const wrong = await runner.validateRuleSamples(coordinates(2), falsePositive, reference, profile, authorize);
-ok(wrong.kind === 'rule_samples_receipt', 'Expected a checked result for the ambiguous sample');
+const wrongSummary = JSON.stringify(checkedSummary(wrong));
+ok(wrong.kind === 'rule_samples_receipt', wrongSummary);
+console.error('Expected one lookalike match', wrongSummary);
 equal(wrong.proof.result.status, 'failed');
 deepStrictEqual(wrong.proof.result.samples.map(item => item.status === 'checked' ? item.matches : null), [1, 0, 1]);
 notEqual(wrong.domainId, correct.domainId);
