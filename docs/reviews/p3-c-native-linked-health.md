@@ -9,3 +9,7 @@
 本地 TypeScript 与托管工作流语法验证通过。完整原生场景随 PR 接受托管验收。该场景使用真实 KVM、PostgreSQL、OCI Registry、Komodo、Whiskers 和 Keycloak 保护入口，平台登录使用签名 OIDC 夹具，Agent 使用真实 Anthropic 协议适配器及确定性模型。提案确认走正式领域服务，C3-D 将同一能力开放给双语门户和外部 MCP。 [托管检查](https://github.com/MaLaNg116/itervane/pull/129/checks)
 
 首轮已执行到复现、修复与复验结果比对。检查发现旧断言把续测失败归入常规基线失败，并漏掉 Agent 对镜像未生成状态的读取。补正后按实际基线回执判断完整观察顺序。 [首轮运行](https://github.com/MaLaNg116/itervane/actions/runs/45129684390/job/137542086519)
+
+第二轮已核对两次 VM 回执和修复候选，补丁导出缺少 `expectedSha256`。第三轮把候选补丁摘要用于该字段，接口因结果版本不匹配返回 409。最终测试沿用门户的版本绑定，使用修复结果外层 `sha256` 导出，再分别核对任务、运行、结果摘要、补丁摘要和唯一路径。 [第二轮运行](https://github.com/MaLaNg116/itervane/actions/runs/45132969172/job/137552606867) · [第三轮运行](https://github.com/MaLaNg116/itervane/actions/runs/45136609101/job/137564425311)
+
+同轮版本恢复场景在初始隔离扫描返回 `inspection_failed`。新的托管运行会一并复验该场景。 [恢复回归](https://github.com/MaLaNg116/itervane/actions/runs/45136609101/job/137564425302)
