@@ -14,6 +14,7 @@ guest_job="$recipe_dir/../../packages/runner/host/guest_job.py"
 downloads="$work/downloads"
 mkdir -- "$downloads"
 extra=()
+checks=()
 if [[ $# -ge 2 ]]; then
   inputs=$(realpath -- "$2")
   test "$(basename -- "$inputs")" = itervane-inspection
@@ -48,6 +49,7 @@ if [[ -n "${ITERVANE_RULE_ENGINE_INPUTS:-}" ]]; then
   test -f "$rule_inputs/inputs.json"
   test -f "$rule_inputs/entry.py"
   extra+=(--copy-in "$rule_inputs:/usr/local/libexec")
+  checks+=(--run "$recipe_dir/verify-guest-rule-engine.sh")
 fi
 
 download() {
@@ -99,7 +101,7 @@ LIBGUESTFS_BACKEND=direct virt-customize --no-network --no-logfile --format qcow
   --upload "$recipe_dir/../../packages/runner/host/scan_guest.py:/var/tmp/scan_guest.py" \
   --upload "$recipe_dir/verify-guest-workload.py:/var/tmp/verify-guest-workload.py" \
   "${extra[@]}" \
-  --run "$recipe_dir/configure-probe-guest.sh"
+  --run "$recipe_dir/configure-probe-guest.sh" "${checks[@]}"
 
 qemu-img convert -f qcow2 -O raw "$guest_image" "$work/probe.raw"
 rm -- "$guest_image"

@@ -106,7 +106,7 @@ export async function runPreparedCodeRuleSamples(directory: string, prepared: Pr
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       return normalizeCodeRuleSample(basis, name, { exitCode: result.status,
-        timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT', stdout: result.stdout ?? '' });
+        timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT', stdout: result.stdout ?? '', stderr: result.stderr ?? '' });
     });
     return summarizeCodeRuleSamples(basis, results);
   } finally { rmSync(temporary, { recursive: true, force: true }); }
