@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { bigint, boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
-  agentRoles, taskStates, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
+  agentRoles, taskStates, type DesignSkillPackage, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairContinuation, type FormalRepairInput, type FormalRepairResult,
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan, type MaterializedSourceBasis,
   type OperationsDiagnosisObservation, type OperationsDiagnosisReceipt, type OperationsDiagnosisSection,
@@ -41,7 +41,38 @@ export const workspaceMembers = domain.table('workspace_members', {
 export const projects = domain.table('projects', {
   id: uuid('id').primaryKey().defaultRandom(), workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id),
   name: text('name').notNull(), slug: text('slug').notNull(), createdAt: createdAt(),
-}, t => [unique('project_slug_unique').on(t.workspaceId, t.slug)]);
+}, t => [unique('project_slug_unique').on(t.workspaceId, t.slug), unique('project_workspace_pair').on(t.id, t.workspaceId)]);
+
+export const rulePackages = domain.table('rule_packages', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id),
+  key: text('key').notNull(), createdAt: createdAt(),
+}, t => [
+  unique('rule_package_workspace_key').on(t.workspaceId, t.key),
+  unique('rule_package_scope_key').on(t.id, t.workspaceId, t.key),
+  check('rule_package_key', sql`${t.key} ~ '^[a-z][a-z0-9-]{0,63}$'`),
+]);
+
+export const rulePackageVersions = domain.table('rule_package_versions', {
+  id: uuid('id').primaryKey().defaultRandom(), packageId: uuid('package_id').notNull(),
+  workspaceId: uuid('workspace_id').notNull(), packageKey: text('package_key').notNull(),
+  projectId: uuid('project_id'), version: text('version').notNull(), sha256: text('sha256').notNull(),
+  submittedBy: uuid('submitted_by').notNull().references(() => principals.id), grantId: uuid('grant_id').notNull(),
+  document: jsonb('document').$type<DesignSkillPackage>().notNull(), createdAt: createdAt(),
+}, t => [
+  foreignKey({ name: 'rule_version_package_scope_fk', columns: [t.packageId, t.workspaceId, t.packageKey],
+    foreignColumns: [rulePackages.id, rulePackages.workspaceId, rulePackages.key] }),
+  foreignKey({ name: 'rule_version_project_scope_fk', columns: [t.projectId, t.workspaceId], foreignColumns: [projects.id, projects.workspaceId] }),
+  unique('rule_package_version_unique').on(t.packageId, t.version),
+  index('rule_package_workspace_history').on(t.workspaceId, t.createdAt, t.id),
+  check('rule_package_version_document', sql`(${t.sha256} ~ '^[a-f0-9]{64}$' AND length(${t.version}) <= 32
+    AND ${t.version} ~ '^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$'
+    AND ${t.document}->>'formatVersion' = '1' AND ${t.document}->>'kind' = 'design_skill'
+    AND ${t.document}->>'packageKey' = ${t.packageKey} AND ${t.document}->>'version' = ${t.version}
+    AND ${t.document}#>>'{scope,kind}' = CASE WHEN ${t.projectId} IS NULL THEN 'workspace' ELSE 'project' END
+    AND (${t.document}#>>'{scope,projectId}') IS NOT DISTINCT FROM ${t.projectId}::text
+    AND octet_length(${t.document}::text) <= 61440) IS TRUE`),
+]);
 
 export const projectMembers = domain.table('project_members', {
   projectId: uuid('project_id').notNull().references(() => projects.id),
