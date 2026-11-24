@@ -22,7 +22,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from native_job import SCENARIOS, JobEvidence, JobRejected, ProbeJob, start_channel_events
-from native_source import SourceEvidence, SourceProbe, maintainer_source
+from native_source import RuleSamplesProbe, SourceEvidence, SourceProbe, maintainer_source
 from session_boundary import SESSION_URI, SessionRejected, prepare_session, process_exited, verify_qemu_process
 
 
@@ -56,6 +56,7 @@ class Result:
     source: SourceEvidence | None = None
     inspection: dict | None = None
     repair: dict | None = None
+    ruleSamples: dict | None = None
 
 
 def check_kvm():
@@ -414,7 +415,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
                     code = "cleanup_unproven"
             else:
                 code = "cleanup_unproven"
-    if code in ("passed", "job_passed", "source_passed", "inspection_passed", "repair_passed"):
+    if code in ("passed", "job_passed", "source_passed", "inspection_passed", "repair_passed", "rule_samples_recorded"):
         try:
             check_deadline()
         except Rejected as error:
@@ -431,6 +432,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
         source=job.evidence if isinstance(job, SourceProbe) and code in ("source_passed", "inspection_passed", "repair_passed") else None,
         inspection=job.inspection if isinstance(job, SourceProbe) and code == "inspection_passed" else None,
         repair=job.repair if isinstance(job, SourceProbe) and code == "repair_passed" else None,
+        ruleSamples=job.proof if isinstance(job, RuleSamplesProbe) and code == "rule_samples_recorded" else None,
     )
 
 

@@ -72,6 +72,10 @@ LimitFSIZE=67108864
 RuntimeMaxSec=165
 UMask=0077
 EOF
+if test -d /usr/local/libexec/itervane-semgrep; then
+  chown -R root:root /usr/local/libexec/itervane-semgrep
+  chmod -R a+rX,a-w /usr/local/libexec/itervane-semgrep
+fi
 if test -d /usr/local/libexec/itervane-inspection; then
   chown -R root:root /usr/local/libexec/itervane-inspection
   chmod -R a+rX,a-w /usr/local/libexec/itervane-inspection

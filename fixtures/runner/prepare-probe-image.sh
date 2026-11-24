@@ -41,6 +41,14 @@ if [[ $# -eq 4 ]]; then
     --upload "$recipe_dir/../../packages/runner/host/oci_layout.py:/var/tmp/oci_layout.py"
     --upload "$recipe_dir/../../packages/runner/host/oci_guest.py:/var/tmp/oci_guest.py")
 fi
+if [[ -n "${ITERVANE_RULE_ENGINE_INPUTS:-}" ]]; then
+  rule_inputs=$(realpath -- "$ITERVANE_RULE_ENGINE_INPUTS")
+  test "$#" -ge 2
+  test "$(basename -- "$rule_inputs")" = itervane-semgrep
+  test -f "$rule_inputs/inputs.json"
+  test -f "$rule_inputs/entry.py"
+  extra+=(--copy-in "$rule_inputs:/usr/local/libexec")
+fi
 
 download() {
   local url=$1 digest=$2 path=$3 limit=$4

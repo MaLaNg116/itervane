@@ -12,7 +12,7 @@ from source_gateway import RegisteredOrigin, SourceGateway, SourceRejected
 from source_wire import (
     CLOSED, GUEST_ERRORS, GUEST_REPAIR_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_MATERIALIZED_SOURCE, MAX_QUALIFIED_RECEIPT,
     MAX_REPAIR_COMMAND, MAX_REPAIR_RECEIPT, MAX_REQUEST_BYTES, MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT, MAX_OCI_CHUNK_BYTES,
-    QUALIFIED_START, RECEIPT, SOURCE_PORT, START, SourceWire,
+    MAX_RULE_VALIDATION_COMMAND, MAX_RULE_VALIDATION_PROOF, QUALIFIED_START, RECEIPT, RULE_SAMPLES_START, SOURCE_PORT, START, SourceWire,
 )
 
 
@@ -216,6 +216,58 @@ class SourceProbe:
             raise JobRejected("job_protocol_rejected") from error
         finally:
             self.gateway.close()
+
+
+class RuleSamplesProbe:
+    port = SOURCE_PORT
+
+    def __init__(self, command):
+        if not 0 < len(command) <= MAX_RULE_VALIDATION_COMMAND:
+            raise ValueError("Invalid rule samples command")
+        self.command = command
+        self.proof = None
+        self.phase = "rule-samples-ready"
+
+    def exchange(self, wire, run_id):
+        wire.expect_greeting()
+        wire.send(b"T", RULE_SAMPLES_START.pack(uuid.UUID(run_id).bytes))
+        wire.send(b"W", self.command)
+        self.phase = "rule-samples-proof"
+        kind, payload = wire.receive({b"Z": MAX_RULE_VALIDATION_PROOF, b"E": 24})
+        if kind == b"E":
+            if payload not in GUEST_ERRORS:
+                raise ProtocolError("Unexpected rule samples failure")
+            self.phase = payload.decode("ascii")
+            raise JobRejected("rule_samples_guest_failed")
+        try:
+            received = json.loads(payload)
+        except (ValueError, RecursionError) as error:
+            raise ProtocolError("Invalid rule samples proof") from error
+        if (not isinstance(received, dict) or received.keys() != {"domainId", "proof"}
+                or received["domainId"] != run_id or not isinstance(received["proof"], dict)
+                or received["proof"].get("commandSha256") != hashlib.sha256(self.command).hexdigest()):
+            raise ProtocolError("Rule samples proof differs from its dispatch")
+        wire.check_deadline()
+        self.proof = received["proof"]
+        return "rule_samples_recorded"
+
+    def run(self, libvirt, conn, domain, run_id, check_lifecycle):
+        deadline = time.monotonic() + INSPECTION_SECONDS
+
+        def check_deadline():
+            check_lifecycle()
+            if time.monotonic() >= deadline:
+                raise JobRejected("job_deadline_exceeded")
+
+        try:
+            check_deadline()
+            with open_channel(libvirt, conn, domain, self.port) as stream:
+                wire = SourceWire(lambda n: stream_io(stream.recv, n), lambda b: stream_io(stream.send, b), check_deadline)
+                return self.exchange(wire, run_id)
+        except libvirt.libvirtError as error:
+            raise JobRejected("job_channel_unavailable") from error
+        except ProtocolError as error:
+            raise JobRejected("job_protocol_rejected") from error
 
 
 def maintainer_source(inspect=False):
