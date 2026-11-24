@@ -17,6 +17,7 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartExecutionViewSchema, operationsRestartRecoveryProofSchema,
   operationsRestartRequestSchema, operationsRestartSubmissionSchema, operationsRestoreExecutionViewSchema, operationsRestorePlanSchema, operationsRestoreRecoveryProofSchema,
   candidateValidationViewSchema, learningCaseCaptureResultSchema, learningCasesViewSchema, ruleExtractionViewSchema, operationsIncidentsViewSchema, operationsIncidentStopResultSchema,
+  rulePackageActivationResultSchema, rulePackageActivationViewSchema, rulePackageImportResultSchema,
   operationsRepairViewSchema, operationsSubmissionSchema, standardHealthRepairPath, taskDtoSchema,
   taskIncidentViewSchema, translate,
   verificationViewSchema,
@@ -318,6 +319,82 @@ async function processCandidateValidation(task: TaskDto, options: CandidateValid
   const worker = new DurableWorker(database.storage, database.runtimeUrl, { candidateValidation: options });
   try { await processAdmittedTestTask(worker); } finally { await worker.close(); }
   return new CandidateValidationService(database.storage).get(identity, task.id, 'zh-CN');
+}
+
+async function assertCandidatePublication(checked: NonNullable<ReturnType<typeof candidateValidationViewSchema.parse>['result']>,
+  portalClientId: string, failedId?: string) {
+  const { projectId, candidateId, taskId, evidence } = checked.document;
+  const project = await new ResourceService(database.storage).createProject(identity, { name: 'Second project', slug: 'second-project' });
+  const app = createApi(database.storage, { ...issuer.config, portalClientId }, { logger: false });
+  const library = '/v1/rule-packages';
+  const path = (source = projectId) => `/v1/projects/${source}/rule-candidates/${candidateId}/package-drafts`;
+  const base = { packageKey: 'validated-case', version: '1.0.0', scope: 'project', validationId: checked.id, validationSha256: checked.sha256,
+    source: { name: 'Test case', license: 'Apache-2.0' }, text: { en: { title: 'New rule', description: 'Verified candidate' },
+      'zh-CN': { title: '新规则', description: '已验证的候选' } } };
+  try {
+    const bearer = await issuer.token('owner', { azp: portalClientId });
+    const owner = await issuer.token();
+    const post = (url: string, payload: object, actor = bearer, locale = 'zh-CN') => app.inject({ url, method: 'POST', payload,
+      headers: { authorization: `Bearer ${actor}`, 'accept-language': locale } });
+    expect((await post(path(), base, owner)).statusCode).toBe(403);
+    expect((await post(path(project.id), base)).statusCode).toBe(404);
+    expect((await post(path(), { ...base, validationSha256: sha256('another proof') })).statusCode).toBe(409);
+    expect((await post(path(), { ...base, candidate: {} })).statusCode).toBe(400);
+    if (failedId) expect((await post(path(), { ...base, validationId: failedId })).statusCode).toBe(409);
+    const [first, second] = await Promise.all([post(path(), base), post(path(), base, bearer, 'en')]);
+    expect([first.statusCode, second.statusCode].sort()).toEqual([200, 201]);
+    const draft = rulePackageImportResultSchema.parse(first.json()).version;
+    const retried = rulePackageImportResultSchema.parse(second.json()).version;
+    expect(retried).toMatchObject({ versionId: draft.versionId, sha256: draft.sha256, text: base.text.en });
+    expect(draft).toMatchObject({ kind: evidence.kind, reviewState: 'draft', text: base.text['zh-CN'],
+      document: { scope: { kind: 'project', projectId }, validation: { id: checked.id, sha256: checked.sha256, taskId, projectId, candidateId } } });
+    expect((await post(path(), { ...base, version: '2.0.0', scope: 'workspace' })).statusCode).toBe(409);
+
+    const packagePath = `${library}/${draft.packageId}`;
+    const reviewPath = (versionId: string) => `${packagePath}/versions/${versionId}/review`;
+    const activationPath = `${packagePath}/activation`;
+    const checks = { sourceAndLicense: true, scopeAndGuidance: true, validationEvidence: true };
+    const publish = (version: typeof draft, reviewSha256: string, expectedSequence: number, action = 'publish') =>
+      post(activationPath, { action, versionId: version.versionId, versionSha256: version.sha256, reviewSha256,
+        expectedSequence, idempotencyKey: randomUUID() });
+    expect((await publish(draft, sha256('unreviewed'), 0)).statusCode).toBe(409);
+    expect((await post(reviewPath(draft.versionId), { versionSha256: draft.sha256, checks: {
+      sourceAndLicense: true, scopeAndGuidance: true, designResources: true,
+    } })).statusCode).toBe(400);
+    const accepted = await post(reviewPath(draft.versionId), { versionSha256: draft.sha256, checks });
+    expect(accepted.statusCode).toBe(201);
+    const review = rulePackageImportResultSchema.parse(accepted.json()).version.review!;
+    expect(review.checks).toEqual(checks);
+    expect((await publish(draft, sha256('changed review'), 0)).statusCode).toBe(409);
+    const published = await Promise.all([publish(draft, review.sha256, 0), publish(draft, review.sha256, 0)]);
+    expect(published.map(result => result.statusCode).sort()).toEqual([201, 409]);
+    const activation = rulePackageActivationResultSchema.parse(published.find(result => result.statusCode === 201)!.json());
+    expect(activation.state.current).toMatchObject({ sequence: 1, versionId: draft.versionId, reviewSha256: review.sha256 });
+
+    const runtime = database.storage.pool;
+    await expect(runtime.query(`INSERT INTO itervane.rule_package_versions
+      (package_id,workspace_id,package_key,project_id,version,sha256,submitted_by,grant_id,document,validation_id)
+      SELECT package_id,workspace_id,package_key,project_id,'9.0.0',sha256,submitted_by,grant_id,
+        jsonb_set(jsonb_set(document,'{version}','"9.0.0"'),'{candidate,key}','"substituted"'),validation_id
+      FROM itervane.rule_package_versions WHERE id=$1`, [draft.versionId]))
+      .rejects.toMatchObject({ code: '23514', message: 'rule_package_validation_binding' });
+
+    const newerResponse = await post(path(), { ...base, version: '1.1.0' });
+    expect(newerResponse.statusCode).toBe(201);
+    const newer = rulePackageImportResultSchema.parse(newerResponse.json()).version;
+    const newerReview = rulePackageImportResultSchema.parse((await post(reviewPath(newer.versionId), { versionSha256: newer.sha256, checks })).json()).version.review!;
+    expect((await publish(newer, newerReview.sha256, 1)).statusCode).toBe(201);
+    const rolledBack = await publish(draft, review.sha256, 2, 'rollback');
+    expect(rolledBack.statusCode).toBe(201);
+    expect(rulePackageActivationResultSchema.parse(rolledBack.json()).state.history.map(record => record.versionId))
+      .toEqual([draft.versionId, newer.versionId, draft.versionId]);
+
+    const workspace = await post(path(), { ...base, packageKey: 'workspace-validated-case', scope: 'workspace' });
+    expect(workspace.statusCode).toBe(201);
+    expect(rulePackageImportResultSchema.parse(workspace.json()).version.document.scope).toEqual({ kind: 'workspace' });
+    const current = await app.inject({ url: activationPath, headers: { authorization: `Bearer ${bearer}` } });
+    expect(rulePackageActivationViewSchema.parse(current.json()).current?.versionId).toBe(draft.versionId);
+  } finally { await app.close(); }
 }
 
 async function repairReady() {
@@ -3882,14 +3959,18 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
     } } });
     await expect(database.storage.pool.query('UPDATE itervane.candidate_validation_results SET document=document'))
       .rejects.toMatchObject({ code: '23514', message: 'candidate_validation_result_is_immutable' });
+    let failedValidationId: string | undefined;
     for (const mode of ['false_positive', 'wrong_fence', 'blocked'] as const) {
       const entry = await validations.admit(identity, linked.projectId, candidateRecord.id, { ...attempt, idempotencyKey: randomUUID() });
       const checked = await processCandidateValidation(entry.task, codeValidationOptions(mode));
       expect(checked.state).toBe('needs_human');
-      if (mode === 'false_positive') expect(checked.result?.document.status).toBe('failed');
-      else expect(checked.result).toBeNull();
+      if (mode === 'false_positive') {
+        expect(checked.result?.document.status).toBe('failed');
+        failedValidationId = checked.result!.id;
+      } else expect(checked.result).toBeNull();
       if (mode === 'blocked') expect(checked.message).toBe(translate('zh-CN', 'reason.candidate_validation_cleanup_unknown'));
     }
+    await assertCandidatePublication(validated.result!, portal, failedValidationId);
     const released = await validations.admit(identity, linked.projectId, candidateRecord.id, { ...attempt, idempotencyKey: randomUUID() });
     const obsolete = await processCandidateValidation(released.task, codeValidationOptions('expired'));
     expect(obsolete).toMatchObject({ state: 'running', result: null });
@@ -5976,6 +6057,7 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
       evaluatorVersion: 1, result: { scenarios: { stale: 'stop_target_drift', unapproved: 'await_approval' },
         recovery: { unknown: 'stop_unknown', verified: 'verified_recovered' } },
     } } } });
+    await assertCandidatePublication(checked.result!, operationsPortal);
     expect((await database.admin.query("SELECT count(*)::int n FROM itervane.checkpoint_write_receipts WHERE run_id=$1 AND graph='rule-extraction'",
       [task.runId])).rows[0]?.n).toBeGreaterThan(0);
     await expect(database.storage.pool.query('UPDATE itervane.rule_extraction_results SET document=document WHERE run_id=$1', [task.runId]))
