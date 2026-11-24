@@ -183,7 +183,7 @@ export function createApi(database: Database, config: ApiConfig,
   });
   if (operationsApi) {
     const operations = new OperationsObservationViewService(database);
-    const incidents = new OperationsIncidentsViewService(database, operationsApi);
+    const incidents = new OperationsIncidentsViewService(database, operationsApi, config.portalClientId);
     app.post('/v1/operations/diagnoses', async (request, reply) => {
       const result = admissionDtoSchema.parse(await tasks.admitOperations(identity(request), request.body, operationsApi));
       return reply.code(result.replayed ? 200 : 202).send(result);

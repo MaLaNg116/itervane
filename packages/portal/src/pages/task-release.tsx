@@ -9,6 +9,7 @@ import { Disclosure } from '../motion.js';
 import { Button } from '../ui/button.js';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogTitle } from '../ui/dialog.js';
 import { StartOperationsObservation } from './task-operations.js';
+import { PublishedIncidentHistory } from './task-incidents.js';
 
 const decisions = {
   confirm: { action: 'releaseApprove', title: 'releaseApproveTitle', help: 'releaseApproveHelp', result: 'releaseApproved' },
@@ -179,6 +180,8 @@ export function TaskRelease({ task, canWrite }: { task: Pick<TaskDto, 'id' | 'pr
           </DialogContent>}
         </Dialog>
       </div>}
+    {view?.result?.status === 'verified' && candidate && <PublishedIncidentHistory projectId={task.projectId}
+      environmentId={candidate.manifest.target.environmentId} releaseOperationId={view.result.operationId} />}
     {canWrite && <StartOperationsObservation taskId={task.id} projectId={task.projectId}
       releaseOperationId={view?.result?.status === 'verified' ? view.result.operationId : undefined} />}
   </Panel>;
