@@ -29,7 +29,9 @@ from session_boundary import SESSION_URI, SessionRejected, prepare_session, proc
 URI = "qemu:///system"
 ARCH = "x86_64"
 MACHINE = "q35"
-CPU_MODEL = "Nehalem"
+CPU_MODEL = "qemu64"
+V2_FEATURES = ("cx16", "lahf_lm", "pni", "popcnt", "sse4.1", "sse4.2", "ssse3")
+NESTED_VIRTUALIZATION = ("vmx", "svm")
 VCPU = 2
 RAM_KIB = 2 * 1024 * 1024
 DISK_BYTES = 8 * 1024**3
@@ -113,9 +115,13 @@ def domain_xml(name, run_id, disk, port=None):
     xml.SubElement(root, "memory", unit="KiB").text = str(RAM_KIB)
     xml.SubElement(root, "currentMemory", unit="KiB").text = str(RAM_KIB)
     xml.SubElement(root, "vcpu", placement="static").text = str(VCPU)
-    # The sealed Semgrep wheel requires x86-64-v2. Keep the guest CPU portable and prevent fallback to a baseline model.
-    cpu = xml.SubElement(root, "cpu", mode="custom", match="exact", check="full")
+    # Add only the instruction set required by the sealed tool to the portable baseline CPU.
+    cpu = xml.SubElement(root, "cpu", mode="custom", match="exact", check="partial")
     xml.SubElement(cpu, "model", fallback="forbid").text = CPU_MODEL
+    for feature in V2_FEATURES:
+        xml.SubElement(cpu, "feature", name=feature, policy="require")
+    for feature in NESTED_VIRTUALIZATION:
+        xml.SubElement(cpu, "feature", name=feature, policy="disable")
     os_config = xml.SubElement(root, "os")
     xml.SubElement(os_config, "type", arch=ARCH, machine=MACHINE).text = "hvm"
     xml.SubElement(os_config, "boot", dev="hd")
@@ -151,10 +157,13 @@ def profile_issue(document, disk, port=None):
     if vcpu.text != str(VCPU) or vcpu.get("current", str(VCPU)) != str(VCPU):
         return "vcpu"
     cpu = root.find("cpu")
-    if (cpu is None or cpu.get("mode") != "custom" or cpu.get("match") != "exact" or cpu.get("check") != "full"
+    if (cpu is None or cpu.get("mode") != "custom" or cpu.get("match") != "exact" or cpu.get("check") not in ("partial", "full")
             or cpu.findtext("model") not in (CPU_MODEL, CPU_MODEL + "-v1")
-            or cpu.find("model").get("fallback") != "forbid"
-            or any(feature.get("policy") != "disable" for feature in cpu.findall("feature"))):
+            or cpu.find("model").get("fallback") != "forbid"):
+        return "cpu-model"
+    features = {feature.get("name"): feature.get("policy") for feature in cpu.findall("feature")}
+    if (not all(features.get(name) == "require" for name in V2_FEATURES)
+            or not all(features.get(name) == "disable" for name in NESTED_VIRTUALIZATION)):
         return "cpu-model"
     if any(root.findtext(event) != "destroy" for event in ("on_poweroff", "on_reboot", "on_crash")):
         return "lifecycle-policy"
@@ -295,6 +304,8 @@ def ping_guest(libvirt, qemu, domain, check_deadline):
 
 def libvirt_issue(error, phase):
     message = str(error).lower()
+    if "cpu" in message and any(detail in message for detail in ("not compatible", "not supported", "does not provide", "failed to find")):
+        return phase + "-cpu-incompatible"
     if "permission denied" in message:
         return phase + "-permission"
     if "too long" in message and "socket" in message:
