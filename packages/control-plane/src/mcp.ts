@@ -3,7 +3,7 @@ import { Server, createMcpHandler, isSpecType, type CallToolResult } from '@mode
 import { toNodeHandler } from '@modelcontextprotocol/node';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { cancelTaskSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, freezeFormalReleaseSchema, freezeOperationsProposalSchema,
+import { cancelTaskSchema, formalReleaseOptionsSchema, formalReleaseResultSchema, freezeFormalReleaseSchema, freezeOperationsProposalSchema, freezeOperationsRepairSchema,
   idSchema, listQuerySchema, operationsIncidentScopeSchema, preauditInputSchema,
   resumeTaskSchema, ruleIdSchema, ruleQuerySchema, startOperationsTaskSchema, startTaskSchema, translate, type Locale } from '@itervane/contracts';
 import { assertVerifiedIdentity, AuthenticationError, createIdentityVerifier, type IdentityConfig, type VerifiedIdentity } from './auth/identity.js';
@@ -25,12 +25,14 @@ import { OperationsProposalViewService } from './service/operations-proposal-vie
 import { OperationsRestartViewService } from './service/operations-restart-view.js';
 import { OperationsRestoreViewService } from './service/operations-restore-view.js';
 import { OperationsProposalService } from './service/operations-proposals.js';
+import { OperationsRepairWorkflow } from './service/operations-repair-workflow.js';
 
 const taskIdInput = z.object({ taskId: idSchema }).strict();
 const versionInput = cancelTaskSchema.extend({ taskId: idSchema }).strict();
 const resumeInput = resumeTaskSchema.extend({ taskId: idSchema }).strict();
 const releaseRequestInput = freezeFormalReleaseSchema.extend({ taskId: idSchema });
 const operationsProposalInput = freezeOperationsProposalSchema.extend({ taskId: idSchema });
+const operationsRepairInput = freezeOperationsRepairSchema.extend({ taskId: idSchema });
 const incidentListInput = operationsIncidentScopeSchema.extend({ limit: listQuerySchema.shape.limit });
 const eventsInput = listQuerySchema.extend({ taskId: idSchema }).strict();
 const ruleListInput = ruleQuerySchema.extend({ projectId: idSchema }).strict();
@@ -68,6 +70,8 @@ const proposalSpecs = [
   { name: 'request_operations_proposal', key: 'mcp.request_operations_proposal', input: operationsProposalInput, write: true },
   { name: 'get_operations_execution', key: 'mcp.operations_execution', input: taskIdInput, write: false },
   { name: 'get_operations_restore', key: 'mcp.operations_restore', input: taskIdInput, write: false },
+  { name: 'get_operations_repair', key: 'mcp.operations_repair', input: taskIdInput, write: false },
+  { name: 'request_operations_repair', key: 'mcp.request_operations_repair', input: operationsRepairInput, write: true },
 ] as const;
 
 export function createMcpEndpoint(database: Database, config: IdentityConfig & { publicUrl?: string; operationsApi?: OperationsWorkflowScope }, onerror: () => void) {
@@ -76,6 +80,7 @@ export function createMcpEndpoint(database: Database, config: IdentityConfig & {
   const proposalViews = operationsApi?.diagnosisProviderSha256 ? new OperationsProposalViewService(database, operationsApi) : undefined;
   const restartViews = operationsApi?.diagnosisProviderSha256 ? new OperationsRestartViewService(database, operationsApi) : undefined;
   const restoreViews = operationsApi?.diagnosisProviderSha256 ? new OperationsRestoreViewService(database, operationsApi) : undefined;
+  const operationsRepairs = operationsApi?.diagnosisProviderSha256 ? new OperationsRepairWorkflow(database, operationsApi) : undefined;
   const specs = [...coreSpecs, ...(operationsApi ? operationsSpecs : []), ...(proposals ? proposalSpecs : [])];
   const publicUrl = canonicalPublicUrl(config.publicUrl ?? 'http://127.0.0.1:4310');
   const resource = `${publicUrl}/mcp`; const metadataUrl = `${publicUrl}/.well-known/oauth-protected-resource/mcp`;
@@ -146,6 +151,15 @@ export function createMcpEndpoint(database: Database, config: IdentityConfig & {
           case 'get_operations_restore': {
             if (!restoreViews) throw new DomainError('not_found');
             output = await restoreViews.get(identity, taskIdInput.parse(args).taskId, locale); break;
+          }
+          case 'get_operations_repair': {
+            if (!operationsRepairs) throw new DomainError('not_found');
+            output = await operationsRepairs.get(identity, taskIdInput.parse(args).taskId, locale); break;
+          }
+          case 'request_operations_repair': {
+            if (!operationsRepairs) throw new DomainError('not_found');
+            const { taskId, ...input } = operationsRepairInput.parse(args);
+            output = (await operationsRepairs.request(identity, taskId, input, locale)).view; break;
           }
           case 'request_operations_proposal': {
             if (!proposals || !proposalViews) throw new DomainError('not_found');

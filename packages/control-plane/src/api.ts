@@ -32,6 +32,7 @@ import { OperationsProposalService } from './service/operations-proposals.js';
 import { OperationsExecutionAdmission } from './service/operations-execution-admission.js';
 import { OperationsRestartViewService } from './service/operations-restart-view.js';
 import { OperationsRestoreViewService } from './service/operations-restore-view.js';
+import { OperationsRepairWorkflow } from './service/operations-repair-workflow.js';
 import type { InstalledReleaseTarget } from './service/release-targets.js';
 import { ExecutionCoordinator } from './runtime/coordinator.js';
 import { OperationsExecutionCoordinator } from './runtime/operations-execution-lease.js';
@@ -219,6 +220,23 @@ export function createApi(database: Database, config: ApiConfig,
     const restarts = new OperationsRestartViewService(database, operationsApi, restartOperator);
     const restores = new OperationsRestoreViewService(database, operationsApi, restoreOperator);
     const admission = new OperationsExecutionAdmission(database, operationsApi);
+    const linkedRepairs = new OperationsRepairWorkflow(database, operationsApi, config.portalClientId);
+    app.get('/v1/tasks/:taskId/operations-repair', async request => {
+      const { taskId } = parseInput(taskParam, request.params);
+      return linkedRepairs.get(identity(request), taskId, request.locale);
+    });
+    app.post('/v1/tasks/:taskId/operations-repair', async (request, reply) => {
+      const { taskId } = parseInput(taskParam, request.params);
+      const { replayed, view } = await linkedRepairs.request(identity(request), taskId, request.body, request.locale);
+      return reply.code(replayed ? 200 : 201).send(view);
+    });
+    if (config.portalClientId && config.portalClientId !== 'signed-access-token') {
+      app.post('/v1/operations/repair-proposals/:proposalId/confirm', async (request, reply) => {
+        const { proposalId } = parseInput(proposalParam, request.params);
+        const result = admissionDtoSchema.parse(await linkedRepairs.confirm(identity(request), proposalId, request.body));
+        return reply.code(result.replayed ? 200 : 202).send(result);
+      });
+    }
     app.get('/v1/tasks/:taskId/operations-proposal', async request => {
       const { taskId } = parseInput(taskParam, request.params);
       return views.get(identity(request), taskId, request.locale);

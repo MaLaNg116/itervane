@@ -16,7 +16,7 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
   operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartExecutionViewSchema, operationsRestartRecoveryProofSchema,
   operationsRestartRequestSchema, operationsRestartSubmissionSchema, operationsRestoreExecutionViewSchema, operationsRestorePlanSchema, operationsRestoreRecoveryProofSchema,
-  operationsIncidentsViewSchema, operationsIncidentStopResultSchema, operationsSubmissionSchema, standardHealthRepairPath, taskDtoSchema,
+  operationsIncidentsViewSchema, operationsIncidentStopResultSchema, operationsRepairViewSchema, operationsSubmissionSchema, standardHealthRepairPath, taskDtoSchema,
   taskIncidentViewSchema, translate,
   verificationViewSchema,
   whiskersRestartImageDigest,
@@ -3241,6 +3241,102 @@ it('enqueues one linked repair task after scoped portal confirmation', async () 
   expect(recovered.fence).toBeGreaterThan(scope.fence);
   await expect(coordinator.withLease(scope, async () => {})).rejects.toBeInstanceOf(ExecutionLost);
   await coordinator.stop(recovered, 'operations_review_required');
+}, 45_000);
+
+it('shares linked repair requests and progress over HTTP and MCP with portal-only confirmation', async () => {
+  const { task, diagnosis, fixture, installed } = await settleProposalDiagnosis('investigate');
+  const publicUrl = 'https://itervane.example';
+  const portalClientId = 'itervane-linked-repair-portal';
+  const api = createApi(database.storage, { ...issuer.config, operationsApi: installed, publicUrl, portalClientId }, { logger: false });
+  const path = `/v1/tasks/${task.id}/operations-repair`;
+  const subject = 'linked-repair-viewer';
+  const [member] = await database.storage.db.insert(principals).values({ issuer: issuer.config.issuer, subject }).returning();
+  const viewer = await issuer.token(subject);
+  const owner = await issuer.token('owner');
+  const portal = await issuer.token('owner', { azp: portalClientId });
+  const read = new Client({ name: 'repair-reader', version: '0.1.0' });
+  const write = new Client({ name: 'repair-requester', version: '0.1.0' });
+  const get = (authorization: string, locale = 'zh-CN') => api.inject({ url: path,
+    headers: { authorization: `Bearer ${authorization}`, 'Accept-Language': locale } });
+  const post = (url: string, authorization: string, payload: Record<string, string>) => api.inject({ method: 'POST', url, payload,
+    headers: { authorization: `Bearer ${authorization}`, 'Accept-Language': 'zh-CN' } });
+  const input = { diagnosisSha256: diagnosis.sha256 };
+  try {
+    expect((await get(viewer)).statusCode).toBe(404);
+    await database.storage.db.insert(projectMembers).values({ projectId: fixture.scope.projectId, principalId: member!.id, role: 'viewer' });
+    expect(operationsRepairViewSchema.parse((await get(viewer)).json())).toMatchObject({ draft: null, proposal: null });
+    expect(operationsRepairViewSchema.parse((await get(owner)).json())).toMatchObject({ draft: input, proposal: null });
+    expect((await post(path, viewer, input)).statusCode).toBe(403);
+    expect((await post(path, owner, { diagnosisSha256: sha256('another diagnosis') })).statusCode).toBe(409);
+
+    const endpoint = new URL('/mcp', await api.listen({ host: '127.0.0.1', port: 0 }));
+    const connect = async (client: Client, username: string, scope: string) => {
+      const token = await issuer.token(username, { aud: `${publicUrl}/mcp`, scope });
+      await client.connect(new StreamableHTTPClientTransport(endpoint, {
+        requestInit: { headers: { authorization: `Bearer ${token}`, 'Accept-Language': 'en' } },
+      }));
+    };
+    await connect(read, subject, 'itervane:read');
+    await connect(write, 'owner', 'itervane:read itervane:write');
+    expect((await read.listTools()).tools.filter(tool => tool.name.includes('operations_repair')).map(tool => tool.name)).toEqual(['get_operations_repair']);
+    expect((await write.listTools()).tools.filter(tool => tool.name.includes('operations_repair'))
+      .map(tool => [tool.name, tool.annotations?.readOnlyHint])).toEqual([['get_operations_repair', true], ['request_operations_repair', false]]);
+    const request = { name: 'request_operations_repair', arguments: { taskId: task.id, ...input } };
+    await expect(read.callTool(request)).rejects.toThrow(/itervane:write/);
+    const prepared = operationsRepairViewSchema.parse((await write.callTool(request)).structuredContent);
+    expect(prepared).toMatchObject({ taskId: task.id, runId: task.runId, draft: null, locale: 'en', proposal: {
+      status: 'pending', message: translate('en', 'operations.linked_repair.pending'), mayConfirm: false,
+      source: { ...task.source, requiresMaterializedCommit: false },
+      target: { environmentId: fixture.scope.environmentId, releaseOperationId: fixture.operationId, restoreExecutionId: null },
+    } });
+    const proposal = prepared.proposal!;
+    const replay = await post(path, owner, input);
+    expect(replay.statusCode).toBe(200);
+    expect(operationsRepairViewSchema.parse(replay.json()).proposal).toMatchObject({ id: proposal.id, fingerprint: proposal.fingerprint,
+      message: translate('zh-CN', 'operations.linked_repair.pending'), mayConfirm: false });
+    expect(operationsRepairViewSchema.parse((await get(portal)).json()).proposal?.mayConfirm).toBe(true);
+    const lookup = { name: 'get_operations_repair', arguments: { taskId: task.id } };
+    expect(operationsRepairViewSchema.parse((await read.callTool(lookup)).structuredContent)).toEqual(prepared);
+
+    const confirmation = `/v1/operations/repair-proposals/${proposal.id}/confirm`;
+    const approval = { fingerprint: proposal.fingerprint, locale: 'zh-CN' };
+    expect((await post(confirmation, owner, approval)).statusCode).toBe(403);
+    expect((await post(confirmation, portal, { ...approval, fingerprint: sha256('wrong fingerprint') })).statusCode).toBe(409);
+    const results = await Promise.all([post(confirmation, portal, approval), post(confirmation, portal, approval)]);
+    expect(results.map(result => result.statusCode).sort()).toEqual([200, 202]);
+    const admissions = results.map(result => admissionDtoSchema.parse(result.json()));
+    expect(admissions[0]!.task).toEqual(admissions[1]!.task);
+    const linked = admissions[0]!.task;
+    const projection = operationsRepairViewSchema.parse((await get(owner, 'en')).json());
+    expect(projection.proposal).toMatchObject({ id: proposal.id, status: 'confirmed', mayConfirm: false,
+      linkedTask: { taskId: linked.id, runId: linked.runId, state: 'queued' } });
+    expect(operationsRepairViewSchema.parse((await read.callTool(lookup)).structuredContent)).toEqual(projection);
+    await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, member!.id));
+    expect((await get(viewer)).statusCode).toBe(404);
+    expect(apiErrorSchema.parse((await read.callTool(lookup)).structuredContent).error.code).toBe('not_found');
+  } finally {
+    await Promise.all([read.close(), write.close()]);
+    await api.close();
+  }
+}, 55_000);
+
+it('projects a stale linked repair proposal after publication changes and refuses confirmation', async () => {
+  const { fixture, installed, task, proposal, input } = await proposedLinkedRepair();
+  const portalClientId = 'itervane-linked-repair-portal';
+  const api = createApi(database.storage, { ...issuer.config, operationsApi: installed, portalClientId }, { logger: false });
+  const headers = { authorization: `Bearer ${await issuer.token('owner', { azp: portalClientId })}` };
+  const lookup = () => api.inject({ url: `/v1/tasks/${task.id}/operations-repair`, headers });
+  try {
+    expect(operationsRepairViewSchema.parse((await lookup()).json()).proposal?.mayConfirm).toBe(true);
+    const replacement = await (await competingPublication(fixture)).confirm();
+    await finishTestRollout(await parkForRollout(replacement, true, 'd'.repeat(24)), 'standard-v3');
+    expect(operationsRepairViewSchema.parse((await lookup()).json()).proposal).toMatchObject({
+      id: proposal.id, status: 'stale', mayConfirm: false, linkedTask: null,
+    });
+    const response = await api.inject({ method: 'POST', url: `/v1/operations/repair-proposals/${proposal.id}/confirm`, headers, payload: input });
+    expect(response.statusCode).toBe(409);
+    expect(await database.storage.db.select().from(operationsRepairAdmissions)).toEqual([]);
+  } finally { await api.close(); }
 }, 45_000);
 
 it('rolls back a linked repair task and its initial wakeup when the confirmation cannot commit', async () => {
