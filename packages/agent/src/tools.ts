@@ -1,9 +1,9 @@
-import { finishOperationsInputSchema, operationsDiagnosisSections, operationsDiagnosisSectionSchema, type Locale } from '@itervane/contracts';
+import { finishOperationsInputSchema, finishRuleExtractionInputSchema, operationsDiagnosisSections, operationsDiagnosisSectionSchema, type Locale } from '@itervane/contracts';
 import type { ToolDefinition } from '@itervane/model';
 import { z } from 'zod';
 import {
   auditScannerSchema, checkKindSchema, completionSchemas, contextSectionSchema, formalReceiptSchema, formalRepairReceiptSchema,
-  formalOperationsReceiptSchema, formalVerificationReceiptSchema, keySchema,
+  formalOperationsReceiptSchema, formalRuleExtractionReceiptSchema, formalVerificationReceiptSchema, keySchema,
   receiptSchema, sha256, templateIdsSchema, type AgentEvidence, type AgentOrigin, type AuditReport, type Candidate, type AgentRole,
 } from './contracts.js';
 import { agentText } from './messages.js';
@@ -23,15 +23,18 @@ const inputs = {
   check_candidate: z.object({ check: checkKindSchema }).strict(),
   read_verification: z.strictObject({ section: verificationSectionSchema }),
   read_operations: z.strictObject({ section: operationsDiagnosisSectionSchema }),
+  read_learning_case: emptyArguments,
+  search_learning_knowledge: emptyArguments,
   ...repairToolInputs,
 };
 const names = ['read_context', 'read_rule', 'read_findings', 'read_scan', 'read_health_reproduction', 'draft_repair', 'read_candidate', 'check_candidate',
-  'read_verification', 'read_operations', ...repairToolNames] as const;
+  'read_verification', 'read_operations', 'read_learning_case', 'search_learning_knowledge', ...repairToolNames] as const;
 export type AgentToolName = typeof names[number];
 const roles: Record<AgentToolName, readonly AgentRole[]> = {
   read_context: ['audit', 'repair'], read_rule: ['audit', 'repair'], read_findings: ['audit'], read_scan: [], read_health_reproduction: [],
   draft_repair: ['repair'], read_candidate: ['verify'], check_candidate: ['verify'],
   read_repair_targets: [], apply_repair_template: [], apply_repair_patch: [], read_verification: [], read_operations: [],
+  read_learning_case: [], search_learning_knowledge: [],
 };
 export const plannedToolSchema = z.discriminatedUnion('name', [
   z.object({ name: z.literal('read_context'), args: inputs.read_context }).strict(),
@@ -44,6 +47,8 @@ export const plannedToolSchema = z.discriminatedUnion('name', [
   z.object({ name: z.literal('check_candidate'), args: inputs.check_candidate }).strict(),
   z.strictObject({ name: z.literal('read_verification'), args: inputs.read_verification }),
   z.strictObject({ name: z.literal('read_operations'), args: inputs.read_operations }),
+  z.strictObject({ name: z.literal('read_learning_case'), args: inputs.read_learning_case }),
+  z.strictObject({ name: z.literal('search_learning_knowledge'), args: inputs.search_learning_knowledge }),
   z.strictObject({ name: z.literal('read_repair_targets'), args: inputs.read_repair_targets }),
   z.strictObject({ name: z.literal('apply_repair_template'), args: inputs.apply_repair_template }),
   z.strictObject({ name: z.literal('apply_repair_patch'), args: inputs.apply_repair_patch }),
@@ -54,6 +59,7 @@ export function canCall(role: AgentRole, name: AgentToolName, origin: AgentOrigi
   if (origin === 'formal_repair') return role === 'repair' && repairToolNames.some(tool => tool === name);
   if (origin === 'formal_verification') return role === 'verify' && name === 'read_verification';
   if (origin === 'formal_operations') return role === 'operations' && name === 'read_operations';
+  if (origin === 'formal_rule_extraction') return role === 'rule-extraction' && (name === 'read_learning_case' || name === 'search_learning_knowledge');
   return roles[name].includes(role);
 }
 
@@ -79,6 +85,8 @@ export function hasObservation(evidence: readonly AgentEvidence[], call: Planned
       case 'check_candidate': return data.kind === 'check' && data.result.check === call.args.check;
       case 'read_verification': return data.kind === 'verification_section' && data.section === call.args.section;
       case 'read_operations': return data.kind === 'operations_section' && data.section === call.args.section;
+      case 'read_learning_case': return data.kind === 'learning_case';
+      case 'search_learning_knowledge': return data.kind === 'learning_knowledge';
       case 'draft_repair': return data.kind === 'candidate' && data.candidate.templateIds.length === call.args.templateIds.length
         && call.args.templateIds.every(id => data.candidate.templateIds.includes(id));
       case 'read_repair_targets': case 'apply_repair_template': case 'apply_repair_patch':
@@ -139,6 +147,8 @@ export function toolDefinitions(locale: Locale, role: AgentRole, evidence: reado
     read_findings: hasObservation(evidence, { name: 'read_findings', args: {} }) ? null : inputs.read_findings,
     read_scan: scanners.length ? z.strictObject({ scanner: z.enum(scanners) }) : null,
     read_health_reproduction: pendingReproduction ? inputs.read_health_reproduction : null,
+    read_learning_case: hasObservation(evidence, { name: 'read_learning_case', args: {} }) ? null : inputs.read_learning_case,
+    search_learning_knowledge: hasObservation(evidence, { name: 'search_learning_knowledge', args: {} }) ? null : inputs.search_learning_knowledge,
     read_candidate: hasObservation(evidence, { name: 'read_candidate', args: {} }) ? null : inputs.read_candidate,
     check_candidate: checks.length ? z.object({ check: z.enum(checks) }).strict() : null,
     read_verification: pendingVerification.length ? z.strictObject({ section: z.enum(pendingVerification) }) : null,
@@ -168,7 +178,10 @@ export function toolDefinitions(locale: Locale, role: AgentRole, evidence: reado
     finish = role === 'operations' && !pendingOperations.includes('container') && !pendingOperations.includes('release')
       ? operationsCompletionInputs(evidence) : null;
     finishDescription = messages.formalOperations.finish;
-  } else finish = role === 'operations' ? null : completionSchemas[role];
+  } else if (origin === 'formal_rule_extraction') {
+    finish = role === 'rule-extraction' && evidence.length === 2 ? finishRuleExtractionInputSchema : null;
+    finishDescription = messages.formalRuleExtraction.finish;
+  } else finish = role === 'operations' || role === 'rule-extraction' ? null : completionSchemas[role];
   return [
     ...available,
     ...(finish ? [{ name: 'finish_role', description: finishDescription,
@@ -183,6 +196,7 @@ const receipts = {
   formal_repair: formalRepairReceiptSchema,
   formal_verification: formalVerificationReceiptSchema,
   formal_operations: formalOperationsReceiptSchema,
+  formal_rule_extraction: formalRuleExtractionReceiptSchema,
 };
 
 export function acceptReceipt(raw: unknown, expected: {
@@ -213,6 +227,8 @@ export function acceptReceipt(raw: unknown, expected: {
     case 'check_candidate': if (data.kind !== 'check' || data.result.check !== call.args.check) return; break;
     case 'read_verification': if (data.kind !== 'verification_section' || data.section !== call.args.section) return; break;
     case 'read_operations': if (data.kind !== 'operations_section' || data.section !== call.args.section) return; break;
+    case 'read_learning_case': if (data.kind !== 'learning_case') return; break;
+    case 'search_learning_knowledge': if (data.kind !== 'learning_knowledge') return; break;
     case 'read_repair_targets': {
       if (data.kind === 'repair_failure' && data.action === call.name && data.actionSha256 === repairActionSha256(call)) break;
       if (data.kind !== 'repair_targets' || data.actionSha256 !== repairActionSha256(call)

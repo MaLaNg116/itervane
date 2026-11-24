@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { auditFindingsPerScan, auditScannerSchema, idSchema, linkedHealthRepairContextSchema, localeSchema, operationsDiagnosisObservationSchema,
+import { auditFindingsPerScan, auditScannerSchema, extractionCaseSchema, idSchema, learningKnowledgeSchema, linkedHealthRepairContextSchema, localeSchema, operationsDiagnosisObservationSchema,
   sourceRefSchema } from '@itervane/contracts';
 import { z } from 'zod';
 import { repairEvidenceDataSchema } from './repair-contracts.js';
@@ -11,7 +11,7 @@ const note = z.string().trim().min(1).max(480);
 
 export const deliveryRoleSchema = z.enum(['audit', 'repair', 'verify']);
 export type DeliveryRole = z.infer<typeof deliveryRoleSchema>;
-export const agentRoleSchema = z.enum([...deliveryRoleSchema.options, 'operations']);
+export const agentRoleSchema = z.enum([...deliveryRoleSchema.options, 'operations', 'rule-extraction']);
 export type AgentRole = z.infer<typeof agentRoleSchema>;
 
 export const agentSpecSchema = z.object({
@@ -107,10 +107,18 @@ export const formalVerificationReceiptSchema = z.strictObject({
 export const formalOperationsReceiptSchema = z.strictObject({
   origin: z.literal('formal_operations'), ...receiptBinding, data: operationsDiagnosisObservationSchema,
 });
+export const ruleExtractionEvidenceSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('learning_case'), record: extractionCaseSchema }),
+  z.strictObject({ kind: z.literal('learning_knowledge'), knowledge: learningKnowledgeSchema }),
+]);
+export const formalRuleExtractionReceiptSchema = z.strictObject({
+  origin: z.literal('formal_rule_extraction'), ...receiptBinding, data: ruleExtractionEvidenceSchema,
+});
 
 export const evidenceSchema = z.discriminatedUnion('origin', [
   receiptSchema.extend({ id: shaSchema }), formalReceiptSchema.extend({ id: shaSchema }), formalRepairReceiptSchema.extend({ id: shaSchema }),
   formalVerificationReceiptSchema.extend({ id: shaSchema }), formalOperationsReceiptSchema.extend({ id: shaSchema }),
+  formalRuleExtractionReceiptSchema.extend({ id: shaSchema }),
 ]);
 export type AgentEvidence = z.infer<typeof evidenceSchema>;
 export type AgentOrigin = AgentEvidence['origin'];
