@@ -51,7 +51,54 @@ def verification_request():
     }, frozen
 
 
+def rule_samples_request():
+    profile = {"runnerImageSha256": "d" * 64, "engineInputsSha256": "e" * 64}
+    basis = {"profile": profile}
+    command = json.dumps({"version": 1, "basis": basis, "candidate": {"kind": "code_rule"}}, separators=(",", ":")).encode()
+    selected = {key: value for key, value in request().items() if key not in {"repositoryId", "planSha256", "commit", "origin"}}
+    return {**selected, **profile, "operation": controller.VALIDATE_RULE_SAMPLES, "basisSha256": controller.json_digest(basis),
+            "commandBytes": len(command), "commandSha256": hashlib.sha256(command).hexdigest()}, command
+
+
 class ControllerTest(unittest.TestCase):
+    def test_rule_samples_need_explicit_capability_lease_and_bound_command(self):
+        data, command = rule_samples_request()
+        for enabled, pulse, content, expected in (
+            (False, b"K", command, "not_ready"),
+            (True, b"C", command, "lease_lost"),
+            (True, b"K", command[:-1] + b"]", "invalid_request"),
+        ):
+            launched = Mock()
+            server, client = socket.socketpair()
+            with self.subTest(expected=expected), server, client:
+                client.sendall(json.dumps(data).encode() + b"\n" + pulse + content)
+                response = controller.serve_connection(server, os.getuid(), {}, WORKSPACE, Mock(), launched, lambda: False,
+                                                       enable_rule_samples=enabled)
+                self.assertEqual(response, controller.rejected(expected, data["requestId"]))
+                launched.assert_not_called()
+
+    def test_rule_samples_require_verified_cleanup_and_receipt_binding(self):
+        data, command = rule_samples_request()
+        proof = {"version": 1, "commandSha256": data["commandSha256"], "result": {"basisSha256": data["basisSha256"]}}
+        domain_id = str(uuid.uuid4())
+        launched = Mock(return_value=Result("rule_samples_recorded", runId=domain_id, imageSha256=data["runnerImageSha256"],
+                                           cleanupConfirmed=True, sessionVerified=True, ruleSamples=proof))
+        server, client = socket.socketpair()
+        with server, client:
+            client.sendall(json.dumps(data).encode() + b"\nK" + command)
+            response = controller.serve_connection(server, os.getuid(), {}, WORKSPACE, Mock(), launched, lambda: False,
+                                                   enable_rule_samples=True)
+            self.assertEqual(response, {"kind": "rule_samples_receipt", "scope": data, "domainId": domain_id, "proof": proof,
+                                       "imageSha256": data["runnerImageSha256"], "cleanupConfirmed": True, "sessionVerified": True})
+            self.assertEqual(launched.call_args.args[:2], (data, None))
+            self.assertEqual(launched.call_args.args[3], command)
+        unproven = Result("rule_samples_recorded", runId=domain_id, imageSha256=data["runnerImageSha256"], ruleSamples=proof)
+        self.assertEqual(controller.response_for(data, unproven)["cleanup"], "unknown")
+        altered = {**proof, "result": {"basisSha256": "f" * 64}}
+        confirmed_but_wrong = Result("rule_samples_recorded", runId=domain_id, imageSha256=data["runnerImageSha256"],
+                                     cleanupConfirmed=True, sessionVerified=True, ruleSamples=altered)
+        self.assertEqual(controller.response_for(data, confirmed_but_wrong)["code"], "job_failed")
+
     def test_materialized_source_coordinates_are_bounded_to_an_inspection_request(self):
         basis = {"commit": "d" * 40, "baseSnapshotSha256": "e" * 64}
         data = {**request(), "materializedFrom": basis}
