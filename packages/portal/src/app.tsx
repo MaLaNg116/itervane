@@ -18,6 +18,9 @@ const ProjectPage = lazy(async () => ({ default: (await import('./pages/project.
 const TaskPage = lazy(async () => ({ default: (await import('./pages/task.js')).TaskPage }));
 const PreauditPage = lazy(async () => ({ default: (await import('./pages/preaudit.js')).PreauditPage }));
 const PreauditReportPage = lazy(async () => ({ default: (await import('./pages/preaudit-report.js')).PreauditReportPage }));
+const RuleLibraryPage = lazy(async () => ({ default: (await import('./pages/rule-library.js')).RuleLibraryPage }));
+const RulePackagePage = lazy(async () => ({ default: (await import('./pages/rule-library.js')).RulePackagePage }));
+const RuleImportPage = lazy(async () => ({ default: (await import('./pages/rule-import.js')).RuleImportPage }));
 
 const queries = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 120_000 }, mutations: { retry: false } } });
 const subscribeRoute = (listener: () => void) => { window.addEventListener('hashchange', listener); window.addEventListener('popstate', listener); return () => { window.removeEventListener('hashchange', listener); window.removeEventListener('popstate', listener); }; };
@@ -85,8 +88,10 @@ function SessionGate({ config, locale }: { config: Extract<PortalConfig, { enabl
 }
 
 function AuthorizedWorkspace({ api, session, epoch, name, locale }: { api: PortalApi; session: BrowserSession; epoch: number; name: string; locale: Locale }) {
-  const me = useQuery({ queryKey: [epoch, '/v1/me'], queryFn: ({ signal }) => api.request('/v1/me', meDtoSchema, locale, { signal }), retry: false });
   const hash = useSyncExternalStore(subscribeRoute, routeSnapshot); const route = readRoute(hash);
+  const inRuleLibrary = route.page === 'rule-packages' || route.page === 'rule-package' || route.page === 'rule-import';
+  const me = useQuery({ queryKey: [epoch, '/v1/me'], queryFn: ({ signal }) => api.request('/v1/me', meDtoSchema, locale, { signal }), retry: false,
+    refetchInterval: inRuleLibrary ? 3_000 : false });
   const t = (key: Parameters<typeof ui>[1]) => ui(locale, key);
   if (me.isPending) return <main id="main"><Loading locale={locale} /></main>;
   if (me.error) return <main id="main" className="login-main">
@@ -96,15 +101,22 @@ function AuthorizedWorkspace({ api, session, epoch, name, locale }: { api: Porta
     <Button variant="outline" className="mt-4" onClick={() => { void session.logout(); }}>{t('signOut')}</Button>
   </main>;
   return <PortalContext value={{ api, session, epoch, locale, me: me.data }}>
-    <div className="workspace-layout"><aside className="sidebar"><p className="eyebrow">{t('appTitle')}</p><nav aria-label={t('projects')}><a href="#/projects" aria-current={route.page === 'projects' ? 'page' : undefined}>
-      <svg viewBox="0 0 20 20" className="nav-icon" aria-hidden="true" focusable="false"><path d="M3 4h5l2 2h7v10H3Z" /></svg>{t('projects')}</a></nav>
+    <div className="workspace-layout"><aside className="sidebar"><p className="eyebrow">{t('appTitle')}</p><nav aria-label={t('workspace')}><a href="#/projects" aria-current={route.page === 'projects' ? 'page' : undefined}>
+      <svg viewBox="0 0 20 20" className="nav-icon" aria-hidden="true" focusable="false"><path d="M3 4h5l2 2h7v10H3Z" /></svg>{t('projects')}</a>
+      {me.data.isWorkspaceOwner && <a href="#/rule-packages" aria-current={inRuleLibrary ? 'page' : undefined}>{t('ruleLibrary')}</a>}
+    </nav>
       <div className="workspace-note"><strong>{t('workspaceGuide')}</strong><p>{t('workspaceGuideDetail')}</p></div>
       <div className="account"><span className="account-avatar" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span><div><strong>{name}</strong><span className="muted">{t(me.data.isWorkspaceOwner ? 'owner' : 'account')}</span></div></div>
       <Button variant="outline" className="signout w-full" onClick={() => { void session.logout(); }}>{t('signOut')}</Button>
     </aside><main id="main" className="workspace-main">
       <Suspense fallback={<Loading locale={locale} />}>{route.page === 'projects' ? <ProjectsPage /> : route.page === 'project' ? <ProjectPage key={route.id} id={route.id} />
         : route.page === 'task' ? <TaskPage key={route.id} id={route.id} /> : route.page === 'preaudit' ? <PreauditPage key={route.id} id={route.id} />
-          : route.page === 'preaudit-report' ? <PreauditReportPage key={route.id} id={route.id} /> : <PortalNotice title={t('notFound')}><p><a href="#/projects">{t('backProjects')}</a></p></PortalNotice>}</Suspense>
+          : route.page === 'preaudit-report' ? <PreauditReportPage key={route.id} id={route.id} />
+            : inRuleLibrary && !me.data.isWorkspaceOwner ? <PortalNotice title={t('accessDenied')} description={t('accessDeniedHelp')} />
+              : route.page === 'rule-packages' ? <RuleLibraryPage />
+                : route.page === 'rule-package' ? <RulePackagePage key={route.versionId} packageId={route.packageId} versionId={route.versionId} />
+                  : route.page === 'rule-import' ? <RuleImportPage />
+                    : <PortalNotice title={t('notFound')}><p><a href="#/projects">{t('backProjects')}</a></p></PortalNotice>}</Suspense>
     </main></div>
   </PortalContext>;
 }
