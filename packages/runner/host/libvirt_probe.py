@@ -541,7 +541,8 @@ def main():
     except Rejected as error:
         result = Result(str(error))
     payload = asdict(result)
-    del payload["repair"]
+    # The standalone lifecycle CLI keeps its output contract. Qualified jobs use the controller protocol.
+    del payload["repair"], payload["ruleSamples"]
     print(json.dumps(payload))
 
 
