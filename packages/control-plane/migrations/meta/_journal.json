@@ -519,6 +519,13 @@
       "when": 1795514482491,
       "tag": "0073_verified_learning_cases",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1795515881773,
+      "tag": "0074_durable_rule_extraction",
+      "breakpoints": true
     }
   ]
 }
