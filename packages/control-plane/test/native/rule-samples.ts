@@ -35,7 +35,7 @@ const authorize = async () => {};
 function checkedSummary(result: Awaited<ReturnType<QualifiedInspectionClient['validateRuleSamples']>>) {
   return result.kind === 'rejected' ? { code: result.code, cleanup: result.cleanup } : {
     status: result.proof.result.status, samples: result.proof.result.samples.map(sample => sample.status === 'checked'
-      ? { sample: sample.name, matches: sample.matches } : { sample: sample.name, reason: sample.reason }),
+      ? { sample: sample.name, matches: sample.matches } : { sample: sample.name, reason: sample.reason, detail: sample.detail }),
   };
 }
 const correct = await runner.validateRuleSamples(coordinates(1), candidate, reference, profile, authorize);

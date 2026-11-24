@@ -29,6 +29,7 @@ from session_boundary import SESSION_URI, SessionRejected, prepare_session, proc
 URI = "qemu:///system"
 ARCH = "x86_64"
 MACHINE = "q35"
+CPU_MODEL = "Nehalem"
 VCPU = 2
 RAM_KIB = 2 * 1024 * 1024
 DISK_BYTES = 8 * 1024**3
@@ -112,6 +113,9 @@ def domain_xml(name, run_id, disk, port=None):
     xml.SubElement(root, "memory", unit="KiB").text = str(RAM_KIB)
     xml.SubElement(root, "currentMemory", unit="KiB").text = str(RAM_KIB)
     xml.SubElement(root, "vcpu", placement="static").text = str(VCPU)
+    # The sealed Semgrep wheel requires x86-64-v2. Keep the guest CPU portable and prevent fallback to a baseline model.
+    cpu = xml.SubElement(root, "cpu", mode="custom", match="exact", check="full")
+    xml.SubElement(cpu, "model", fallback="forbid").text = CPU_MODEL
     os_config = xml.SubElement(root, "os")
     xml.SubElement(os_config, "type", arch=ARCH, machine=MACHINE).text = "hvm"
     xml.SubElement(os_config, "boot", dev="hd")
@@ -146,6 +150,12 @@ def profile_issue(document, disk, port=None):
         return "platform"
     if vcpu.text != str(VCPU) or vcpu.get("current", str(VCPU)) != str(VCPU):
         return "vcpu"
+    cpu = root.find("cpu")
+    if (cpu is None or cpu.get("mode") != "custom" or cpu.get("match") != "exact" or cpu.get("check") != "full"
+            or cpu.findtext("model") not in (CPU_MODEL, CPU_MODEL + "-v1")
+            or cpu.find("model").get("fallback") != "forbid"
+            or any(feature.get("policy") != "disable" for feature in cpu.findall("feature"))):
+        return "cpu-model"
     if any(root.findtext(event) != "destroy" for event in ("on_poweroff", "on_reboot", "on_crash")):
         return "lifecycle-policy"
     for tag in ("memory", "currentMemory"):

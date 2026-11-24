@@ -28,9 +28,13 @@ export type CodeRuleValidationBasis = z.infer<typeof codeRuleValidationBasisSche
 
 export const ruleSampleFailureSchema = z.enum(['engine_unavailable', 'timeout', 'command_failed', 'invalid_report', 'version_mismatch', 'incomplete_coverage', 'invalid_match']);
 const reportBinding = { ...sampleBinding.shape };
+const commandFailureDetail = z.strictObject({ exitCode: z.int().min(1).max(255), cause: z.enum([
+  'dependency', 'import', 'filesystem', 'illegal_instruction', 'core_exit', 'other',
+]) });
 export const codeRuleSampleObservationSchema = z.discriminatedUnion('status', [
   z.strictObject({ ...reportBinding, status: z.literal('checked'), reportSha256: sha256Schema, matches: z.int().min(0).max(256) }),
-  z.strictObject({ ...reportBinding, status: z.literal('unavailable'), reason: ruleSampleFailureSchema }),
+  z.strictObject({ ...reportBinding, status: z.literal('unavailable'), reason: ruleSampleFailureSchema, detail: commandFailureDetail.optional() })
+    .refine(value => value.detail === undefined || value.reason === 'command_failed'),
 ]);
 export type CodeRuleSampleObservation = z.infer<typeof codeRuleSampleObservationSchema>;
 export const codeRuleSampleResultSchema = z.strictObject({

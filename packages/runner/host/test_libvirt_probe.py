@@ -158,6 +158,20 @@ class LifecycleTest(unittest.TestCase):
         self.assertEqual(list(self.root.iterdir()), [])
         self.assertTrue(self.image.exists())
 
+    def test_rejects_substituted_cpu_and_implicit_fallback_before_resuming_guest(self):
+        for change in (
+            lambda domain: domain.remove(domain.find("cpu")),
+            lambda domain: setattr(domain.find("cpu/model"), "text", "qemu64"),
+            lambda domain: domain.find("cpu/model").set("fallback", "allow"),
+        ):
+            with self.subTest(change=change):
+                self.libvirt.profile_change = change
+                self.libvirt.events.clear()
+                result = self.launch()
+                self.assertEqual((result.code, result.profileIssue), ("profile_rejected", "cpu-model"))
+                self.assertTrue(result.cleanupConfirmed)
+                self.assertNotIn("resume", self.libvirt.events)
+
     def test_approved_job_channel_is_distinct_from_the_heartbeat_channel(self):
         with patch.object(runner.ProbeJob, "run", return_value="job_passed") as run:
             result = self.launch("job")
