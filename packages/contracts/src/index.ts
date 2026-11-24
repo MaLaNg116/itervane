@@ -23,6 +23,7 @@ export * from './preaudit.js';
 export * from './rule-packages.js';
 export * from './learning-cases.js';
 export * from './rule-extraction.js';
+export * from './rule-validation.js';
 export * from './release.js';
 export * from './operations.js';
 export * from './operations-diagnosis.js';

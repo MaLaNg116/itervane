@@ -142,6 +142,7 @@
 | 137 | P4-B1 正式修复与重启案例 | [#137](https://github.com/MaLaNg116/itervane/pull/137)，依赖 #136 | [证据案例导读](p4-verified-learning-cases.md) | TypeScript、Drizzle、Bash 与 5 项 PostgreSQL 通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/137/checks) |
 | 138 | P4-B2a 规则提炼 Agent 与候选合同 | [#138](https://github.com/MaLaNg116/itervane/pull/138)，依赖 #137 | [提炼 Agent 导读](p4-rule-extraction-agent.md) | TypeScript 与 262 项单元通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/138/checks) |
 | 139 | P4-B2b 提炼任务调度与候选结算 | [#139](https://github.com/MaLaNg116/itervane/pull/139)，依赖 #138 | [持久化提炼导读](p4-durable-rule-extraction.md) | TypeScript、262 项单元和 5 项 PostgreSQL 通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/139/checks) |
+| 140 | P4-C1 候选样例与 Runbook 判据 | [#140](https://github.com/MaLaNg116/itervane/pull/140)，依赖 #139 | [候选验证导读](p4-candidate-validation.md) | TypeScript 与 272 项单元通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/140/checks) |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
