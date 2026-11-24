@@ -26,6 +26,12 @@ case "$scenario" in
   standard-build-missing-cache) features=(--enable-verification --enable-standard-build) ;;
   *) exit 1 ;;
 esac
+if [[ "$scenario" == protected-release-linked-health ]]; then
+  ITERVANE_NATIVE_RULE_ENGINE_SHA256=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["engineInputsSha256"])' "$reports/kvm-rule-engine-inputs.json")
+  [[ "$ITERVANE_NATIVE_RULE_ENGINE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+  export ITERVANE_NATIVE_RULE_ENGINE_SHA256
+  features+=(--enable-rule-samples)
+fi
 
 sudo -n useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$worker"
 sudo -n install -d -m 0755 -o "$runner" -g "$runner" "$shared"
