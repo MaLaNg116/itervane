@@ -135,6 +135,7 @@
 | 130 | P3-C3-D1 授权事件读面 | [#130](https://github.com/MaLaNg116/itervane/pull/130)，依赖 #129 | [事件读面导读](p3-c-incident-views.md) | TypeScript 与 PostgreSQL 双语和项目授权用例通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/130/checks) |
 | 131 | P3-C3-D2a 人工停止诊断与外部 MCP 读面 | [#131](https://github.com/MaLaNg116/itervane/pull/131)，依赖 #130 | [诊断停止与 MCP 导读](p3-c-incident-actions.md) | TypeScript、Drizzle 与 PostgreSQL 专项通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/131/checks) |
 | 132 | P3-C3-D2b 关联修复 HTTP 与 MCP 入口 | [#132](https://github.com/MaLaNg116/itervane/pull/132)，依赖 #131 | [关联修复接口导读](p3-c-linked-repair-interfaces.md) | TypeScript、253 项单元和 8 项 PostgreSQL 专项通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/132/checks) |
+| 133 | P3-C3-D3a 双语事件门户与关联修复 | [#133](https://github.com/MaLaNg116/itervane/pull/133)，依赖 #132 | [事件门户导读](p3-c-incident-portal.md) | TypeScript、3 项 PostgreSQL 专项和新增 Chrome 实测通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/133/checks) |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
