@@ -17,6 +17,7 @@ import {
   operationsObservationReceiptSchema, operationsObservationViewSchema, operationsRestartInstallationSchema,
   qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
   repositoryDtoSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sha256Schema, sourceInspectionDtoSchema,
+  ruleExtractionViewSchema,
   qualifiedImageArchiveSchema, qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
   taskDtoSchema, taskEventDtoSchema, taskEventReasonSchema, translate,
   type FormalAuditResult, type Locale, type NpmUpgradeApproval, type StandardVerificationProfile, type TaskDto,
@@ -1002,6 +1003,59 @@ async function probe() {
         ok(configuration);
         const { providerSha256 } = configuredAuditModel(configuration);
 
+        const extractNativeLearningCase = async (item: Awaited<ReturnType<typeof captureNativeLearningCase>>, expectedKind: 'code_rule' | 'runbook') => {
+          const config = runtimeConfig({
+            DATABASE_URL: db.runtimeUrl, ITERVANE_OIDC_ISSUER: oidc.config.issuer, ITERVANE_OIDC_AUDIENCE: oidc.config.audience,
+            ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_RULE_EXTRACTION_PROVIDER_SHA256: providerSha256,
+          });
+          const { app: extractionApi } = await createInstalledApi(db.storage, config, { logger: false });
+          let extractionWorker: Awaited<ReturnType<typeof startScopedWorker>> | undefined;
+          try {
+            const endpoint = await extractionApi.listen({ host: '127.0.0.1', port: 0 });
+            const call = async (path: string, body?: object) => {
+              const response = await fetch(endpoint + path, {
+                headers: { Authorization: await authorization(), 'Accept-Language': 'zh-CN', ...(body ? { 'content-type': 'application/json' } : {}) },
+                signal: AbortSignal.timeout(5_000), ...(body ? { method: 'POST', body: JSON.stringify(body) } : {}),
+              });
+              if (!response.ok) {
+                await response.body?.cancel();
+                throw new Error(`fixture_extraction_http_${response.status}`);
+              }
+              return response.json() as Promise<unknown>;
+            };
+            const path = `/v1/projects/${item.origin.projectId}/learning-cases/${item.id}/extractions`;
+            const input = { caseSha256: item.sha256, idempotencyKey: randomUUID(), locale: 'zh-CN' };
+            const admitted = admissionDtoSchema.parse(await call(path, input));
+            const replay = admissionDtoSchema.parse(await call(path, input));
+            equal(admitted.replayed, false);
+            equal(admitted.task.workflow, 'rule-extraction');
+            equal(replay.replayed, true);
+            deepStrictEqual(replay.task, admitted.task);
+            const callsBefore = audit.calls.length;
+            extractionWorker = await startScopedWorker(bundle, ['PATH=/usr/bin:/bin', 'LANG=C.UTF-8',
+              'ITERVANE_WORKER_POLL_MS=100', 'ITERVANE_WORKER_LEASE_SECONDS=30',
+              ...Object.entries(providerEnv).map(([name, value]) => `${name}=${value}`),
+            ], { DATABASE_URL: db.runtimeUrl, ANTHROPIC_API_KEY: auditFixtureKey });
+            const checked = await poll(async () => {
+              const settled = ruleExtractionViewSchema.parse(await call(`/v1/tasks/${admitted.task.id}/rule-extraction`));
+              if (settled.state === 'needs_human' || settled.state === 'failed') throw new Error('fixture_extraction_did_not_settle');
+              return settled.result ?? undefined;
+            }, 75_000, 'rule_extraction');
+            const { extraction, usage, candidateSemanticSha256 } = checked.document;
+            ok(extraction.result.outcome === 'candidate');
+            equal(extraction.caseId, item.id);
+            equal(extraction.caseSha256, item.sha256);
+            equal(extraction.result.candidate.kind, expectedKind);
+            equal(checked.document.provider, 'anthropic');
+            const actions = audit.calls.slice(callsBefore);
+            deepStrictEqual(actions, ['read_learning_case', 'search_learning_knowledge', 'finish_role']);
+            return { caseId: item.id, caseSha256: item.sha256, taskId: admitted.task.id, resultId: checked.id, resultSha256: checked.sha256,
+              candidateKind: expectedKind, candidateSemanticSha256, usage, actions, model: 'scripted_anthropic_fixture' };
+          } finally {
+            try { await extractionWorker?.stop('TERM'); } finally { await extractionApi.close(); }
+          }
+        };
+
         const verifyInstalledDiagnosis = async <T>(enrollmentSha256: string, readKey: string, publication: NativeDiagnosisPublication,
           acceptance?: NativeDiagnosisAcceptance<T> | { kind: 'monitor'; taskId: string; previousOperationId: string }) => {
           phase = 'operations_formal_installation';
@@ -1249,6 +1303,8 @@ async function probe() {
             equal(facts.patchSha256, patch.patchSha256);
             equal(facts.verificationReceiptSha256, after.receiptSha256);
             equal(facts.reproductionSha256, before.receiptSha256);
+            phase = 'linked_health_extract_rule_candidate';
+            const ruleExtraction = await extractNativeLearningCase(learningCase, 'code_rule');
             return {
               incidentId: failed.incidentId, sampleSequence: failed.sequence, diagnosis, originalVersion: first.report.version,
               originalContainerId: first.proof.runtime.containerId, originalReleaseOperationId: operationId,
@@ -1261,7 +1317,7 @@ async function probe() {
               after: { domainId: after.domainId, receiptSha256: after.receiptSha256, health: replacementBaseline.healthFollowup, cleanupConfirmed: true,
                 candidateManifestSha256: after.targetManifestSha256, patchSha256: patch.patchSha256, changedPath: patch.patch.files[0]!.path },
               verifiedBuild: { build: after.build, archiveVerification: after.archiveVerification },
-              modelCalls: calls, readOnlyKomodo: true, whiskersCleanup: true, learningCase,
+              modelCalls: calls, readOnlyKomodo: true, whiskersCleanup: true, learningCase, ruleExtraction,
             };
           } finally {
             setDefaultCACertificates(trusted);
@@ -1731,7 +1787,9 @@ async function probe() {
                   equal(facts.executionId, accepted.executionId);
                   equal(facts.releaseOperationId, operationId);
                   equal(facts.healthStatus, 200);
-                  return { ...accepted, learningCase };
+                  phase = 'operations_extract_runbook_candidate';
+                  const ruleExtraction = await extractNativeLearningCase(learningCase, 'runbook');
+                  return { ...accepted, learningCase, ruleExtraction };
                 },
               });
               ok(result.accepted);

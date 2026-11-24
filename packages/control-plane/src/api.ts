@@ -26,6 +26,7 @@ import { PreauditService, RuleService } from './service/preaudits.js';
 import { RulePackageService } from './service/rule-packages.js';
 import { RulePackageActivationService } from './service/rule-package-activations.js';
 import { LearningCaseService } from './service/learning-cases.js';
+import { RuleExtractionService } from './service/rule-extraction.js';
 import { OperationsObservationViewService } from './service/operations-observation-view.js';
 import { OperationsIncidentsViewService } from './service/operations-incidents-view.js';
 import { OperationsIncidentStopService } from './service/operations-incident-stop.js';
@@ -59,7 +60,7 @@ const identity = (request: FastifyRequest) => {
 };
 const limit = (request: FastifyRequest) => parseInput(listQuerySchema, request.query).limit;
 
-export type ApiConfig = IdentityConfig & { publicUrl?: string; portalClientId?: string; operationsApi?: OperationsWorkflowScope };
+export type ApiConfig = IdentityConfig & { publicUrl?: string; portalClientId?: string; operationsApi?: OperationsWorkflowScope; ruleExtractionProviderSha256?: string };
 export function createApi(database: Database, config: ApiConfig,
   options: { logger?: boolean; portalRoot?: string; operationsRestartWriter?: OperationsRestartWriterProof;
     operationsRestoreTarget?: InstalledReleaseTarget } = {}) {
@@ -73,6 +74,7 @@ export function createApi(database: Database, config: ApiConfig,
   const ruleLibrary = new RulePackageService(database, config.portalClientId);
   const ruleActivations = new RulePackageActivationService(database, config.portalClientId);
   const learningCases = new LearningCaseService(database);
+  const ruleExtraction = new RuleExtractionService(database, config.ruleExtractionProviderSha256);
   const app = Fastify({
     logger: options.logger === false ? false : { level: 'info' },
     logController: new LogController({ disableRequestLogging: true }), requestIdHeader: false, genReqId: () => randomUUID(),
@@ -172,6 +174,15 @@ export function createApi(database: Database, config: ApiConfig,
   app.get('/v1/projects/:projectId/learning-cases/:caseId', async request => {
     const { projectId, caseId } = parseInput(learningCaseParam, request.params);
     return learningCases.get(identity(request), projectId, caseId, request.locale);
+  });
+  app.post('/v1/projects/:projectId/learning-cases/:caseId/extractions', async (request, reply) => {
+    const { projectId, caseId } = parseInput(learningCaseParam, request.params);
+    const result = admissionDtoSchema.parse(await ruleExtraction.admit(identity(request), projectId, caseId, request.body));
+    return reply.code(result.replayed ? 200 : 202).send(result);
+  });
+  app.get('/v1/tasks/:taskId/rule-extraction', async request => {
+    const { taskId } = parseInput(taskParam, request.params);
+    return ruleExtraction.get(identity(request), taskId, request.locale);
   });
   app.post('/v1/tasks/:taskId/learning-case', async (request, reply) => {
     const { taskId } = parseInput(taskParam, request.params);

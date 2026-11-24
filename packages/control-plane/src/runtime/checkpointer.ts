@@ -7,7 +7,8 @@ import { and, eq } from 'drizzle-orm';
 import { sha256Schema } from '@itervane/contracts';
 import type { OperationsEnrollmentScope } from '../config.js';
 import { checkpointWrites, formalAuditInputs, formalAuditRuntime, formalRepairInputs, formalRepairRuntime,
-  formalRescanAttempts, formalVerificationInputs, formalVerificationRuntime, operationsDiagnosisRuntime, runRuntime } from '../persistence/schema.js';
+  formalRescanAttempts, formalVerificationInputs, formalVerificationRuntime, operationsDiagnosisRuntime, ruleExtractionInputs,
+  ruleExtractionRuntime, runRuntime } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { ExecutionLost, type ExecutionScope } from './authority.js';
 import type { CurrentExecution, ExecutionCoordinator } from './coordinator.js';
@@ -15,16 +16,18 @@ import { requireCurrentOperationsTarget } from './operations-execution.js';
 
 type OperationsCheckpoint = OperationsEnrollmentScope & { inputSha256: string; providerSha256: string };
 type CheckpointOptions = { signal?: AbortSignal } & (
-  { auditInputSha256: string; repairInputSha256?: never; verification?: never; operations?: never }
-  | { repairInputSha256: string; auditInputSha256?: never; verification?: never; operations?: never }
-  | { verification: { inputSha256: string; receiptSha256: string }; auditInputSha256?: never; repairInputSha256?: never; operations?: never }
-  | { operations: OperationsCheckpoint; auditInputSha256?: never; repairInputSha256?: never; verification?: never }
+  { auditInputSha256: string; repairInputSha256?: never; ruleExtractionInputSha256?: never; verification?: never; operations?: never }
+  | { repairInputSha256: string; auditInputSha256?: never; ruleExtractionInputSha256?: never; verification?: never; operations?: never }
+  | { ruleExtractionInputSha256: string; auditInputSha256?: never; repairInputSha256?: never; verification?: never; operations?: never }
+  | { verification: { inputSha256: string; receiptSha256: string }; auditInputSha256?: never; repairInputSha256?: never; ruleExtractionInputSha256?: never; operations?: never }
+  | { operations: OperationsCheckpoint; auditInputSha256?: never; repairInputSha256?: never; ruleExtractionInputSha256?: never; verification?: never }
 );
 const formalGraphs = {
   audit: { inputs: formalAuditInputs, pointers: formalAuditRuntime },
   repair: { inputs: formalRepairInputs, pointers: formalRepairRuntime },
   verify: { inputs: formalVerificationInputs, pointers: formalVerificationRuntime },
   operations: { pointers: operationsDiagnosisRuntime },
+  'rule-extraction': { inputs: ruleExtractionInputs, pointers: ruleExtractionRuntime },
 };
 
 /** Only this logical run's published checkpoint is a valid recovery entry point. */
@@ -39,13 +42,13 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
     options?: CheckpointOptions) {
     super(storage.serde);
     this.formalInputSha256 = options ? sha256Schema.parse(options.operations?.inputSha256 ?? options.verification?.inputSha256
-      ?? options.repairInputSha256 ?? options.auditInputSha256) : undefined;
+      ?? options.ruleExtractionInputSha256 ?? options.repairInputSha256 ?? options.auditInputSha256) : undefined;
     this.verificationReceiptSha256 = options?.verification && sha256Schema.parse(options.verification.receiptSha256);
     const operations = options?.operations;
     this.operations = operations && { environmentId: operations.environmentId, enrollmentSha256: operations.enrollmentSha256,
       inputSha256: operations.inputSha256, providerSha256: sha256Schema.parse(operations.providerSha256) };
     this.signal = options?.signal;
-    this.graph = this.operations ? 'operations' : options?.verification ? 'verify'
+    this.graph = this.operations ? 'operations' : options?.verification ? 'verify' : options?.ruleExtractionInputSha256 ? 'rule-extraction'
       : options?.repairInputSha256 !== undefined ? 'repair' : options ? 'audit' : 'preflight';
     this.threadId = this.graph === 'preflight' ? scope.runId : `${this.graph}:${scope.runId}`;
   }
@@ -68,7 +71,7 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
   private async publication(tx: Transaction, current: CurrentExecution) {
     this.signal?.throwIfAborted();
     if (this.graph === 'preflight') {
-      if (current.run.role === 'operations') throw new ExecutionLost();
+      if (current.run.role === 'operations' || current.run.role === 'rule-extraction') throw new ExecutionLost();
       return current.runtime;
     }
     if (!this.formalInputSha256) throw new ExecutionLost();
@@ -77,6 +80,7 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
           || current.operationsDiagnosis?.providerSha256 !== this.operations.providerSha256) throw new ExecutionLost();
       await requireCurrentOperationsTarget(tx, current.task, current.operationsRequest, this.operations);
     } else {
+      if (this.graph === 'rule-extraction' && current.run.role !== 'rule-extraction') throw new ExecutionLost();
       const { inputs } = formalGraphs[this.graph];
       const [input] = await tx.select({ sha256: inputs.sha256 }).from(inputs).where(eq(inputs.runId, this.scope.runId));
       if (input?.sha256 !== this.formalInputSha256) throw new ExecutionLost();
@@ -117,7 +121,7 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
       const published = await this.publication(tx, current);
       // 用图的持久化 step 排序；跨进程的系统时钟回拨不能使 UUID 时间排序阻塞进展。
       if (!Number.isSafeInteger(metadata.step)) throw new Error('Invalid checkpoint step');
-      if (this.graph === 'operations' && published.checkpointId === checkpoint.id) throw new ExecutionLost();
+      if ((this.graph === 'operations' || this.graph === 'rule-extraction') && published.checkpointId === checkpoint.id) throw new ExecutionLost();
       const next = await this.storage.put(bound, checkpoint, metadata, newVersions);
       // A retiring Worker may still hold its lease. Prevent its abort from becoming user cancellation on recovery.
       this.signal?.throwIfAborted();

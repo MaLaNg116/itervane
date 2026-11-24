@@ -17,6 +17,7 @@ import { GuardedCheckpointer } from './checkpointer.js';
 import { ExecutionCoordinator } from './coordinator.js';
 import { runFormalAudit, type AuditModel } from './formal-audit.js';
 import { runFormalOperations } from './formal-operations.js';
+import { runFormalRuleExtraction } from './formal-rule-extraction.js';
 import { runFormalRepair, type FormalRepairOptions } from './formal-repair.js';
 import { runFormalVerification, type FormalVerificationOptions } from './formal-verification.js';
 import { OperationsExecutionError, runOperationsObservation } from './operations-execution.js';
@@ -104,7 +105,7 @@ export class DurableWorker {
         .finally(() => { heartbeat = undefined; });
     }, this.coordinator.leaseSeconds * 1_000 / 3);
     timer.unref();
-    let phase: 'preflight' | 'audit' | 'repair' | 'verification' | 'operations' = 'preflight';
+    let phase: 'preflight' | 'audit' | 'repair' | 'verification' | 'operations' | 'rule-extraction' = 'preflight';
     try {
       const { runtime, retry, role, diagnosis } = await this.coordinator.withLease(scope, async (tx, current) => {
         const continuation = await readRepairRetry(tx, current.task, scope);
@@ -121,6 +122,10 @@ export class DurableWorker {
             this.auditModel, controller.signal);
         }
         return await runOperationsObservation(this.coordinator, scope, this.#operations, controller.signal);
+      }
+      if (role === 'rule-extraction') {
+        phase = 'rule-extraction';
+        return await runFormalRuleExtraction(this.coordinator, scope, this.saver, this.auditModel, controller.signal);
       }
       if (retry && (!this.repair || !this.verification || retry.repairPolicySha256 !== repairPolicyFingerprint(this.repair)
           || retry.verificationProfileSha256 !== verificationProfileFingerprint(this.verification.profile))) {
@@ -150,7 +155,8 @@ export class DurableWorker {
           : error instanceof DomainError && ['forbidden', 'not_found'].includes(error.code) ? 'permission_revoked'
           : error instanceof ExecutionLost ? 'cancelled' : controller.signal.aborted ? 'cancelled_or_interrupted'
           : error instanceof OperationsExecutionError ? error.reason
-          : phase === 'operations' ? 'operations_unavailable' : phase === 'verification' ? 'verification_unavailable'
+          : phase === 'operations' ? 'operations_unavailable' : phase === 'rule-extraction' ? 'rule_extraction_needs_human'
+          : phase === 'verification' ? 'verification_unavailable'
           : phase === 'repair' ? 'repair_failed' : phase === 'audit' ? 'audit_failed' : 'execution_error';
         try { await this.coordinator.stop(scope, reason, error instanceof ExecutionLost); }
         catch (stopError) { if (!(stopError instanceof ExecutionLost)) throw stopError; }

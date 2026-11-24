@@ -16,7 +16,7 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
   operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartExecutionViewSchema, operationsRestartRecoveryProofSchema,
   operationsRestartRequestSchema, operationsRestartSubmissionSchema, operationsRestoreExecutionViewSchema, operationsRestorePlanSchema, operationsRestoreRecoveryProofSchema,
-  learningCaseCaptureResultSchema, learningCasesViewSchema, operationsIncidentsViewSchema, operationsIncidentStopResultSchema,
+  learningCaseCaptureResultSchema, learningCasesViewSchema, ruleExtractionViewSchema, operationsIncidentsViewSchema, operationsIncidentStopResultSchema,
   operationsRepairViewSchema, operationsSubmissionSchema, standardHealthRepairPath, taskDtoSchema,
   taskIncidentViewSchema, translate,
   verificationViewSchema,
@@ -25,13 +25,14 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type OperationsDiagnosisObservation, type OperationsDiagnosisSection,
   type OperationsHealthSignal, type OperationsRestartInstallation,
   type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
-  type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile } from '@itervane/contracts';
+  type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile, type TaskDto } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
 import { canonicalRepairCommand, canonicalRepairObservation, canonicalVerificationCommand, prepareQualifiedVerificationRequest,
   scannerProfiles, sha256, verifyQualifiedVerificationReceipt } from '@itervane/runner';
 import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../verification/src/agent/npm-repair-fixture.js';
 import { chooseOperationsSection, operationsDecision, scriptedOperations } from '../../../verification/src/agent/operations-fixture.js';
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
+import { extractionFixtureCall } from '../../../verification/src/agent/rule-extraction-fixture.js';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { runtimeConfig, workerConfig, type OperationsWorkflowScope } from '../../src/config.js';
@@ -86,6 +87,7 @@ import { requireActor } from '../../src/service/access.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
 import { InspectionService, prepareInspection } from '../../src/service/inspections.js';
 import { LearningCaseService } from '../../src/service/learning-cases.js';
+import { RuleExtractionService } from '../../src/service/rule-extraction.js';
 import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
 import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { FormalReleaseService } from '../../src/service/formal-release.js';
@@ -260,6 +262,21 @@ async function processAdmittedTestTask(worker: DurableWorker) {
     await delay(40);
   } while (performance.now() < deadline);
   throw new Error('The admitted test task did not receive a wakeup');
+}
+
+const extractionModel = () => auditModel(async request => {
+  const context = request.conversation[0];
+  if (context?.kind !== 'user') throw new Error('Missing extraction context');
+  const { observations, role } = JSON.parse(context.text) as { observations: AgentEvidence[]; role: string };
+  expect(role).toBe('rule-extraction');
+  const { name, input } = extractionFixtureCall(observations);
+  return auditTurn(name, input);
+});
+
+async function processExtraction(task: TaskDto, model = extractionModel()) {
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { auditModel: model });
+  try { await processAdmittedTestTask(worker); } finally { await worker.close(); }
+  return new RuleExtractionService(database.storage).get(identity, task.id, 'zh-CN');
 }
 
 async function repairReady() {
@@ -3799,6 +3816,22 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
     expect(JSON.stringify(english.item)).not.toContain('export const secondHealth');
     await expect(database.storage.pool.query('UPDATE itervane.learning_cases SET document=document'))
       .rejects.toMatchObject({ code: '23514', message: 'learning_case_is_immutable' });
+    const extraction = new RuleExtractionService(database.storage, extractionModel().providerSha256);
+    const request = { caseSha256: english.item.sha256, idempotencyKey: randomUUID() };
+    const first = await extraction.admit(identity, linked.projectId, english.item.id, request);
+    const repeated = await extraction.admit(identity, linked.projectId, english.item.id, request);
+    expect(repeated).toEqual({ task: first.task, replayed: true });
+    expect(first.task).toMatchObject({ workflow: 'rule-extraction', state: 'queued' });
+    const generated = await processExtraction(first.task);
+    expect(generated).toMatchObject({ state: 'succeeded', result: { document: {
+      extraction: { caseId: english.item.id, result: { outcome: 'candidate', candidate: { kind: 'code_rule' } } },
+      usage: { turns: 3, toolCalls: 2 },
+    } } });
+    const replayedCase = await extraction.admit(identity, linked.projectId, english.item.id, { ...request, idempotencyKey: randomUUID() });
+    const duplicate = await processExtraction(replayedCase.task);
+    expect(duplicate).toMatchObject({ state: 'succeeded', result: { document: {
+      extraction: { result: { outcome: 'duplicate', existingCandidateId: generated.result?.id } }, candidateSemanticSha256: null,
+    } } });
     const { candidate: release } = await freeze();
     expect(release.manifest.repairedSnapshotSha256).toBe(candidate?.candidateManifestSha256);
     const approver = await createIdentityVerifier(issuer.config)(await issuer.token('owner', { azp: portal }));
@@ -3808,7 +3841,7 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
     expect(job).toBeTruthy();
     const claim = await new FormalReleaseCoordinator(coordinator, releaseOrigin).claim(job!, randomUUID());
     expect(claim).toMatchObject({ operationId: approved.candidate.operationId, candidateId: release.id, mode: 'import' });
-  }, 55_000);
+  }, 75_000);
 
 it('freezes one immutable restart proposal from the settled diagnosis under concurrent requests', async () => {
   const current = await settleProposalDiagnosis('restart');
@@ -5810,7 +5843,8 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
     .rejects.toMatchObject({ code: 'unsupported_state' });
   await expect(runtime.settleRestartRecovery(scope, outcomeEvidence)).resolves.toBe('verified');
   const publicUrl = 'http://127.0.0.1:4330';
-  const config = { ...issuer.config, publicUrl, portalClientId: operationsPortal, operationsApi: action.installed };
+  const config = { ...issuer.config, publicUrl, portalClientId: operationsPortal, operationsApi: action.installed,
+    ruleExtractionProviderSha256: extractionModel().providerSha256 };
   const { installationId, installationSha256, credentialSha256 } = binding;
   const app = createApi(database.storage, config, { logger: false, operationsRestartWriter: { installationId, installationSha256, credentialSha256 } });
   const reader = new Client({ name: 'restart-receipt-test', version: '0.0.0' });
@@ -5842,6 +5876,42 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
     const scopedCases = await app.inject({ url: listing, headers: http });
     expect(scopedCases.statusCode).toBe(200);
     expect(learningCasesViewSchema.parse(scopedCases.json()).items).toMatchObject([{ id: item.id, sha256: item.sha256, locale: 'zh-CN' }]);
+    const extractionPath = `/v1/projects/${projectId}/learning-cases/${item.id}/extractions`;
+    const input = { caseSha256: item.sha256, locale: 'zh-CN', idempotencyKey: randomUUID() };
+    expect((await app.inject({ url: extractionPath, method: 'POST', headers: http, payload: input })).statusCode).toBe(403);
+    const admit = (body: typeof input) => app.inject({ url: extractionPath, method: 'POST', headers: ownerHttp, payload: body });
+    const admitted = await Promise.all([admit(input), admit(input)]);
+    expect(admitted.map(value => value.statusCode).sort()).toEqual([200, 202]);
+    const task = admissionDtoSchema.parse(admitted[0]!.json()).task;
+    expect(admissionDtoSchema.parse(admitted[1]!.json()).task).toEqual(task);
+    const observed = await processExtraction(task);
+    expect(observed).toMatchObject({ state: 'succeeded', result: { document: { extraction: {
+      caseId: item.id, result: { outcome: 'candidate', candidate: { kind: 'runbook', action: 'restart_current_publication' } },
+    } } } });
+    const report = ruleExtractionViewSchema.parse((await app.inject({ url: `/v1/tasks/${task.id}/rule-extraction`, headers: http })).json());
+    expect(report.result).toEqual(observed.result);
+    expect((await database.admin.query("SELECT count(*)::int n FROM itervane.checkpoint_write_receipts WHERE run_id=$1 AND graph='rule-extraction'",
+      [task.runId])).rows[0]?.n).toBeGreaterThan(0);
+    await expect(database.storage.pool.query('UPDATE itervane.rule_extraction_results SET document=document WHERE run_id=$1', [task.runId]))
+      .rejects.toMatchObject({ code: '23514', message: 'rule_extraction_result_is_immutable' });
+
+    const mismatched = admissionDtoSchema.parse((await admit({ ...input, idempotencyKey: randomUUID() })).json()).task;
+    const stopped = await processExtraction(mismatched, { ...extractionModel(), providerSha256: sha256('rotated provider') });
+    expect(stopped).toMatchObject({ state: 'needs_human', result: null, message: translate('zh-CN', 'reason.rule_extraction_model_changed') });
+    const recoverTask = admissionDtoSchema.parse((await admit({ ...input, idempotencyKey: randomUUID() })).json()).task;
+    const lease = await claim();
+    expect(lease).toMatchObject({ taskId: recoverTask.id, runId: recoverTask.runId });
+    await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second' WHERE run_id=$1", [recoverTask.runId]);
+    await expect(coordinator.withLease(lease, async () => true)).rejects.toBeInstanceOf(ExecutionLost);
+    expect(await processExtraction(recoverTask)).toMatchObject({ state: 'succeeded', result: { document: {
+      extraction: { result: { outcome: 'duplicate', existingCandidateId: report.result?.id } },
+    } } });
+
+    await database.storage.db.update(projectMembers).set({ role: 'maintainer' }).where(eq(projectMembers.principalId, principalId));
+    const maintainer = await app.inject({ url: extractionPath, method: 'POST', headers: http, payload: { ...input, idempotencyKey: randomUUID() } });
+    const revoked = admissionDtoSchema.parse(maintainer.json()).task;
+    await database.storage.db.update(projectMembers).set({ role: 'viewer' }).where(eq(projectMembers.principalId, principalId));
+    expect(await processExtraction(revoked)).toMatchObject({ state: 'needs_human', result: null });
     await expect(database.storage.pool.query('DELETE FROM itervane.learning_cases WHERE id=$1', [item.id]))
       .rejects.toMatchObject({ code: '23514', message: 'learning_case_is_immutable' });
     expect(view).toMatchObject({ taskId: action.diagnosed.id, locale: 'zh-CN', action: null, execution: {
@@ -5875,7 +5945,7 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
     await Promise.all([reader.close(), writer.close()]);
     await app.close();
   }
-});
+}, 60_000);
 
 it('rejects portal restart submission after the original approval grant is replaced', async () => {
   const action = await restartExecutionCandidate();

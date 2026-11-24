@@ -14,7 +14,7 @@ import {
   type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
   type ReleaseKomodoCompletion, type ReleaseKomodoConfiguration, type ReleaseKomodoIntent, type ReleaseKomodoUpdate,
-  type ReleaseRolloutFailure, type ReleaseRolloutProof, type RulePackageReviewRecord,
+  type ReleaseRolloutFailure, type ReleaseRolloutProof, type RuleExtractionInput, type RuleExtractionResultRecord, type RulePackageReviewRecord,
 } from '@itervane/contracts';
 
 export const domain = pgSchema('itervane');
@@ -180,6 +180,60 @@ export const learningCases = domain.table('learning_cases', {
     AND octet_length(${t.document}::text) <= 4096) IS TRUE`),
 ]);
 
+export const ruleExtractionAdmissions = domain.table('rule_extraction_admissions', {
+  runId: uuid('run_id').primaryKey(), taskId: uuid('task_id').notNull(),
+  projectId: uuid('project_id').notNull(), caseId: uuid('case_id').notNull().references(() => learningCases.id),
+  caseSha256: text('case_sha256').notNull(), providerSha256: text('provider_sha256').notNull(), grantId: uuid('grant_id').notNull(),
+}, t => [
+  foreignKey({ name: 'rule_extraction_admission_task_fk', columns: [t.taskId, t.projectId], foreignColumns: [tasks.id, tasks.projectId] }),
+  foreignKey({ name: 'rule_extraction_admission_run_fk', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
+  check('rule_extraction_admission_digests', sql`${t.caseSha256} ~ '^[a-f0-9]{64}$' AND ${t.providerSha256} ~ '^[a-f0-9]{64}$'`),
+]);
+
+export const ruleExtractionInputs = domain.table('rule_extraction_inputs', {
+  runId: uuid('run_id').primaryKey().references(() => ruleExtractionAdmissions.runId),
+  sha256: text('sha256').notNull(), preparedFence: integer('prepared_fence').notNull(),
+  workerId: uuid('worker_id').notNull(), document: jsonb('document').$type<RuleExtractionInput>().notNull(),
+  createdAt: createdAt(),
+}, t => [
+  check('rule_extraction_input_binding', sql`(${t.preparedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.document}->>'version' = '1' AND ${t.document}->>'runId' = ${t.runId}::text
+    AND ${t.document}->>'knowledgeSha256' ~ '^[a-f0-9]{64}$' AND octet_length(${t.document}::text) <= 8192) IS TRUE`),
+]);
+
+export const ruleExtractionRuntime = domain.table('rule_extraction_runtime', {
+  runId: uuid('run_id').primaryKey().references(() => ruleExtractionInputs.runId), inputSha256: text('input_sha256').notNull(),
+  checkpointId: text('checkpoint_id').notNull(), checkpointStep: integer('checkpoint_step').notNull(),
+  publishedFence: integer('published_fence').notNull(), workerId: uuid('worker_id').notNull(),
+}, t => [
+  check('rule_extraction_runtime_binding', sql`${t.inputSha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.checkpointStep} >= -1 AND ${t.publishedFence} > 0`),
+]);
+
+export const ruleExtractionResults = domain.table('rule_extraction_results', {
+  id: uuid('id').primaryKey().defaultRandom(), runId: uuid('run_id').notNull().references(() => ruleExtractionRuntime.runId),
+  projectId: uuid('project_id').notNull().references(() => projects.id), inputSha256: text('input_sha256').notNull(),
+  checkpointId: text('checkpoint_id').notNull(), finalizedFence: integer('finalized_fence').notNull(), workerId: uuid('worker_id').notNull(),
+  sha256: text('sha256').notNull(), candidateKey: text('candidate_key'), candidateKind: text('candidate_kind').$type<'code_rule' | 'runbook'>(),
+  candidateSemanticSha256: text('candidate_semantic_sha256'), document: jsonb('document').$type<RuleExtractionResultRecord>().notNull(), createdAt: createdAt(),
+}, t => [
+  unique('rule_extraction_finalized_run').on(t.runId),
+  unique('rule_extraction_candidate_key').on(t.projectId, t.candidateKey),
+  unique('rule_extraction_candidate_semantics').on(t.projectId, t.candidateSemanticSha256),
+  index('rule_extraction_candidate_history').on(t.projectId, t.candidateKind, t.createdAt, t.id),
+  check('rule_extraction_result_binding', sql`(${t.finalizedFence} > 0 AND ${t.sha256} ~ '^[a-f0-9]{64}$' AND ${t.inputSha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.document}->>'version' = '1' AND ${t.document}->>'runId' = ${t.runId}::text AND ${t.document}->>'projectId' = ${t.projectId}::text
+    AND ${t.document}->>'inputSha256' = ${t.inputSha256} AND ${t.document}->>'checkpointId' = ${t.checkpointId}
+    AND octet_length(${t.document}::text) <= 16384
+    AND CASE WHEN ${t.document}#>>'{extraction,result,outcome}' = 'candidate' THEN
+      ${t.candidateKey} = ${t.document}#>>'{extraction,result,candidate,key}' AND ${t.candidateKind} = ${t.document}#>>'{extraction,result,candidate,kind}'
+      AND ${t.candidateKind} IN ('code_rule', 'runbook') AND ${t.candidateSemanticSha256} ~ '^[a-f0-9]{64}$'
+      AND ${t.candidateSemanticSha256} = ${t.document}->>'candidateSemanticSha256'
+    ELSE ${t.candidateKey} IS NULL AND ${t.candidateKind} IS NULL AND ${t.candidateSemanticSha256} IS NULL
+      AND ${t.document}#>>'{extraction,result,outcome}' IN ('retain_case', 'duplicate')
+    END) IS TRUE`),
+]);
+
 export const taskEvents = domain.table('task_events', {
   taskId: uuid('task_id').notNull().references(() => tasks.id), sequence: integer('sequence').notNull(),
   type: text('type').notNull(), state: taskState('state').notNull(),
@@ -217,11 +271,11 @@ export const toolCalls = domain.table('tool_calls', {
 // 底层 saver 与领域事务分离：只有已发布的中间写入才参与恢复。
 export const checkpointWrites = domain.table('checkpoint_write_receipts', {
   runId: uuid('run_id').notNull().references(() => taskRuns.id),
-  graph: text('graph').$type<'preflight' | 'audit' | 'repair' | 'verify' | 'operations'>().notNull().default('preflight'),
+  graph: text('graph').$type<'preflight' | 'audit' | 'repair' | 'verify' | 'operations' | 'rule-extraction'>().notNull().default('preflight'),
   checkpointId: text('checkpoint_id').notNull(),
   writeHash: text('write_hash').notNull(),
 }, t => [primaryKey({ columns: [t.runId, t.graph, t.checkpointId, t.writeHash] }),
-  check('checkpoint_write_graph', sql`${t.graph} IN ('preflight', 'audit', 'repair', 'verify', 'operations')`)]);
+  check('checkpoint_write_graph', sql`${t.graph} IN ('preflight', 'audit', 'repair', 'verify', 'operations', 'rule-extraction')`)]);
 
 // A prepared intent is not a fetched snapshot or a completed scan. One immutable policy per logical run.
 export const inspectionPlans = domain.table('inspection_plans', {

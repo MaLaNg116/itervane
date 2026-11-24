@@ -39,7 +39,7 @@ export const environmentDtoSchema = z.object({
 export const taskDtoSchema = z.object({
   id: idSchema, projectId: idSchema, requestedBy: idSchema, runId: idSchema,
   source: sourceRefSchema, purpose: z.string(), dataClass: z.enum(['synthetic', 'public']),
-  workflow: z.literal('operations').optional(),
+  workflow: z.enum(['operations', 'rule-extraction']).optional(),
   state: taskStateSchema, version: z.number().int().positive(), locale: localeSchema, createdAt: timestampSchema,
 }).strict();
 export const taskEventDtoSchema = z.object({

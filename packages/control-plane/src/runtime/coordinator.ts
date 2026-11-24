@@ -9,6 +9,7 @@ import { DomainError } from '../service/errors.js';
 import { requireIncidentDiagnosisAuthority } from '../service/operations-incident-monitor.js';
 import { readLinkedOperationsRepair } from '../service/operations-repair-proposals.js';
 import { readOperationsDiagnosis, readOperationsRequest } from '../service/operations-requests.js';
+import { requireRuleExtractionAdmission } from '../service/rule-extraction.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, enqueue, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope, type TaskRow } from './authority.js';
 import { recoverOperationsExecutionSlot } from './operations-execution-lease.js';
@@ -27,6 +28,10 @@ export async function authorizeRun(tx: Transaction, task: TaskRow, runId: string
     const operationsDiagnosis = await readOperationsDiagnosis(tx, task, runId, operationsRequest);
     await requireIncidentDiagnosisAuthority(tx, runId, task.requestedBy, operationsRequest.document, operationsDiagnosis?.providerSha256);
     return { ...access, operationsRequest, operationsDiagnosis, linkedRepair: undefined };
+  }
+  if (role === 'rule-extraction') {
+    await requireRuleExtractionAdmission(tx, task, runId, access.grantId);
+    return { ...access, operationsRequest: undefined, operationsDiagnosis: undefined, linkedRepair: undefined };
   }
   const linked = await readLinkedOperationsRepair(tx, task);
   if (linked && linked.admission.grantId !== access.grantId) throw new DomainError('forbidden');
@@ -118,7 +123,9 @@ export class ExecutionCoordinator {
       }
       const completed = await settle();
       if (completed.affected !== 1) return null;
-      await appendEvent(tx, task, run.role === 'operations' ? 'task.operations_started' : 'task.started', 'running', { workerId });
+      const started = run.role === 'operations' ? 'task.operations_started'
+        : run.role === 'rule-extraction' ? 'task.rule_extraction_started' : 'task.started';
+      await appendEvent(tx, task, started, 'running', { workerId });
       return assignSlot(tx, task, run.id, workerId, this.leaseSeconds);
     });
   }

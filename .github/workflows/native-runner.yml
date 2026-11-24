@@ -239,6 +239,9 @@ jobs:
               $proof.learningCase.origin.facts.category == "reproduced_health_failure" and
               $proof.learningCase.origin.facts.patchSha256 == $proof.after.patchSha256 and
               $proof.learningCase.origin.facts.reproductionSha256 == $proof.before.receiptSha256 and
+              $proof.ruleExtraction.caseId == $proof.learningCase.id and $proof.ruleExtraction.caseSha256 == $proof.learningCase.sha256 and
+              $proof.ruleExtraction.candidateKind == "code_rule" and $proof.ruleExtraction.usage.toolCalls == 2 and
+              ($proof.ruleExtraction.candidateSemanticSha256 | test("^[a-f0-9]{64}$")) and
               $proof.originalContainerId != $proof.recoveredContainerId and $proof.release.operationId != $original.operationId and
               $proof.release.version != $original.version and $proof.release.manifestDigest != $original.manifestDigest and
               $proof.release.approvalDeniedWithoutPortal and $proof.release.healthStatus == 200 and $proof.release.httpMcpAgreement and
@@ -358,6 +361,10 @@ jobs:
               .operations.restart.learningCase.origin.evidenceSha256 == .operations.restart.proofSha256 and
               .operations.restart.learningCase.origin.facts.category == "recovered_stopped_instance" and
               .operations.restart.learningCase.origin.facts.sameInstance and .operations.restart.learningCase.origin.facts.healthStatus == 200 and
+              .operations.restart.ruleExtraction.caseId == .operations.restart.learningCase.id and
+              .operations.restart.ruleExtraction.caseSha256 == .operations.restart.learningCase.sha256 and
+              .operations.restart.ruleExtraction.candidateKind == "runbook" and .operations.restart.ruleExtraction.usage.toolCalls == 2 and
+              (.operations.restart.ruleExtraction.candidateSemanticSha256 | test("^[a-f0-9]{64}$")) and
               .operations.restart.environmentReleased and .operations.restart.slotReleased and .operations.restart.httpMcpAgreement' "$report" >/dev/null
             jq -e '.operations.restart as $verified | $verified.interrupted as $interrupted |
               $interrupted.releaseOperationId == .release.operationId and
