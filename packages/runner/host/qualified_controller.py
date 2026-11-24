@@ -25,6 +25,7 @@ from oci_artifacts import ArtifactStore
 from session_boundary import SESSION_URI, SessionRejected, prepare_session
 from source_gateway import COMMIT, RegisteredOrigin, SourceGateway, SourceRejected
 from source_wire import (GUEST_REPAIR_ERRORS, MAX_OCI_CHUNK_BYTES, MAX_QUALIFIED_RECEIPT, MAX_REPAIR_COMMAND,
+                         MAX_PUBLISHED_INSPECTION_COMMAND, MAX_PUBLISHED_INSPECTION_PROOF,
                          MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT, MAX_RULE_VALIDATION_COMMAND, OCI_ARCHIVE_FORMAT)
 
 
@@ -56,6 +57,7 @@ HEALTH_FOLLOWUP = "healthFollowup"
 OCI_INPUTS = "ociInputsSha256"
 RETAIN_IMAGE = "retainStandardImage"
 MATERIALIZED_SOURCE = "materializedFrom"
+PUBLISHED_CODE = "publishedCode"
 PEER = struct.Struct("3i")
 
 
@@ -97,6 +99,8 @@ def parse_request(line):
     fields = VERIFY_FIELDS if verification else REPAIR_FIELDS if repair else FIELDS
     if not repair and not verification and MATERIALIZED_SOURCE in data:
         fields = fields | {MATERIALIZED_SOURCE}
+    if operation is None and PUBLISHED_CODE in data:
+        fields = fields | {PUBLISHED_CODE}
     if build:
         fields = fields | {BUILD_PROFILE}
         if RUN_BASELINE in data:
@@ -136,6 +140,13 @@ def parse_request(line):
             or basis["commit"] == data["commit"] or not isinstance(basis["baseSnapshotSha256"], str)
             or not IMAGE_DIGEST.fullmatch(basis["baseSnapshotSha256"])):
             raise ValueError("invalid materialized source reference")
+    if PUBLISHED_CODE in fields:
+        binding = data[PUBLISHED_CODE]
+        if (not isinstance(binding, dict) or binding.keys() != {"commandSha256", "commandBytes", "runnerImageSha256"}
+            or type(binding["commandBytes"]) is not int or not 0 < binding["commandBytes"] <= MAX_PUBLISHED_INSPECTION_COMMAND
+            or not all(isinstance(binding[key], str) and IMAGE_DIGEST.fullmatch(binding[key])
+                       for key in ("commandSha256", "runnerImageSha256"))):
+            raise ValueError("invalid published inspection command binding")
     if repair or verification:
         limit = MAX_VERIFICATION_COMMAND if verification else MAX_REPAIR_COMMAND
         if type(data["commandBytes"]) is not int or not 0 < data["commandBytes"] <= limit:
@@ -207,9 +218,27 @@ def require_verification_command(command, request):
         raise ValueError("verification repair evidence mismatch")
 
 
+def require_published_inspection_command(command, request):
+    fields = {"version", "rules"}
+    if MATERIALIZED_SOURCE in request:
+        fields.add(MATERIALIZED_SOURCE)
+    if (not isinstance(command, dict) or command.keys() != fields or type(command["version"]) is not int
+        or command["version"] != 1 or command.get(MATERIALIZED_SOURCE) != request.get(MATERIALIZED_SOURCE)):
+        raise ValueError("invalid published inspection command")
+    rules = command["rules"]
+    snapshot = rules.get("snapshot") if isinstance(rules, dict) else None
+    profile = rules.get("profile") if isinstance(rules, dict) else None
+    document = snapshot.get("document") if isinstance(snapshot, dict) else None
+    if (not isinstance(document, dict) or document.get("purpose") != "delivery"
+        or any(document.get(key) != request[key] for key in ("taskId", "projectId"))
+        or not isinstance(profile, dict) or profile.get("runnerImageSha256") != request[PUBLISHED_CODE]["runnerImageSha256"]):
+        raise ValueError("published inspection command authority mismatch")
+
+
 def read_command(connection, request):
     expires = time.monotonic() + HANDSHAKE_SECONDS
-    size = request["commandBytes"]
+    binding = request.get(PUBLISHED_CODE, request)
+    size = binding["commandBytes"]
     data = bytearray()
     while len(data) < size:
         remaining = expires - time.monotonic()
@@ -220,9 +249,12 @@ def read_command(connection, request):
         if not block:
             raise ValueError("truncated runner command")
         data.extend(block)
-    if hashlib.sha256(data).hexdigest() != request["commandSha256"]:
+    if hashlib.sha256(data).hexdigest() != binding["commandSha256"]:
         raise ValueError("runner command digest mismatch")
     command = json.loads(data, object_pairs_hook=unique_fields)
+    if PUBLISHED_CODE in request:
+        require_published_inspection_command(command, request)
+        return bytes(data)
     if request["operation"] == VALIDATE_RULE_SAMPLES:
         if (not isinstance(command, dict) or command.keys() != {"version", "basis", "candidate"}
                 or type(command["version"]) is not int or command["version"] != 1
@@ -394,7 +426,13 @@ def response_for(request, result):
         materialized = snapshot.get("materializedCandidateSha256")
         materialized_matches = (isinstance(materialized, str) and bool(IMAGE_DIGEST.fullmatch(materialized))
                                 if MATERIALIZED_SOURCE in request else "materializedCandidateSha256" not in snapshot)
-        if repair_matches and materialized_matches and (not verification or verification_proof_matches(request, snapshot, result.imageSha256)):
+        published = request.get(PUBLISHED_CODE)
+        proof = snapshot.get(PUBLISHED_CODE)
+        publication_matches = (PUBLISHED_CODE not in snapshot if published is None else
+                               isinstance(proof, dict) and proof.get("commandSha256") == published["commandSha256"]
+                               and result.imageSha256 == published["runnerImageSha256"])
+        if (repair_matches and materialized_matches and publication_matches
+            and (not verification or verification_proof_matches(request, snapshot, result.imageSha256))):
             kind = ("verification_receipt" if verification else "repair_observation" if observation
                     else "repair_receipt" if repair else "receipt")
             return {
@@ -475,8 +513,9 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
     repair = request.get("operation") in REPAIR_OPERATIONS
     verification = request.get("operation") == VERIFY_SOURCE
     rule_samples = request.get("operation") == VALIDATE_RULE_SAMPLES
+    published_code = PUBLISHED_CODE in request
     if (request["workspaceSha256"] != fingerprint or (repair and not enable_repair)
-        or (rule_samples and not enable_rule_samples)
+        or ((rule_samples or published_code) and not enable_rule_samples)
         or (verification and not enable_verification) or (BUILD_PROFILE in request and not enable_standard_build)
         or (RUN_BASELINE in request and not enable_baseline) or (OCI_INPUTS in request and not enable_oci)
         or (RETAIN_IMAGE in request and not enable_retention)):
@@ -493,7 +532,7 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
     if first != b"K" or stopping():
         return rejected("lease_lost", request["requestId"])
     try:
-        command = read_command(connection, request) if repair or verification or rule_samples else None
+        command = read_command(connection, request) if repair or verification or rule_samples or published_code else None
     except (OSError, ValueError, RecursionError):
         return rejected("invalid_request", request["requestId"])
     if stopping():
@@ -538,7 +577,8 @@ def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping
                                                   enable_repair, enable_verification, enable_standard_build, enable_baseline,
                                                   enable_oci, enable_retention, verify_archive, read_archive, enable_rule_samples)
                         encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
-                        limit = MAX_VERIFICATION_RECEIPT if result["kind"] == "verification_receipt" else MAX_QUALIFIED_RECEIPT
+                        limit = MAX_VERIFICATION_RECEIPT if result["kind"] == "verification_receipt" else (
+                            MAX_PUBLISHED_INSPECTION_PROOF if PUBLISHED_CODE in result.get("scope", {}) else MAX_QUALIFIED_RECEIPT)
                         if len(encoded) > limit + 8192:
                             encoded = b'{"kind":"rejected","requestId":null,"code":"cleanup_unproven","cleanup":"unknown","domainId":null}\n'
                         connection.settimeout(HANDSHAKE_SECONDS)
@@ -618,7 +658,10 @@ def main():
         def launch(request, origin, cancelled, command):
             verification = request.get("operation") == VERIFY_SOURCE
             rule_samples = request.get("operation") == VALIDATE_RULE_SAMPLES
+            published_code = request.get(PUBLISHED_CODE)
             if (verification or rule_samples) and request["runnerImageSha256"] != digest:
+                return Result("config_required")
+            if published_code is not None and published_code["runnerImageSha256"] != digest:
                 return Result("config_required")
             if not workspace_idle(libvirt, root, image, fingerprint):
                 return Result("pending_cleanup")
@@ -627,10 +670,11 @@ def main():
                              source_override=RuleSamplesProbe(command))
             storage = artifact_store if RETAIN_IMAGE in request else None
             materialized = (json.dumps(request[MATERIALIZED_SOURCE], separators=(",", ":")).encode("ascii")
-                            if MATERIALIZED_SOURCE in request else None)
+                            if MATERIALIZED_SOURCE in request and published_code is None else None)
             job = SourceProbe(SourceGateway(origin, request["commit"]), repository_id=request["repositoryId"],
-                              repair_command=None if verification else command, repair_observation=request.get("operation") == OBSERVE_REPAIR,
-                              verification_command=command if verification else None, artifact_store=storage, materialized_source=materialized)
+                              repair_command=None if verification or published_code is not None else command,
+                              repair_observation=request.get("operation") == OBSERVE_REPAIR, verification_command=command if verification else None,
+                              artifact_store=storage, materialized_source=materialized, published_code_command=command if published_code is not None else None)
             try:
                 result = probe(libvirt, libvirt_qemu, root, image, digest, cancelled, "inspect", True, source_override=job)
                 if storage is None or job.pending_archive is None:
