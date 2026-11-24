@@ -39,14 +39,32 @@ export async function requireCandidateValidationAdmission(tx: Transaction, task:
 
 export function readCandidateValidationRecord(row: Result, admission: Admission) {
   const record = candidateValidationRecordSchema.parse(row.document);
+  const plan = candidateValidationPlanSchema.parse(admission.plan);
   const expectedRequestId = record.evidence.kind === 'code_rule' ? record.evidence.receipt.scope.requestId : null;
   if (record.taskId !== admission.taskId || record.runId !== admission.runId || record.projectId !== admission.projectId
       || record.runId !== row.runId || record.projectId !== row.projectId || record.candidateId !== admission.candidateId
       || record.candidateId !== row.candidateId || record.planSha256 !== admission.planSha256 || record.planSha256 !== row.planSha256
-      || record.candidateSha256 !== admission.plan.candidateSha256 || record.extractionResultSha256 !== admission.plan.extractionResultSha256
-      || record.evidence.kind !== admission.plan.kind || expectedRequestId !== row.requestId
+      || record.candidateSha256 !== plan.candidateSha256 || record.extractionResultSha256 !== plan.extractionResultSha256
+      || record.evidence.kind !== plan.kind || expectedRequestId !== row.requestId || plan.candidateId !== admission.candidateId
+      || sha256(JSON.stringify(plan)) !== admission.planSha256
       || sha256(JSON.stringify(record)) !== row.sha256) throw new Error('candidate_validation_record_integrity');
   return record;
+}
+
+export async function readPassedCandidateValidation(tx: Transaction, projectId: string, candidateId: string, validationId: string) {
+  const [stored] = await tx.select({ result: candidateValidationResults, admission: candidateValidationAdmissions, state: tasks.state })
+    .from(candidateValidationResults).innerJoin(candidateValidationAdmissions, eq(candidateValidationAdmissions.runId, candidateValidationResults.runId))
+    .innerJoin(tasks, eq(tasks.id, candidateValidationAdmissions.taskId))
+    .where(and(eq(candidateValidationResults.id, validationId), eq(candidateValidationResults.candidateId, candidateId),
+      eq(candidateValidationResults.projectId, projectId)));
+  if (!stored) throw new DomainError('not_found');
+  const record = readCandidateValidationRecord(stored.result, stored.admission);
+  if (record.status !== 'passed' || stored.state !== 'succeeded') throw new DomainError('unsupported_state');
+  const { row, candidate } = await readCandidateForValidation(tx, projectId, candidateId);
+  if (row.sha256 !== record.extractionResultSha256 || candidate.kind !== record.evidence.kind
+      || sha256(JSON.stringify(candidate)) !== record.candidateSha256) throw new Error('candidate_validation_source_integrity');
+  return { candidate, validation: { id: stored.result.id, sha256: stored.result.sha256, projectId: record.projectId, candidateId: record.candidateId,
+    candidateSha256: record.candidateSha256, extractionResultSha256: record.extractionResultSha256, planSha256: record.planSha256 } };
 }
 
 export class CandidateValidationService {
