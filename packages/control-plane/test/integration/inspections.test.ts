@@ -6105,10 +6105,17 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
     expect(tools.filter(tool => /operations.*(execution|continue|restart)/.test(tool.name)).map(tool => tool.name)).toEqual(['get_operations_execution']);
     const call = { name: 'get_operations_execution', arguments: { taskId: action.diagnosed.id } };
     expect((await reader.callTool(call)).structuredContent).toEqual(view);
+    const extractionCall = { name: 'get_rule_extraction', arguments: { taskId: task.id } };
+    const validationCall = { name: 'get_candidate_validation', arguments: { taskId: validationTask.id } };
+    expect((await reader.callTool(extractionCall)).structuredContent).toEqual(report);
+    expect((await reader.callTool(validationCall)).structuredContent).toEqual(checked);
     await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
     expect((await app.inject({ url, headers: http })).statusCode).toBe(404);
     expect((await app.inject({ url: listing, headers: http })).statusCode).toBe(404);
     expect(await reader.callTool(call)).toMatchObject({ isError: true, structuredContent: { error: { code: 'not_found' } } });
+    for (const request of [extractionCall, validationCall]) {
+      expect(await reader.callTool(request)).toMatchObject({ isError: true, structuredContent: { error: { code: 'not_found' } } });
+    }
   } finally {
     await Promise.all([reader.close(), writer.close()]);
     await app.close();
