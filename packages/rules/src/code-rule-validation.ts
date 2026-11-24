@@ -34,10 +34,10 @@ export function prepareCodeRuleValidation(rawCandidate: unknown, reference: { ca
 type ScannerRun = { exitCode: number | null; timedOut?: boolean; stdout: string; stderr?: string };
 
 function commandFailureCause(output: string) {
+  if (/CPU ISA level is lower than required|Illegal instruction|semgrep-core exit code:\s*-4\b/i.test(output)) return 'illegal_instruction';
   if (/error while loading shared libraries|cannot open shared object file|GLIBC_[0-9.]+.*not found/i.test(output)) return 'dependency';
   if (/ModuleNotFoundError:|ImportError:/i.test(output)) return 'import';
   if (/PermissionError:|Read-only file system|No space left on device|File size limit exceeded/i.test(output)) return 'filesystem';
-  if (/Illegal instruction|semgrep-core exit code:\s*-4\b/i.test(output)) return 'illegal_instruction';
   if (/semgrep-core (?:exit code:|exited with)/i.test(output)) return 'core_exit';
   return 'other';
 }

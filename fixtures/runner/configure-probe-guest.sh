@@ -417,6 +417,12 @@ set -- /sys/class/net/*
 test "$#" -eq 1
 test "$1" = /sys/class/net/lo
 test "$(cat /sys/devices/system/cpu/online)" = 0-1
+awk -F : '/^flags[[:space:]]*:/ {
+  flags = " " $2 " "; count++
+  required = "cx16 lahf_lm pni popcnt sse4_1 sse4_2 ssse3"
+  n = split(required, names, " ")
+  for (i = 1; i <= n; i++) if (index(flags, " " names[i] " ") == 0) failed = 1
+} END { exit (count != 2 || failed) }' /proc/cpuinfo
 awk '$1 == "MemTotal:" { ok = ($2 >= 1536 * 1024 && $2 <= 2048 * 1024) } END { exit !ok }' /proc/meminfo
 read -r sectors </sys/class/block/vda/size
 test "$sectors" -gt 0
