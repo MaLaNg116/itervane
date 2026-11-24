@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { bigint, boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
-  agentRoles, taskStates, type CandidateValidationPlan, type CandidateValidationRecord, type DesignSkillPackage,
+  agentRoles, taskStates, type CandidateValidationPlan, type CandidateValidationRecord, type RulePackageDocument,
   type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
   type LearningCaseDocument, type LearningCaseFacts,
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairContinuation, type FormalRepairInput, type FormalRepairResult,
@@ -60,19 +60,25 @@ export const rulePackageVersions = domain.table('rule_package_versions', {
   workspaceId: uuid('workspace_id').notNull(), packageKey: text('package_key').notNull(),
   projectId: uuid('project_id'), version: text('version').notNull(), sha256: text('sha256').notNull(),
   submittedBy: uuid('submitted_by').notNull().references(() => principals.id), grantId: uuid('grant_id').notNull(),
-  document: jsonb('document').$type<DesignSkillPackage>().notNull(), createdAt: createdAt(),
+  validationId: uuid('validation_id'), document: jsonb('document').$type<RulePackageDocument>().notNull(), createdAt: createdAt(),
 }, t => [
   foreignKey({ name: 'rule_version_package_scope_fk', columns: [t.packageId, t.workspaceId, t.packageKey],
     foreignColumns: [rulePackages.id, rulePackages.workspaceId, rulePackages.key] }),
   foreignKey({ name: 'rule_version_project_scope_fk', columns: [t.projectId, t.workspaceId], foreignColumns: [projects.id, projects.workspaceId] }),
+  foreignKey({ name: 'rule_version_candidate_validation_fk', columns: [t.validationId], foreignColumns: [candidateValidationResults.id] }),
   unique('rule_package_version_unique').on(t.packageId, t.version),
   index('rule_package_workspace_history').on(t.workspaceId, t.createdAt, t.id),
   check('rule_package_version_document', sql`(${t.sha256} ~ '^[a-f0-9]{64}$' AND length(${t.version}) <= 32
     AND ${t.version} ~ '^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$'
-    AND ${t.document}->>'formatVersion' = '1' AND ${t.document}->>'kind' = 'design_skill'
+    AND ${t.document}->>'formatVersion' = '1'
     AND ${t.document}->>'packageKey' = ${t.packageKey} AND ${t.document}->>'version' = ${t.version}
     AND ${t.document}#>>'{scope,kind}' = CASE WHEN ${t.projectId} IS NULL THEN 'workspace' ELSE 'project' END
     AND (${t.document}#>>'{scope,projectId}') IS NOT DISTINCT FROM ${t.projectId}::text
+    AND CASE WHEN ${t.document}->>'kind' = 'design_skill' THEN ${t.validationId} IS NULL AND ${t.document}->'validation' IS NULL
+      ELSE ${t.document}->>'kind' IN ('code_rule', 'runbook') AND ${t.validationId} IS NOT NULL
+        AND ${t.document}#>>'{validation,id}' = ${t.validationId}::text
+        AND (${t.projectId} IS NULL OR ${t.document}#>>'{validation,projectId}' = ${t.projectId}::text)
+    END
     AND octet_length(${t.document}::text) <= 61440) IS TRUE`),
 ]);
 
@@ -86,7 +92,7 @@ export const rulePackageReviews = domain.table('rule_package_reviews', {
   unique('rule_package_review_grant').on(t.versionId, t.grantId),
   check('rule_package_review_document', sql`(${t.sha256} ~ '^[a-f0-9]{64}$' AND ${t.versionSha256} ~ '^[a-f0-9]{64}$'
     AND ${t.outcome} IN ('accepted', 'changes_requested') AND ${t.document}->>'formatVersion' = '1'
-    AND ${t.document}->>'kind' = 'design_review' AND ${t.document}->>'outcome' = ${t.outcome}
+    AND ${t.document}->>'kind' IN ('design_review', 'candidate_review') AND ${t.document}->>'outcome' = ${t.outcome}
     AND ${t.document}->>'versionId' = ${t.versionId}::text AND ${t.document}->>'versionSha256' = ${t.versionSha256}
     AND ${t.document}->>'reviewedBy' = ${t.reviewedBy}::text AND ${t.document}->>'grantId' = ${t.grantId}::text
     AND octet_length(${t.document}::text) <= 8192) IS TRUE`),
