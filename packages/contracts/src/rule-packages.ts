@@ -23,7 +23,7 @@ const source = z.strictObject({
 });
 const scope = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('workspace') }),
-  z.strictObject({ kind: z.literal('project'), projectId: idSchema }),
+  z.strictObject({ kind: z.literal('project'), projectId: idSchema.transform(value => value.toLowerCase()) }),
 ]);
 const resource = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('reference'), path: z.string().max(160).regex(referencePath), locale: localeSchema, content: skillText }),
@@ -50,12 +50,52 @@ export const designSkillPackageSchema = z.strictObject({
 }).refine(document => new TextEncoder().encode(JSON.stringify(document)).length <= 48 * 1024, 'Rule package exceeds 48 KiB');
 export type DesignSkillPackage = z.infer<typeof designSkillPackageSchema>;
 
+const reviewChecks = z.strictObject({
+  sourceAndLicense: z.boolean(), scopeAndGuidance: z.boolean(), designResources: z.boolean(),
+});
+const reviewOutcome = z.enum(['accepted', 'changes_requested']);
+export const rulePackageReviewInputSchema = z.strictObject({
+  versionSha256: sha256Schema, checks: reviewChecks, note: skillText.pipe(z.string().trim().max(800)).optional(),
+}).refine(({ checks, note }) => Boolean(note) || Object.values(checks).every(Boolean), 'Review notes are required for requested changes');
+export const rulePackageReviewRecordSchema = rulePackageReviewInputSchema.safeExtend({
+  formatVersion: z.literal(1), kind: z.literal('design_review'), versionId: idSchema, reviewedBy: idSchema, grantId: idSchema,
+  outcome: reviewOutcome,
+}).refine(({ checks, outcome }) => (outcome === 'accepted') === Object.values(checks).every(Boolean));
+export type RulePackageReviewRecord = z.infer<typeof rulePackageReviewRecordSchema>;
+export const rulePackageReviewDtoSchema = z.strictObject({
+  id: idSchema, sha256: sha256Schema, versionSha256: sha256Schema, checks: reviewChecks,
+  outcome: reviewOutcome, note: z.string().max(800).optional(), reviewedAt: z.iso.datetime(),
+});
+
 export const rulePackageRevisionSchema = z.strictObject({
   packageId: idSchema, versionId: idSchema, packageKey: ruleIdSchema, version: versionLabel, sha256: sha256Schema,
   scope, source, text: summary, locale: localeSchema, kind: z.literal('design_skill'),
-  reviewState: z.literal('draft'), reviewMessage: z.string(), createdAt: z.iso.datetime(),
+  reviewState: z.enum(['draft', 'accepted', 'changes_requested']), reviewMessage: z.string(), createdAt: z.iso.datetime(),
 });
-export const rulePackageDetailSchema = rulePackageRevisionSchema.extend({ document: designSkillPackageSchema });
+export const rulePackageDetailSchema = rulePackageRevisionSchema.extend({
+  document: designSkillPackageSchema, review: rulePackageReviewDtoSchema.nullable(),
+});
 export const rulePackageImportResultSchema = z.strictObject({ version: rulePackageDetailSchema, replayed: z.boolean() });
 export const rulePackageListQuerySchema = listQuerySchema.extend({ before: idSchema.optional() });
 export const rulePackagePageSchema = z.strictObject({ items: z.array(rulePackageRevisionSchema).max(100), nextBefore: idSchema.nullable() });
+
+const activationSequence = z.int().min(0).max(2_147_483_647);
+const activationBinding = {
+  expectedSequence: activationSequence, versionId: idSchema, versionSha256: sha256Schema, idempotencyKey: idSchema,
+};
+export const rulePackageActivationInputSchema = z.discriminatedUnion('action', [
+  z.strictObject({ ...activationBinding, action: z.enum(['publish', 'rollback']), reviewSha256: sha256Schema }),
+  z.strictObject({ ...activationBinding, action: z.literal('withdraw') }),
+]);
+export const rulePackageActivationSchema = z.strictObject({
+  sequence: activationSequence.min(1), action: z.enum(['publish', 'rollback', 'withdraw']),
+  versionId: idSchema, versionSha256: sha256Schema, reviewSha256: sha256Schema.nullable(),
+  recordedBy: idSchema, recordedAt: z.iso.datetime(), message: z.string(),
+});
+export const rulePackageActivationViewSchema = z.strictObject({
+  packageId: idSchema, sequence: activationSequence, current: rulePackageActivationSchema.nullable(),
+  history: z.array(rulePackageActivationSchema).max(50), locale: localeSchema,
+});
+export const rulePackageActivationResultSchema = z.strictObject({
+  operation: rulePackageActivationSchema, state: rulePackageActivationViewSchema, replayed: z.boolean(),
+});
