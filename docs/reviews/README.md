@@ -148,6 +148,7 @@
 | 143 | P4-C2c 候选验证队列与证据 | [#143](https://github.com/MaLaNg116/itervane/pull/143)，依赖 #142 | [候选验证账本导读](p4-durable-candidate-validation.md) | TypeScript、Drizzle、274 项单元与 5 项 PostgreSQL 通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/143/checks) |
 | 144 | P4-C3a 已验证候选的审核与发布 | [#144](https://github.com/MaLaNg116/itervane/pull/144)，依赖 #143 | [候选发布导读](p4-validated-package-publication.md) | TypeScript、Drizzle、275 项单元与 8 项既有 Skill 真库回归通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/144/checks) |
 | 145 | P4-C3b 双语规则库与人审门户 | [#145](https://github.com/MaLaNg116/itervane/pull/145)，依赖 #144 | [规则库门户导读](p4-rule-package-portal.md) | 7 项 MCP 真库与 2 项真实浏览器用例通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/145/checks) |
+| 146 | P4-D1 正式任务规则版本快照 | [#146](https://github.com/MaLaNg116/itervane/pull/146)，依赖 #145 | [规则快照导读](p4-task-rule-snapshots.md) | TypeScript、Drizzle、275 项单元和 6 项 PostgreSQL 专项通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/146/checks) |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
