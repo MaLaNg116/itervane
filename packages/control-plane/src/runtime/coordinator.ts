@@ -10,6 +10,7 @@ import { requireIncidentDiagnosisAuthority } from '../service/operations-inciden
 import { readLinkedOperationsRepair } from '../service/operations-repair-proposals.js';
 import { readOperationsDiagnosis, readOperationsRequest } from '../service/operations-requests.js';
 import { requireRuleExtractionAdmission } from '../service/rule-extraction.js';
+import { requireCandidateValidationAdmission } from '../service/candidate-validations.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, enqueue, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope, type TaskRow } from './authority.js';
 import { recoverOperationsExecutionSlot } from './operations-execution-lease.js';
@@ -29,8 +30,9 @@ export async function authorizeRun(tx: Transaction, task: TaskRow, runId: string
     await requireIncidentDiagnosisAuthority(tx, runId, task.requestedBy, operationsRequest.document, operationsDiagnosis?.providerSha256);
     return { ...access, operationsRequest, operationsDiagnosis, linkedRepair: undefined };
   }
-  if (role === 'rule-extraction') {
-    await requireRuleExtractionAdmission(tx, task, runId, access.grantId);
+  if (role === 'rule-extraction' || role === 'verify') {
+    if (role === 'rule-extraction') await requireRuleExtractionAdmission(tx, task, runId, access.grantId);
+    else await requireCandidateValidationAdmission(tx, task, runId, access.grantId);
     return { ...access, operationsRequest: undefined, operationsDiagnosis: undefined, linkedRepair: undefined };
   }
   const linked = await readLinkedOperationsRepair(tx, task);
@@ -124,7 +126,8 @@ export class ExecutionCoordinator {
       const completed = await settle();
       if (completed.affected !== 1) return null;
       const started = run.role === 'operations' ? 'task.operations_started'
-        : run.role === 'rule-extraction' ? 'task.rule_extraction_started' : 'task.started';
+        : run.role === 'rule-extraction' ? 'task.rule_extraction_started'
+        : run.role === 'verify' ? 'task.candidate_validation_started' : 'task.started';
       await appendEvent(tx, task, started, 'running', { workerId });
       return assignSlot(tx, task, run.id, workerId, this.leaseSeconds);
     });

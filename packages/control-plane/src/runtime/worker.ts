@@ -18,6 +18,7 @@ import { ExecutionCoordinator } from './coordinator.js';
 import { runFormalAudit, type AuditModel } from './formal-audit.js';
 import { runFormalOperations } from './formal-operations.js';
 import { runFormalRuleExtraction } from './formal-rule-extraction.js';
+import { runCandidateValidation, type CandidateValidationOptions } from './candidate-validation.js';
 import { runFormalRepair, type FormalRepairOptions } from './formal-repair.js';
 import { runFormalVerification, type FormalVerificationOptions } from './formal-verification.js';
 import { OperationsExecutionError, runOperationsObservation } from './operations-execution.js';
@@ -55,6 +56,7 @@ export class DurableWorker {
   private readonly auditModel: AuditModel | undefined;
   private readonly repair: FormalRepairOptions | undefined;
   private readonly verification: VerificationOptions | undefined;
+  private readonly candidateValidation: CandidateValidationOptions | undefined;
   readonly #operations: OperationsInstallation | undefined;
   private active: Promise<boolean> | undefined;
   private abort: AbortController | undefined;
@@ -63,12 +65,14 @@ export class DurableWorker {
 
   constructor(readonly database: Database, connectionString: string,
     options: { leaseSeconds?: number; runner?: InspectionRunner; auditModel?: AuditModel;
-      repair?: FormalRepairOptions; verification?: VerificationOptions; operations?: OperationsInstallation } = {}) {
+      repair?: FormalRepairOptions; verification?: VerificationOptions; operations?: OperationsInstallation;
+      candidateValidation?: CandidateValidationOptions } = {}) {
     this.coordinator = new ExecutionCoordinator(database, options);
     this.gateway = new ToolGateway(this.coordinator, options.runner);
     this.auditModel = options.auditModel;
     this.repair = options.repair;
     this.verification = options.verification;
+    this.candidateValidation = options.candidateValidation;
     this.#operations = options.operations;
     if (this.verification && (!options.runner || !options.auditModel)) throw new Error('Incomplete verification Worker');
     if (this.#operations?.diagnosisProviderSha256 && this.#operations.diagnosisProviderSha256 !== this.auditModel?.providerSha256) {
@@ -105,7 +109,7 @@ export class DurableWorker {
         .finally(() => { heartbeat = undefined; });
     }, this.coordinator.leaseSeconds * 1_000 / 3);
     timer.unref();
-    let phase: 'preflight' | 'audit' | 'repair' | 'verification' | 'operations' | 'rule-extraction' = 'preflight';
+    let phase: 'preflight' | 'audit' | 'repair' | 'verification' | 'operations' | 'rule-extraction' | 'candidate-validation' = 'preflight';
     try {
       const { runtime, retry, role, diagnosis } = await this.coordinator.withLease(scope, async (tx, current) => {
         const continuation = await readRepairRetry(tx, current.task, scope);
@@ -126,6 +130,10 @@ export class DurableWorker {
       if (role === 'rule-extraction') {
         phase = 'rule-extraction';
         return await runFormalRuleExtraction(this.coordinator, scope, this.saver, this.auditModel, controller.signal);
+      }
+      if (role === 'verify') {
+        phase = 'candidate-validation';
+        return await runCandidateValidation(this.coordinator, scope, this.candidateValidation, controller.signal);
       }
       if (retry && (!this.repair || !this.verification || retry.repairPolicySha256 !== repairPolicyFingerprint(this.repair)
           || retry.verificationProfileSha256 !== verificationProfileFingerprint(this.verification.profile))) {
@@ -156,6 +164,7 @@ export class DurableWorker {
           : error instanceof ExecutionLost ? 'cancelled' : controller.signal.aborted ? 'cancelled_or_interrupted'
           : error instanceof OperationsExecutionError ? error.reason
           : phase === 'operations' ? 'operations_unavailable' : phase === 'rule-extraction' ? 'rule_extraction_needs_human'
+          : phase === 'candidate-validation' ? 'candidate_validation_unavailable'
           : phase === 'verification' ? 'verification_unavailable'
           : phase === 'repair' ? 'repair_failed' : phase === 'audit' ? 'audit_failed' : 'execution_error';
         try { await this.coordinator.stop(scope, reason, error instanceof ExecutionLost); }
