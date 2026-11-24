@@ -57,8 +57,9 @@ const validatedPackage = {
   validation: z.strictObject({ id: idSchema, sha256: sha256Schema, taskId: idSchema, projectId: idSchema, candidateId: idSchema,
     candidateSha256: sha256Schema, extractionResultSha256: sha256Schema, planSha256: sha256Schema }),
 };
+export const codeRulePackageSchema = z.strictObject({ kind: z.literal('code_rule'), ...validatedPackage, candidate: codeRuleCandidateSchema });
 export const validatedRulePackageSchema = z.discriminatedUnion('kind', [
-  z.strictObject({ kind: z.literal('code_rule'), ...validatedPackage, candidate: codeRuleCandidateSchema }),
+  codeRulePackageSchema,
   z.strictObject({ kind: z.literal('runbook'), ...validatedPackage, candidate: runbookCandidateSchema }),
 ]).refine(document => document.scope.kind === 'workspace' || document.scope.projectId === document.validation.projectId);
 export const rulePackageDocumentSchema = z.union([designSkillPackageSchema, validatedRulePackageSchema]);
