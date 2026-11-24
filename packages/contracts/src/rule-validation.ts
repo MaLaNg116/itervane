@@ -1,6 +1,7 @@
 import { z } from 'zod';
+import { localeSchema } from './i18n.js';
 import { sha256Schema } from './inspection.js';
-import { idSchema } from './primitives.js';
+import { idSchema, taskStateSchema } from './primitives.js';
 import { ruleIdSchema } from './preaudit.js';
 import { qualifiedRunnerRejectionSchema } from './qualified-inspection.js';
 import { codeRuleCandidateSchema } from './rule-extraction.js';
@@ -77,3 +78,44 @@ export const runbookRecoveryContextSchema = z.strictObject({
   healthStatus: z.int().min(100).max(599).nullable(), anonymousStatus: z.int().min(100).max(599).nullable(),
 });
 export const runbookRecoverySchema = z.enum(['verified_recovered', 'stop_target_drift', 'stop_unknown', 'stop_failed_health']);
+
+export const runbookEvaluationResultSchema = z.strictObject({
+  status: z.enum(['passed', 'failed']),
+  scenarios: z.strictObject({
+    eligible: runbookSelectionSchema, healthy: runbookSelectionSchema, stale: runbookSelectionSchema,
+    unapproved: runbookSelectionSchema, exhausted: runbookSelectionSchema, revoked: runbookSelectionSchema,
+  }),
+  recovery: z.strictObject({
+    verified: runbookRecoverySchema, replaced: runbookRecoverySchema, unknown: runbookRecoverySchema,
+    unhealthy: runbookRecoverySchema, anonymous: runbookRecoverySchema,
+  }),
+});
+
+const candidateValidationIdentity = {
+  version: z.literal(1), candidateId: idSchema, extractionResultSha256: sha256Schema, candidateSha256: sha256Schema,
+};
+export const candidateValidationPlanSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ ...candidateValidationIdentity, kind: z.literal('code_rule'), profile: codeRuleValidationProfileSchema }),
+  z.strictObject({ ...candidateValidationIdentity, kind: z.literal('runbook'), evaluatorVersion: z.literal(1) }),
+]);
+export type CandidateValidationPlan = z.infer<typeof candidateValidationPlanSchema>;
+const codeRuleReceipt = qualifiedRuleValidationResponseSchema.options[0];
+export const candidateValidationEvidenceSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('code_rule'), receipt: codeRuleReceipt }),
+  z.strictObject({ kind: z.literal('runbook'), evaluatorVersion: z.literal(1), result: runbookEvaluationResultSchema }),
+]);
+export type CandidateValidationEvidence = z.infer<typeof candidateValidationEvidenceSchema>;
+export const candidateValidationRecordSchema = z.strictObject({
+  ...candidateValidationIdentity, taskId: idSchema, runId: idSchema, projectId: idSchema, planSha256: sha256Schema,
+  status: z.enum(['passed', 'failed', 'unavailable']), evidence: candidateValidationEvidenceSchema,
+}).refine(record => record.status === (record.evidence.kind === 'code_rule' ? record.evidence.receipt.proof.result.status : record.evidence.result.status));
+export type CandidateValidationRecord = z.infer<typeof candidateValidationRecordSchema>;
+export const startCandidateValidationSchema = z.strictObject({
+  extractionResultSha256: sha256Schema, locale: localeSchema.default('en'), idempotencyKey: z.string().min(1).max(128),
+});
+export const candidateValidationViewSchema = z.strictObject({
+  taskId: idSchema, runId: idSchema, plan: candidateValidationPlanSchema, planSha256: sha256Schema,
+  state: taskStateSchema, locale: localeSchema, message: z.string(),
+  result: z.strictObject({ id: idSchema, sha256: sha256Schema, document: candidateValidationRecordSchema, recordedAt: z.iso.datetime() }).nullable(),
+}).refine(view => (view.state === 'succeeded') === (view.result?.document.status === 'passed')
+  && (view.result === null || view.state === 'succeeded' || view.state === 'needs_human'));
