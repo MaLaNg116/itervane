@@ -51,6 +51,7 @@ BEGIN
     JOIN itervane.projects source ON source.id = result.project_id
     WHERE result.id = NEW.validation_id AND result.sha256 = NEW.document#>>'{validation,sha256}'
       AND source.workspace_id = NEW.workspace_id AND source.id::text = NEW.document#>>'{validation,projectId}'
+      AND result.document->>'taskId' = NEW.document#>>'{validation,taskId}'
       AND result.plan_sha256 = NEW.document#>>'{validation,planSha256}' AND result.document->>'status' = 'passed'
       AND result.document#>>'{evidence,kind}' = package_kind
       AND result.document->>'candidateSha256' = NEW.document#>>'{validation,candidateSha256}'

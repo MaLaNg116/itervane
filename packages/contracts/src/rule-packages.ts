@@ -54,7 +54,7 @@ export const prepareCandidatePackageSchema = z.strictObject({
 
 const validatedPackage = {
   formatVersion: z.literal(1), ...metadata, scope,
-  validation: z.strictObject({ id: idSchema, sha256: sha256Schema, projectId: idSchema, candidateId: idSchema,
+  validation: z.strictObject({ id: idSchema, sha256: sha256Schema, taskId: idSchema, projectId: idSchema, candidateId: idSchema,
     candidateSha256: sha256Schema, extractionResultSha256: sha256Schema, planSha256: sha256Schema }),
 };
 export const validatedRulePackageSchema = z.discriminatedUnion('kind', [
