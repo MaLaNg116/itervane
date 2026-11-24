@@ -16,7 +16,7 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   formalVerificationResultSchema, operationsDiagnosisReceiptSchema, operationsLaunchViewSchema, operationsObservationViewSchema,
   operationsProposalViewSchema, operationsRestartBaselineSchema, operationsRestartExecutionViewSchema, operationsRestartRecoveryProofSchema,
   operationsRestartRequestSchema, operationsRestartSubmissionSchema, operationsRestoreExecutionViewSchema, operationsRestorePlanSchema, operationsRestoreRecoveryProofSchema,
-  learningCaseCaptureResultSchema, learningCasesViewSchema, ruleExtractionViewSchema, operationsIncidentsViewSchema, operationsIncidentStopResultSchema,
+  candidateValidationViewSchema, learningCaseCaptureResultSchema, learningCasesViewSchema, ruleExtractionViewSchema, operationsIncidentsViewSchema, operationsIncidentStopResultSchema,
   operationsRepairViewSchema, operationsSubmissionSchema, standardHealthRepairPath, taskDtoSchema,
   taskIncidentViewSchema, translate,
   verificationViewSchema,
@@ -27,13 +27,15 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile, type TaskDto } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
-import { canonicalRepairCommand, canonicalRepairObservation, canonicalVerificationCommand, prepareQualifiedVerificationRequest,
+import { canonicalRepairCommand, canonicalRepairObservation, canonicalRuleValidationCommand, canonicalVerificationCommand, prepareQualifiedRuleValidationRequest, prepareQualifiedVerificationRequest,
   scannerProfiles, sha256, verifyQualifiedVerificationReceipt } from '@itervane/runner';
 import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../verification/src/agent/npm-repair-fixture.js';
 import { chooseOperationsSection, operationsDecision, scriptedOperations } from '../../../verification/src/agent/operations-fixture.js';
 import { scriptedVerification } from '../../../verification/src/agent/verification-fixture.js';
 import { extractionFixtureCall } from '../../../verification/src/agent/rule-extraction-fixture.js';
 import { createApi } from '../../src/api.js';
+import { CandidateValidationService } from '../../src/service/candidate-validations.js';
+import type { CandidateValidationOptions } from '../../src/runtime/candidate-validation.js';
 import { createIdentityVerifier, type VerifiedIdentity } from '../../src/auth/identity.js';
 import { runtimeConfig, workerConfig, type OperationsWorkflowScope } from '../../src/config.js';
 import { formalReleaseQueue, operationsExecutionQueue, operationsRestoreQueue, queueName } from '../../src/persistence/database.js';
@@ -277,6 +279,45 @@ async function processExtraction(task: TaskDto, model = extractionModel()) {
   const worker = new DurableWorker(database.storage, database.runtimeUrl, { auditModel: model });
   try { await processAdmittedTestTask(worker); } finally { await worker.close(); }
   return new RuleExtractionService(database.storage).get(identity, task.id, 'zh-CN');
+}
+
+const validationProfile = {
+  version: 1, engine: 'semgrep_ce', engineVersion: '1.170.0', engineInputsSha256: sha256('candidate test tool'),
+  runnerImageSha256: sha256('candidate test image'),
+} as const;
+
+function codeValidationOptions(mode: 'passed' | 'false_positive' | 'wrong_fence' | 'blocked' | 'expired') {
+  const workspaceSha256 = sha256('candidate test workspace');
+  const runner: NonNullable<CandidateValidationOptions['code']>['runner'] = {
+    async observe() { return { version: 1, kind: 'status', state: mode === 'blocked' ? 'blocked' : 'idle',
+      workspaceSha256, imageSha256: validationProfile.runnerImageSha256 }; },
+    async validateRuleSamples(coordinates, candidate, reference, profile, authorize) {
+      await authorize();
+      if (mode === 'expired') {
+        await database.admin.query("UPDATE itervane.execution_slot SET lease_until=clock_timestamp()-interval '1 second' WHERE run_id=$1",
+          [coordinates.runId]);
+      }
+      const command = canonicalRuleValidationCommand(candidate, reference, profile);
+      const scope = prepareQualifiedRuleValidationRequest(coordinates, command);
+      return {
+        kind: 'rule_samples_receipt', scope: mode === 'wrong_fence' ? { ...scope, fence: scope.fence + 1 } : scope,
+        imageSha256: validationProfile.runnerImageSha256, domainId: randomUUID(), cleanupConfirmed: true, sessionVerified: true,
+        proof: { version: 1, commandSha256: scope.commandSha256, result: { version: 1, basisSha256: scope.basisSha256,
+          status: mode === 'false_positive' ? 'failed' : 'passed',
+          samples: command.prepared.basis.samples.map(sample => ({ ...sample, status: 'checked',
+            reportSha256: sha256(sample.name), matches: sample.name === 'violation' || (sample.name === 'lookalike' && mode === 'false_positive') ? 1 : 0,
+          })),
+        } },
+      };
+    },
+  };
+  return { code: { runner, profile: validationProfile } };
+}
+
+async function processCandidateValidation(task: TaskDto, options: CandidateValidationOptions) {
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, { candidateValidation: options });
+  try { await processAdmittedTestTask(worker); } finally { await worker.close(); }
+  return new CandidateValidationService(database.storage).get(identity, task.id, 'zh-CN');
 }
 
 async function repairReady() {
@@ -3827,6 +3868,37 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
       extraction: { caseId: english.item.id, result: { outcome: 'candidate', candidate: { kind: 'code_rule' } } },
       usage: { turns: 3, toolCalls: 2 },
     } } });
+    const candidateRecord = generated.result!;
+    const validations = new CandidateValidationService(database.storage, { profile: validationProfile });
+    const attempt = { extractionResultSha256: candidateRecord.sha256, locale: 'zh-CN', idempotencyKey: randomUUID() };
+    await expect(validations.admit(identity, linked.projectId, candidateRecord.id, { ...attempt, extractionResultSha256: sha256('replaced extraction') }))
+      .rejects.toMatchObject({ code: 'version_conflict' });
+    const admissions = await Promise.all([validations.admit(identity, linked.projectId, candidateRecord.id, attempt),
+      validations.admit(identity, linked.projectId, candidateRecord.id, attempt)]);
+    expect(admissions.map(item => item.replayed).sort()).toEqual([false, true]);
+    const validated = await processCandidateValidation(admissions[0]!.task, codeValidationOptions('passed'));
+    expect(validated).toMatchObject({ state: 'succeeded', result: { document: { status: 'passed', candidateId: candidateRecord.id,
+      evidence: { kind: 'code_rule', receipt: { sessionVerified: true, cleanupConfirmed: true } },
+    } } });
+    await expect(database.storage.pool.query('UPDATE itervane.candidate_validation_results SET document=document'))
+      .rejects.toMatchObject({ code: '23514', message: 'candidate_validation_result_is_immutable' });
+    for (const mode of ['false_positive', 'wrong_fence', 'blocked'] as const) {
+      const entry = await validations.admit(identity, linked.projectId, candidateRecord.id, { ...attempt, idempotencyKey: randomUUID() });
+      const checked = await processCandidateValidation(entry.task, codeValidationOptions(mode));
+      expect(checked.state).toBe('needs_human');
+      if (mode === 'false_positive') expect(checked.result?.document.status).toBe('failed');
+      else expect(checked.result).toBeNull();
+      if (mode === 'blocked') expect(checked.message).toBe(translate('zh-CN', 'reason.candidate_validation_cleanup_unknown'));
+    }
+    const released = await validations.admit(identity, linked.projectId, candidateRecord.id, { ...attempt, idempotencyKey: randomUUID() });
+    const obsolete = await processCandidateValidation(released.task, codeValidationOptions('expired'));
+    expect(obsolete).toMatchObject({ state: 'running', result: null });
+    const recovered = await processCandidateValidation(released.task, codeValidationOptions('passed'));
+    expect(recovered).toMatchObject({ state: 'succeeded', result: { document: { status: 'passed' } } });
+    const observations = await database.admin.query<{ fence: number }>(
+      'SELECT fence FROM itervane.candidate_validation_attempts WHERE run_id=$1 ORDER BY fence', [released.task.runId]);
+    expect(observations.rows).toHaveLength(2);
+    expect(observations.rows[1]!.fence).toBeGreaterThan(observations.rows[0]!.fence);
     const replayedCase = await extraction.admit(identity, linked.projectId, english.item.id, { ...request, idempotencyKey: randomUUID() });
     const duplicate = await processExtraction(replayedCase.task);
     expect(duplicate).toMatchObject({ state: 'succeeded', result: { document: {
@@ -5844,7 +5916,7 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
   await expect(runtime.settleRestartRecovery(scope, outcomeEvidence)).resolves.toBe('verified');
   const publicUrl = 'http://127.0.0.1:4330';
   const config = { ...issuer.config, publicUrl, portalClientId: operationsPortal, operationsApi: action.installed,
-    ruleExtractionProviderSha256: extractionModel().providerSha256 };
+    ruleExtractionProviderSha256: extractionModel().providerSha256, candidateValidation: {} };
   const { installationId, installationSha256, credentialSha256 } = binding;
   const app = createApi(database.storage, config, { logger: false, operationsRestartWriter: { installationId, installationSha256, credentialSha256 } });
   const reader = new Client({ name: 'restart-receipt-test', version: '0.0.0' });
@@ -5890,6 +5962,20 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
     } } } });
     const report = ruleExtractionViewSchema.parse((await app.inject({ url: `/v1/tasks/${task.id}/rule-extraction`, headers: http })).json());
     expect(report.result).toEqual(observed.result);
+    const validationUrl = `/v1/projects/${projectId}/rule-candidates/${report.result!.id}/validations`;
+    const validationPayload = { extractionResultSha256: report.result!.sha256, locale: 'zh-CN', idempotencyKey: randomUUID() };
+    expect((await app.inject({ url: validationUrl, method: 'POST', headers: http, payload: validationPayload })).statusCode).toBe(403);
+    const validation = await app.inject({ url: validationUrl, method: 'POST', headers: ownerHttp, payload: validationPayload });
+    expect(validation.statusCode).toBe(202);
+    const validationTask = admissionDtoSchema.parse(validation.json()).task;
+    expect(validationTask.workflow).toBe('rule-validation');
+    const checked = await processCandidateValidation(validationTask, {});
+    const presented = await app.inject({ url: `/v1/tasks/${validationTask.id}/candidate-validation`, headers: http });
+    expect(candidateValidationViewSchema.parse(presented.json())).toEqual(checked);
+    expect(checked).toMatchObject({ state: 'succeeded', result: { document: { status: 'passed', evidence: { kind: 'runbook',
+      evaluatorVersion: 1, result: { scenarios: { stale: 'stop_target_drift', unapproved: 'await_approval' },
+        recovery: { unknown: 'stop_unknown', verified: 'verified_recovered' } },
+    } } } });
     expect((await database.admin.query("SELECT count(*)::int n FROM itervane.checkpoint_write_receipts WHERE run_id=$1 AND graph='rule-extraction'",
       [task.runId])).rows[0]?.n).toBeGreaterThan(0);
     await expect(database.storage.pool.query('UPDATE itervane.rule_extraction_results SET document=document WHERE run_id=$1', [task.runId]))
