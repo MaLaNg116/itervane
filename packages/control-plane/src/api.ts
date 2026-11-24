@@ -25,6 +25,7 @@ import { VerificationViewService } from './service/verification-view.js';
 import { PreauditService, RuleService } from './service/preaudits.js';
 import { OperationsObservationViewService } from './service/operations-observation-view.js';
 import { OperationsIncidentsViewService } from './service/operations-incidents-view.js';
+import { OperationsIncidentStopService } from './service/operations-incident-stop.js';
 import { OperationsDecisionService } from './service/operations-decisions.js';
 import { OperationsProposalViewService } from './service/operations-proposal-view.js';
 import { OperationsProposalService } from './service/operations-proposals.js';
@@ -200,6 +201,11 @@ export function createApi(database: Database, config: ApiConfig,
       const { taskId } = parseInput(taskParam, request.params);
       return incidents.forTask(identity(request), taskId, request.locale);
     });
+    if (config.portalClientId && config.portalClientId !== 'signed-access-token') {
+      const incidentStop = new OperationsIncidentStopService(database, operationsApi, config.portalClientId);
+      app.post('/v1/projects/:projectId/environments/:environmentId/operations-incidents/:incidentId/stop-diagnosis', async request =>
+        incidentStop.stop(identity(request), request.params, request.body, request.locale));
+    }
   }
   if (operationsApi?.diagnosisProviderSha256) {
     const proposals = new OperationsProposalService(database, operationsApi);

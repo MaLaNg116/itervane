@@ -39,3 +39,12 @@ export const taskIncidentViewSchema = z.strictObject({
   version: z.literal(1), taskId: idSchema, locale: localeSchema,
   relatedAs: z.enum(['diagnosis', 'linked_repair']).nullable(), incident: operationsIncidentSummarySchema.nullable(),
 }).refine(({ relatedAs, incident }) => (relatedAs === null) === (incident === null));
+
+export const stopOperationsIncidentDiagnosisSchema = z.strictObject({
+  expectedReleaseOperationId: idSchema,
+  expectedRestoreExecutionId: idSchema.nullable(),
+});
+export const operationsIncidentStopResultSchema = z.strictObject({
+  incidentId: idSchema, stoppedAt: z.iso.datetime(), replayed: z.boolean(), locale: localeSchema,
+  reason: z.enum(['attempt_limit', 'task_stopped', 'operator_stopped']), message: z.string(),
+});

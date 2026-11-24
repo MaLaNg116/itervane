@@ -805,6 +805,8 @@ export const operationsIncidents = domain.table('operations_incidents', {
   closedReason: text('closed_reason').$type<'recovered' | 'target_changed'>(),
   diagnosisStoppedAt: timestamp('diagnosis_stopped_at', { withTimezone: true }),
   diagnosisStopReason: text('diagnosis_stop_reason').$type<'attempt_limit' | 'task_stopped' | 'operator_stopped'>(),
+  diagnosisStoppedBy: uuid('diagnosis_stopped_by').references(() => principals.id),
+  diagnosisStopGrantId: uuid('diagnosis_stop_grant_id'),
 }, t => [
   unique('operations_incident_scope').on(t.id, t.environmentId, t.bindingSha256),
   uniqueIndex('operations_incident_active_environment').on(t.environmentId).where(sql`${t.closedAt} IS NULL`),
@@ -818,6 +820,9 @@ export const operationsIncidents = domain.table('operations_incidents', {
   check('operations_incident_diagnosis_stop', sql`((
     ${t.diagnosisStoppedAt} IS NULL AND ${t.diagnosisStopReason} IS NULL
   ) OR (${t.diagnosisStoppedAt} >= ${t.openedAt} AND ${t.diagnosisStopReason} IN ('attempt_limit', 'task_stopped', 'operator_stopped'))) IS TRUE`),
+  check('operations_incident_operator_record', sql`((
+    ${t.diagnosisStoppedBy} IS NULL AND ${t.diagnosisStopGrantId} IS NULL
+  ) OR (${t.diagnosisStopReason} = 'operator_stopped' AND ${t.diagnosisStoppedBy} IS NOT NULL AND ${t.diagnosisStopGrantId} IS NOT NULL)) IS TRUE`),
 ]);
 
 export const operationsHealthSamples = domain.table('operations_health_samples', {
