@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { operationsDiagnosisResultSchema } from '@itervane/contracts';
+import { formalRuleExtractionResultSchema, operationsDiagnosisResultSchema } from '@itervane/contracts';
 import {
   agentRoleSchema, auditReportSchema, evidenceSchema, repairReportSchema,
   sha256, shaSchema, verificationReportSchema, type AgentOrigin, type AgentSpec,
@@ -8,6 +8,7 @@ import { agentText, type AgentReason, type Feedback } from './messages.js';
 import { finishFormalOperations, operationsObservations } from './operations-results.js';
 import { formalRepairCompletionSchema } from './repair-contracts.js';
 import { finishFormalRepair, finishFormalVerification } from './results.js';
+import { finishRuleExtraction } from './rule-extraction-result.js';
 import { canCall, plannedToolSchema } from './tools.js';
 import { formalVerificationCompletionSchema } from './verification-contracts.js';
 
@@ -31,6 +32,7 @@ const stateSchema = z.object({
   formalRepair: formalRepairCompletionSchema.optional(),
   formalVerification: formalVerificationCompletionSchema.optional(),
   formalOperations: operationsDiagnosisResultSchema.optional(),
+  formalRuleExtraction: formalRuleExtractionResultSchema.optional(),
   verifications: z.array(verificationReportSchema).max(3),
   stop: z.object({
     status: z.enum(['completed', 'requires_human', 'cancelled']),
@@ -41,6 +43,7 @@ export type AgentState = z.infer<typeof stateSchema>;
 export type Stop = NonNullable<AgentState['stop']>;
 
 export function initialRole(origin: AgentOrigin): AgentState['role'] {
+  if (origin === 'formal_rule_extraction') return 'rule-extraction';
   if (origin === 'formal_operations') return 'operations';
   if (origin === 'formal_verification') return 'verify';
   return origin === 'formal_repair' ? 'repair' : 'audit';
@@ -115,6 +118,23 @@ export function restoreState(raw: unknown, spec: AgentSpec, binding: string, ori
       if (JSON.stringify(finishFormalOperations(observed, { hypotheses, recommendation })) !== JSON.stringify(state.formalOperations)) return;
     }
   } else if (state.formalOperations || state.role === 'operations' || state.stop?.reason === 'operations_review_complete') return;
+  if (origin === 'formal_rule_extraction') {
+    const completed = state.stop?.status === 'completed';
+    if (state.role !== 'rule-extraction' || state.audit || state.repairs.length || state.verifications.length
+        || state.evidence.length !== state.currentEvidence.length || state.evidence.length !== state.trace.length
+        || new Set(state.currentEvidence).size !== state.currentEvidence.length
+        || new Set(state.evidence.map(item => item.data.kind)).size !== state.evidence.length
+        || state.evidence.some(item => item.snapshotSha256 !== spec.snapshotSha256)
+        || state.trace.some(({ role, call, evidenceId }, index) => {
+          const item = state.evidence[index];
+          return role !== 'rule-extraction' || item?.id !== evidenceId
+            || (call.name === 'read_learning_case' ? item.data.kind !== 'learning_case'
+              : call.name !== 'search_learning_knowledge' || item.data.kind !== 'learning_knowledge');
+        }) || completed !== (state.stop?.reason === 'rule_extraction_complete')
+        || completed !== (state.formalRuleExtraction !== undefined)) return;
+    if (state.formalRuleExtraction && JSON.stringify(finishRuleExtraction(state.evidence, state.formalRuleExtraction.result))
+        !== JSON.stringify(state.formalRuleExtraction)) return;
+  } else if (state.formalRuleExtraction || state.role === 'rule-extraction' || state.stop?.reason === 'rule_extraction_complete') return;
   const ids = new Set(state.evidence.map(item => item.id));
   if (ids.size !== state.evidence.length || state.evidence.some(({ id, ...receipt }) =>
     receipt.origin !== origin || receipt.bindingSha256 !== binding || sha256(JSON.stringify(receipt)) !== id)
