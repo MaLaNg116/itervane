@@ -10,6 +10,7 @@ import { admissionDtoSchema, catalogDtoSchema, confirmOperationsRepairSchema, fo
   taskIncidentViewSchema, translate, verificationViewSchema,
   type FormalReleaseCandidateDto, type Locale, type OperationsRestartExecutionView, type TaskDto } from '@itervane/contracts';
 import { browserStack } from './stack.js';
+import { ui, type UiKey } from '../../src/messages.js';
 
 type Stack = Awaited<ReturnType<typeof browserStack>>;
 const test = base.extend<{}, { stack: Stack }>({ stack: [async ({}, use) => {
@@ -1609,4 +1610,96 @@ for (const locale of ['en', 'zh-CN'] as const) test(`the refreshed workspace sup
   await page.setViewportSize({ width: 375, height: 812 }); await captureWorkspace(page, `.reports/p1-ux/mobile-${locale}.png`);
   await expectMotionCsp(page);
   if (zh) expect(await motionProbe(page)).toMatchObject({ headings: 0, state: 0, events: 0, disclosures: 0 });
+});
+
+for (const locale of ['en', 'zh-CN'] as const) test(`real design Skill import, review and ordered activation in ${locale}`, async ({ page, stack }) => {
+  const t = (key: UiKey) => ui(locale, key);
+  const project = await seedProject(stack);
+  const packageKey = `design-fixture-${randomUUID()}`;
+  const heading = locale === 'en' ? 'Sample layout' : '样例布局';
+  const material = '<design-fixture>Review keyboard focus.</design-fixture>';
+  await page.setViewportSize({ width: 390, height: 850 });
+  await login(page, stack, 'owner', locale);
+  await page.getByRole('link', { name: t('ruleLibrary'), exact: true }).click();
+
+  async function importVersion(version: string) {
+    await page.getByRole('link', { name: t('importDesignSkill'), exact: true }).click();
+    await page.getByLabel(t('packageKey'), { exact: true }).fill(packageKey);
+    await page.getByLabel(t('version'), { exact: true }).fill(version);
+    await page.getByLabel(t('packageSourceName'), { exact: true }).fill('Itervane test fixture');
+    await page.getByLabel(t('packageLicense'), { exact: true }).fill('Apache-2.0');
+    await page.getByLabel(t('packageTitleEn'), { exact: true }).fill(`Sample layout ${version}`);
+    await page.getByLabel(t('packageTitleZh'), { exact: true }).fill(`样例布局 ${version}`);
+    await page.getByLabel(t('packageDescriptionEn'), { exact: true }).fill('Focus guidelines.');
+    await page.getByLabel(t('packageDescriptionZh'), { exact: true }).fill('焦点指引。');
+    await page.getByLabel(t('packageScope'), { exact: true }).selectOption(project.id);
+    await page.getByLabel(t('packageSkillFile'), { exact: true }).setInputFiles({ name: 'SKILL.md', mimeType: 'text/markdown', buffer: Buffer.from(material) });
+    await page.getByLabel(t('packageAssets'), { exact: true }).setInputFiles({ name: 'tokens.json', mimeType: 'application/json', buffer: Buffer.from('{"focus":8}') });
+    await page.getByRole('button', { name: t('saveRuleDraft'), exact: true }).click();
+    await expect(page.getByRole('heading', { name: `${heading} ${version}`, exact: true })).toBeVisible();
+    return new URL(page.url()).hash;
+  }
+
+  async function review() {
+    for (const key of ['packageReviewSource', 'packageReviewScope', 'packageReviewResources'] as const) {
+      await page.getByRole('checkbox', { name: t(key), exact: true }).check();
+    }
+    await page.getByRole('button', { name: t('savePackageReview'), exact: true }).click();
+    await expect(page.getByRole('button', { name: t('packagePublish'), exact: true })).toBeVisible();
+  }
+
+  async function activate(key: 'packagePublish' | 'packageRollback' | 'packageWithdraw', retry = false) {
+    await page.getByRole('button', { name: t(key), exact: true }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByRole('heading', { name: t('packageConfirmActivation') })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: t('cancel'), exact: true })).toBeFocused();
+    await dialog.getByRole('button', { name: t(key), exact: true }).click();
+    if (retry) await dialog.getByRole('button', { name: t('retrySubmission'), exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+  }
+
+  const original = await importVersion('1.0.0');
+  const disclosure = page.locator('summary').getByText('SKILL.md', { exact: true });
+  await disclosure.focus(); await disclosure.press('Enter');
+  await expect(page.getByText(material, { exact: true })).toBeVisible();
+  await expect(page.locator('design-fixture')).toHaveCount(0);
+  await review();
+  const requests: string[] = [];
+  if (locale === 'en') await page.route('**/v1/rule-packages/*/activation', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    requests.push(route.request().postDataJSON().idempotencyKey);
+    if (requests.length !== 1) return route.continue();
+    expect((await route.fetch()).status()).toBe(201);
+    await route.abort();
+  });
+  await activate('packagePublish', locale === 'en');
+  if (locale === 'en') expect(requests).toEqual([requests[0], requests[0]]);
+  await expect(page.getByRole('button', { name: t('packageWithdraw'), exact: true })).toBeVisible();
+  await page.locator('aside').getByRole('link', { name: t('ruleLibrary'), exact: true }).click();
+  await importVersion('1.1.0');
+  await review(); await activate('packagePublish');
+  await expect(page.getByRole('button', { name: t('packageWithdraw'), exact: true })).toBeVisible();
+  await page.evaluate(hash => { location.hash = hash; }, original);
+  await activate('packageRollback');
+  await expect(page.getByRole('button', { name: t('packageWithdraw'), exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+  await activate('packageWithdraw');
+  await expect(page.getByText(t('packageInactive'), { exact: true })).toBeVisible();
+
+  const { rows } = await stack.database.admin.query(`SELECT activation.action, version.version
+    FROM itervane.rule_package_activations activation JOIN itervane.rule_package_versions version ON version.id=activation.version_id
+    WHERE version.package_key=$1 ORDER BY activation.sequence`, [packageKey]);
+  expect(rows).toEqual([{ action: 'publish', version: '1.0.0' }, { action: 'publish', version: '1.1.0' },
+    { action: 'rollback', version: '1.0.0' }, { action: 'withdraw', version: '1.0.0' }]);
+  if (locale === 'zh-CN') {
+    const [grant] = (await stack.database.admin.query('DELETE FROM itervane.workspace_members RETURNING workspace_id, principal_id, grant_id')).rows;
+    try {
+      await expect(page.getByRole('heading', { name: t('accessDenied'), exact: true })).toBeVisible();
+      await expect(page.getByText('SKILL.md', { exact: true })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: t('packagePublish'), exact: true })).toHaveCount(0);
+    } finally {
+      await stack.database.admin.query('INSERT INTO itervane.workspace_members(workspace_id,principal_id,grant_id) VALUES ($1,$2,$3)',
+        [grant.workspace_id, grant.principal_id, grant.grant_id]);
+    }
+  }
 });

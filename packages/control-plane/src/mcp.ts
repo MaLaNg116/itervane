@@ -26,6 +26,8 @@ import { OperationsRestartViewService } from './service/operations-restart-view.
 import { OperationsRestoreViewService } from './service/operations-restore-view.js';
 import { OperationsProposalService } from './service/operations-proposals.js';
 import { OperationsRepairWorkflow } from './service/operations-repair-workflow.js';
+import { RuleExtractionService } from './service/rule-extraction.js';
+import { CandidateValidationService } from './service/candidate-validations.js';
 
 const taskIdInput = z.object({ taskId: idSchema }).strict();
 const versionInput = cancelTaskSchema.extend({ taskId: idSchema }).strict();
@@ -47,6 +49,8 @@ const coreSpecs = [
   { name: 'get_audit', key: 'mcp.audit', input: taskIdInput, write: false },
   { name: 'get_repair', key: 'mcp.repair', input: taskIdInput, write: false },
   { name: 'get_verification', key: 'mcp.verification', input: taskIdInput, write: false },
+  { name: 'get_rule_extraction', key: 'mcp.rule_extraction', input: taskIdInput, write: false },
+  { name: 'get_candidate_validation', key: 'mcp.candidate_validation', input: taskIdInput, write: false },
   { name: 'get_release_candidate', key: 'mcp.release_candidate', input: taskIdInput, write: false },
   { name: 'get_release_options', key: 'mcp.release_options', input: taskIdInput, write: false },
   { name: 'get_release_result', key: 'mcp.release_result', input: taskIdInput, write: false },
@@ -91,6 +95,7 @@ export function createMcpEndpoint(database: Database, config: IdentityConfig & {
   const verification = new VerificationViewService(database);
   const release = new FormalReleaseService(database);
   const rules = new RuleService(database); const preaudits = new PreauditService(database);
+  const extraction = new RuleExtractionService(database); const validations = new CandidateValidationService(database);
   const operations = new OperationsObservationViewService(database);
   const incidents = operationsApi ? new OperationsIncidentsViewService(database, operationsApi) : undefined;
   const allowedHosts = new Set([new URL(publicUrl).hostname, 'localhost', '127.0.0.1', '[::1]']);
@@ -172,6 +177,8 @@ export function createMcpEndpoint(database: Database, config: IdentityConfig & {
           case 'get_audit': output = await audits.get(identity, taskIdInput.parse(args).taskId, locale); break;
           case 'get_repair': output = await repairs.get(identity, taskIdInput.parse(args).taskId, locale); break;
           case 'get_verification': output = await verification.get(identity, taskIdInput.parse(args).taskId, locale); break;
+          case 'get_rule_extraction': output = await extraction.get(identity, taskIdInput.parse(args).taskId, locale); break;
+          case 'get_candidate_validation': output = await validations.get(identity, taskIdInput.parse(args).taskId, locale); break;
           case 'get_release_candidate': output = await release.get(identity, taskIdInput.parse(args).taskId, locale); break;
           case 'get_release_options': {
             const { taskId, runId, taskVersion, availableTargets } = await release.getView(identity, taskIdInput.parse(args).taskId, locale);
