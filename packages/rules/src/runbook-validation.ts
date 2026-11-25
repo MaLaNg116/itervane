@@ -3,7 +3,7 @@ import { learningCandidateSchema, runbookRecoveryContextSchema, runbookSelection
 
 type Runbook = Extract<LearningCandidate, { kind: 'runbook' }>;
 
-export function selectRunbookAction(candidate: Runbook, raw: unknown) {
+export function selectRunbookAction(candidate: Pick<Runbook, 'when' | 'controls'>, raw: unknown) {
   const { observedState, publication, approvals, priorAttempts } = runbookSelectionContextSchema.parse(raw);
   if (publication === 'superseded') return 'stop_target_drift';
   if (publication === 'unknown' || observedState === 'unknown') return 'stop_unknown';
@@ -14,7 +14,7 @@ export function selectRunbookAction(candidate: Runbook, raw: unknown) {
   return 'ready_for_guarded_dispatch';
 }
 
-export function compareRunbookRecovery(candidate: Runbook, raw: unknown) {
+export function compareRunbookRecovery(candidate: Pick<Runbook, 'success'>, raw: unknown) {
   const context = runbookRecoveryContextSchema.parse(raw);
   if (context.sameInstance === false) return 'stop_target_drift';
   if (context.nativeOutcome !== 'acknowledged' || context.newerStart !== true || context.sameInstance !== true

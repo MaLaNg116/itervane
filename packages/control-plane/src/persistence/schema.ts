@@ -1003,8 +1003,8 @@ export const operationsRestartRecoveries = domain.table('operations_restart_reco
       OR (${t.state} = 'retry' AND ${t.attempt} < 3 AND ${t.failure} IN ('unhealthy', 'unavailable', 'lease_expired') AND ${t.proof} IS NULL)
       OR (${t.state} = 'manual_review' AND (
         (${t.failure} = 'native_unconfirmed' AND ${t.proof} IS NOT NULL)
-        OR (${t.failure} IN ('missing_evidence', 'target_changed') AND ${t.proof} IS NULL)
-        OR (${t.attempt} = 3 AND ${t.failure} IN ('unhealthy', 'unavailable', 'lease_expired') AND ${t.proof} IS NULL)
+        OR (${t.failure} IN ('missing_evidence', 'target_changed', 'unhealthy') AND ${t.proof} IS NULL)
+        OR (${t.attempt} = 3 AND ${t.failure} IN ('unavailable', 'lease_expired') AND ${t.proof} IS NULL)
       ))
     ))) IS TRUE`),
 ]);
