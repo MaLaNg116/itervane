@@ -1,6 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { formalRepairResultSchema, formalVerificationInputSchema, type FormalVerificationInput, type VerificationProfile } from '@itervane/contracts';
-import { sha256, type canonicalVerificationCommand } from '@itervane/runner';
+import { preparePublishedCodeRules, sha256, type canonicalVerificationCommand } from '@itervane/runner';
 import { formalRepairResults, formalRepairRuntime, formalVerificationInputs } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
@@ -8,7 +8,7 @@ import { inspectionCoverage } from '../service/inspection-evidence.js';
 import { readLinkedHealthBasis } from '../service/operations-repair-proposals.js';
 import { readPublishedRepairCommand } from '../service/repair-result.js';
 import { verificationProfileFingerprint } from '../service/repair-retry.js';
-import { readTaskRuleSnapshot } from '../service/task-rule-snapshots.js';
+import { readTaskPublishedCodeRules } from '../service/task-published-code-rules.js';
 import type { ExecutionScope, TaskRow } from './authority.js';
 import { repairBasis } from './repair-execution.js';
 
@@ -56,13 +56,19 @@ async function verificationMaterial(tx: Transaction, { input, scan }: Basis): Pr
 // The Worker supplies the trusted profile and holds the current authorized lease in this transaction.
 export async function prepareFormalVerificationInput(tx: Transaction, task: TaskRow, scope: ExecutionScope, profile: VerificationProfile) {
   const basis = await repairBasis(tx, task, scope);
-  // A published rule scan must be repeated in independent verification before it can qualify a release.
-  const rules = await readTaskRuleSnapshot(tx, task);
-  if (basis.scan.snapshot.publishedCode || rules?.document.entries.some(entry => entry.kind === 'code_rule')) {
-    throw new DomainError('unavailable');
-  }
   if (basis.input.retry && basis.input.retry.verificationProfileSha256 !== verificationProfileFingerprint(profile)) throw new DomainError('conflict');
   const { subject, repair } = await verificationMaterial(tx, basis);
+  const inspectionCode = basis.scan.snapshot.publishedCode?.scan;
+  const rules = await readTaskPublishedCodeRules(tx, task, inspectionCode && {
+    ...inspectionCode.document.basis.profile, runnerImageSha256: profile.runnerImageSha256,
+  });
+  const published = rules ? preparePublishedCodeRules(rules) : undefined;
+  if (inspectionCode && published?.input.snapshot.sha256 !== inspectionCode.document.basis.snapshotSha256) {
+    throw new Error('verification_inspection_rule_binding');
+  }
+  const publishedCode = inspectionCode && published && {
+    snapshotSha256: published.input.snapshot.sha256, inspectionScanSha256: inspectionCode.sha256, ruleSetSha256: published.sha256,
+  };
   const { findingIds: _findingIds, ...base } = basis.input.document;
   const healthRegression = (await readLinkedHealthBasis(tx, task))?.regression;
   if (healthRegression && !profile.runStandardBaseline) throw new DomainError('unavailable');
@@ -70,6 +76,7 @@ export async function prepareFormalVerificationInput(tx: Transaction, task: Task
   const document = formalVerificationInputSchema.parse({ ...base, subject,
     profile: healthRegression && subject.kind === 'original' ? reproductionProfile : profile,
     ...(healthRegression ? { healthRegression } : {}),
+    ...(publishedCode ? { publishedCode } : {}),
   });
   const hash = sha256(JSON.stringify(document));
   const [stored] = await tx.select().from(formalVerificationInputs).where(eq(formalVerificationInputs.runId, scope.runId));
@@ -81,5 +88,5 @@ export async function prepareFormalVerificationInput(tx: Transaction, task: Task
     await tx.insert(formalVerificationInputs).values({ runId: scope.runId, preparedFence: scope.fence,
       workerId: scope.workerId, sha256: hash, document });
   }
-  return { sha256: hash, document, repair, origin: basis.origin, scan: basis.scan };
+  return { sha256: hash, document, repair, publishedCodeRules: published?.input, origin: basis.origin, scan: basis.scan };
 }

@@ -10,11 +10,27 @@ import { appendEvent, clearSlot, ExecutionLost, type ExecutionScope, type TaskRo
 import { recordedVerificationEvidence } from '../runtime/verification-evidence.js';
 import type { Transaction } from './access.js';
 import { DomainError } from './errors.js';
+import { currentInspectionAttempt, readInspectionEvidence } from './inspection-evidence.js';
+import { readInspectionPlan } from './inspections.js';
 import { readLinkedHealthBasis } from './operations-repair-proposals.js';
 import { enqueueRepairRetry, prepareLinkedHealthRepair, prepareRepairRetry, readRepairRetry, verificationProfileFingerprint } from './repair-retry.js';
 
 type PublishedVerification = { row: typeof formalVerificationResults.$inferSelect; input: FormalVerificationInput;
   result: FormalVerificationResult; evidence: FormalVerificationEvidence; originSha256: string };
+
+async function readOriginalCode(tx: Transaction, task: TaskRow, input: FormalVerificationInput) {
+  if (!input.publishedCode) return;
+  const plan = await readInspectionPlan(tx, task, input.runId);
+  const attempt = await currentInspectionAttempt(tx, input.runId);
+  if (!plan || !attempt || attempt.requestId !== input.inspection.requestId || plan.sha256 !== input.inspection.planSha256) {
+    throw new Error('verification_original_code_attempt');
+  }
+  const { receipt, sha256: inspectionSha256 } = await readInspectionEvidence(tx, attempt, plan);
+  if (inspectionSha256 !== input.inspection.receiptSha256 || receipt.snapshot.manifestSha256 !== input.inspection.snapshotSha256) {
+    throw new Error('verification_original_code_receipt');
+  }
+  return receipt.snapshot.publishedCode?.scan;
+}
 
 export async function readPublishedVerification(tx: Transaction, task: TaskRow,
   run: Pick<ExecutionScope, 'runId' | 'generation'>): Promise<PublishedVerification | null> {
@@ -30,7 +46,7 @@ export async function readPublishedVerification(tx: Transaction, task: TaskRow,
   const { row, input: storedInput, pointer, attempt } = entry;
   const input = formalVerificationInputSchema.parse(storedInput.document);
   const result = formalVerificationResultSchema.parse(row.document);
-  const { receipt, evidence } = recordedVerificationEvidence(attempt.receipt, row.receiptSha256);
+  const { receipt, evidence } = recordedVerificationEvidence(attempt.receipt, row.receiptSha256, input, await readOriginalCode(tx, task, input));
   if (result.taskId !== task.id || result.projectId !== task.projectId || result.locale !== task.locale
       || result.runId !== run.runId || result.generation !== run.generation || sha256(JSON.stringify(result)) !== row.sha256
       || result.inputSha256 !== row.inputSha256 || result.receiptSha256 !== row.receiptSha256 || result.requestId !== row.requestId
@@ -86,22 +102,22 @@ export async function publishFormalVerification(tx: Transaction, task: TaskRow, 
   retryConfig?: { database: Database; repairPolicySha256: string; profile: StandardVerificationProfile }) {
   signal.throwIfAborted();
   const { report, archiveVerification } = result;
-  const [entry] = await tx.select({ pointer: formalVerificationRuntime, attempt: formalRescanAttempts })
+  const [entry] = await tx.select({ pointer: formalVerificationRuntime, attempt: formalRescanAttempts, input: formalVerificationInputs })
     .from(formalVerificationRuntime).innerJoin(formalRescanAttempts, and(eq(formalRescanAttempts.runId, formalVerificationRuntime.runId),
       eq(formalRescanAttempts.inputSha256, formalVerificationRuntime.inputSha256),
       eq(formalRescanAttempts.receiptSha256, formalVerificationRuntime.receiptSha256)))
+    .innerJoin(formalVerificationInputs, eq(formalVerificationInputs.runId, formalVerificationRuntime.runId))
     .where(and(eq(formalVerificationRuntime.runId, scope.runId), eq(formalRescanAttempts.state, 'recorded')));
   if (!entry || entry.pointer.checkpointId !== report.checkpointId || report.runId !== scope.runId || report.role !== 'verify'
       || report.origin !== 'formal_verification') throw new ExecutionLost();
-  const { receipt, evidence } = recordedVerificationEvidence(entry.attempt.receipt, entry.pointer.receiptSha256);
+  const input = formalVerificationInputSchema.parse(entry.input.document);
+  const { receipt, evidence } = recordedVerificationEvidence(entry.attempt.receipt, entry.pointer.receiptSha256, input,
+    await readOriginalCode(tx, task, input));
   if (JSON.stringify(evidence) !== JSON.stringify(result.evidence)) throw new Error('formal_verification_projection_binding');
   let linked: { input: FormalVerificationInput; basis: NonNullable<Awaited<ReturnType<typeof readLinkedHealthBasis>>> } | undefined;
   if (receipt.scope.healthFollowup) {
-    const [frozen] = await tx.select().from(formalVerificationInputs).where(eq(formalVerificationInputs.runId, scope.runId));
-    const input = formalVerificationInputSchema.parse(frozen?.document);
     const basis = await readLinkedHealthBasis(tx, task);
-    if (frozen?.sha256 !== receipt.scope.verificationInputSha256 || !input.healthRegression
-        || sha256(JSON.stringify(input)) !== frozen.sha256
+    if (entry.input.sha256 !== receipt.scope.verificationInputSha256 || !input.healthRegression
         || !basis || JSON.stringify(basis.regression) !== JSON.stringify(input.healthRegression)) {
       throw new DomainError('version_conflict');
     }

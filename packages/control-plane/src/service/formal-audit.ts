@@ -119,10 +119,8 @@ export async function publishFormalAudit(tx: Transaction, task: TaskRow, scope: 
   const blockedPublished = completed && document.checklist?.findings.some(finding => finding.scanner === 'semgrep_ce');
   const handoff = completed && !blockedReproduction && !blockedPublished ? await prepareFormalRepairInput(tx, task, scope) : undefined;
   const findings = handoff?.document.findingIds.length ?? 0;
-  // Wait for the independent rescan to accept the pinned rule set before starting verification.
-  const canVerify = allowVerification && prepared.inspection.snapshot.publishedCode === undefined;
   const next = allowRepair && findings > 0 ? 'repair_pending'
-    : canVerify && handoff && findings === 0 ? 'verification_pending' : null;
+    : allowVerification && handoff && findings === 0 ? 'verification_pending' : null;
   const needsReview = !completed || blockedReproduction || blockedPublished;
   const reason = next ?? (blockedReproduction ? 'operations_reproduction_unavailable'
     : blockedPublished ? 'audit_published_rule_review' : completed ? 'audit_ready' : 'audit_needs_human');
