@@ -71,6 +71,8 @@ jobs:
           fc-match -f '%{family}\n' ':lang=zh-cn'
       - name: Real browser, Keycloak, PostgreSQL and Worker
         run: pnpm test:portal
+      - name: Clean reference install with real OIDC login and external MCP
+        run: pnpm probe:reference-install
       - name: Sanitized browser verification evidence
         if: always()
         run: test ! -f .reports/p1-c/browser.json || cat .reports/p1-c/browser.json

@@ -19,6 +19,7 @@
     "probe:whiskers": "tsx packages/portal/test/native/whiskers.ts",
     "probe:mcp": "tsx packages/verification/src/entries/mcp.ts",
     "probe:backup": "tsx packages/control-plane/test/native/backup.ts",
+    "probe:reference-install": "tsx packages/portal/test/native/reference-install.ts",
     "probe:evaluation": "tsx packages/verification/src/entries/evaluation.ts",
     "probe:agent": "tsx --env-file-if-exists=.env packages/verification/src/entries/agent.ts",
     "probe:formal-audit": "tsx --env-file-if-exists=.env packages/verification/src/entries/formal-audit.ts",
