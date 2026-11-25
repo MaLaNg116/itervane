@@ -2,8 +2,9 @@ import { deepStrictEqual, equal, notEqual, ok, rejects } from 'node:assert/stric
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Client } from '@modelcontextprotocol/client';
-import { operationsProposalViewSchema, operationsRestartExecutionViewSchema, operationsRestartRecoveryProofSchema,
-  operationsRestartSubmissionSchema, type Locale, type OperationsRestartBaseline, type ReleaseRolloutProof, type TaskDto } from '@itervane/contracts';
+import { operationsObservationViewSchema, operationsProposalSchema, operationsProposalViewSchema, operationsRestartExecutionViewSchema, operationsRestartRecoveryProofSchema,
+  operationsRestartSubmissionSchema, sha256Schema, taskRuleSnapshotViewSchema,
+  type Locale, type OperationsRestartBaseline, type OperationsRunbookBinding, type ReleaseRolloutProof, type TaskDto } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { lockEnvironmentForEffect, requireNoOperationsHold } from '../../src/service/environment-effects.js';
 import type { databaseFixture } from '../helpers/database.js';
@@ -14,12 +15,64 @@ export type DiagnosisReaders = {
   request: DiagnosisHttp; mcp: Client; withEnglishReader: <T>(read: (lookup: Client) => Promise<T>) => Promise<T>;
 };
 type RestartInterruption = { environmentId: string; stopWorker: () => Promise<void>; startWorker: () => Promise<void> };
+export type NativePublishedRunbook = Pick<OperationsRunbookBinding['selection']['rule'], 'packageKey' | 'packageId' | 'versionId' | 'versionSha256' | 'sequence'> & {
+  reviewSha256: string | null; validationSha256: string;
+};
 
 type RestartProofInput = {
   db: Awaited<ReturnType<typeof databaseFixture>>; diagnosis: TaskDto; diagnosisSha256: string;
   released: ReleaseRolloutProof; request: DiagnosisHttp; mcp: Client;
   readStopped: () => Promise<OperationsRestartBaseline>; approve: () => Promise<void>; verifyAudit: () => Promise<void>;
+  expectedRunbook?: NativePublishedRunbook;
 };
+
+async function verifyNativeRunbook({ db, diagnosis, request, mcp, expectedRunbook }: RestartProofInput,
+  proposal: NonNullable<ReturnType<typeof operationsProposalViewSchema.parse>['proposal']>, observedState: OperationsRestartBaseline['state']) {
+  if (!expectedRunbook) {
+    equal(proposal.runbook, undefined);
+    return;
+  }
+  const { packageKey, packageId, versionId, versionSha256, reviewSha256, sequence, validationSha256 } = expectedRunbook;
+  const rule = { kind: 'runbook', packageKey, packageId, versionId, versionSha256, reviewSha256: sha256Schema.parse(reviewSha256), sequence };
+  ok(proposal.runbook);
+  deepStrictEqual(proposal.runbook.rule, rule);
+  const taskId = diagnosis.id;
+  const path = `/v1/tasks/${taskId}`;
+  const read = async (name: string) => (await mcp.callTool({ name, arguments: { taskId } })).structuredContent;
+  const pin = taskRuleSnapshotViewSchema.parse(await request(path + '/rule-snapshot'));
+  deepStrictEqual(taskRuleSnapshotViewSchema.parse(await read('get_task_rule_snapshot')), pin);
+  ok(pin.snapshot);
+  equal(pin.snapshot.document.projectId, diagnosis.projectId);
+  equal(pin.snapshot.document.purpose, 'operations');
+  deepStrictEqual(pin.snapshot.document.entries, [rule]);
+  equal(pin.snapshot.sha256, sha256(JSON.stringify(pin.snapshot.document)));
+
+  const diagnostic = operationsObservationViewSchema.parse(await request(path + '/operations'));
+  deepStrictEqual(operationsObservationViewSchema.parse(await read('get_operations_result')), diagnostic);
+  ok(diagnostic.diagnosis);
+  equal(diagnostic.observation?.state, observedState);
+  const fact = diagnostic.diagnosis.facts.find(item => item.section === 'release');
+  ok(fact?.result.runbooks);
+  equal(fact.result.runbooks.snapshotSha256, pin.snapshot.sha256);
+  const selection = fact.result.runbooks.byState[observedState];
+  ok(selection.status === 'available');
+  equal(selection.validationSha256, validationSha256);
+  equal(selection.action, 'restart_current_publication');
+  deepStrictEqual(selection.rule, rule);
+  equal(selection.controls.maxNativeAttempts, 1);
+  ok(diagnostic.diagnosis.recommendation.evidenceIds.includes(fact.evidenceId));
+
+  const { rows: [row] } = await db.admin.query<{ document: unknown; fingerprint: string }>(
+    'SELECT document,fingerprint FROM itervane.operations_proposals WHERE id=$1 AND diagnosis_run_id=$2', [proposal.id, diagnosis.runId]);
+  ok(row);
+  const frozen = operationsProposalSchema.parse(row.document);
+  equal(sha256(JSON.stringify(frozen)), row.fingerprint);
+  equal(row.fingerprint, proposal.fingerprint);
+  deepStrictEqual(frozen.runbook, { snapshotSha256: pin.snapshot.sha256, evidenceId: fact.evidenceId, observedState, selection });
+  deepStrictEqual(proposal.runbook, { rule, version: selection.version, controls: selection.controls });
+  return { snapshotSha256: pin.snapshot.sha256, evidenceId: fact.evidenceId, observedState, selection,
+    proposalFingerprint: row.fingerprint, diagnosisRunId: diagnosis.runId, httpMcpAgreement: true };
+}
 
 export async function proveNativeRestart(input: RestartProofInput, interruption?: RestartInterruption) {
   const { db, diagnosis, diagnosisSha256, released, request, mcp, readStopped, approve, verifyAudit } = input;
@@ -32,6 +85,7 @@ export async function proveNativeRestart(input: RestartProofInput, interruption?
   ok(proposal?.kind === 'restart' && proposal.status === 'pending');
   equal(proposal.current.operationId, released.operationId);
   equal(proposal.current.manifestDigest, released.manifestDigest);
+  const runbook = await verifyNativeRunbook(input, proposal, baseline.state);
   const executionPath = `/v1/operations/proposals/${proposal.id}/execution`;
   const payload = { fingerprint: proposal.fingerprint, decisionVersion: 1 };
   await request(executionPath, { portal: true, payload, status: 409 });
@@ -40,6 +94,7 @@ export async function proveNativeRestart(input: RestartProofInput, interruption?
     action: 'confirm', expectedVersion: 0, fingerprint: proposal.fingerprint, idempotencyKey: randomUUID(),
   } }));
   equal(decision.proposal?.status, 'confirmed');
+  deepStrictEqual(decision.proposal?.runbook, proposal.runbook);
   const actorId = decision.proposal?.decisions.at(-1)?.actorId;
   ok(actorId);
   await request(executionPath, { payload, status: 403 });
@@ -144,7 +199,7 @@ export async function proveNativeRestart(input: RestartProofInput, interruption?
     recoveredStart: proof.observation.startedAt, anonymousStatus: proof.observation.runtime.anonymousStatus,
     healthStatus: proof.observation.runtime.healthStatus, resumeCount: record.resumes, acknowledgedCount: record.acknowledged,
     environmentReleased: !recovered.receipt.environmentHeld, environmentHeld: recovered.receipt.environmentHeld,
-    slotReleased: true, nativeAuditCount: interruption ? 2 : 1, blockedBeforeApproval: true, httpMcpAgreement: true,
+    slotReleased: true, blockedBeforeApproval: true, httpMcpAgreement: true, ...(runbook ? { runbook } : {}),
     approvalRevoked: Boolean(interruption), publicationBlocked: Boolean(interruption), manualReason: recovered.receipt.recovery?.failure,
     sameWorker: record.sender === record.observer, sendFence: record.send_fence, readFence: record.read_fence };
 }

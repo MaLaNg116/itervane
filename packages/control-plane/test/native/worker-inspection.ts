@@ -64,7 +64,7 @@ import { temporaryRegistry } from './registry-fixture.js';
 import { openProtectedIngress } from './protected-ingress.js';
 import { readNativeRuleReuse, ruleReuseRevisions, summarizePublishedRuleScan } from './published-rule-reuse.js';
 import { proveDeniedNativeRestore, proveInterruptedNativeRestore, proveNativeRestore } from './restore-proof.js';
-import { proveNativeRestart, type DiagnosisHttp, type DiagnosisReaders } from './restart-proof.js';
+import { proveNativeRestart, type DiagnosisHttp, type DiagnosisReaders, type NativePublishedRunbook } from './restart-proof.js';
 
 type NativeDiagnosisPublication = {
   taskId: string; operationId: string; containerId: string; restoreExecutionId?: string;
@@ -1159,8 +1159,10 @@ async function probe() {
               if (!response.ok) { await response.body?.cancel(); return null; }
               return response.json() as Promise<unknown>;
             };
+            const diagnosisToken = await oidc.token('owner', { aud: `${publicUrl}/mcp`, scope: 'itervane:read itervane:write',
+              exp: Math.floor(Date.now() / 1_000) + 900 });
             await reader.connect(new StreamableHTTPClientTransport(new URL('/mcp', endpoint), {
-              requestInit: { headers: { Authorization: `Bearer ${mcpToken}`, 'Accept-Language': 'zh-CN' } },
+              requestInit: { headers: { Authorization: `Bearer ${diagnosisToken}`, 'Accept-Language': 'zh-CN' } },
             }));
             const capability = await http('/v1/capabilities') as { stage: string; operations: boolean };
             equal(capability.stage, 'p3-b');
@@ -1929,7 +1931,7 @@ async function probe() {
             const { containerId, version, configDigest, imageReference } = proof.runtime;
             const subject = { containerId, version, image, rolloutCheckSha256, check: ingress.check, target: boundTarget };
 
-            const exerciseRestart = async (interrupted: boolean) => {
+            const exerciseRestart = async (count: number, expectedRunbook?: NativePublishedRunbook, interrupted = false) => {
               phase = 'operations_native_stop_bound_fixture';
               await target.setOwnedContainerRunning(false, { containerId, configDigest, reference: imageReference });
               const startRestartProcess = async () => {
@@ -1949,9 +1951,10 @@ async function probe() {
                 kind: 'restart', installationFile: files.installation,
                 async verify(diagnosis, diagnosisSha256, { request, mcp }) {
                   await startRestartProcess();
-                  phase = interrupted ? 'operations_native_restart_interruption' : 'operations_native_restart_application';
-                  const count = interrupted ? 2 : 1;
+                  phase = interrupted ? 'operations_native_restart_interruption' : expectedRunbook
+                    ? 'operations_native_restart_runbook_reuse' : 'operations_native_restart_application';
                   const accepted = await proveNativeRestart({ db, diagnosis, diagnosisSha256, released: proof, request, mcp,
+                    ...(expectedRunbook ? { expectedRunbook } : {}),
                     readStopped: () => verifier.captureRestartBaseline(subject, async () => {}),
                     approve: () => native.approve(containerId, count), verifyAudit: () => native.verifyAudit(target.endpoint.container, count),
                   }, interrupted ? {
@@ -1966,7 +1969,7 @@ async function probe() {
                   } : undefined);
                   ok(worker);
                   await worker.stop('TERM'); worker = undefined;
-                  if (interrupted) return accepted;
+                  if (expectedRunbook) return accepted;
                   phase = 'operations_capture_learning_case';
                   const learningCase = await captureNativeLearningCase(diagnosis, accepted.proofSha256);
                   const facts = learningCase.origin.facts;
@@ -1981,15 +1984,19 @@ async function probe() {
                 },
               });
               ok(result.accepted);
-              return { ...result.accepted, diagnosisRunId: result.runId, diagnosisSections: result.sections,
+              return { ...result.accepted, diagnosisRunId: result.runId, diagnosisSections: result.sections, nativeAuditCount: count,
                 distinctKomodoReader: true, model: result.model };
             };
-            const verified = await exerciseRestart(false);
-            const interrupted = await exerciseRestart(true);
-            equal(interrupted.stoppedStart, verified.recoveredStart);
-            notEqual(interrupted.approvalId, verified.approvalId);
-            notEqual(interrupted.diagnosisRunId, verified.diagnosisRunId);
-            return { ...verified, interrupted, restoreWorker: { separateReadIdentity: true, mismatchedMappingDenied: true, idleWithoutWork: true } };
+            const verified = await exerciseRestart(1);
+            const published = 'ruleExtraction' in verified ? verified.ruleExtraction.publication : undefined;
+            ok(published?.kind === 'runbook');
+            const reused = await exerciseRestart(2, published);
+            const interrupted = await exerciseRestart(3, published, true);
+            equal(reused.stoppedStart, verified.recoveredStart);
+            equal(interrupted.stoppedStart, reused.recoveredStart);
+            equal(new Set([verified.approvalId, reused.approvalId, interrupted.approvalId]).size, 3);
+            equal(new Set([verified.diagnosisRunId, reused.diagnosisRunId, interrupted.diagnosisRunId]).size, 3);
+            return { ...verified, reused, interrupted, restoreWorker: { separateReadIdentity: true, mismatchedMappingDenied: true, idleWithoutWork: true } };
           } finally {
             try { await worker?.stop('TERM'); worker = undefined; }
             finally { await native.close(); }
