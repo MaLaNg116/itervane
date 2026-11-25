@@ -10,6 +10,8 @@ on:
       - 'packages/runner/src/**'
       - 'packages/control-plane/src/**'
       - 'packages/control-plane/migrations/**'
+      - 'packages/portal/src/**'
+      - 'packages/portal/test/native/reference-install.ts'
       - 'packages/control-plane/test/helpers/**'
       - 'packages/control-plane/test/native/**'
       - 'packages/contracts/src/**'
@@ -207,6 +209,14 @@ jobs:
         run: |
           pnpm --silent reference:runner-profile .reports/p0/kvm-image.json "$SCANNER_INPUTS/inputs.json" "$BUILD_INPUTS/profile.json" \
             "$OCI_INPUTS/inputs.json" "$RULE_INPUTS/inputs.json" > .reports/p0/runner-reference-profile.env
+      - name: Require the clean installation and authenticated audit receipt
+        if: matrix.scenario == 'protected-release-linked-health' && steps.capability.outputs.available == 'true'
+        run: |
+          jq -e '.cleanInstallation and .qualifiedRunner and .browserPkce and .ownerPasswordChanged and
+            .externalMcpPkce and .mcpScopeAndAudienceVerified and .locales == ["en", "zh-CN"] and
+            .postgresMajor == 17 and .keycloak == "26.8.2" and .audit.model == "scripted_anthropic_fixture" and
+            ([.audit.auditSha256, .audit.scanSha256, .audit.snapshotSha256] | all(test("^[a-f0-9]{64}$")))' \
+            .reports/p0/runner-reference-audit.json >/dev/null
       - name: Require independent rule samples and cleanup receipts
         if: matrix.scenario == 'rule-samples'
         env:
@@ -526,6 +536,7 @@ jobs:
             .reports/p0/runner-installed-status.json
             .reports/p0/runner-reference-connection.env
             .reports/p0/runner-reference-profile.env
+            .reports/p0/runner-reference-audit.json
             .reports/p0/runner-vm*.json
             .reports/p0/runner-qualified-*.json
             .reports/p0/runner-worker-inspection.json
