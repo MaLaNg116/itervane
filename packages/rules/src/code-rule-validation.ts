@@ -1,4 +1,4 @@
-import { codeRuleSampleObservationSchema, codeRuleSampleResultSchema, codeRuleValidationBasisSchema, learningCandidateSchema, ruleSampleKinds,
+import { codeRuleCandidateSchema, codeRuleSampleObservationSchema, codeRuleSampleResultSchema, codeRuleValidationBasisSchema, learningCandidateSchema, ruleSampleKinds,
   type CodeRuleSampleObservation, type CodeRuleSampleResult, type CodeRuleValidationBasis, type RuleSampleKind } from '@itervane/contracts';
 import { z } from 'zod';
 import { digest } from './catalog.js';
@@ -11,14 +11,18 @@ const reportSchema = z.object({
   results: z.array(z.object({ check_id: z.string().max(164), path: z.string().max(256), start: position, end: position })).max(256),
 });
 
+export function compileSemgrepRule(id: string, check: z.infer<typeof codeRuleCandidateSchema.shape.check>) {
+  const expression = check.patternNot
+    ? { patterns: [{ pattern: check.pattern }, { 'pattern-not': check.patternNot }] }
+    : { pattern: check.pattern };
+  return { id, languages: [check.language], message: 'Review this match.', severity: 'WARNING', ...expression };
+}
+
 export function prepareCodeRuleValidation(rawCandidate: unknown, reference: { candidateId: string; extractionResultSha256: string }, profile: unknown) {
   const candidate = learningCandidateSchema.parse(rawCandidate);
   if (candidate.kind !== 'code_rule') throw new Error('code_rule_candidate_required');
   const { key, check, samples } = candidate;
-  const expression = check.patternNot
-    ? { patterns: [{ pattern: check.pattern }, { 'pattern-not': check.patternNot }] }
-    : { pattern: check.pattern };
-  const config = JSON.stringify({ rules: [{ id: key, languages: [check.language], message: 'Review this match.', severity: 'WARNING', ...expression }] });
+  const config = JSON.stringify({ rules: [compileSemgrepRule(key, check)] });
   const extension = check.language === 'javascript' ? 'js' : 'ts';
   const files = ruleSampleKinds.map(name => {
     const content = samples[name].replace(/\r\n/g, '\n');

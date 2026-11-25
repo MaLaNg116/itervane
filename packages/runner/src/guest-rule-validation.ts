@@ -85,6 +85,17 @@ export async function verifySemgrepEngine(directory: string, profile: CodeRuleVa
 
 type Prepared = ReturnType<typeof prepareCodeRuleValidation>;
 
+export function invokeGuestSemgrep(directory: string, workdir: string, paths: readonly string[], limits: {
+  targetBytes: number; reportBytes: number; timeoutMs: number;
+}) {
+  return spawnSync('/usr/bin/python3', ['-I', '-B', join(directory, 'entry.py'), 'scan',
+    '--metrics=off', '--disable-version-check', '--disable-nosem', '--no-git-ignore', '--no-rewrite-rule-ids',
+    '--strict', '--max-target-bytes=' + limits.targetBytes, '--timeout=8', '--jobs=1', '--json', '--quiet', '--config', 'rule.json', ...paths], {
+    cwd: workdir, env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: workdir, XDG_CACHE_HOME: workdir },
+    maxBuffer: limits.reportBytes, timeout: limits.timeoutMs, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
 // The caller runs this inside the sealed scan service. The provisioning smoke uses only the tracked synthetic sample.
 export async function runPreparedCodeRuleSamples(directory: string, prepared: Prepared) {
   await verifySemgrepEngine(directory, prepared.basis.profile);
@@ -98,15 +109,12 @@ export async function runPreparedCodeRuleSamples(directory: string, prepared: Pr
     writeFileSync(join(temporary, 'rule.json'), config, { flag: 'wx', mode: 0o400 });
     for (const file of files) writeFileSync(join(temporary, file.file), file.content, { flag: 'wx', mode: 0o400 });
     const results = files.map(({ file, name }) => {
-      const result = spawnSync('/usr/bin/python3', ['-I', '-B', join(directory, 'entry.py'), 'scan',
-        '--metrics=off', '--disable-version-check', '--disable-nosem', '--no-git-ignore', '--no-rewrite-rule-ids',
-        '--strict', '--max-target-bytes=6400', '--timeout=8', '--jobs=1', '--json', '--quiet', '--config', 'rule.json', file], {
-        cwd: temporary, env: { PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', HOME: temporary, XDG_CACHE_HOME: temporary },
-        maxBuffer: maxSemgrepReportBytes, timeout: 12_000, killSignal: 'SIGKILL', encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
+      const result = invokeGuestSemgrep(directory, temporary, [file], {
+        targetBytes: 6_400, reportBytes: maxSemgrepReportBytes, timeoutMs: 12_000,
       });
       return normalizeCodeRuleSample(basis, name, { exitCode: result.status,
-        timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT', stdout: result.stdout ?? '', stderr: result.stderr ?? '' });
+        timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT',
+        stdout: result.stdout?.toString('utf8') ?? '', stderr: result.stderr?.toString('utf8') ?? '' });
     });
     return summarizeCodeRuleSamples(basis, results);
   } finally { rmSync(temporary, { recursive: true, force: true }); }

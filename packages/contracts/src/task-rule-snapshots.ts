@@ -6,6 +6,7 @@ import { idSchema } from './primitives.js';
 
 export const ruleSnapshotPurposeSchema = z.enum(['delivery', 'operations']);
 export type RuleSnapshotPurpose = z.infer<typeof ruleSnapshotPurposeSchema>;
+export const taskRuleSnapshotLimit = 32;
 
 const publishedRuleReference = z.strictObject({
   packageId: idSchema, packageKey: ruleIdSchema, versionId: idSchema, kind: z.enum(['design_skill', 'code_rule', 'runbook']),
@@ -13,7 +14,7 @@ const publishedRuleReference = z.strictObject({
 });
 export const taskRuleSnapshotSchema = z.strictObject({
   version: z.literal(1), taskId: idSchema, projectId: idSchema, purpose: ruleSnapshotPurposeSchema,
-  entries: publishedRuleReference.array().max(32),
+  entries: publishedRuleReference.array().max(taskRuleSnapshotLimit),
 }).refine(({ purpose, entries }) => new Set(entries.map(item => item.packageId)).size === entries.length
   && entries.every(item => (purpose === 'operations') === (item.kind === 'runbook'))
   && entries.every((item, index) => !index || entries[index - 1]!.packageKey < item.packageKey));
