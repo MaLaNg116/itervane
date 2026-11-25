@@ -63,7 +63,7 @@ export async function readPassedCandidateValidation(tx: Transaction, projectId: 
   const { row, candidate } = await readCandidateForValidation(tx, projectId, candidateId);
   if (row.sha256 !== record.extractionResultSha256 || candidate.kind !== record.evidence.kind
       || sha256(JSON.stringify(candidate)) !== record.candidateSha256) throw new Error('candidate_validation_source_integrity');
-  return { candidate, validation: { id: stored.result.id, sha256: stored.result.sha256, taskId: record.taskId, projectId: record.projectId,
+  return { candidate, record, validation: { id: stored.result.id, sha256: stored.result.sha256, taskId: record.taskId, projectId: record.projectId,
     candidateId: record.candidateId, candidateSha256: record.candidateSha256, extractionResultSha256: record.extractionResultSha256,
     planSha256: record.planSha256 } };
 }
