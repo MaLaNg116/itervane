@@ -160,7 +160,8 @@
 | 155 | P4-D3b Runbook 约束受控重启 | [#155](https://github.com/MaLaNg116/itervane/pull/155)，依赖 #154 | [Runbook 重启授权导读](p4-runbook-restart-authority.md) | 287 项单测、5 项 PostgreSQL 和真实 Chrome 审批验收通过 |
 | 156 | P4-D3c 后续运维任务复用 Runbook | [#156](https://github.com/MaLaNg116/itervane/pull/156)，依赖 #155 | [真实运维复用导读](p4-native-runbook-reuse.md) | 13 项托管原生作业与实际授权、重启、独立核对通过 |
 | 157 | P4-D4a 规则变化后的发布权限 | [#157](https://github.com/MaLaNg116/itervane/pull/157)，依赖 #156 | [规则与发布权限导读](p4-current-release-rules.md) | 287 项单测、4 项真库和真实 Chrome 双语验收通过 |
-| 后续批次 | P4-D4b 运维重启的规则失效与对账 | 依赖 [#157](https://github.com/MaLaNg116/itervane/pull/157) | [运维规则失效导读](p4-current-restart-rules.md) | 287 项单测及 6 项真库专项通过 |
+| 158 | P4-D4b 运维重启的规则失效与对账 | [#158](https://github.com/MaLaNg116/itervane/pull/158)，依赖 #157 | [运维规则失效导读](p4-current-restart-rules.md) | 6 项真库专项和 13 项托管原生作业通过，已合入 |
+| P4-D5 | 正式审计引用已审核的设计 Skill | 依赖 [#158](https://github.com/MaLaNg116/itervane/pull/158) | [设计 Skill 审计导读](p4-audit-design-guidance.md) | 6 项真库专项和真实 Chrome 双语用例通过，托管回归待验 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
