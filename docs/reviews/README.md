@@ -161,9 +161,10 @@
 | 156 | P4-D3c 后续运维任务复用 Runbook | [#156](https://github.com/MaLaNg116/itervane/pull/156)，依赖 #155 | [真实运维复用导读](p4-native-runbook-reuse.md) | 13 项托管原生作业与实际授权、重启、独立核对通过 |
 | 157 | P4-D4a 规则变化后的发布权限 | [#157](https://github.com/MaLaNg116/itervane/pull/157)，依赖 #156 | [规则与发布权限导读](p4-current-release-rules.md) | 287 项单测、4 项真库和真实 Chrome 双语验收通过 |
 | 158 | P4-D4b 运维重启的规则失效与对账 | [#158](https://github.com/MaLaNg116/itervane/pull/158)，依赖 #157 | [运维规则失效导读](p4-current-restart-rules.md) | 6 项真库专项和 13 项托管原生作业通过，已合入 |
-| 159 | P4-D5 正式审计引用已审核的设计 Skill | [#159](https://github.com/MaLaNg116/itervane/pull/159)，依赖 #158 | [设计 Skill 审计导读](p4-audit-design-guidance.md) | 6 项真库专项和真实 Chrome 双语用例通过 |
+| 159 | P4-D5 正式审计引用已审核的设计 Skill | [#159](https://github.com/MaLaNg116/itervane/pull/159)，依赖 #158 | [设计 Skill 审计导读](p4-audit-design-guidance.md) | 16 项托管检查通过，已合入 |
 | 160 | P5-A1 控制面冷备和独立恢复 | [#160](https://github.com/MaLaNg116/itervane/pull/160)，依赖 #159 | [冷备与独立恢复导读](p5-backup-restore.md) | 两套 PostgreSQL 17.12 恢复 89 张表与配置 |
-| P5-A2 | 原生发布档案和运维回执恢复 | 依赖 [#160](https://github.com/MaLaNg116/itervane/pull/160) | [原生冷备演练导读](p5-native-backup-recovery.md) | TypeScript、原生打包和基础真库演练通过，托管验收待完成 |
+| 161 | P5-A2 原生发布档案和运维回执恢复 | [#161](https://github.com/MaLaNg116/itervane/pull/161)，依赖 #160 | [原生冷备演练导读](p5-native-backup-recovery.md) | TypeScript、原生打包和基础真库演练通过，托管验收待完成 |
+| P5-B1 | 参考控制面干净安装 | 依赖 [#161](https://github.com/MaLaNg116/itervane/pull/161) | [参考安装导读](p5-reference-install.md) | 实际 PostgreSQL、Keycloak、Chrome 和外部 MCP 已在本地联验 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
