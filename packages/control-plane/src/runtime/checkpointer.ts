@@ -71,7 +71,7 @@ export class GuardedCheckpointer extends BaseCheckpointSaver {
   private async publication(tx: Transaction, current: CurrentExecution) {
     this.signal?.throwIfAborted();
     if (this.graph === 'preflight') {
-      if (current.run.role === 'operations' || current.run.role === 'rule-extraction') throw new ExecutionLost();
+      if (current.run.role === 'operations' || current.run.role === 'rule-extraction' || current.run.role === 'verify') throw new ExecutionLost();
       return current.runtime;
     }
     if (!this.formalInputSha256) throw new ExecutionLost();

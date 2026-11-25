@@ -1,7 +1,8 @@
 import { sql } from 'drizzle-orm';
 import { bigint, boolean, check, foreignKey, index, integer, jsonb, pgSchema, primaryKey, text, timestamp, unique, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import {
-  agentRoles, taskStates, type DesignSkillPackage, type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
+  agentRoles, taskStates, type CandidateValidationPlan, type CandidateValidationRecord, type DesignSkillPackage,
+  type FixtureReleaseManifest, type FixtureReleaseObservation, type FormalAuditInput, type FormalAuditResult,
   type LearningCaseDocument, type LearningCaseFacts,
   type FormalReleaseManifest, type FormalReleaseTarget, type FormalRepairContinuation, type FormalRepairInput, type FormalRepairResult,
   type FormalVerificationInput, type FormalVerificationResult, type InspectionPlan, type MaterializedSourceBasis,
@@ -11,7 +12,7 @@ import {
   type OperationsRestartInstallation, type OperationsRestartRecoveryFailure, type OperationsRestartRecoveryProof, type OperationsRestartRequest,
   type OperationsRestorePlan, type OperationsRestoreRecoveryFailure, type OperationsRestoreRecoveryProof,
   type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt,
-  type QualifiedOciArchiveVerification, type QualifiedRepairReceipt,
+  type QualifiedOciArchiveVerification, type QualifiedRepairReceipt, type QualifiedRuleValidationRequest,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
   type ReleaseKomodoCompletion, type ReleaseKomodoConfiguration, type ReleaseKomodoIntent, type ReleaseKomodoUpdate,
   type ReleaseRolloutFailure, type ReleaseRolloutProof, type RuleExtractionInput, type RuleExtractionResultRecord, type RulePackageReviewRecord,
@@ -232,6 +233,52 @@ export const ruleExtractionResults = domain.table('rule_extraction_results', {
     ELSE ${t.candidateKey} IS NULL AND ${t.candidateKind} IS NULL AND ${t.candidateSemanticSha256} IS NULL
       AND ${t.document}#>>'{extraction,result,outcome}' IN ('retain_case', 'duplicate')
     END) IS TRUE`),
+]);
+
+export const candidateValidationAdmissions = domain.table('candidate_validation_admissions', {
+  runId: uuid('run_id').primaryKey(), taskId: uuid('task_id').notNull(), projectId: uuid('project_id').notNull(),
+  candidateId: uuid('candidate_id').notNull().references(() => ruleExtractionResults.id), grantId: uuid('grant_id').notNull(),
+  planSha256: text('plan_sha256').notNull(), plan: jsonb('plan').$type<CandidateValidationPlan>().notNull(),
+}, t => [
+  foreignKey({ name: 'candidate_validation_admission_task_fk', columns: [t.taskId, t.projectId], foreignColumns: [tasks.id, tasks.projectId] }),
+  foreignKey({ name: 'candidate_validation_admission_run_fk', columns: [t.runId, t.taskId], foreignColumns: [taskRuns.id, taskRuns.taskId] }),
+  check('candidate_validation_plan', sql`(${t.planSha256} ~ '^[a-f0-9]{64}$' AND ${t.plan}->>'version' = '1'
+    AND ${t.plan}->>'candidateId' = ${t.candidateId}::text AND ${t.plan}->>'candidateSha256' ~ '^[a-f0-9]{64}$'
+    AND ${t.plan}->>'extractionResultSha256' ~ '^[a-f0-9]{64}$' AND ${t.plan}->>'kind' IN ('code_rule', 'runbook')
+    AND octet_length(${t.plan}::text) <= 4096) IS TRUE`),
+]);
+
+export const candidateValidationAttempts = domain.table('candidate_validation_attempts', {
+  requestId: uuid('request_id').primaryKey(), runId: uuid('run_id').notNull().references(() => candidateValidationAdmissions.runId),
+  fence: integer('fence').notNull(), workerId: uuid('worker_id').notNull(), planSha256: text('plan_sha256').notNull(),
+  request: jsonb('request').$type<QualifiedRuleValidationRequest>().notNull(), createdAt: createdAt(),
+}, t => [
+  unique('candidate_validation_attempt_run_fence').on(t.runId, t.fence),
+  check('candidate_validation_attempt_binding', sql`(${t.planSha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.request}->>'requestId' = ${t.requestId}::text AND ${t.request}->>'runId' = ${t.runId}::text
+    AND ${t.request}->>'fence' = ${t.fence}::text AND ${t.fence} > 0
+    AND ${t.request}->>'version' = '1' AND ${t.request}->>'operation' = 'validate_rule_samples'
+    AND ${t.request}->>'basisSha256' ~ '^[a-f0-9]{64}$' AND ${t.request}->>'commandSha256' ~ '^[a-f0-9]{64}$'
+    AND octet_length(${t.request}::text) <= 4096) IS TRUE`),
+]);
+
+export const candidateValidationResults = domain.table('candidate_validation_results', {
+  id: uuid('id').primaryKey().defaultRandom(), runId: uuid('run_id').notNull().references(() => candidateValidationAdmissions.runId),
+  candidateId: uuid('candidate_id').notNull().references(() => ruleExtractionResults.id), projectId: uuid('project_id').notNull().references(() => projects.id),
+  requestId: uuid('request_id').references(() => candidateValidationAttempts.requestId),
+  planSha256: text('plan_sha256').notNull(), sha256: text('sha256').notNull(), fence: integer('fence').notNull(), workerId: uuid('worker_id').notNull(),
+  document: jsonb('document').$type<CandidateValidationRecord>().notNull(), createdAt: createdAt(),
+}, t => [
+  unique('candidate_validation_result_run').on(t.runId),
+  index('candidate_validation_result_candidate').on(t.projectId, t.candidateId, t.createdAt, t.id),
+  check('candidate_validation_result_binding', sql`(${t.fence} > 0 AND ${t.planSha256} ~ '^[a-f0-9]{64}$' AND ${t.sha256} ~ '^[a-f0-9]{64}$'
+    AND ${t.document}->>'version' = '1' AND ${t.document}->>'candidateId' = ${t.candidateId}::text
+    AND ${t.document}->>'runId' = ${t.runId}::text AND ${t.document}->>'projectId' = ${t.projectId}::text
+    AND ${t.document}->>'planSha256' = ${t.planSha256} AND ${t.document}->>'status' IN ('passed', 'failed', 'unavailable')
+    AND CASE WHEN ${t.document}#>>'{evidence,kind}' = 'code_rule'
+      THEN ${t.requestId} IS NOT NULL AND ${t.document}#>>'{evidence,receipt,scope,requestId}' = ${t.requestId}::text
+      ELSE ${t.requestId} IS NULL AND ${t.document}#>>'{evidence,kind}' = 'runbook'
+    END AND octet_length(${t.document}::text) <= 16384) IS TRUE`),
 ]);
 
 export const taskEvents = domain.table('task_events', {

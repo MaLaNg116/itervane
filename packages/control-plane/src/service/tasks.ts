@@ -6,7 +6,7 @@ import { cancelTaskSchema, resumeTaskSchema, idSchema, listQuerySchema, startOpe
 import type { VerifiedIdentity } from '../auth/identity.js';
 import type { OperationsWorkflowScope } from '../config.js';
 import { queueName, type Database } from '../persistence/database.js';
-import { formalAuditInputs, formalAuditResults, operationsDiagnosisInputs, operationsExecutionSchedules, operationsRequests, releaseCandidates, releaseOperations, repositories,
+import { candidateValidationAdmissions, formalAuditInputs, formalAuditResults, operationsDiagnosisInputs, operationsExecutionSchedules, operationsRequests, releaseCandidates, releaseOperations, repositories,
   ruleExtractionAdmissions, runRuntime, taskEvents, taskRuns, tasks } from '../persistence/schema.js';
 import { requireActor, requireProject, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
@@ -19,7 +19,7 @@ import { databaseNow } from './releases.js';
 
 function presentTask(task: typeof tasks.$inferSelect, run: Pick<typeof taskRuns.$inferSelect, 'id' | 'role'>) {
   return taskDtoSchema.parse({ id: task.id, projectId: task.projectId, requestedBy: task.requestedBy, runId: run.id,
-    ...(run.role === 'operations' || run.role === 'rule-extraction' ? { workflow: run.role } : {}),
+    ...(run.role === 'verify' ? { workflow: 'rule-validation' } : run.role === 'operations' || run.role === 'rule-extraction' ? { workflow: run.role } : {}),
     source: { repositoryId: task.repositoryId, commit: task.commit }, purpose: task.purpose, dataClass: task.dataClass,
     state: task.state, version: task.version, locale: task.locale, createdAt: task.createdAt.toISOString() });
 }
@@ -41,6 +41,7 @@ type TaskAdmission = Pick<typeof tasks.$inferInsert,
   'projectId' | 'requestedBy' | 'repositoryId' | 'commit' | 'purpose' | 'dataClass' | 'locale' | 'requestKey' | 'requestHash'>;
 type OperationsAdmission = { request: ReturnType<typeof freezeOperationsRequest>; providerSha256: string | undefined };
 type ExtractionAdmission = Pick<typeof ruleExtractionAdmissions.$inferInsert, 'caseId' | 'caseSha256' | 'grantId' | 'providerSha256'>;
+type ValidationAdmission = Pick<typeof candidateValidationAdmissions.$inferInsert, 'candidateId' | 'plan' | 'planSha256' | 'grantId'>;
 type OperationsTarget = Awaited<ReturnType<typeof readOperationsObservationTarget>>;
 
 async function replayAdmission(tx: Transaction, scope: Pick<TaskAdmission, 'projectId' | 'requestedBy' | 'requestKey' | 'requestHash'>) {
@@ -55,9 +56,10 @@ export class TaskService {
   constructor(private readonly database: Database) {}
 
   // The caller supplies values after the source and actor are authorized in this transaction.
-  async insertAuthorizedTask(tx: Transaction, values: TaskAdmission, admission?: OperationsAdmission | ExtractionAdmission) {
+  async insertAuthorizedTask(tx: Transaction, values: TaskAdmission, admission?: OperationsAdmission | ExtractionAdmission | ValidationAdmission) {
     const operations = admission && 'request' in admission ? admission : undefined;
     const extraction = admission && 'caseId' in admission ? admission : undefined;
+    const validation = admission && 'candidateId' in admission ? admission : undefined;
     const taskId = randomUUID(); const runId = randomUUID();
     const [task] = await tx.insert(tasks).values({ ...values, id: taskId })
       .onConflictDoNothing({ target: [tasks.projectId, tasks.requestedBy, tasks.requestKey] }).returning();
@@ -66,11 +68,11 @@ export class TaskService {
       if (!replay) throw new DomainError('idempotency_conflict');
       return replay;
     }
-    const run = { id: runId, role: operations ? 'operations' : extraction ? 'rule-extraction' : 'audit' } as const;
+    const run = { id: runId, role: operations ? 'operations' : extraction ? 'rule-extraction' : validation ? 'verify' : 'audit' } as const;
     await tx.insert(taskRuns).values({ ...run, taskId, generation: 1 });
     await tx.insert(runRuntime).values({ runId, taskId, ...(operations ? {
       maxTools: operations.providerSha256 ? operationsDiagnosisSections.length : 2,
-    } : extraction ? { maxTools: 2 } : {}) });
+    } : extraction ? { maxTools: 2 } : validation ? { maxTools: 1 } : {}) });
     if (operations) {
       const { request, providerSha256 } = operations;
       const { projectId, applicationId, environmentId, releaseOperationId } = request.document;
@@ -81,6 +83,7 @@ export class TaskService {
       }
     }
     if (extraction) await tx.insert(ruleExtractionAdmissions).values({ ...extraction, runId, taskId, projectId: task.projectId });
+    if (validation) await tx.insert(candidateValidationAdmissions).values({ ...validation, runId, taskId, projectId: task.projectId });
     await enqueue(tx, this.database, task, runId);
     await tx.insert(taskEvents).values({ taskId, sequence: 1, type: 'task.accepted', state: 'queued', actorId: task.requestedBy });
     return { task: presentTask(task, run), replayed: false };

@@ -67,6 +67,7 @@ export async function appendEvent(tx: Transaction, task: TaskRow, type: string, 
     repair?: { runId: string; repairResultSha256: string };
     verification?: { runId: string; verificationResultSha256: string };
     ruleExtraction?: { runId: string; resultId: string; resultSha256: string };
+    candidateValidation?: { runId: string; validationResultId: string; validationResultSha256: string };
     operations?: { runId: string; releaseOperationId: string; observationSha256: string; fence: number; diagnosisSha256?: string };
     operationsExecution?: { executionId: string; proposalId: string; fence?: number; nativeApprovalId?: string; nativeCallSha256?: string;
       resumeAttempt?: number; recoveryAttempt?: number; recoverySha256?: string };
@@ -80,7 +81,7 @@ export async function appendEvent(tx: Transaction, task: TaskRow, type: string, 
   await tx.insert(taskEvents).values({ taskId: task.id, sequence: next.version, type, state,
     actorId: options.actorId ?? task.requestedBy, actorKind: options.workerId ? 'worker' : 'principal', workerId: options.workerId ?? null,
     detail: { ...(options.reason ? { reason: options.reason } : {}), ...options.observation, ...options.audit, ...options.repair,
-      ...options.verification, ...options.ruleExtraction, ...options.operations, ...options.operationsExecution, ...options.releaseCandidate, ...options.releaseDecision,
+      ...options.verification, ...options.ruleExtraction, ...options.candidateValidation, ...options.operations, ...options.operationsExecution, ...options.releaseCandidate, ...options.releaseDecision,
       ...options.retry } });
   return next;
 }

@@ -70,7 +70,7 @@ jobs:
           apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
           extras=()
           if [[ "${{ matrix.scenario }}" == standard-oci || "${{ matrix.scenario }}" == protected-release* ]]; then extras+=(skopeo); fi
-          if [[ "${{ matrix.scenario }}" == rule-samples ]]; then extras+=(python3-pip); fi
+          if [[ "${{ matrix.scenario }}" == rule-samples || "${{ matrix.scenario }}" == protected-release-linked-health ]]; then extras+=(python3-pip); fi
           sudo -n apt-get "${apt_options[@]}" update -qq
           sudo -n apt-get "${apt_options[@]}" install -y --no-install-recommends gdisk guestfish guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils "${extras[@]}"
           dpkg-query -W gdisk guestfish guestfs-tools libvirt-daemon-system python3-libvirt qemu-system-x86 > .reports/p0/kvm-packages.txt
@@ -115,7 +115,7 @@ jobs:
           printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
       - name: Prepare the pinned rule engine
         id: rule-engine
-        if: steps.capability.outputs.available == 'true' && matrix.scenario == 'rule-samples'
+        if: steps.capability.outputs.available == 'true' && (matrix.scenario == 'rule-samples' || matrix.scenario == 'protected-release-linked-health')
         run: |
           scratch=$(mktemp -d "$RUNNER_TEMP/itervane-rule-engine.XXXXXXXX")
           payload="$scratch/itervane-semgrep"
@@ -273,6 +273,11 @@ jobs:
               $proof.ruleExtraction.caseId == $proof.learningCase.id and $proof.ruleExtraction.caseSha256 == $proof.learningCase.sha256 and
               $proof.ruleExtraction.candidateKind == "code_rule" and $proof.ruleExtraction.usage.toolCalls == 2 and
               ($proof.ruleExtraction.candidateSemanticSha256 | test("^[a-f0-9]{64}$")) and
+              $proof.ruleExtraction.validation.status == "passed" and $proof.ruleExtraction.validation.kind == "code_rule" and
+              $proof.ruleExtraction.validation.candidateId == $proof.ruleExtraction.resultId and
+              $proof.ruleExtraction.validation.domainId != $proof.before.domainId and
+              $proof.ruleExtraction.validation.domainId != $proof.after.domainId and
+              $proof.ruleExtraction.validation.matches == [1,0,0] and $proof.ruleExtraction.validation.cleanupConfirmed and
               $proof.originalContainerId != $proof.recoveredContainerId and $proof.release.operationId != $original.operationId and
               $proof.release.version != $original.version and $proof.release.manifestDigest != $original.manifestDigest and
               $proof.release.approvalDeniedWithoutPortal and $proof.release.healthStatus == 200 and $proof.release.httpMcpAgreement and
@@ -396,6 +401,10 @@ jobs:
               .operations.restart.ruleExtraction.caseSha256 == .operations.restart.learningCase.sha256 and
               .operations.restart.ruleExtraction.candidateKind == "runbook" and .operations.restart.ruleExtraction.usage.toolCalls == 2 and
               (.operations.restart.ruleExtraction.candidateSemanticSha256 | test("^[a-f0-9]{64}$")) and
+              .operations.restart.ruleExtraction.validation.kind == "runbook" and .operations.restart.ruleExtraction.validation.status == "passed" and
+              .operations.restart.ruleExtraction.validation.candidateId == .operations.restart.ruleExtraction.resultId and
+              .operations.restart.ruleExtraction.validation.result.scenarios.stale == "stop_target_drift" and
+              .operations.restart.ruleExtraction.validation.result.scenarios.unapproved == "await_approval" and
               .operations.restart.environmentReleased and .operations.restart.slotReleased and .operations.restart.httpMcpAgreement' "$report" >/dev/null
             jq -e '.operations.restart as $verified | $verified.interrupted as $interrupted |
               $interrupted.releaseOperationId == .release.operationId and

@@ -17,6 +17,8 @@ try {
       npmApprovals: config.npmRepairApprovals,
     } } : {}),
     ...(runner && config.verificationProfile ? { verification: { runner, profile: config.verificationProfile } } : {}),
+    ...(config.candidateValidation ? { candidateValidation: runner && config.candidateValidation.profile
+      ? { code: { runner, profile: config.candidateValidation.profile } } : {} } : {}),
   });
   const controller = new AbortController();
   const stop = () => { controller.abort(); void worker.close().catch(() => undefined); };

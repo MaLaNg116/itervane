@@ -1,7 +1,7 @@
 import { isAbsolute, posix } from 'node:path';
 import { z } from 'zod';
-import { auditModelProtocolSchema, idSchema, komodoResourceIdSchema, npmUpgradeApprovalsSchema, sha256Schema,
-  standardVerificationProfileSchema, whiskersMcpKeySchema, whiskersReadKeySchema } from '@itervane/contracts';
+import { auditModelProtocolSchema, codeRuleValidationProfileSchema, idSchema, komodoResourceIdSchema, npmUpgradeApprovalsSchema, sha256Schema,
+  standardVerificationProfileSchema, whiskersMcpKeySchema, whiskersReadKeySchema, type CodeRuleValidationProfile } from '@itervane/contracts';
 import { safeEndpoint } from '@itervane/model';
 import { sourcePath } from '@itervane/runner';
 import { validateIdentityConfig } from './auth/identity.js';
@@ -27,6 +27,14 @@ const komodoReader = z.strictObject({ actorId: komodoResourceIdSchema, key: komo
 export type OperationsEnrollmentScope = Readonly<z.infer<typeof operationsEnrollmentScopeSchema>>;
 export type OperationsInstallation = Readonly<z.infer<typeof operationsInstallationSchema>>;
 export type OperationsWorkflowScope = Readonly<z.infer<typeof operationsWorkflowScopeSchema>>;
+export type CandidateValidationInstallation = Readonly<{ profile?: CodeRuleValidationProfile }>;
+
+function candidateValidationInstallation(env: NodeJS.ProcessEnv): CandidateValidationInstallation | undefined {
+  const enabled = z.enum(['0', '1']).parse(env.ITERVANE_CANDIDATE_VALIDATION_ENABLED ?? '0') === '1';
+  if (!enabled) return undefined;
+  const raw = env.ITERVANE_CODE_RULE_VALIDATION_PROFILE;
+  return raw === undefined ? {} : { profile: codeRuleValidationProfileSchema.parse(JSON.parse(raw)) };
+}
 
 function operationsEnvironment(env: NodeJS.ProcessEnv) {
   const diagnosisProviderSha256 = env.ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256;
@@ -53,10 +61,11 @@ export function runtimeConfig(env: NodeJS.ProcessEnv = process.env) {
   if (restoreEnabled && !hasDiagnosisAndPortal) throw new Error('operations_restore_api_requires_formal_diagnosis_and_portal');
   const restoreApi = restoreEnabled ? operationsEffectTarget(env) : undefined;
   const ruleExtractionProviderSha256 = sha256Schema.optional().parse(env.ITERVANE_RULE_EXTRACTION_PROVIDER_SHA256);
+  const candidateValidation = candidateValidationInstallation(env);
   return { ...config, publicUrl: canonicalPublicUrl(env.ITERVANE_PUBLIC_URL ?? `http://127.0.0.1:${config.port}`),
     ...(portalClientId ? { portalClientId } : {}), ...(operationsApi ? { operationsApi } : {}),
     ...(restartApiInstallationFile ? { restartApiInstallationFile } : {}), ...(restoreApi ? { restoreApi } : {}),
-    ...(ruleExtractionProviderSha256 ? { ruleExtractionProviderSha256 } : {}) };
+    ...(ruleExtractionProviderSha256 ? { ruleExtractionProviderSha256 } : {}), ...(candidateValidation ? { candidateValidation } : {}) };
 }
 
 function sharedWorkerConfig(env: NodeJS.ProcessEnv) {
@@ -93,7 +102,11 @@ export function workerConfig(env: NodeJS.ProcessEnv = process.env) {
   if (verificationProfile && (!selected || runner?.imageSha256 !== verificationProfile.runnerImageSha256)) {
     throw new Error('Formal verification requires a configured model and the same qualified Runner image');
   }
-  const options = { ...worker, runner, operations, repairProtectedPaths, npmRepairApprovals, verificationProfile };
+  const candidateValidation = candidateValidationInstallation(env);
+  if (candidateValidation?.profile && candidateValidation.profile.runnerImageSha256 !== runner?.imageSha256) {
+    throw new Error('Code rule validation requires the configured qualified Runner image');
+  }
+  const options = { ...worker, runner, operations, repairProtectedPaths, npmRepairApprovals, verificationProfile, candidateValidation };
   if (selected === undefined) return { ...options, auditModel: undefined };
   const protocol = auditModelProtocolSchema.parse(selected);
   const prefix = protocol === 'anthropic' ? 'ANTHROPIC' : 'OPENAI';

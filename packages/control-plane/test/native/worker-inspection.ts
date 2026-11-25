@@ -17,7 +17,7 @@ import {
   operationsObservationReceiptSchema, operationsObservationViewSchema, operationsRestartInstallationSchema,
   qualifiedVerificationResponseSchema, standardVerificationProfileSchema,
   repositoryDtoSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sha256Schema, sourceInspectionDtoSchema,
-  ruleExtractionViewSchema,
+  candidateValidationViewSchema, codeRuleValidationProfileSchema, ruleExtractionViewSchema,
   qualifiedImageArchiveSchema, qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
   taskDtoSchema, taskEventDtoSchema, taskEventReasonSchema, translate,
   type FormalAuditResult, type Locale, type NpmUpgradeApproval, type StandardVerificationProfile, type TaskDto,
@@ -1004,9 +1004,17 @@ async function probe() {
         const { providerSha256 } = configuredAuditModel(configuration);
 
         const extractNativeLearningCase = async (item: Awaited<ReturnType<typeof captureNativeLearningCase>>, expectedKind: 'code_rule' | 'runbook') => {
+          const codeProfile = expectedKind === 'code_rule' ? codeRuleValidationProfileSchema.parse({
+            version: 1, engine: 'semgrep_ce', engineVersion: '1.170.0', runnerImageSha256: imageSha256,
+            engineInputsSha256: process.env.ITERVANE_NATIVE_RULE_ENGINE_SHA256,
+          }) : undefined;
+          const validationConfig = {
+            ITERVANE_CANDIDATE_VALIDATION_ENABLED: '1',
+            ...(codeProfile ? { ITERVANE_CODE_RULE_VALIDATION_PROFILE: JSON.stringify(codeProfile) } : {}),
+          };
           const config = runtimeConfig({
             DATABASE_URL: db.runtimeUrl, ITERVANE_OIDC_ISSUER: oidc.config.issuer, ITERVANE_OIDC_AUDIENCE: oidc.config.audience,
-            ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_RULE_EXTRACTION_PROVIDER_SHA256: providerSha256,
+            ITERVANE_PUBLIC_URL: publicUrl, ITERVANE_RULE_EXTRACTION_PROVIDER_SHA256: providerSha256, ...validationConfig,
           });
           const { app: extractionApi } = await createInstalledApi(db.storage, config, { logger: false });
           let extractionWorker: Awaited<ReturnType<typeof startScopedWorker>> | undefined;
@@ -1034,7 +1042,9 @@ async function probe() {
             const callsBefore = audit.calls.length;
             extractionWorker = await startScopedWorker(bundle, ['PATH=/usr/bin:/bin', 'LANG=C.UTF-8',
               'ITERVANE_WORKER_POLL_MS=100', 'ITERVANE_WORKER_LEASE_SECONDS=30',
-              ...Object.entries(providerEnv).map(([name, value]) => `${name}=${value}`),
+              ...Object.entries({ ...providerEnv, ...validationConfig, ...(codeProfile ? {
+                ITERVANE_RUNNER_SOCKET: socket, ITERVANE_RUNNER_UID: String(controllerUid), ITERVANE_RUNNER_IMAGE_SHA256: imageSha256,
+              } : {}) }).map(([name, value]) => `${name}=${value}`),
             ], { DATABASE_URL: db.runtimeUrl, ANTHROPIC_API_KEY: auditFixtureKey });
             const checked = await poll(async () => {
               const settled = ruleExtractionViewSchema.parse(await call(`/v1/tasks/${admitted.task.id}/rule-extraction`));
@@ -1049,8 +1059,31 @@ async function probe() {
             equal(checked.document.provider, 'anthropic');
             const actions = audit.calls.slice(callsBefore);
             deepStrictEqual(actions, ['read_learning_case', 'search_learning_knowledge', 'finish_role']);
+            const validationPath = `/v1/projects/${item.origin.projectId}/rule-candidates/${checked.id}/validations`;
+            const validationBody = { extractionResultSha256: checked.sha256, locale: 'zh-CN', idempotencyKey: randomUUID() };
+            const validated = admissionDtoSchema.parse(await call(validationPath, validationBody));
+            const repeatedValidation = admissionDtoSchema.parse(await call(validationPath, validationBody));
+            equal(validated.replayed, false);
+            equal(validated.task.workflow, 'rule-validation');
+            equal(repeatedValidation.replayed, true);
+            equal(repeatedValidation.task.id, validated.task.id);
+            const final = await poll(async () => {
+              const view = candidateValidationViewSchema.parse(await call(`/v1/tasks/${validated.task.id}/candidate-validation`));
+              if (view.state === 'needs_human' || view.state === 'failed') throw new Error('fixture_candidate_validation_failed');
+              return view.result ?? undefined;
+            }, 150_000, 'candidate_validation');
+            const { status, evidence } = final.document;
+            equal(status, 'passed');
+            equal(final.document.candidateId, checked.id);
+            equal(evidence.kind, expectedKind);
+            const validation = { id: final.id, sha256: final.sha256, status, kind: evidence.kind, candidateId: checked.id,
+              ...(evidence.kind === 'code_rule' ? {
+                domainId: evidence.receipt.domainId, cleanupConfirmed: evidence.receipt.cleanupConfirmed,
+                matches: evidence.receipt.proof.result.samples.map(sample => sample.status === 'checked' ? sample.matches : null),
+              } : { result: evidence.result }),
+            };
             return { caseId: item.id, caseSha256: item.sha256, taskId: admitted.task.id, resultId: checked.id, resultSha256: checked.sha256,
-              candidateKind: expectedKind, candidateSemanticSha256, usage, actions, model: 'scripted_anthropic_fixture' };
+              candidateKind: expectedKind, candidateSemanticSha256, usage, actions, validation, model: 'scripted_anthropic_fixture' };
           } finally {
             try { await extractionWorker?.stop('TERM'); } finally { await extractionApi.close(); }
           }

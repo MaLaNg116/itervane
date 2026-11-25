@@ -15,7 +15,7 @@ import { errorCode, localizedError, statusFor } from './service/presentation.js'
 import { ResourceService } from './service/resources.js';
 import { TaskService } from './service/tasks.js';
 import { createMcpEndpoint } from './mcp.js';
-import { canonicalPublicUrl, type OperationsWorkflowScope } from './config.js';
+import { canonicalPublicUrl, type CandidateValidationInstallation, type OperationsWorkflowScope } from './config.js';
 import { registerPortal } from './portal.js';
 import { InspectionService } from './service/inspections.js';
 import { FormalAuditService } from './service/formal-audit.js';
@@ -27,6 +27,7 @@ import { RulePackageService } from './service/rule-packages.js';
 import { RulePackageActivationService } from './service/rule-package-activations.js';
 import { LearningCaseService } from './service/learning-cases.js';
 import { RuleExtractionService } from './service/rule-extraction.js';
+import { CandidateValidationService } from './service/candidate-validations.js';
 import { OperationsObservationViewService } from './service/operations-observation-view.js';
 import { OperationsIncidentsViewService } from './service/operations-incidents-view.js';
 import { OperationsIncidentStopService } from './service/operations-incident-stop.js';
@@ -54,13 +55,15 @@ const executionParam = z.strictObject({ executionId: idSchema });
 const rulePackageVersionParam = z.strictObject({ packageId: idSchema, versionId: idSchema });
 const rulePackageParam = z.strictObject({ packageId: idSchema });
 const learningCaseParam = z.strictObject({ projectId: idSchema, caseId: idSchema });
+const ruleCandidateParam = z.strictObject({ projectId: idSchema, candidateId: idSchema });
 const identity = (request: FastifyRequest) => {
   if (!request.verifiedIdentity) throw new AuthenticationError();
   return request.verifiedIdentity;
 };
 const limit = (request: FastifyRequest) => parseInput(listQuerySchema, request.query).limit;
 
-export type ApiConfig = IdentityConfig & { publicUrl?: string; portalClientId?: string; operationsApi?: OperationsWorkflowScope; ruleExtractionProviderSha256?: string };
+export type ApiConfig = IdentityConfig & { publicUrl?: string; portalClientId?: string; operationsApi?: OperationsWorkflowScope;
+  ruleExtractionProviderSha256?: string; candidateValidation?: CandidateValidationInstallation };
 export function createApi(database: Database, config: ApiConfig,
   options: { logger?: boolean; portalRoot?: string; operationsRestartWriter?: OperationsRestartWriterProof;
     operationsRestoreTarget?: InstalledReleaseTarget } = {}) {
@@ -75,6 +78,7 @@ export function createApi(database: Database, config: ApiConfig,
   const ruleActivations = new RulePackageActivationService(database, config.portalClientId);
   const learningCases = new LearningCaseService(database);
   const ruleExtraction = new RuleExtractionService(database, config.ruleExtractionProviderSha256);
+  const candidateValidation = new CandidateValidationService(database, config.candidateValidation);
   const app = Fastify({
     logger: options.logger === false ? false : { level: 'info' },
     logController: new LogController({ disableRequestLogging: true }), requestIdHeader: false, genReqId: () => randomUUID(),
@@ -183,6 +187,15 @@ export function createApi(database: Database, config: ApiConfig,
   app.get('/v1/tasks/:taskId/rule-extraction', async request => {
     const { taskId } = parseInput(taskParam, request.params);
     return ruleExtraction.get(identity(request), taskId, request.locale);
+  });
+  app.post('/v1/projects/:projectId/rule-candidates/:candidateId/validations', async (request, reply) => {
+    const { projectId, candidateId } = parseInput(ruleCandidateParam, request.params);
+    const result = admissionDtoSchema.parse(await candidateValidation.admit(identity(request), projectId, candidateId, request.body));
+    return reply.code(result.replayed ? 200 : 202).send(result);
+  });
+  app.get('/v1/tasks/:taskId/candidate-validation', async request => {
+    const { taskId } = parseInput(taskParam, request.params);
+    return candidateValidation.get(identity(request), taskId, request.locale);
   });
   app.post('/v1/tasks/:taskId/learning-case', async (request, reply) => {
     const { taskId } = parseInput(taskParam, request.params);

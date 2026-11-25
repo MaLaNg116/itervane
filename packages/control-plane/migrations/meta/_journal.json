@@ -526,6 +526,13 @@
       "when": 1795515881773,
       "tag": "0074_durable_rule_extraction",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1795528447378,
+      "tag": "0075_durable_candidate_validation",
+      "breakpoints": true
     }
   ]
 }
