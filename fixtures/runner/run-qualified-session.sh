@@ -4,6 +4,7 @@ set -euo pipefail
 test "${PROBE_HOST_ENVIRONMENT:-}" = github-hosted
 directory=$(realpath -- "$1")
 scenario=${2:-regression}
+source packages/runner/ops/dedicated-session.sh
 reports="$PWD/.reports/p0"
 runner=itervane-probe
 worker=itervane-inspection-client
@@ -33,7 +34,7 @@ if [[ "$scenario" == protected-release-linked-health ]]; then
   features+=(--enable-rule-samples)
 fi
 
-sudo -n useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$worker"
+sudo -n useradd --system --user-group --groups "$runner" --no-create-home --shell /usr/sbin/nologin "$worker"
 sudo -n install -d -m 0755 -o "$runner" -g "$runner" "$shared"
 probe=scripts/probe-qualified-runner.ts
 if [[ "$scenario" == rule-samples ]]; then probe=packages/control-plane/test/native/rule-samples.ts; fi
@@ -41,26 +42,33 @@ pnpm exec esbuild "$probe" --bundle --platform=node --format=esm --target=node24
   --outfile=.reports/p0/qualified-client.mjs
 sudo -n install -m 0444 .reports/p0/qualified-client.mjs "$shared/client.mjs"
 
-sudo -n systemd-run --quiet --unit="$unit" --uid="$runner" --gid="$runner" \
-  --property=Type=exec --property=NoNewPrivileges=yes --property=SupplementaryGroups=kvm \
-  --property=CapabilityBoundingSet= --property=AmbientCapabilities= \
-  --setenv="XDG_CONFIG_HOME=/home/$runner/.config" --setenv="XDG_CACHE_HOME=/home/$runner/.cache" --setenv=LANG=C.UTF-8 \
-  /usr/bin/python3 -I -B "$directory/code/packages/runner/host/qualified_controller.py" \
-  "$sock" "$stage" "$directory/probe.raw" "$digest" "$(id -u "$worker")" "${features[@]}" https://github.com/MaLaNg116/itervane.git
+reference_session=
+if [[ "$scenario" == protected-release-linked-health ]]; then
+  sudo -n systemctl stop itervane-probe-libvirtd.service
+  reference_session=itervane-reference-libvirt.service
+  unit=itervane-reference-runner.service
+  sock=/run/itervane-reference-runner/inspection.sock
+fi
+
 stop_session() {
   sudo -n systemctl stop "$unit"
+  if [[ -n "$reference_session" ]]; then sudo -n systemctl stop "$reference_session"; fi
   if [[ "$1" -ne 0 ]]; then
     sudo -n journalctl --unit "$unit" --grep '^itervane-domain-result ' --lines 20 --output cat --no-pager >&2 || true
   fi
 }
 trap 'stop_session "$?"' EXIT
-for attempt in {1..100}; do
-  if sudo -n test -S "$sock"; then break; fi
-  sleep 0.1
-done
-sudo -n test -S "$sock"
-sudo -n chgrp "$worker" "$sock"
-sudo -n chmod 0660 "$sock"
+if [[ -n "$reference_session" ]]; then
+  sudo -n bash packages/runner/ops/start-reference-runner.sh "$directory" "$directory/probe.raw" "$digest" \
+    "$runner" "$worker" https://github.com/MaLaNg116/itervane.git > "$reports/runner-reference-connection.env"
+  grep -Fx "ITERVANE_RUNNER_SOCKET=$sock" "$reports/runner-reference-connection.env"
+  grep -Fx "ITERVANE_RUNNER_UID=$(id -u "$runner")" "$reports/runner-reference-connection.env"
+  grep -Fx "ITERVANE_RUNNER_IMAGE_SHA256=$digest" "$reports/runner-reference-connection.env"
+else
+  itervane_start_controller "$runner" "$worker" "$unit" "$directory/code/packages/runner/host/qualified_controller.py" \
+    "$sock" "$stage" "$directory/probe.raw" "$digest" "${features[@]}" https://github.com/MaLaNg116/itervane.git
+fi
+itervane_runner_status "$worker" "$sock" "$digest" > "$reports/runner-installed-status.json"
 
 as_client() {
   sudo -n -u "$worker" -- /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 \
