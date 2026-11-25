@@ -53,11 +53,15 @@ function AuditResult({ result, sha256 }: { result: FormalAuditResult; sha256: st
     <details>
       <summary>{t('auditEvidence')}</summary>
       <p><code className="break-text">{sha256}</code></p>
-      <ul>{result.evidence.map(item => <li key={item.id}>
-        {item.kind === 'scan' ? <><strong>{scannerNames[item.scanner]} {item.version}</strong> · {t('scanFindings')} {item.totalFindings}</>
-          : <strong>{item.kind === 'rule' ? item.ruleId : t('auditHealthReproduction')}</strong>}
-        <br /><code className="break-text">{item.id}</code>
-      </li>)}</ul>
+      <ul>{result.evidence.map(item => {
+        const skill = item.kind === 'rule' ? item.designSkill : undefined;
+        return <li key={item.id}>
+          {item.kind === 'scan' && <><strong>{scannerNames[item.scanner]} {item.version}</strong> · {t('scanFindings')} {item.totalFindings}</>}
+          {item.kind === 'health_reproduction' && <strong>{t('auditHealthReproduction')}</strong>}
+          {item.kind === 'rule' && <strong>{skill ? `${t('auditDesignSkill')} · ${skill.reference.packageKey} ${skill.version}` : item.ruleId}</strong>}
+          <br /><code className="break-text">{item.id}</code>
+        </li>;
+      })}</ul>
     </details>
   </div>;
 }

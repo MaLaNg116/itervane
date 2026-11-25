@@ -78,14 +78,20 @@ test('renders the audit checklist with locale-independent evidence and escaped n
   const hash = (text: string) => createHash('sha256').update(text).digest('hex');
   const finding = { id: hash('finding'), ruleId: 'fixture-pattern', path: 'settings/example.txt', line: 3,
     severity: 'unknown', certainty: 'suspected', scanner: 'gitleaks', impact: 'Review fixture <audit-fixture> verbatim.', suggestion: 'Ask the owner to verify the match.' };
-  const evidenceIds = [hash('gitleaks'), hash('trivy')];
+  const evidenceIds = [hash('gitleaks'), hash('trivy'), hash('design-skill')];
+  const ruleVersionHash = hash('skill-version');
   const result = { version: 1, taskId: task.id, runId: task.runId, projectId: project.id, generation: 1, locale: 'en',
     inputSha256: hash('input'), checkpointId: randomUUID(), inspectionSha256: hash('inspection'), snapshotSha256: hash('snapshot'),
-    catalogSha256: hash('catalog'), status: 'completed', reason: 'audit_complete', provider: 'anthropic', usage: { turns: 3, toolCalls: 2, tokens: 90 },
+    catalogSha256: hash('catalog'), status: 'completed', reason: 'audit_complete', provider: 'anthropic', usage: { turns: 4, toolCalls: 3, tokens: 120 },
     evidence: [{ kind: 'scan', id: evidenceIds[0], scanner: 'gitleaks', version: '8.30.1', policySha256: hash('secret-policy'), databaseSha256: null,
       totalFindings: 1, findingIds: [finding.id] }, { kind: 'scan', id: evidenceIds[1], scanner: 'trivy', version: '0.70.0', policySha256: hash('dependency-policy'),
-      databaseSha256: hash('vulnerability-db'), totalFindings: 0, findingIds: [] }],
-    trace: evidenceIds.map(evidenceId => ({ operationId: hash(evidenceId), tool: 'read_scan', evidenceId })),
+      databaseSha256: hash('vulnerability-db'), totalFindings: 0, findingIds: [] },
+      { kind: 'rule', id: evidenceIds[2], ruleId: 'skill-portable-forms', sha256: ruleVersionHash,
+        designSkill: { authority: 'advisory', snapshotSha256: hash('rule-snapshot'), version: '1.0.0', reference: {
+          kind: 'design_skill', packageId: randomUUID(), packageKey: 'portable-forms', versionId: randomUUID(),
+          versionSha256: ruleVersionHash, reviewSha256: hash('review'), sequence: 1,
+        } } }],
+    trace: evidenceIds.map((evidenceId, index) => ({ operationId: hash(evidenceId), tool: index === 2 ? 'read_rule' : 'read_scan', evidenceId })),
     checklist: { summary: 'Two protected scans reviewed.', coverage: 'complete', findings: [finding], hypotheses: [], evidenceIds, limits: ['Scope covers secret and dependency checks.'] },
   };
   // The Worker and persisted response are verified separately against PostgreSQL; this fixture drives the browser rendering branch.
@@ -103,9 +109,13 @@ test('renders the audit checklist with locale-independent evidence and escaped n
   await expect(panel.getByText(`${finding.path}:${finding.line}`, { exact: true })).toBeVisible();
   await panel.getByText('Evidence references', { exact: true }).click();
   await expect(panel.getByText(evidenceIds[0]!, { exact: true })).toBeVisible();
+  await expect(panel.getByText('Design Skill guidance · portable-forms 1.0.0', { exact: true })).toBeVisible();
   await language(page, 'zh-CN');
   await expect(panel.getByText('潜在影响')).toBeVisible();
   await expect(panel.getByText('已形成审计清单。')).toBeVisible();
+  const localizedEvidence = panel.getByText('证据引用', { exact: true });
+  if (!(await localizedEvidence.evaluate(element => element.parentElement?.hasAttribute('open')))) await localizedEvidence.click();
+  await expect(panel.getByText('设计 Skill 指导 · portable-forms 1.0.0', { exact: true })).toBeVisible();
   await expect(panel.getByText(finding.impact, { exact: true })).toHaveAttribute('lang', 'en');
 });
 
