@@ -32,6 +32,7 @@
     "reference:prepare": "tsx packages/control-plane/src/entries/reference.ts prepare",
     "reference:init": "tsx packages/control-plane/src/entries/reference.ts init",
     "reference:start": "tsx packages/control-plane/src/entries/reference.ts start",
+    "reference:runner-profile": "tsx scripts/reference-runner-profile.ts",
     "start:worker": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/worker.ts",
     "start:release-worker": "tsx packages/control-plane/src/entries/release-worker.ts",
     "start:restart-worker": "tsx packages/control-plane/src/entries/restart-worker.ts",
