@@ -28,7 +28,7 @@ function citedFacts(facts: ReadonlyMap<string, OperationsDiagnosisObservation>, 
   const errors = Boolean(logs && logs.errorLines > 0);
   const previous = released?.previous && released.previous.manifestDigest !== released.current.manifestDigest ? released.previous : null;
   const memoryPressure = metrics?.status === 'observed' && metrics.memory !== null && metrics.memory.average >= operationsMemoryPressureThreshold;
-  return { stopped, errors, memoryPressure, previous, released };
+  return { stopped, errors, memoryPressure, previous, released, state: container?.state };
 }
 
 export function finishFormalOperations(evidence: readonly AgentEvidence[], raw: unknown) {
@@ -53,6 +53,11 @@ export function finishFormalOperations(evidence: readonly AgentEvidence[], raw: 
   }
   const cited = citedFacts(facts, recommendation);
   if (!cited) return;
+  if (recommendation.code === 'review_restart' && (cited.state === 'exited' || cited.state === 'dead')) {
+    const release = observed.find(item => item.data.section === 'release');
+    const guidance = release?.data.section === 'release' ? release.data.result.runbooks?.byState[cited.state] : undefined;
+    if (guidance?.status === 'ambiguous' || (guidance?.status === 'available' && !cited.released)) return;
+  }
   const supported = {
     continue_observation: true,
     review_restart: cited.stopped,

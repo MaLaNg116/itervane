@@ -22,10 +22,11 @@ export type OperationsDiagnosisSection = z.infer<typeof operationsDiagnosisSecti
 const verifiedRelease = z.strictObject({
   operationId: idSchema, manifestDigest: ociDigestSchema, verifiedAt: z.iso.datetime({ precision: 3 }),
 });
+const selectedRunbook = z.strictObject({ status: z.literal('available'), rule: publishedRuleReferenceSchema.extend({ kind: z.literal('runbook') }),
+  version: z.string().min(1).max(32), validationSha256: sha256Schema,
+  action: runbookCandidateSchema.shape.action, controls: runbookCandidateSchema.shape.controls, success: runbookCandidateSchema.shape.success });
 const runbookChoice = z.discriminatedUnion('status', [
-  z.strictObject({ status: z.literal('available'), rule: publishedRuleReferenceSchema.extend({ kind: z.literal('runbook') }),
-    version: z.string().min(1).max(32), validationSha256: sha256Schema,
-    action: runbookCandidateSchema.shape.action, controls: runbookCandidateSchema.shape.controls, success: runbookCandidateSchema.shape.success }),
+  selectedRunbook,
   z.strictObject({ status: z.literal('no_match') }),
   z.strictObject({ status: z.literal('ambiguous') }),
 ]);
@@ -33,6 +34,10 @@ export const operationsRunbookGuidanceSchema = z.strictObject({
   version: z.literal(1), snapshotSha256: sha256Schema, byState: z.strictObject({ exited: runbookChoice, dead: runbookChoice }),
 });
 export type OperationsRunbookGuidance = z.infer<typeof operationsRunbookGuidanceSchema>;
+export const operationsRunbookBindingSchema = z.strictObject({
+  snapshotSha256: sha256Schema, evidenceId: sha256Schema, observedState: z.enum(['exited', 'dead']), selection: selectedRunbook,
+});
+export type OperationsRunbookBinding = z.infer<typeof operationsRunbookBindingSchema>;
 
 const releaseEvidence = z.strictObject({ current: verifiedRelease, previous: verifiedRelease.nullable(), runbooks: operationsRunbookGuidanceSchema.optional() })
   .refine(evidence => !evidence.previous || evidence.previous.operationId !== evidence.current.operationId

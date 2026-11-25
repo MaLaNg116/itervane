@@ -1,10 +1,11 @@
 import {
   idSchema, maxOperationsRestartResumes, operationsRestartApprovalInputSchema, operationsRestartContinueInputSchema,
   operationsRestartResumeBindingSchema, operationsRestartResumeOutcomeSchema, operationsRestartWriterProofSchema, operationsRestorePlanSchema,
-  type OperationsRestartInstallation, type OperationsRestartWriterProof,
+  type OperationsProposal, type OperationsRestartBaseline, type OperationsRestartInstallation, type OperationsRestartWriterProof,
 } from '@itervane/contracts';
+import { selectRunbookAction } from '@itervane/rules';
 import { sha256 } from '@itervane/runner';
-import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, count, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { fromDrizzle, type Job } from 'pg-boss';
 import type { VerifiedIdentity } from '../auth/identity.js';
@@ -94,6 +95,21 @@ async function readRestartContinuation(tx: Transaction, executionId: string, aut
   if (resume?.state !== 'queued' || resume.approvalId !== request.approvalId || resume.callSha256 !== request.callSha256
       || resume.actorId !== decision.actorId || resume.grantId !== decision.grantId) throw new ExecutionLost();
   return { request, resume, approval: { approvalId: request.approvalId, callSha256: request.callSha256 } };
+}
+
+async function requireRunbookRestart(tx: Transaction, executionId: string, frozen: OperationsProposal, baseline?: OperationsRestartBaseline) {
+  const { runbook } = frozen;
+  if (!runbook) return;
+  if (!baseline || baseline.state !== runbook.observedState) throw new DomainError('version_conflict');
+  // A prepared call may have reached Whiskers. A confirmed pending response only checked the approval gate.
+  const [prior] = await tx.select({ attempts: count() }).from(operationsRestartResumes).where(and(
+    eq(operationsRestartResumes.executionId, executionId), inArray(operationsRestartResumes.state, ['prepared', 'acknowledged', 'unknown']),
+  ));
+  const decision = selectRunbookAction({ when: { observedStates: [runbook.observedState] }, controls: runbook.selection.controls }, {
+    observedState: baseline.state, publication: 'current', approvals: 'missing', priorAttempts: prior?.attempts ?? 0,
+  });
+  // This is permission to reach the native confirmation gate. Whiskers decides whether the effect can run.
+  if (decision !== 'await_approval') throw new DomainError('unsupported_state');
 }
 
 function wakeupMode({ execution, task, reason, intent }: BoundExecution): OperationsExecutionLease['mode'] | undefined {
@@ -285,6 +301,7 @@ export class OperationsExecutionCoordinator {
       if (preparation?.kind === 'restart') await requireOperationsRestartWriter(tx, frozen.target, whiskers, preparation.proof);
       const baseline = preparation?.kind === 'restart'
         ? matchRestartBaseline(await readOperationsRestartSubject(tx, frozen.target, publishedVersion), preparation.baseline) : undefined;
+      await requireRunbookRestart(tx, execution.id, frozen, baseline);
       const [intent] = await tx.insert(operationsExecutionIntents).values({ executionId: execution.id,
         decisionVersion: execution.decisionVersion, proposalFingerprint: execution.proposalFingerprint,
         generation: scope.generation, workerId: scope.workerId, fence: scope.fence,
@@ -477,6 +494,7 @@ export class OperationsExecutionCoordinator {
       const { request, resume: checked, approval } = await readRestartContinuation(tx, execution.id, authority, binding);
       if (approval.approvalId !== binding.approvalId || approval.callSha256 !== binding.callSha256 ||
           request.runtimeBaselineSha256 !== binding.runtimeBaselineSha256) throw new DomainError('version_conflict');
+      await requireRunbookRestart(tx, execution.id, authority.frozen, request.runtimeBaseline ?? undefined);
       const [resume] = await tx.update(operationsRestartResumes).set({ state: 'prepared', workerId: scope.workerId, fence: scope.fence })
         .where(and(eq(operationsRestartResumes.executionId, execution.id), eq(operationsRestartResumes.attempt, checked.attempt))).returning();
       if (!resume) throw new ExecutionLost();

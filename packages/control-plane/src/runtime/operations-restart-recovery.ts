@@ -1,5 +1,6 @@
 import { maxOperationsRestartRecoveryAttempts, operationsRestartRecoveryObservationSchema, operationsRestartRecoveryProofSchema,
   type OperationsRestartRecoveryFailure, type OperationsRestartRecoveryProof } from '@itervane/contracts';
+import { compareRunbookRecovery } from '@itervane/rules';
 import { sha256 } from '@itervane/runner';
 import { and, desc, eq } from 'drizzle-orm';
 import type { OperationsEnrollmentScope } from '../config.js';
@@ -99,6 +100,11 @@ export async function proveRestartRecovery(tx: Transaction, scope: OperationsExe
   const native = resume?.state === 'acknowledged' && resume.fence && resume.fence < scope.fence && request.approvalId
     && resume.approvalId === request.approvalId && resume.callSha256 === request.callSha256
     ? { approvalId: request.approvalId, attempt: resume.attempt } : null;
+  const { runbook } = readOperationsProposal(bound.proposal);
+  if (runbook && native && compareRunbookRecovery(runbook.selection, { nativeOutcome: 'acknowledged',
+    sameInstance: runtime.containerId === baseline.containerId, newerStart: observation.startedAt > baseline.startedAt,
+    healthStatus: runtime.healthStatus, anonymousStatus: runtime.anonymousStatus,
+  }) !== 'verified_recovered') throw new RestartRecoveryRejected('missing_evidence');
   return operationsRestartRecoveryProofSchema.parse({ version: 1, executionId: scope.executionId, releaseOperationId, fence: scope.fence,
     proposalFingerprint: bound.execution.proposalFingerprint, callSha256: request.callSha256, runtimeBaselineSha256: request.runtimeBaselineSha256,
     native, observation });
@@ -109,7 +115,8 @@ export async function finishRestartRecovery(tx: Transaction, database: Database,
   const { execution, schedule, task } = bound;
   const proof = 'proof' in outcome ? outcome.proof : null;
   const failure = 'failure' in outcome ? outcome.failure : proof?.native ? null : 'native_unconfirmed';
-  const retry = (failure === 'unhealthy' || failure === 'unavailable' || failure === 'lease_expired') && attempt.attempt < maxOperationsRestartRecoveryAttempts;
+  const retryUnhealthy = failure === 'unhealthy' && !readOperationsProposal(bound.proposal).runbook;
+  const retry = (retryUnhealthy || failure === 'unavailable' || failure === 'lease_expired') && attempt.attempt < maxOperationsRestartRecoveryAttempts;
   const state = !failure ? 'verified' : retry ? 'retry' : 'manual_review';
   const proofSha256 = proof && sha256(JSON.stringify(proof));
   const [record] = await tx.update(operationsRestartRecoveries).set({ state, failure, proof, proofSha256 })

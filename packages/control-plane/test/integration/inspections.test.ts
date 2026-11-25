@@ -6352,13 +6352,20 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
     expect(laterScope?.runId).toBe(later.task.runId);
     const scripted = scriptedRestartDiagnosis();
     let observedGuidance: unknown;
+    let omittedCitation = false;
     const inspectModel = vi.fn<ModelAdapter['complete']>(async request => {
       const context = request.conversation[0];
       if (context?.kind !== 'user') throw new Error('Expected diagnosis context');
       const { observations } = JSON.parse(context.text) as { observations: AgentEvidence[] };
       const release = observations.find(item => item.data.kind === 'operations_section' && item.data.section === 'release');
       if (release?.data.kind === 'operations_section' && release.data.section === 'release') observedGuidance = release.data.result.runbooks;
-      return scripted.complete(request);
+      const result = await scripted.complete(request);
+      if (result.calls[0]?.name !== 'finish_role' || omittedCitation) return result;
+      const draft = finishOperationsInputSchema.parse(result.calls[0].input);
+      omittedCitation = true;
+      return operationsDecision('finish_role', { ...draft, recommendation: {
+        ...draft.recommendation, evidenceIds: draft.recommendation.evidenceIds.filter(id => id !== release?.id),
+      } });
     });
     const saver = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
     const whiskers = scopedWhiskers(action.fixture, undefined, 'exited');
@@ -6367,7 +6374,7 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
     }, new AbortController().signal); }
     finally { whiskers.restore(); await saver.end(); }
     expect(observedGuidance).toEqual(guidance);
-    expect(inspectModel).toHaveBeenCalledTimes(4);
+    expect(inspectModel).toHaveBeenCalledTimes(5);
     expect(whiskers.tools).toEqual(['get_container_details', 'get_container_logs']);
     const observationViews = new OperationsObservationViewService(database.storage);
     const beforeWithdrawal = await observationViews.get(identity, later.task.id, 'zh-CN');
@@ -6378,11 +6385,59 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
     const initial = await observationViews.get(identity, action.diagnosed.id, 'zh-CN');
     expect(initial.diagnosis?.facts.find(fact => fact.section === 'release')?.result.runbooks).toBeUndefined();
     const reviewer = await createIdentityVerifier(issuer.config)(await issuer.token('owner', { azp: operationsPortal }));
+    const proposals = new OperationsProposalService(database.storage, action.installed);
+    const proposalDecisions = new OperationsDecisionService(database.storage, action.installed, operationsPortal);
+    const admission = new OperationsExecutionAdmission(database.storage, action.installed);
+    const executionRuntime = new OperationsExecutionCoordinator(coordinator, action.installed, operationsPortal);
+    const writerProof = { installationId, installationSha256, credentialSha256 };
+    const freezeRunbook = async (taskId: string, diagnosisSha256: string) => {
+      const { proposal } = await proposals.freeze(identity, taskId, { diagnosisSha256 });
+      const frozen = readOperationsProposal(proposal);
+      expect(frozen.runbook).toMatchObject({ observedState: 'exited', selection: match });
+      await proposalDecisions.decide(reviewer, proposal.id, { action: 'confirm', fingerprint: proposal.fingerprint,
+        expectedVersion: 0, idempotencyKey: randomUUID() });
+      return { proposalId: proposal.id, fingerprint: proposal.fingerprint, decisionVersion: 1 };
+    };
+    const executeRunbook = async (approved: Awaited<ReturnType<typeof freezeRunbook>>, health: 'passed' | 'failed') => {
+      const { execution, schedule } = await admission.enqueue(approved);
+      const dispatch = await executionRuntime.claim(await fetchOperationsWakeup(), randomUUID());
+      if (!dispatch || dispatch.mode !== 'dispatch') throw new Error('Expected a scoped Runbook dispatch');
+      const baseline = stoppedBaseline(action.fixture);
+      await expect(executionRuntime.prepareDispatch(dispatch, writerProof, { ...baseline, state: 'dead' })).rejects.toMatchObject({ code: 'version_conflict' });
+      const { restartRequest } = await executionRuntime.prepareDispatch(dispatch, writerProof, baseline);
+      if (!restartRequest) throw new Error('Expected a restart approval request');
+      const native = { approvalId: randomUUID().replaceAll('-', ''), callSha256: restartRequest.callSha256 };
+      await executionRuntime.pauseForRestartApproval(dispatch, native);
+      const waiting = await action.fixture.taskService.get(identity, schedule.taskId);
+      await executionRuntime.requestRestartResume(reviewer, execution.id, { ...native, expectedVersion: waiting.version, idempotencyKey: randomUUID() });
+      const continuation = await executionRuntime.claim(await fetchOperationsWakeup(), randomUUID());
+      if (!continuation || continuation.mode !== 'restart_resume') throw new Error('Expected a scoped Runbook continuation');
+      const send = { ...native, ...writerProof, runtimeBaselineSha256: sha256(JSON.stringify(baseline)) };
+      await executionRuntime.prepareRestartResume(continuation, send);
+      await expect(executionRuntime.prepareRestartResume(continuation, send)).rejects.toBeInstanceOf(ExecutionLost);
+      await executionRuntime.recordRestartResume(continuation, { ...native, outcome: 'acknowledged' });
+      const recovery = await executionRuntime.claim(await fetchOperationsWakeup(), randomUUID());
+      if (!recovery || recovery.mode !== 'reconcile') throw new Error('Expected an independent recovery lease');
+      expect(recovery.fence).toBeGreaterThan(continuation.fence);
+      if (health === 'passed') await expect(executionRuntime.settleRestartRecovery(recovery, outcomeEvidence)).resolves.toBe('verified');
+      else await expect(executionRuntime.deferRestartRecovery(recovery, 'unhealthy')).resolves.toBe('manual_review');
+      const [result] = await database.storage.db.select().from(operationsRestartRecoveries).where(eq(operationsRestartRecoveries.executionId, execution.id));
+      expect(result).toMatchObject({ attempt: 1, state: health === 'passed' ? 'verified' : 'manual_review',
+        failure: health === 'passed' ? null : 'unhealthy' });
+      const [reservation] = await database.storage.db.select().from(operationsExecutions).where(eq(operationsExecutions.id, execution.id));
+      expect(reservation?.state).toBe(health === 'passed' ? 'recovered' : 'reserved');
+    };
+    await executeRunbook(await freezeRunbook(later.task.id, beforeWithdrawal.diagnosis!.receiptSha256), 'passed');
+    const nextFailure = await settleProposalDiagnosis('restart', action.fixture);
+    await executeRunbook(await freezeRunbook(nextFailure.task.id, nextFailure.diagnosis.sha256), 'failed');
+    const stale = await settleProposalDiagnosis('restart', action.fixture);
+    const staleApproval = await freezeRunbook(stale.task.id, stale.diagnosis.sha256);
     const withdrawal = await new RulePackageActivationService(database.storage, operationsPortal).change(reviewer, publishedRunbook.packageId, {
       action: 'withdraw', expectedSequence: 3, versionId: publishedRunbook.versionId,
       versionSha256: publishedRunbook.sha256, idempotencyKey: randomUUID(),
     }, 'zh-CN');
     expect(withdrawal.state.current).toBeNull();
+    await expect(admission.reserve(staleApproval)).rejects.toMatchObject({ code: 'version_conflict' });
     expect(await observationViews.get(identity, later.task.id, 'zh-CN')).toEqual(beforeWithdrawal);
     const after = await new TaskService(database.storage).admitOperations(identity, { projectId, environmentId: action.fixture.scope.environmentId,
       idempotencyKey: randomUUID(), locale: 'zh-CN', expectedReleaseOperationId: action.fixture.operationId }, action.installed);

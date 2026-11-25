@@ -65,6 +65,8 @@ export class OperationsProposalViewService {
         status, message: translate(locale, `operations.proposal_${status}`),
         current: { operationId: target.releaseOperationId, manifestDigest: target.manifestDigest },
         restore: action.kind === 'rollback' ? { operationId: action.restore.operationId, manifestDigest: action.restore.manifestDigest } : null,
+        ...(frozen.runbook ? { runbook: { rule: frozen.runbook.selection.rule, version: frozen.runbook.selection.version,
+          controls: frozen.runbook.selection.controls } } : {}),
         decisions: history.map(({ action, version, actorId, selfConfirmed, decidedAt }) =>
           ({ action, version, actorId, selfConfirmed, decidedAt: decidedAt.toISOString() })),
         actions: !mayDecide ? [] : last?.action === 'confirm' ? ['revoke'] : status === 'pending' ? ['confirm', 'reject'] : [],

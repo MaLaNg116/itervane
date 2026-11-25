@@ -155,8 +155,9 @@
 | 150 | P4-D2b3 审计 Agent 引用已发布规则 | [#150](https://github.com/MaLaNg116/itervane/pull/150)，依赖 #149 | [审计规则证据导读](p4-formal-audit-rules.md) | 282 项单测、5 项 PostgreSQL 专项与 16 项托管检查通过 |
 | 151 | P4-D2b4a 复验 Runner 重扫代码规则 | [#151](https://github.com/MaLaNg116/itervane/pull/151)，依赖 #150 | [独立规则复验导读](p4-qualified-published-verification.md) | 284 项单测、81 项 Linux 主机与固定样例的独立 VM 重扫通过 |
 | 152 | P4-D2b4b 已发布规则复验与发布裁决 | [#152](https://github.com/MaLaNg116/itervane/pull/152)，依赖 #151 | [规则复验与发布导读](p4-published-verification-result.md) | 287 项单测与 5 项 PostgreSQL 专项通过 |
-| 153 | P4-D2c 第二个登记项目复用规则 | [#153](https://github.com/MaLaNg116/itervane/pull/153)，依赖 #152 | [真实规则复用导读](p4-native-rule-reuse.md) | 两份固定源码的实际 Semgrep 校验、TypeScript 和 287 项单测通过 |
-| 后续批次 | P4-D3a 固定 Runbook 进入运维诊断 | 依赖 [#153](https://github.com/MaLaNg116/itervane/pull/153) | [运维 Runbook 诊断导读](p4-pinned-runbook-guidance.md) | 287 项单测、4 项 PostgreSQL 与真实 Chrome 双语验收通过 |
+| 153 | P4-D2c 第二个登记项目复用规则 | [#153](https://github.com/MaLaNg116/itervane/pull/153)，依赖 #152 | [真实规则复用导读](p4-native-rule-reuse.md) | 13 项托管原生作业通过，第二个项目的正式初检、独立复验和 OCI 归档已核对 |
+| 154 | P4-D3a 固定 Runbook 进入运维诊断 | [#154](https://github.com/MaLaNg116/itervane/pull/154)，依赖 #153 | [运维 Runbook 诊断导读](p4-pinned-runbook-guidance.md) | 287 项单测、4 项 PostgreSQL 与真实 Chrome 双语验收通过 |
+| 后续批次 | P4-D3b Runbook 约束受控重启 | 依赖 [#154](https://github.com/MaLaNg116/itervane/pull/154) | [Runbook 重启授权导读](p4-runbook-restart-authority.md) | 287 项单测、5 项 PostgreSQL 和真实 Chrome 审批验收通过 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
