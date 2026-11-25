@@ -65,7 +65,7 @@ export async function repairBasis(tx: Transaction, task: TaskRow, scope: Executi
   const [repo] = await tx.select({ origin: repositories.url }).from(repositories)
     .where(and(eq(repositories.id, task.repositoryId), eq(repositories.projectId, task.projectId))).for('share');
   if (!plan || !inspection || !repo) throw new DomainError('unavailable');
-  const scan = readInspectionEvidence(inspection, plan);
+  const scan = await readInspectionEvidence(tx, inspection, plan);
   const reference = input.document.inspection;
   if (scan.sha256 !== reference.receiptSha256 || inspection.requestId !== reference.requestId || plan.sha256 !== reference.planSha256
       || scan.receipt.snapshot.manifestSha256 !== reference.snapshotSha256 || scan.receipt.originSha256 !== sha256(repo.origin)) {

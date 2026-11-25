@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import {
   qualifiedInspectionRequestSchema, qualifiedInspectionResponseSchema, qualifiedInspectionStatusSchema,
-  type QualifiedInspectionResponse, type QualifiedInspectionStatus, type ToolResult,
+  type CodeRuleValidationProfile, type QualifiedInspectionResponse, type QualifiedInspectionStatus, type ToolResult,
 } from '@itervane/contracts';
-import { sha256, type QualifiedInspectionClient } from '@itervane/runner';
+import { canonicalPublishedInspectionCommand, sha256, type PublishedInspectionCommand, type QualifiedInspectionClient } from '@itervane/runner';
 import { inspectionAttempts, repositories } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
@@ -13,6 +13,8 @@ import {
 } from '../service/inspection-evidence.js';
 import { prepareInspection } from '../service/inspections.js';
 import { matchesLinkedRepairSource } from '../service/operations-repair-proposals.js';
+import { readTaskPublishedCodeRules } from '../service/task-published-code-rules.js';
+import { readTaskRuleSnapshot } from '../service/task-rule-snapshots.js';
 import { ExecutionLost, type ExecutionScope, type TaskRow } from './authority.js';
 import type { ExecutionCoordinator } from './coordinator.js';
 
@@ -47,7 +49,8 @@ function checkRejection(response: Extract<QualifiedInspectionResponse, { kind: '
 }
 
 export class SourceInspection {
-  constructor(private readonly coordinator: ExecutionCoordinator, private readonly runner?: InspectionRunner) {}
+  constructor(private readonly coordinator: ExecutionCoordinator, private readonly runner?: InspectionRunner,
+    private readonly ruleProfile?: CodeRuleValidationProfile) {}
 
   async run(scope: ExecutionScope, publish: Publish, signal?: AbortSignal): Promise<ToolResult> {
     const initial = await this.coordinator.withLease(scope, async (tx, { task }) => {
@@ -65,7 +68,9 @@ export class SourceInspection {
       const plan = await prepareInspection(tx, task, scope.runId, scope.fence);
       const pending = await currentInspectionAttempt(tx, scope.runId);
       if (pending?.state === 'recorded' && pending.workspaceSha256) {
-        const evidence = readInspectionEvidence(pending, plan);
+        const snapshot = pending.publishedCode ? null : await readTaskRuleSnapshot(tx, task);
+        if (snapshot?.document.entries.some(entry => entry.kind === 'code_rule')) return { result: await publish(tx, task, unavailable) };
+        const evidence = await readInspectionEvidence(tx, pending, plan);
         const recorded = linkedRepair && !matchesLinkedRepairSource(linkedRepair.frozen, evidence.receipt) ? sourceMismatch : observation(evidence);
         return { result: await publish(tx, task, recorded, pending.requestId) };
       }
@@ -89,23 +94,41 @@ export class SourceInspection {
       const frozen = linkedRepair?.frozen;
       const originSha256 = sha256(repo.url);
       if (frozen && originSha256 !== frozen.source.originSha256) return { result: await publish(tx, task, sourceMismatch) };
+      const materializedFrom = frozen?.source.patchSha256 ? { commit: frozen.source.git.commit,
+        baseSnapshotSha256: frozen.source.originalSnapshotSha256 } : undefined;
+      let command: PublishedInspectionCommand | undefined;
+      try {
+        const rules = await readTaskPublishedCodeRules(tx, task, this.ruleProfile);
+        if (rules) {
+          if (rules.profile.runnerImageSha256 !== status.imageSha256) return { result: await publish(tx, task, unavailable) };
+          command = canonicalPublishedInspectionCommand(rules, materializedFrom);
+        }
+      } catch (error) {
+        if (error instanceof Error && ['published_inspection_profile_unavailable', 'published_code_rule_validation_profile'].includes(error.message)) {
+          return { result: await publish(tx, task, unavailable) };
+        }
+        throw error;
+      }
       const parsed = qualifiedInspectionRequestSchema.safeParse({ version: 1, taskId: task.id, runId: scope.runId,
         projectId: task.projectId, requestId: randomUUID(), repositoryId: repo.id, commit: task.commit,
         generation: scope.generation, fence: scope.fence, planSha256: plan.sha256, workspaceSha256: status.workspaceSha256, origin: repo.url,
-        ...(frozen?.source.patchSha256 ? { materializedFrom: { commit: frozen.source.git.commit,
-          baseSnapshotSha256: frozen.source.originalSnapshotSha256 } } : {}),
+        ...(materializedFrom ? { materializedFrom } : {}),
+        ...(command ? { publishedCode: command.binding } : {}),
       });
       if (!parsed.success) return { result: await publish(tx, task, unsupported) };
 
-      const { origin: _origin, version: _version, ...coordinates } = parsed.data;
+      const { origin: _origin, version: _version, publishedCode: _publishedCode, ...coordinates } = parsed.data;
       const [attempt] = await tx.insert(inspectionAttempts).values({ ...coordinates, workerId: scope.workerId,
-        imageSha256: status.imageSha256, originSha256 }).returning();
+        imageSha256: status.imageSha256, originSha256,
+        ...(command ? { publishedCode: { binding: command.binding, snapshotSha256: command.rules.input.snapshot.sha256,
+          profile: command.rules.input.profile } } : {}),
+      }).returning();
       if (!attempt) throw new ExecutionLost();
-      return { attempt, request: parsed.data, plan: plan.document, frozen };
+      return { attempt, request: parsed.data, plan: plan.document, frozen, command };
     });
     if ('result' in reserved) return reserved.result!;
 
-    const { attempt, request, plan, frozen } = reserved;
+    const { attempt, request, plan, frozen, command } = reserved;
     let authoritySeen = false;
     let authorityFailure: { error: unknown } | undefined;
     const authorize = async () => {
@@ -127,10 +150,12 @@ export class SourceInspection {
     let cleanupProven = false;
     let result: ToolResult;
     try {
-      const response = qualifiedInspectionResponseSchema.parse(await this.runner!.inspect(request, authorize, signal));
+      const runner = this.runner!;
+      const response = qualifiedInspectionResponseSchema.parse(await (command
+        ? runner.inspect(request, authorize, signal, command) : runner.inspect(request, authorize, signal)));
       if (response.kind === 'receipt') {
         if (!authoritySeen) throw new Error('inspection_without_authority');
-        const measured = verifyInspectionEvidence(response, attempt, plan);
+        const measured = verifyInspectionEvidence(response, attempt, plan, command);
         cleanupProven = true;
         if (frozen && !matchesLinkedRepairSource(frozen, measured.receipt)) result = sourceMismatch;
         else { evidence = measured; result = observation(evidence); }

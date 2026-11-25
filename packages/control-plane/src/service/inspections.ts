@@ -48,12 +48,21 @@ export class InspectionService {
 
       const attempt = await currentInspectionAttempt(tx, run.id);
       if (attempt?.state === 'recorded' && attempt.workspaceSha256) {
-        const { receipt, sha256 } = readInspectionEvidence(attempt, plan);
+        const { receipt, sha256 } = await readInspectionEvidence(tx, attempt, plan);
         const complete = inspectionCoverage(receipt) === 'complete';
+        const code = receipt.snapshot.publishedCode?.scan;
+        const reports = code?.document.reports ?? [];
+        const publishedCode = code && {
+          status: reports.some(report => report.status === 'unavailable') ? 'incomplete' : 'complete',
+          evidenceSha256: code.sha256, ruleSnapshotSha256: code.document.basis.snapshotSha256,
+          checkedFiles: reports.reduce((total, report, index) => total
+            + (report.status === 'checked' ? code.document.basis.batches[index]!.fileCount : 0), 0),
+          findings: reports.reduce((total, report) => total + (report.status === 'checked' ? report.findings.length : 0), 0),
+        };
         return sourceInspectionDtoSchema.parse({ ...coordinates, plan, sourceFetched: true, snapshotVerified: true, scanCompleted: complete,
           status: complete ? 'completed' : 'incomplete', reason: complete ? 'inspection_ready' : 'inspection_incomplete',
           result: { requestId: attempt.requestId, receiptSha256: sha256, snapshotSha256: receipt.snapshot.manifestSha256,
-            recordedAt: attempt.settledAt?.toISOString(), files: receipt.snapshot.files,
+            recordedAt: attempt.settledAt?.toISOString(), files: receipt.snapshot.files, ...(publishedCode ? { publishedCode } : {}),
             scans: receipt.snapshot.reports.map(({ scanner, status, reason, findings, database }) =>
               ({ scanner, status, reason, findingsCount: findings.length, database })) } });
       }

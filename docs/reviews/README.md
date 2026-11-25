@@ -150,7 +150,8 @@
 | 145 | P4-C3b 双语规则库与人审门户 | [#145](https://github.com/MaLaNg116/itervane/pull/145)，依赖 #144 | [规则库门户导读](p4-rule-package-portal.md) | 7 项 MCP 真库与 2 项真实浏览器用例通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/145/checks) |
 | 146 | P4-D1 正式任务规则版本快照 | [#146](https://github.com/MaLaNg116/itervane/pull/146)，依赖 #145 | [规则快照导读](p4-task-rule-snapshots.md) | TypeScript、Drizzle、275 项单元和 6 项 PostgreSQL 专项通过，[托管检查](https://github.com/MaLaNg116/itervane/pull/146/checks) |
 | 147 | P4-D2a 已发布代码规则扫描 | [#147](https://github.com/MaLaNg116/itervane/pull/147)，依赖 #146 | [固定源码扫描导读](p4-published-source-scan.md) | TypeScript、280 项单测和真实 Semgrep 固定源码 Smoke 通过 |
-| 后续批次 | P4-D2b1 原生 Runner 固定规则扫描 | 依赖 [#147](https://github.com/MaLaNg116/itervane/pull/147) | [原生规则扫描导读](p4-qualified-published-inspection.md) | TypeScript、282 项单测及 80 项 Linux 主机测试通过 |
+| 148 | P4-D2b1 原生 Runner 固定规则扫描 | [#148](https://github.com/MaLaNg116/itervane/pull/148)，依赖 #147 | [原生规则扫描导读](p4-qualified-published-inspection.md) | 19 项托管检查通过，KVM 覆盖 4 个固定文件并核对清理 |
+| 后续批次 | P4-D2b2 正式任务固定规则检查 | 依赖 [#148](https://github.com/MaLaNg116/itervane/pull/148) | [正式规则检查导读](p4-formal-published-inspection.md) | PostgreSQL 回执留存、历史重读与授权回归 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 

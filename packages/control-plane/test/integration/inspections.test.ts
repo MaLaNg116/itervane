@@ -28,7 +28,7 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
   type QualifiedStandardImageProof, type QualifiedVerificationReceipt, type RepairPatch, type StandardVerificationProfile, type TaskDto } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
-import { canonicalRepairCommand, canonicalRepairObservation, canonicalRuleValidationCommand, canonicalVerificationCommand, prepareQualifiedRuleValidationRequest, prepareQualifiedVerificationRequest,
+import { canonicalRepairCommand, canonicalRepairObservation, canonicalRuleValidationCommand, canonicalVerificationCommand, preparePublishedCodeScan, prepareQualifiedRuleValidationRequest, prepareQualifiedVerificationRequest,
   scannerProfiles, sha256, verifyQualifiedVerificationReceipt } from '@itervane/runner';
 import { npmFixtureApproval, npmFixtureFiles, npmFixturePaths } from '../../../verification/src/agent/npm-repair-fixture.js';
 import { chooseOperationsSection, operationsDecision, scriptedOperations } from '../../../verification/src/agent/operations-fixture.js';
@@ -89,6 +89,7 @@ import type { InspectionRunner } from '../../src/runtime/source-inspection.js';
 import { requireActor } from '../../src/service/access.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
 import { InspectionService, prepareInspection } from '../../src/service/inspections.js';
+import { RulePackageActivationService } from '../../src/service/rule-package-activations.js';
 import { LearningCaseService } from '../../src/service/learning-cases.js';
 import { RuleExtractionService } from '../../src/service/rule-extraction.js';
 import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
@@ -832,7 +833,7 @@ it('retains the audited source when there are no findings and does not queue a r
   });
   const tasks = new TaskService(database.storage);
   try {
-    expect(await worker.tick()).toBe(true);
+    await processAdmittedTestTask(worker);
     const waiting = await tasks.get(identity, task.id);
     expect(waiting.state).toBe('waiting_input');
     await expect(tasks.resume(identity, task.id, { expectedVersion: waiting.version })).rejects.toMatchObject({ code: 'unsupported_state' });
@@ -3986,19 +3987,67 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
     expect(duplicate).toMatchObject({ state: 'succeeded', result: { document: {
       extraction: { result: { outcome: 'duplicate', existingCandidateId: generated.result?.id } }, candidateSemanticSha256: null,
     } } });
-    const { candidate: release } = await freeze();
-    expect(release.manifest.repairedSnapshotSha256).toBe(candidate?.candidateManifestSha256);
-    const approver = await createIdentityVerifier(issuer.config)(await issuer.token('owner', { azp: portal }));
-    const approved = await releases.decide(approver, release.id, { action: 'confirm', fingerprint: release.fingerprint,
-      expectedVersion: 0, idempotencyKey: randomUUID() }, 'zh-CN');
-    const [job] = await database.storage.boss.fetch(formalReleaseQueue, { includeMetadata: true });
-    expect(job).toBeTruthy();
-    const claim = await new FormalReleaseCoordinator(coordinator, releaseOrigin).claim(job!, randomUUID());
-    expect(claim).toMatchObject({ operationId: approved.candidate.operationId, candidateId: release.id, mode: 'import' });
     const later = await new TaskService(database.storage).admit(identity, { projectId: linked.projectId, source: linked.source,
       dataClass: 'synthetic', purpose: 'Check published rule snapshot', idempotencyKey: randomUUID() });
     expect(await database.storage.pool.query('SELECT document FROM itervane.task_rule_snapshots WHERE task_id=$1', [later.task.id]))
       .toMatchObject({ rows: [{ document: { purpose: 'delivery', entries: [{ kind: 'code_rule', versionId: publishedRule.versionId, sequence: 3 }] } }] });
+    const laterScope = await claim();
+    expect(laterScope.taskId).toBe(later.task.id);
+    const inspect = vi.fn<InspectionRunner['inspect']>(async (request, authorize, _signal, published) => {
+      await authorize();
+      expect(published?.rules.input.snapshot.document.entries[0]).toMatchObject({ versionId: publishedRule.versionId, sequence: 3 });
+      const { publishedCode, ...legacy } = request;
+      expect(publishedCode).toEqual(published?.binding);
+      const receipt = testReceipt(legacy);
+      const { tree, totalBytes } = receipt.snapshot;
+      const dimensions = { version: 1 as const, source: later.task.source, objectFormat: 'sha1' as const, tree,
+        files: [{ path: 'api/readiness.mjs', mode: '100644' as const, bytes: totalBytes, sha256: sha256('synthetic bytes') }], totalBytes,
+      };
+      const manifest = { ...dimensions, sha256: sha256(JSON.stringify(dimensions)) };
+      const { basis } = preparePublishedCodeScan(published!.rules, manifest);
+      expect(basis.batches[0]?.fileCount).toBe(1);
+      const document = { basis, reports: [{ language: 'javascript', status: 'checked', reportSha256: sha256('synthetic scanner output'), findings: [] }] };
+      return qualifiedInspectionResponseSchema.parse({ ...receipt, scope: { ...receipt.scope, publishedCode },
+        snapshot: { ...receipt.snapshot, manifestSha256: manifest.sha256,
+          reports: receipt.snapshot.reports.map(report => ({ ...report, snapshotSha256: manifest.sha256 })),
+          publishedCode: { commandSha256: published!.binding.commandSha256, manifest, scan: { sha256: sha256(JSON.stringify(document)), document } },
+        },
+      });
+    });
+    const inspected = inspectionRunner(inspect);
+    const disconnected = new ToolGateway(coordinator, inspected);
+    expect(await disconnected.call(laterScope, 'source.inspect', {}, 'profile-missing'))
+      .toMatchObject({ status: 'business_error', code: 'runner_unavailable' });
+    expect(inspect).not.toHaveBeenCalled();
+    const delegated = new ToolGateway(coordinator, inspected, { ...validationProfile, runnerImageSha256: imageSha256 });
+    expect(await delegated.call(laterScope, 'source.inspect', {}, 'published-rule-coverage'))
+      .toMatchObject({ status: 'success', data: { coverage: 'complete' } });
+    expect(inspect).toHaveBeenCalledTimes(1);
+    const reading = new InspectionService(database.storage);
+    expect(await reading.get(identity, later.task.id)).toMatchObject({
+      status: 'completed', result: { publishedCode: { status: 'complete', findings: 0, checkedFiles: 1 } },
+    });
+    const approver = await createIdentityVerifier(issuer.config)(await issuer.token('owner', { azp: portal }));
+    const activation = await new RulePackageActivationService(database.storage, portal).change(approver, publishedRule.packageId, {
+      action: 'withdraw', expectedSequence: 3, versionId: publishedRule.versionId, versionSha256: publishedRule.sha256, idempotencyKey: randomUUID(),
+    }, 'zh-CN');
+    expect(activation.state.current).toBeNull();
+    expect(await new ToolGateway(coordinator, inspected).call(laterScope, 'source.inspect', {}, 'historical-coverage'))
+      .toMatchObject({ status: 'success', data: { coverage: 'complete' } });
+    expect(inspect).toHaveBeenCalledTimes(1);
+    await coordinator.stop(laterScope, 'runner_unavailable');
+    const next = await new TaskService(database.storage).admit(identity, { projectId: linked.projectId, source: linked.source,
+      dataClass: 'synthetic', purpose: 'Check withdrawn rule snapshot', idempotencyKey: randomUUID() });
+    expect(await database.storage.pool.query('SELECT document FROM itervane.task_rule_snapshots WHERE task_id=$1', [next.task.id]))
+      .toMatchObject({ rows: [{ document: { purpose: 'delivery', entries: [] } }] });
+    const { candidate: release } = await freeze();
+    expect(release.manifest.repairedSnapshotSha256).toBe(candidate?.candidateManifestSha256);
+    const approved = await releases.decide(approver, release.id, { action: 'confirm', fingerprint: release.fingerprint,
+      expectedVersion: 0, idempotencyKey: randomUUID() }, 'zh-CN');
+    const [job] = await database.storage.boss.fetch(formalReleaseQueue, { includeMetadata: true });
+    expect(job).toBeTruthy();
+    const releaseClaim = await new FormalReleaseCoordinator(coordinator, releaseOrigin).claim(job!, randomUUID());
+    expect(releaseClaim).toMatchObject({ operationId: approved.candidate.operationId, candidateId: release.id, mode: 'import' });
   }, 75_000);
 
 it('freezes one immutable restart proposal from the settled diagnosis under concurrent requests', async () => {

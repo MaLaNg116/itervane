@@ -11,7 +11,7 @@ import {
   type OperationsObservationReceipt, type OperationsProposal, type OperationsRepairProposal, type OperationsRequestBinding, type OperationsRestartBaseline,
   type OperationsRestartInstallation, type OperationsRestartRecoveryFailure, type OperationsRestartRecoveryProof, type OperationsRestartRequest,
   type OperationsRestorePlan, type OperationsRestoreRecoveryFailure, type OperationsRestoreRecoveryProof,
-  type OperationsTargetInput, type PreauditRecord, type QualifiedInspectionReceipt,
+  type OperationsTargetInput, type PreauditRecord, type PublishedInspectionBasis, type QualifiedInspectionReceipt,
   type QualifiedOciArchiveVerification, type QualifiedRepairReceipt, type QualifiedRuleValidationRequest,
   type QualifiedVerificationReceipt, type ReleaseDecision, type ReleaseOperationState, type ReleaseRegistryImageProof,
   type ReleaseKomodoCompletion, type ReleaseKomodoConfiguration, type ReleaseKomodoIntent, type ReleaseKomodoUpdate,
@@ -360,6 +360,7 @@ export const inspectionAttempts = domain.table('inspection_attempts', {
   planSha256: text('plan_sha256').notNull(), originSha256: text('origin_sha256').notNull(), imageSha256: text('image_sha256').notNull(),
   workspaceSha256: text('workspace_sha256'),
   materializedFrom: jsonb('materialized_from').$type<MaterializedSourceBasis>(),
+  publishedCode: jsonb('published_code').$type<PublishedInspectionBasis>(),
   state: text('state').$type<'reserved' | 'closed' | 'uncertain' | 'recorded'>().notNull().default('reserved'),
   settledFence: integer('settled_fence'), settledAt: timestamp('settled_at', { withTimezone: true }),
   receiptSha256: text('receipt_sha256'), receipt: jsonb('receipt').$type<QualifiedInspectionReceipt>(),
@@ -380,6 +381,17 @@ export const inspectionAttempts = domain.table('inspection_attempts', {
     ${t.materializedFrom}->>'commit' ~ '^[a-f0-9]{40}$' AND ${t.materializedFrom}->>'commit' <> ${t.commit}
     AND ${t.materializedFrom}->>'baseSnapshotSha256' ~ '^[a-f0-9]{64}$' AND octet_length(${t.materializedFrom}::text) <= 512))
     AND (${t.state} <> 'recorded' OR ${t.receipt}#>'{scope,materializedFrom}' IS NOT DISTINCT FROM ${t.materializedFrom})) IS TRUE`),
+  check('inspection_attempt_published_code_binding', sql`((${t.publishedCode} IS NULL OR (
+    ${t.publishedCode}->>'snapshotSha256' ~ '^[a-f0-9]{64}$'
+    AND ${t.publishedCode}#>>'{binding,commandSha256}' ~ '^[a-f0-9]{64}$'
+    AND ${t.publishedCode}#>>'{binding,runnerImageSha256}' = ${t.imageSha256}
+    AND ${t.publishedCode}#>>'{profile,runnerImageSha256}' = ${t.imageSha256}
+    AND ${t.publishedCode}#>>'{profile,engine}' = 'semgrep_ce'
+    AND ${t.publishedCode}#>>'{profile,engineInputsSha256}' ~ '^[a-f0-9]{64}$'
+    AND octet_length(${t.publishedCode}::text) <= 2048))
+    AND (${t.state} <> 'recorded' OR (${t.receipt}#>'{scope,publishedCode}' IS NOT DISTINCT FROM ${t.publishedCode}->'binding'
+      AND ${t.receipt}#>>'{snapshot,publishedCode,commandSha256}' IS NOT DISTINCT FROM ${t.publishedCode}#>>'{binding,commandSha256}'
+      AND ${t.receipt}#>>'{snapshot,publishedCode,scan,document,basis,snapshotSha256}' IS NOT DISTINCT FROM ${t.publishedCode}->>'snapshotSha256'))) IS TRUE`),
   check('inspection_attempt_state', sql`(
     (${t.state} = 'reserved' AND ${t.settledFence} IS NULL AND ${t.settledAt} IS NULL)
     OR (${t.state} IN ('closed', 'uncertain', 'recorded') AND ${t.settledFence} >= ${t.fence} AND ${t.settledAt} IS NOT NULL)
@@ -387,7 +399,7 @@ export const inspectionAttempts = domain.table('inspection_attempts', {
   check('inspection_attempt_receipt_binding', sql`(
     (${t.state} <> 'recorded' AND ${t.receipt} IS NULL AND ${t.receiptSha256} IS NULL)
     OR (${t.state} = 'recorded' AND ${t.settledFence} = ${t.fence} AND ${t.receiptSha256} ~ '^[a-f0-9]{64}$'
-      AND octet_length(${t.receipt}::text) <= 4202496
+      AND octet_length(${t.receipt}::text) <= CASE WHEN ${t.publishedCode} IS NULL THEN 4202496 ELSE 13631488 END
       AND ${t.receipt}->>'kind' = 'receipt' AND ${t.receipt}->'cleanupConfirmed' = 'true'::jsonb
       AND ${t.receipt}->'sessionVerified' = 'true'::jsonb AND ${t.receipt}->>'originSha256' = ${t.originSha256}
       AND ${t.receipt}->>'imageSha256' = ${t.imageSha256}

@@ -68,7 +68,7 @@ export class DurableWorker {
       repair?: FormalRepairOptions; verification?: VerificationOptions; operations?: OperationsInstallation;
       candidateValidation?: CandidateValidationOptions } = {}) {
     this.coordinator = new ExecutionCoordinator(database, options);
-    this.gateway = new ToolGateway(this.coordinator, options.runner);
+    this.gateway = new ToolGateway(this.coordinator, options.runner, options.candidateValidation?.code?.profile);
     this.auditModel = options.auditModel;
     this.repair = options.repair;
     this.verification = options.verification;
