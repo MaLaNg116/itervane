@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { scannerDatabaseSchema, scannerReasonSchema, scannerStatusSchema, sha256Schema } from './inspection.js';
+import { scannerDatabaseSchema, scannerReasonSchema, scannerStatusSchema, sha256Schema, sourceManifestSchema } from './inspection.js';
+import { publishedCodeScanEvidenceSchema } from './published-code-scan.js';
 
 const uuid = z.uuidv4();
 const gitId = z.string().regex(/^[0-9a-f]{40}$/);
@@ -45,7 +46,17 @@ export const qualifiedInspectionScopeSchema = z.strictObject({
   generation: counter, fence: counter, planSha256: sha256Schema, workspaceSha256: sha256Schema, commit: gitId,
 });
 export const materializedSourceBasisSchema = z.strictObject({ commit: gitId, baseSnapshotSha256: sha256Schema });
-export const qualifiedInspectionJobScopeSchema = qualifiedInspectionScopeSchema.extend({ materializedFrom: materializedSourceBasisSchema.optional() });
+export const publishedInspectionCommandByteLimit = 2 * 1024 * 1024;
+export const publishedInspectionProofByteLimit = 12 * 1024 * 1024;
+const publishedInspectionBinding = z.strictObject({
+  commandSha256: sha256Schema, commandBytes: z.int().min(1).max(publishedInspectionCommandByteLimit), runnerImageSha256: sha256Schema,
+});
+export const publishedInspectionProofSchema = z.strictObject({
+  commandSha256: sha256Schema, manifest: sourceManifestSchema, scan: publishedCodeScanEvidenceSchema,
+});
+export const qualifiedInspectionJobScopeSchema = qualifiedInspectionScopeSchema.extend({
+  materializedFrom: materializedSourceBasisSchema.optional(), publishedCode: publishedInspectionBinding.optional(),
+});
 export const qualifiedInspectionRequestSchema = qualifiedInspectionJobScopeSchema.extend({ origin: z.string().min(1).max(768) });
 export const qualifiedInspectionStatusSchema = z.strictObject({
   kind: z.literal('status'), version: z.literal(1), workspaceSha256: sha256Schema,
@@ -61,9 +72,10 @@ export const qualifiedInspectionResponseSchema = z.discriminatedUnion('kind', [
     kind: z.literal('receipt'), scope: qualifiedInspectionJobScopeSchema, domainId: uuid, imageSha256: sha256Schema,
     originSha256: sha256Schema, commitSha256: sha256Schema, cleanupConfirmed: z.literal(true),
     sessionVerified: z.literal(true), snapshot: qualifiedInspectionSnapshotSchema.extend({
-      reports: qualifiedScanReportsSchema, materializedCandidateSha256: sha256Schema.optional(),
+      reports: qualifiedScanReportsSchema, materializedCandidateSha256: sha256Schema.optional(), publishedCode: publishedInspectionProofSchema.optional(),
     }),
-  }).refine(receipt => Boolean(receipt.scope.materializedFrom) === Boolean(receipt.snapshot.materializedCandidateSha256)),
+  }).refine(receipt => Boolean(receipt.scope.materializedFrom) === Boolean(receipt.snapshot.materializedCandidateSha256)
+    && Boolean(receipt.scope.publishedCode) === Boolean(receipt.snapshot.publishedCode)),
   qualifiedRunnerRejectionSchema,
 ]);
 export type QualifiedInspectionRequest = z.infer<typeof qualifiedInspectionRequestSchema>;

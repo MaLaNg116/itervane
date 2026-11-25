@@ -11,6 +11,7 @@ from native_job import JobRejected, open_channel, stream_io
 from source_gateway import RegisteredOrigin, SourceGateway, SourceRejected
 from source_wire import (
     CLOSED, GUEST_ERRORS, GUEST_REPAIR_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_MATERIALIZED_SOURCE, MAX_QUALIFIED_RECEIPT,
+    MAX_PUBLISHED_INSPECTION_COMMAND, MAX_PUBLISHED_INSPECTION_PROOF,
     MAX_REPAIR_COMMAND, MAX_REPAIR_RECEIPT, MAX_REQUEST_BYTES, MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT, MAX_OCI_CHUNK_BYTES,
     MAX_RULE_VALIDATION_COMMAND, MAX_RULE_VALIDATION_PROOF, QUALIFIED_START, RECEIPT, RULE_SAMPLES_START, SOURCE_PORT, START, SourceWire,
 )
@@ -39,7 +40,7 @@ class SourceProbe:
     port = SOURCE_PORT
 
     def __init__(self, gateway, inspect=False, repository_id=None, repair_command=None, repair_observation=False,
-                 verification_command=None, artifact_store=None, materialized_source=None):
+                 verification_command=None, artifact_store=None, materialized_source=None, published_code_command=None):
         if repair_command is not None and (repository_id is None or not 0 < len(repair_command) <= MAX_REPAIR_COMMAND):
             raise ValueError("invalid repair command")
         if repair_observation and repair_command is None:
@@ -50,6 +51,11 @@ class SourceProbe:
         if materialized_source is not None and (repository_id is None or repair_command is not None
             or verification_command is not None or not 0 < len(materialized_source) <= MAX_MATERIALIZED_SOURCE):
             raise ValueError("invalid materialized source reference")
+        if published_code_command is not None and (
+            repository_id is None or any(value is not None for value in (repair_command, verification_command, materialized_source))
+            or not 0 < len(published_code_command) <= MAX_PUBLISHED_INSPECTION_COMMAND
+        ):
+            raise ValueError("invalid published code inspection command")
         self.gateway = gateway
         self.evidence = None
         self.inspect = inspect or repository_id is not None
@@ -58,6 +64,7 @@ class SourceProbe:
         self.repair_observation = repair_observation
         self.verification_command = verification_command
         self.materialized_source = materialized_source
+        self.published_code_command = published_code_command
         if artifact_store is not None and verification_command is None:
             raise ValueError("OCI storage requires a verification command")
         self.artifact_store = artifact_store
@@ -85,7 +92,8 @@ class SourceProbe:
         if self.repository_id is None:
             wire.send(b"A" if self.inspect else b"S", START.pack(identity, commit))
         else:
-            start = (b"V" if self.verification_command is not None else b"L" if self.repair_observation
+            start = (b"V" if self.verification_command is not None else b"U" if self.published_code_command is not None
+                     else b"L" if self.repair_observation
                      else b"R" if self.repair_command is not None else b"B" if self.materialized_source is not None else b"F")
             wire.send(start, QUALIFIED_START.pack(identity, commit, uuid.UUID(self.repository_id).bytes))
         self.phase = "source-fetch"
@@ -146,6 +154,14 @@ class SourceProbe:
             return "source_passed"
         self.phase = "scan-results"
         self.scan_deadline = time.monotonic() + INSPECTION_SECONDS
+        if self.published_code_command is not None:
+            wire.send(b"W", self.published_code_command)
+            proof = self.read_proof(wire, run_id, b"N", MAX_PUBLISHED_INSPECTION_PROOF)
+            published = proof.get("publishedCode")
+            if not isinstance(published, dict) or published.get("commandSha256") != hashlib.sha256(self.published_code_command).hexdigest():
+                raise ProtocolError("invalid published inspection command digest")
+            self.inspection = proof
+            return "inspection_passed"
         if self.materialized_source is not None:
             wire.send(b"W", self.materialized_source)
         size = MAX_QUALIFIED_RECEIPT if self.repository_id is not None else MAX_INSPECTION_RECEIPT

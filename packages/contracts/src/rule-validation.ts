@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { codeRuleValidationProfileSchema, ruleSampleFailureSchema } from './code-rule-profile.js';
 import { localeSchema } from './i18n.js';
 import { sha256Schema } from './inspection.js';
 import { idSchema, taskStateSchema } from './primitives.js';
@@ -10,11 +11,7 @@ export const ruleSampleKinds = ['violation', 'corrected', 'lookalike'] as const;
 export const ruleSampleKindSchema = z.enum(ruleSampleKinds);
 export type RuleSampleKind = z.infer<typeof ruleSampleKindSchema>;
 
-export const codeRuleValidationProfileSchema = z.strictObject({
-  version: z.literal(1), engine: z.literal('semgrep_ce'),
-  engineVersion: z.string().max(24).regex(/^\d+\.\d+\.\d+$/), engineInputsSha256: sha256Schema, runnerImageSha256: sha256Schema,
-});
-export type CodeRuleValidationProfile = z.infer<typeof codeRuleValidationProfileSchema>;
+export { codeRuleValidationProfileSchema, ruleSampleFailureSchema, type CodeRuleValidationProfile } from './code-rule-profile.js';
 const sampleBinding = z.strictObject({
   name: ruleSampleKindSchema, file: z.string().regex(/^(violation|corrected|lookalike)\.(js|ts)$/), sha256: sha256Schema,
 });
@@ -26,7 +23,6 @@ export const codeRuleValidationBasisSchema = z.strictObject({
   && new Set(value.samples.map(item => item.sha256)).size === 3);
 export type CodeRuleValidationBasis = z.infer<typeof codeRuleValidationBasisSchema>;
 
-export const ruleSampleFailureSchema = z.enum(['engine_unavailable', 'timeout', 'command_failed', 'invalid_report', 'version_mismatch', 'incomplete_coverage', 'invalid_match']);
 const reportBinding = { ...sampleBinding.shape };
 const commandFailureDetail = z.strictObject({ exitCode: z.int().min(1).max(255), cause: z.enum([
   'dependency', 'import', 'filesystem', 'illegal_instruction', 'core_exit', 'other',

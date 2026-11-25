@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { codeRuleLanguageSchema } from './code-rule-profile.js';
 import { auditModelProtocolSchema } from './formal-audit.js';
 import { localeSchema } from './i18n.js';
 import { sha256Schema } from './inspection.js';
@@ -14,7 +15,7 @@ const candidateBase = {
 const sampleText = limitedTextSchema.pipe(z.string().max(1_600));
 export const codeRuleCandidateSchema = z.strictObject({
   ...candidateBase, kind: z.literal('code_rule'),
-  check: z.strictObject({ engine: z.literal('semgrep_ce'), language: z.enum(['javascript', 'typescript']),
+  check: z.strictObject({ engine: z.literal('semgrep_ce'), language: codeRuleLanguageSchema,
     pattern: shortText, patternNot: shortText.optional(),
   }),
   samples: z.strictObject({ violation: sampleText, corrected: sampleText, lookalike: sampleText })

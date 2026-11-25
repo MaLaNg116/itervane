@@ -1,24 +1,9 @@
 import { z } from 'zod';
+import { codeRuleLanguageSchema, codeRuleValidationProfileSchema, ruleSampleFailureSchema } from './code-rule-profile.js';
 import { sha256Schema, sourceContentLimits } from './inspection.js';
 import { ruleIdSchema } from './preaudit.js';
 import { idSchema, sourceRefSchema } from './primitives.js';
-import { codeRuleCandidateSchema } from './rule-extraction.js';
-import { codeRulePackageSchema, rulePackageReviewRecordSchema } from './rule-packages.js';
-import { candidateValidationRecordSchema, codeRuleValidationProfileSchema, ruleSampleFailureSchema } from './rule-validation.js';
-import { taskRuleSnapshotLimit, taskRuleSnapshotSchema } from './task-rule-snapshots.js';
-
-export const codeRuleLanguageSchema = codeRuleCandidateSchema.shape.check.shape.language;
-export type CodeRuleLanguage = z.infer<typeof codeRuleLanguageSchema>;
-
-export const publishedCodeRuleSetSchema = z.strictObject({
-  version: z.literal(1),
-  snapshot: z.strictObject({ sha256: sha256Schema, document: taskRuleSnapshotSchema }),
-  profile: codeRuleValidationProfileSchema,
-  rules: z.array(z.strictObject({
-    package: codeRulePackageSchema, review: rulePackageReviewRecordSchema, validation: candidateValidationRecordSchema,
-  })).max(taskRuleSnapshotLimit),
-});
-export type PublishedCodeRuleSet = z.infer<typeof publishedCodeRuleSetSchema>;
+export { codeRuleLanguageSchema, type CodeRuleLanguage } from './code-rule-profile.js';
 
 const batchBasis = z.strictObject({
   language: codeRuleLanguageSchema, configSha256: sha256Schema, targetsSha256: sha256Schema,

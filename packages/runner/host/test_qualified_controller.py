@@ -60,6 +60,15 @@ def rule_samples_request():
             "commandBytes": len(command), "commandSha256": hashlib.sha256(command).hexdigest()}, command
 
 
+def published_inspection_request():
+    data = request()
+    profile = {"runnerImageSha256": "d" * 64}
+    snapshot = {"document": {"purpose": "delivery", "taskId": data["taskId"], "projectId": data["projectId"]}}
+    command = json.dumps({"version": 1, "rules": {"snapshot": snapshot, "profile": profile}}).encode()
+    binding = {**profile, "commandBytes": len(command), "commandSha256": hashlib.sha256(command).hexdigest()}
+    return {**data, "publishedCode": binding}, command
+
+
 class ControllerTest(unittest.TestCase):
     def test_rule_samples_need_explicit_capability_lease_and_bound_command(self):
         data, command = rule_samples_request()
@@ -98,6 +107,48 @@ class ControllerTest(unittest.TestCase):
         confirmed_but_wrong = Result("rule_samples_recorded", runId=domain_id, imageSha256=data["runnerImageSha256"],
                                      cleanupConfirmed=True, sessionVerified=True, ruleSamples=altered)
         self.assertEqual(controller.response_for(data, confirmed_but_wrong)["code"], "job_failed")
+
+    def test_published_inspection_requires_registered_origin_lease_and_bound_payload(self):
+        data, command = published_inspection_request()
+        replaced_project = {**data, "projectId": str(uuid.uuid4())}
+        for supplied, origins, enabled, pulse, content, expected in (
+            (data, {ORIGIN: ORIGIN}, False, b"K", command, "not_ready"),
+            (data, {}, True, b"K", command, "origin_denied"),
+            (data, {ORIGIN: ORIGIN}, True, b"C", command, "lease_lost"),
+            (data, {ORIGIN: ORIGIN}, True, b"K", command[:-1] + b"]", "invalid_request"),
+            (replaced_project, {ORIGIN: ORIGIN}, True, b"K", command, "invalid_request"),
+        ):
+            server, client = socket.socketpair()
+            launch = Mock()
+            with self.subTest(expected=expected), server, client:
+                client.sendall(json.dumps(supplied).encode() + b"\n" + pulse + content)
+                response = controller.serve_connection(server, os.getuid(), origins, WORKSPACE, Mock(), launch, lambda: False,
+                                                       enable_rule_samples=enabled)
+                self.assertEqual(response, controller.rejected(expected, data["requestId"]))
+                launch.assert_not_called()
+
+    def test_published_inspection_returns_only_the_requested_cleaned_image_proof(self):
+        data, command = published_inspection_request()
+        binding = data["publishedCode"]
+        proof = {"publishedCode": {"commandSha256": binding["commandSha256"]}}
+        domain = str(uuid.uuid4())
+        source = SimpleNamespace(originSha256="a" * 64, commitSha256="b" * 64)
+        valid = Result("inspection_passed", runId=domain, imageSha256=binding["runnerImageSha256"], source=source,
+                       cleanupConfirmed=True, sessionVerified=True, inspection=proof)
+        server, client = socket.socketpair()
+        launch = Mock(return_value=valid)
+        with server, client:
+            client.sendall(json.dumps(data).encode() + b"\nK" + command)
+            receipt = controller.serve_connection(server, os.getuid(), {ORIGIN: ORIGIN}, WORKSPACE, Mock(), launch, lambda: False,
+                                                  enable_rule_samples=True)
+            self.assertEqual(receipt["kind"], "receipt")
+            self.assertEqual(receipt["snapshot"], proof)
+            self.assertEqual(launch.call_args.args[3], command)
+        original = {key: value for key, value in data.items() if key != "publishedCode"}
+        self.assertEqual(controller.response_for(original, valid)["code"], "job_failed")
+        wrong = Result("inspection_passed", runId=domain, imageSha256="c" * 64, source=source,
+                       cleanupConfirmed=True, sessionVerified=True, inspection=proof)
+        self.assertEqual(controller.response_for(data, wrong)["code"], "job_failed")
 
     def test_materialized_source_coordinates_are_bounded_to_an_inspection_request(self):
         basis = {"commit": "d" * 40, "baseSnapshotSha256": "e" * 64}

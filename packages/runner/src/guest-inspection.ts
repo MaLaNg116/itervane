@@ -4,13 +4,17 @@ import { constants, lstatSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { qualifiedGuestVerificationProofSchema, repairCandidateManifestSchema, sha256Schema, type MaterializedSourceBasis } from '@itervane/contracts';
+import { publishedInspectionProofSchema, qualifiedGuestVerificationProofSchema, repairCandidateManifestSchema, sha256Schema,
+  type MaterializedSourceBasis } from '@itervane/contracts';
 import { z } from 'zod';
 import { exerciseGuestRepair } from './guest-repair-fixture.js';
 import { readGuestCandidate } from './guest-repair.js';
-import { readBoundedFile, readGuestSnapshot } from './guest-snapshot.js';
+import { readBoundedFile, readGuestSnapshot, readGuestSnapshotData } from './guest-snapshot.js';
+import { runPublishedCodeScan } from './guest-published-code-scan.js';
+import { semgrepEngineDirectory } from './guest-rule-validation.js';
 import { readGuestVerificationSource } from './guest-verification-source.js';
 import { scannerCommands, scannerProfiles, sha256 } from './profiles.js';
+import type { PublishedInspectionCommand } from './published-inspection-command.js';
 import { normalizeScan, type ScanSummary } from './scans.js';
 
 export const INSPECTION_TOOLS = '/usr/local/libexec/itervane-inspection';
@@ -157,10 +161,13 @@ function summarize(scan: ScanSummary) {
 }
 
 /** Runs from the sealed scan service after its kernel boundary checks. */
-export async function inspectGuestSnapshot(ready: string, tools: string, materializedFrom?: MaterializedSourceBasis) {
-  const { runId, mode, manifest } = readGuestSnapshot(ready);
+export async function inspectGuestSnapshot(ready: string, tools: string, materializedFrom?: MaterializedSourceBasis,
+  command?: PublishedInspectionCommand) {
+  const scanSource = command && readGuestSnapshotData(ready);
+  const { runId, mode, manifest } = scanSource ?? readGuestSnapshot(ready);
   if (mode !== 'qualified' && mode !== 'fixture') throw new Error('scan-boundary');
-  if (materializedFrom && (mode !== 'qualified' || materializedFrom.commit === manifest.source.commit)) throw new Error('scan-integrity');
+  if ((materializedFrom || command) && mode !== 'qualified') throw new Error('scan-integrity');
+  if (materializedFrom?.commit === manifest.source.commit) throw new Error('scan-integrity');
   const { inputs, inputsSha256 } = await verifyGuestInspectionInputs(tools);
   const output = mkdtempSync(join(tmpdir(), 'itervane-raw-scan-'));
   try {
@@ -174,6 +181,9 @@ export async function inspectGuestSnapshot(ready: string, tools: string, materia
     }
 
     const trivy = scanTree('trivy', ready, tools, output, manifest, inputs);
+    const publishedCode = command && scanSource && publishedInspectionProofSchema.parse({
+      commandSha256: command.binding.commandSha256, manifest, scan: await runPublishedCodeScan(semgrepEngineDirectory, command.rules, scanSource),
+    });
     const checked = readGuestSnapshot(ready);
     if (await fileDigest(join(tools, 'cache/db/trivy.db'), MAX_DATABASE_BYTES) !== inputs.databaseSha256
         || checked.runId !== runId || checked.mode !== mode || checked.manifest.sha256 !== manifest.sha256) throw new Error('scan-integrity');
@@ -187,7 +197,8 @@ export async function inspectGuestSnapshot(ready: string, tools: string, materia
         baseSnapshotSha256: materializedFrom.baseSnapshotSha256, files: manifest.files, totalBytes: manifest.totalBytes,
       });
       return { ...proof, repositoryId: manifest.source.repositoryId, reports: [gitleaks, trivy],
-        ...(candidate ? { materializedCandidateSha256: sha256(JSON.stringify(candidate)) } : {}) };
+        ...(candidate ? { materializedCandidateSha256: sha256(JSON.stringify(candidate)) } : {}),
+        ...(publishedCode ? { publishedCode } : {}) };
     }
     if (trivy.status !== 'completed') throw new Error('scan-trivy');
     fixtureControls(gitleaks, trivy);

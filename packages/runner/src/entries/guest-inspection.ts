@@ -1,6 +1,7 @@
 import { lstatSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { materializedSourceBasisSchema, qualifiedGuestRepairIssueSchema, qualifiedGuestRuleValidationProofSchema,
+import { materializedSourceBasisSchema, publishedInspectionCommandByteLimit, publishedInspectionProofByteLimit,
+  qualifiedGuestRepairIssueSchema, qualifiedGuestRuleValidationProofSchema,
   ruleValidationCommandByteLimit, ruleValidationProofByteLimit, verificationProofByteLimit } from '@itervane/contracts';
 import { scanGuestImage } from '../guest-image-scan.js';
 import { repairQualifiedGuestSnapshot } from '../guest-repair.js';
@@ -10,6 +11,7 @@ import { stageGuestStandardBuild, STANDARD_BUILD_INPUT, STANDARD_BUILD_TOOLS } f
 import { publishGuestVerificationSource, verificationCommandName } from '../guest-verification-source.js';
 import { runPreparedCodeRuleSamples, semgrepEngineDirectory } from '../guest-rule-validation.js';
 import { readRuleValidationCommand } from '../rule-validation-command.js';
+import { readPublishedInspectionCommand } from '../published-inspection-command.js';
 import { sha256 } from '../profiles.js';
 import {
   INSPECTION_OUTPUT, INSPECTION_SOURCE, INSPECTION_TOOLS, inspectGuestSnapshot, inspectionFailures, inspectVerificationSnapshots,
@@ -41,19 +43,23 @@ if (command === 'snapshot' && args.length === 5) {
   const materialized = lstatSync(materializedSource, { throwIfNoEntry: false }) !== undefined;
   const ruleCommand = join(INSPECTION_SOURCE, 'rule-validation-command.json');
   const validateRule = lstatSync(ruleCommand, { throwIfNoEntry: false }) !== undefined;
+  const publishedCommand = join(INSPECTION_SOURCE, 'published-code-command.json');
+  const publishedCode = lstatSync(publishedCommand, { throwIfNoEntry: false }) !== undefined;
   let receipt: object;
   try {
-    if ([repair, observeRepair, verification, materialized, validateRule].filter(Boolean).length > 1) throw new Error('scan-integrity');
+    if ([repair, observeRepair, verification, materialized, validateRule, publishedCode].filter(Boolean).length > 1) throw new Error('scan-integrity');
     if (validateRule) {
       const bytes = readBoundedFile(ruleCommand, ruleValidationCommandByteLimit);
       const result = await runPreparedCodeRuleSamples(semgrepEngineDirectory, readRuleValidationCommand(bytes));
       receipt = qualifiedGuestRuleValidationProofSchema.parse({ version: 1, commandSha256: sha256(bytes), result });
     } else {
-      const materializedFrom = materialized ? materializedSourceBasisSchema.parse(JSON.parse(readBoundedFile(materializedSource, 512).toString('utf8'))) : undefined;
+      const command = publishedCode ? readPublishedInspectionCommand(readBoundedFile(publishedCommand, publishedInspectionCommandByteLimit)) : undefined;
+      const materializedFrom = materialized ? materializedSourceBasisSchema.parse(JSON.parse(readBoundedFile(materializedSource, 512).toString('utf8')))
+        : command?.materializedFrom;
       receipt = verification ? await inspectVerificationSnapshots(INSPECTION_SOURCE, INSPECTION_TOOLS)
         : observeRepair ? observeQualifiedRepairTargets(INSPECTION_SOURCE)
         : repair ? repairQualifiedGuestSnapshot(INSPECTION_SOURCE, INSPECTION_OUTPUT)
-        : await inspectGuestSnapshot(join(INSPECTION_SOURCE, 'ready'), INSPECTION_TOOLS, materializedFrom);
+        : await inspectGuestSnapshot(join(INSPECTION_SOURCE, 'ready'), INSPECTION_TOOLS, materializedFrom, command);
     }
   }
   catch (error) {
@@ -67,7 +73,8 @@ if (command === 'snapshot' && args.length === 5) {
   try {
     const pending = join(INSPECTION_OUTPUT, 'receipt.pending');
     const report = JSON.stringify(receipt);
-    const maximum = validateRule ? ruleValidationProofByteLimit : verification ? verificationProofByteLimit : Infinity;
+    const maximum = validateRule ? ruleValidationProofByteLimit : verification ? verificationProofByteLimit
+      : publishedCode ? publishedInspectionProofByteLimit : Infinity;
     const bounded = Buffer.byteLength(report) > maximum ? '{"code":"scan-integrity"}' : report;
     writeFileSync(pending, bounded, { flag: 'wx', mode: 0o440 });
     renameSync(pending, join(INSPECTION_OUTPUT, 'receipt.json'));

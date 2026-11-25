@@ -13,7 +13,7 @@ import type { readGuestSnapshotData } from './guest-snapshot.js';
 type Files = ReturnType<typeof readGuestSnapshotData>['files'];
 type Group = PreparedPublishedCodeScan['groups'][number];
 
-function scanGroup(group: Group, directory: string, engineVersion: string, byPath: ReadonlyMap<string, Files[number]>) {
+function scanGroup(group: Group, directory: string, engineVersion: string, byPath: ReadonlyMap<string, Files[number]>, deadline: number): PublishedCodeScanReport {
   const workdir = mkdtempSync(join(tmpdir(), 'itervane-published-code-'));
   try {
     writeFileSync(join(workdir, 'rule.json'), group.config, { flag: 'wx', mode: 0o400 });
@@ -25,8 +25,10 @@ function scanGroup(group: Group, directory: string, engineVersion: string, byPat
       // Use a closed, neutral staging tree. The repository cannot supply config, ignores or command arguments.
       writeFileSync(join(workdir, target.alias), file.content, { flag: 'wx', mode: 0o400 });
     }
+    const timeoutMs = Math.floor(deadline - performance.now());
+    if (timeoutMs <= 0) return { language: group.language, status: 'unavailable', reason: 'timeout' };
     const run = invokeGuestSemgrep(directory, workdir, group.targets.map(file => file.alias), {
-      targetBytes: sourceLimits.maxFileBytes, reportBytes: publishedCodeScanReportByteLimit, timeoutMs: 25_000,
+      targetBytes: sourceLimits.maxFileBytes, reportBytes: publishedCodeScanReportByteLimit, timeoutMs,
     });
     const error = (run.error as NodeJS.ErrnoException | undefined)?.code;
     return normalizePublishedCodeScan(group, engineVersion, {
@@ -44,6 +46,7 @@ export async function runPublishedCodeScan(directory: string, rules: PreparedPub
   const byPath = new Map(source.files.map(file => [file.path, file]));
   if (byPath.size !== source.files.length || byPath.size !== source.manifest.files.length) throw new Error('published_code_scan_source_binding');
   const { profile } = scan.basis;
+  const deadline = performance.now() + 25_000;
   let engineAvailable = true;
   if (scan.groups.some(group => group.targets.length)) {
     try { await verifySemgrepEngine(directory, profile); } catch { engineAvailable = false; }
@@ -51,7 +54,7 @@ export async function runPublishedCodeScan(directory: string, rules: PreparedPub
   const reports = scan.groups.map((group): PublishedCodeScanReport => {
     if (!group.targets.length) return { language: group.language, status: 'not_applicable' };
     if (!engineAvailable) return { language: group.language, status: 'unavailable', reason: 'engine_unavailable' };
-    return scanGroup(group, directory, profile.engineVersion, byPath);
+    return scanGroup(group, directory, profile.engineVersion, byPath, deadline);
   });
   const document = { basis: scan.basis, reports };
   return verifyPublishedCodeScanEvidence(scan, { document, sha256: sha256(JSON.stringify(document)) });

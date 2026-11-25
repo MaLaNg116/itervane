@@ -20,6 +20,7 @@ if __name__ == "__main__":
 from guest_job import ProtocolError, verify_workload_receipt
 from source_wire import (
     CLOSED, GUEST_ERRORS, GUEST_REPAIR_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_MATERIALIZED_SOURCE, MAX_QUALIFIED_RECEIPT,
+    MAX_PUBLISHED_INSPECTION_COMMAND, MAX_PUBLISHED_INSPECTION_PROOF,
     MAX_REPAIR_COMMAND, MAX_REPAIR_RECEIPT, MAX_REQUEST_BYTES, MAX_TRANSFER_BYTES, MAX_VERIFICATION_COMMAND,
     MAX_VERIFICATION_RECEIPT, MAX_RULE_VALIDATION_COMMAND, MAX_RULE_VALIDATION_PROOF, MAX_OCI_ARCHIVE_BYTES, MAX_OCI_CHUNK_BYTES,
     PACK_TYPE, QUALIFIED_START, RECEIPT, REFS_TYPE, RULE_SAMPLES_START, SOURCE_PORT, START, UPLOAD_TYPE, SourceWire,
@@ -34,6 +35,7 @@ REPAIR_OBSERVATION = INSPECTION_REQUEST.with_name("repair-observation.json")
 VERIFICATION_COMMAND = INSPECTION_REQUEST.with_name("verification-command.json")
 MATERIALIZED_SOURCE = INSPECTION_REQUEST.with_name("materialized-source.json")
 RULE_SAMPLES_COMMAND = INSPECTION_REQUEST.with_name("rule-validation-command.json")
+PUBLISHED_CODE_COMMAND = INSPECTION_REQUEST.with_name("published-code-command.json")
 INSPECTION_RECEIPT = Path("/var/lib/itervane-inspection-output/receipt.json")
 BUILD_INPUT = Path("/var/lib/itervane-build-input")
 BUILD_RECEIPT = Path("/var/lib/itervane-build-output/receipt.json")
@@ -268,6 +270,7 @@ def inspect_source(repository, identity, commit, repository_id, mode, wire, comm
         "repair": (REPAIR_COMMAND, MAX_REPAIR_RECEIPT, b"H"),
         "repair-observation": (REPAIR_OBSERVATION, MAX_REPAIR_RECEIPT, b"H"),
         "materialized": (MATERIALIZED_SOURCE, MAX_QUALIFIED_RECEIPT, b"N"),
+        "published-code": (PUBLISHED_CODE_COMMAND, MAX_PUBLISHED_INSPECTION_PROOF, b"N"),
         "qualified": (None, MAX_QUALIFIED_RECEIPT, b"N"),
         "fixture": (None, MAX_INSPECTION_RECEIPT, b"N"),
     }
@@ -282,9 +285,10 @@ def inspect_source(repository, identity, commit, repository_id, mode, wire, comm
                 command_written = True
                 stream.write(command)
                 os.fchmod(stream.fileno(), 0o440)
+        snapshot_mode = "qualified" if mode in ("materialized", "published-code") else mode
         result = subprocess.run(
             [INSPECTION_TOOLS / "node", INSPECTION_TOOLS / "worker.mjs", "snapshot", repository,
-             str(uuid.UUID(bytes=identity)), commit, repository_id, "qualified" if mode == "materialized" else mode],
+             str(uuid.UUID(bytes=identity)), commit, repository_id, snapshot_mode],
             env=GIT_ENV, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=35,
         )
         if result.returncode:
@@ -359,11 +363,11 @@ def validate_rule_samples(wire, start):
 def serve_source(wire, work):
     wire.greeting()
     scenario, start = wire.receive({b"S": START.size, b"A": START.size, b"F": QUALIFIED_START.size, b"B": QUALIFIED_START.size,
-                                    b"R": QUALIFIED_START.size, b"L": QUALIFIED_START.size, b"V": QUALIFIED_START.size,
+                                    b"R": QUALIFIED_START.size, b"L": QUALIFIED_START.size, b"V": QUALIFIED_START.size, b"U": QUALIFIED_START.size,
                                     b"T": RULE_SAMPLES_START.size})
     if scenario == b"T":
         return validate_rule_samples(wire, start)
-    if scenario in (b"F", b"B", b"R", b"L", b"V") and len(start) == QUALIFIED_START.size:
+    if scenario in (b"F", b"B", b"R", b"L", b"V", b"U") and len(start) == QUALIFIED_START.size:
         identity, commit_bytes, repository = QUALIFIED_START.unpack(start)
         repository_id = str(uuid.UUID(bytes=repository))
     elif scenario in (b"S", b"A") and len(start) == START.size:
@@ -388,6 +392,11 @@ def serve_source(wire, work):
                 raise GuestFailure("guest-input" if verify else "repair-invalid")
             mode = "verification" if verify else "repair-observation" if scenario == b"L" else "repair"
             inspect_source(repository, identity, commit, repository_id, mode, wire, command)
+        elif scenario == b"U":
+            _, command = wire.receive({b"W": MAX_PUBLISHED_INSPECTION_COMMAND})
+            if not command:
+                raise GuestFailure("guest-input")
+            inspect_source(repository, identity, commit, repository_id, "published-code", wire, command)
         elif scenario == b"B":
             _, basis = wire.receive({b"W": MAX_MATERIALIZED_SOURCE})
             if not basis:
