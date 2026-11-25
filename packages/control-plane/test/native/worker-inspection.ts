@@ -1498,6 +1498,7 @@ async function probe() {
             equal(frozen.status, 'pending');
             equal(frozen.manifest.projectId, reuseProject.id);
             equal(frozen.manifest.verification.resultSha256, verified.verificationResultSha256);
+            equal(frozen.manifest.verification.ruleSnapshotSha256, before.ruleSnapshotSha256);
             equal(frozen.manifest.target.environmentId, reuseEnv.id);
             equal(frozen.manifest.target.mappingSha256, reuseMapping.fingerprint);
             equal(frozen.manifest.image.archive.sha256, verified.archiveVerification?.archive.sha256);
@@ -1511,7 +1512,8 @@ async function probe() {
                 verification: { ...rechecked, domainId: verified.domainId, receiptSha256: verified.receiptSha256,
                   resultSha256: verified.verificationResultSha256, cleanupConfirmed: verified.cleanupConfirmed },
                 candidate: { id: frozen.id, status: frozen.status, target: frozen.manifest.target, image: frozen.manifest.image.manifestDigest,
-                  verificationResultSha256: frozen.manifest.verification.resultSha256, deniedWithoutPortal: true, unchangedTarget: true },
+                  verificationResultSha256: frozen.manifest.verification.resultSha256,
+                  ruleSnapshotSha256: frozen.manifest.verification.ruleSnapshotSha256, deniedWithoutPortal: true, unchangedTarget: true },
               }, model: 'scripted_anthropic_fixture' };
             return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
               release: first.report, initialBuild: { build: initial.build, archiveVerification: initial.archiveVerification },
