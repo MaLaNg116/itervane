@@ -447,14 +447,35 @@ jobs:
                 $published.validationId == $learning.validation.id and $published.validationSha256 == $learning.validation.sha256 and
                 ($published.reviewSha256 | test("^[a-f0-9]{64}$"))) and
               .operations.restart.environmentReleased and .operations.restart.slotReleased and .operations.restart.httpMcpAgreement' "$report" >/dev/null
-            jq -e '.operations.restart as $verified | $verified.interrupted as $interrupted |
+            jq -e '.operations.restart as $first | $first.ruleExtraction.publication as $published | $first.reused as $reuse |
+              $reuse.runbook as $binding | $binding.selection as $selected |
+              ($first.runbook == null) and $reuse.diagnosisRunId != $first.diagnosisRunId and $reuse.executionId != $first.executionId and
+              $reuse.releaseOperationId == $first.releaseOperationId and $reuse.activeContainer == $first.activeContainer and
+              $reuse.approvalId != $first.approvalId and $reuse.stoppedStart == $first.recoveredStart and $reuse.recoveredStart > $reuse.stoppedStart and
+              $binding.diagnosisRunId == $reuse.diagnosisRunId and $binding.observedState == "exited" and
+              ($binding.snapshotSha256 | test("^[a-f0-9]{64}$")) and ($binding.evidenceId | test("^[a-f0-9]{64}$")) and
+              ($binding.proposalFingerprint | test("^[a-f0-9]{64}$")) and
+              $binding.httpMcpAgreement and $selected.status == "available" and $selected.action == "restart_current_publication" and
+              $selected.rule.packageId == $published.packageId and $selected.rule.packageKey == $published.packageKey and
+              $selected.rule.versionId == $published.versionId and $selected.rule.versionSha256 == $published.versionSha256 and
+              $selected.rule.reviewSha256 == $published.reviewSha256 and $selected.rule.sequence == $published.sequence and
+              $selected.validationSha256 == $published.validationSha256 and
+              $selected.controls.approval == "portal_and_whiskers" and $selected.controls.publicationBinding == "exact" and
+              $reuse.resumeCount == $selected.controls.maxNativeAttempts and $reuse.acknowledgedCount == 1 and $reuse.nativeAuditCount == 2 and
+              $reuse.healthStatus == 200 and ($reuse.anonymousStatus == 401 or $reuse.anonymousStatus == 403) and
+              $reuse.blockedBeforeApproval and $reuse.distinctKomodoReader and $reuse.readFence > $reuse.sendFence and
+              $reuse.environmentReleased and $reuse.slotReleased and $reuse.httpMcpAgreement and
+              $reuse.model == "scripted_anthropic_fixture"' "$report" >/dev/null
+            jq -e '.operations.restart as $verified | $verified.reused as $reuse | $verified.interrupted as $interrupted |
               $interrupted.releaseOperationId == .release.operationId and
-              $interrupted.activeContainer == .operations.containerId and $interrupted.approvalId != $verified.approvalId and
-              $interrupted.diagnosisRunId != $verified.diagnosisRunId and $interrupted.diagnosisSections == ["container", "release"] and
-              $interrupted.stoppedStart == $verified.recoveredStart and $interrupted.recoveredStart > $interrupted.stoppedStart and
+              $interrupted.activeContainer == .operations.containerId and $interrupted.approvalId != $verified.approvalId and $interrupted.approvalId != $reuse.approvalId and
+              $interrupted.diagnosisRunId != $verified.diagnosisRunId and $interrupted.diagnosisRunId != $reuse.diagnosisRunId and
+              $interrupted.diagnosisSections == ["container", "release"] and
+              $interrupted.runbook.selection == $reuse.runbook.selection and $interrupted.runbook.snapshotSha256 != $reuse.runbook.snapshotSha256 and
+              $interrupted.stoppedStart == $reuse.recoveredStart and $interrupted.recoveredStart > $interrupted.stoppedStart and
               ($interrupted.proofSha256 | test("^[a-f0-9]{64}$")) and
               ($interrupted.anonymousStatus == 401 or $interrupted.anonymousStatus == 403) and $interrupted.healthStatus == 200 and
-              $interrupted.nativeAuditCount == 2 and $interrupted.resumeCount == 1 and $interrupted.acknowledgedCount == 0 and
+              $interrupted.nativeAuditCount == 3 and $interrupted.resumeCount == 1 and $interrupted.acknowledgedCount == 0 and
               $interrupted.approvalRevoked and $interrupted.environmentHeld and $interrupted.publicationBlocked and
               $interrupted.slotReleased and ($interrupted.environmentReleased == false) and
               $interrupted.manualReason == "native_unconfirmed" and ($interrupted.sameWorker == false) and
