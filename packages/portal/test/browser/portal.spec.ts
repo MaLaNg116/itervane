@@ -559,6 +559,12 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
   await page.route(`${deliveryPath}/operations-option`, route => route.fulfill({ json: {
     option: { projectId: project.id, environmentId: target.environmentId, releaseOperationId: availableOperation, diagnosis: true },
   } }));
+  const selectedRunbook = {
+    version: '1.2.0', rule: { kind: 'runbook', packageId: randomUUID(), packageKey: 'restart-verified-stopped-app',
+      versionId: randomUUID(), versionSha256: hash('submitted Runbook'), reviewSha256: hash('human-reviewed Runbook'), sequence: 3 },
+    controls: { publicationBinding: 'exact', approval: 'portal_and_whiskers', maxNativeAttempts: 1,
+      stopOn: ['target_drift', 'unknown_outcome', 'failed_health'] },
+  };
   const diagnosticView = (locale: Locale) => {
     const current = activeTask();
     return operationsObservationViewSchema.parse({
@@ -576,12 +582,7 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
           { section: 'release', evidenceId: releaseEvidenceId, proofSha256: hash('verified release history'),
             result: { current: { operationId: releaseOperationId, manifestDigest: candidate.manifest.image.manifestDigest, verifiedAt: observedAt }, previous: null,
               runbooks: { version: 1, snapshotSha256: hash('selected Runbook snapshot'), byState: {
-                exited: { status: 'available', version: '1.2.0', validationSha256: hash('Runbook validation'), action: 'restart_current_publication',
-                  rule: { kind: 'runbook', packageId: 'fa827635-4c43-46d3-b29a-38a74a35b18b', packageKey: 'restart-verified-stopped-app',
-                    versionId: '285240ff-4d48-4b98-916f-bee24224c4c9', versionSha256: hash('submitted Runbook'),
-                    reviewSha256: hash('human-reviewed Runbook'), sequence: 3 },
-                  controls: { publicationBinding: 'exact', approval: 'portal_and_whiskers', maxNativeAttempts: 1,
-                    stopOn: ['target_drift', 'unknown_outcome', 'failed_health'] },
+                exited: { ...selectedRunbook, status: 'available', validationSha256: hash('Runbook validation'), action: 'restart_current_publication',
                   success: { instance: 'same', newerStart: true, healthStatus: 200, access: 'protected' } },
                 dead: { status: 'no_match' },
               } },
@@ -614,6 +615,7 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
       message: translate(locale, decidedAt ? 'operations.proposal_confirmed' : 'operations.proposal_pending'),
       validUntil: new Date(Date.parse(observedAt) + 120_000).toISOString(),
       current: { operationId: releaseOperationId, manifestDigest: candidate.manifest.image.manifestDigest },
+      runbook: selectedRunbook,
       restore: null, actions: owner ? decidedAt ? ['revoke'] : ['confirm', 'reject'] : [],
       decisions: decidedAt ? [{ version: 1, action: 'confirm', actorId: ownerActorId, selfConfirmed: false, decidedAt }] : [],
     } : null,
@@ -695,6 +697,7 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
   const proposal = panel.getByTestId('operations-proposal');
   await proposal.getByRole('button', { name: 'Prepare restart proposal', exact: true }).click();
   await expect(proposal.getByRole('status')).toHaveText(translate('en', 'operations.proposal_pending'));
+  await expect(proposal.getByText('Maximum restart attempts', { exact: true })).toBeVisible();
   await expect(proposal.getByRole('button', { name: 'Approve action', exact: true })).toHaveCount(0);
   expect(proposalSubmissions).toEqual([{ diagnosisSha256: diagnosisDigest }]);
   const diagnosticPage = `${stack.origin}/#/tasks/${diagnostic.id}`;
@@ -715,6 +718,8 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
     await ownerProposal.getByRole('button', { name: '批准处置', exact: true }).click();
     const decision = ownerPage.getByRole('dialog', { name: '核对此处置决定' });
     await expect(decision.getByText(candidate.manifest.image.manifestDigest, { exact: true })).toBeVisible();
+    await expect(decision.getByText('restart-verified-stopped-app · 1.2.0', { exact: true })).toBeVisible();
+    await expect(decision.getByText('最多重启次数', { exact: true })).toBeVisible();
     const confirm = decision.getByRole('button', { name: '批准处置', exact: true });
     await confirm.click();
     await expect(decision.getByRole('alert')).toBeVisible();

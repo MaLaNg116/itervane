@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import { operationsProposalViewSchema, type ReleaseDecision, type TaskDto } from '@itervane/contracts';
+import { operationsProposalViewSchema, type OperationsProposalView, type ReleaseDecision, type TaskDto } from '@itervane/contracts';
 import { ApiFailure } from '../api.js';
 import { Failure, formatTime } from '../components.js';
 import { usePortal, useRemote, useText } from '../context.js';
@@ -18,6 +18,15 @@ const decisionText = {
 type PendingDecision = {
   proposalId: string; fingerprint: string; expectedVersion: number; idempotencyKey: string; action: ReleaseDecision;
 };
+
+function ProposalRunbook({ runbook }: { runbook: NonNullable<OperationsProposalView['proposal']>['runbook'] }) {
+  const t = useText();
+  if (!runbook) return null;
+  return <>
+    <div><dt>{t('operationsPinnedRunbook')}</dt><dd><code className="break-text">{runbook.rule.packageKey} · {runbook.version}</code></dd></div>
+    <div><dt>{t('operationsRunbookAttempts')}</dt><dd>{runbook.controls.maxNativeAttempts}</dd></div>
+  </>;
+}
 
 export function OperationsProposal({ task }: { task: Pick<TaskDto, 'id' | 'runId' | 'version'> }) {
   const { api, locale } = usePortal();
@@ -68,6 +77,7 @@ export function OperationsProposal({ task }: { task: Pick<TaskDto, 'id' | 'runId
         <div><dt>{t('releaseDeadline')}</dt><dd><time dateTime={proposal.validUntil}>{formatTime(proposal.validUntil, locale)}</time></dd></div>
         <div><dt>{t('operationsCurrentImage')}</dt><dd><code className="break-text">{proposal.current.manifestDigest}</code></dd></div>
         {proposal.restore && <div><dt>{t('operationsRestoreImage')}</dt><dd><code className="break-text">{proposal.restore.manifestDigest}</code></dd></div>}
+        <ProposalRunbook runbook={proposal.runbook} />
       </dl>
       <Disclosure title={t('operationsProposalDigest')}><code className="break-text">{proposal.fingerprint}</code></Disclosure>
       {proposal.decisions.length > 0 && <ol aria-label={t('releaseHistory')} className="space-y-1">
@@ -96,6 +106,7 @@ export function OperationsProposal({ task }: { task: Pick<TaskDto, 'id' | 'runId
           <dl className="detail-grid mt-2">
             <div><dt>{t('operationsCurrentImage')}</dt><dd><code className="break-text">{proposal.current.manifestDigest}</code></dd></div>
             {proposal.restore && <div><dt>{t('operationsRestoreImage')}</dt><dd><code className="break-text">{proposal.restore.manifestDigest}</code></dd></div>}
+            <ProposalRunbook runbook={proposal.runbook} />
           </dl>
         </div>
         {submit.error && <Failure error={submit.error} locale={locale} />}
