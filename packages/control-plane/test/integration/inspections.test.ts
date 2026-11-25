@@ -833,7 +833,7 @@ it('retains the audited source when there are no findings and does not queue a r
   });
   const tasks = new TaskService(database.storage);
   try {
-    expect(await worker.tick()).toBe(true);
+    await processAdmittedTestTask(worker);
     const waiting = await tasks.get(identity, task.id);
     expect(waiting.state).toBe('waiting_input');
     await expect(tasks.resume(identity, task.id, { expectedVersion: waiting.version })).rejects.toMatchObject({ code: 'unsupported_state' });
