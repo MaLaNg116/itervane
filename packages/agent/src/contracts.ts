@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { auditFindingsPerScan, auditScannerSchema, extractionCaseSchema, idSchema, learningKnowledgeSchema, linkedHealthRepairContextSchema, localeSchema, operationsDiagnosisObservationSchema,
+import { auditChecklistFindingLimit, auditFindingsPerScan, auditScanFindingLimit, auditScannerSchema, extractionCaseSchema, idSchema, learningKnowledgeSchema, linkedHealthRepairContextSchema, localeSchema, operationsDiagnosisObservationSchema,
   sourceRefSchema } from '@itervane/contracts';
 import { z } from 'zod';
 import { repairEvidenceDataSchema } from './repair-contracts.js';
@@ -67,11 +67,11 @@ const ruleEvidenceSchema = z.object({
 const scanEvidenceSchema = z.object({
   kind: z.literal('scan'), scanner: auditScannerSchema, version: z.string().regex(/^\d+\.\d+\.\d+$/),
   inspectionSha256: shaSchema, policySha256: shaSchema, databaseSha256: shaSchema.nullable(),
-  totalFindings: z.int().min(0).max(2_000), findings: z.array(scannedFindingSchema).max(auditFindingsPerScan),
+  totalFindings: z.int().min(0).max(auditScanFindingLimit), findings: z.array(scannedFindingSchema).max(auditFindingsPerScan),
 }).strict().refine(scan => (scan.scanner === 'trivy') === (scan.databaseSha256 !== null)
   && scan.findings.length === Math.min(scan.totalFindings, auditFindingsPerScan)
   && new Set(scan.findings.map(finding => finding.id)).size === scan.findings.length
-  && scan.findings.every(finding => finding.certainty === (scan.scanner === 'trivy' ? 'confirmed' : 'suspected')));
+  && scan.findings.every(finding => finding.certainty === (scan.scanner === 'gitleaks' ? 'suspected' : 'confirmed')));
 
 const evidenceDataSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('context'), section: contextSectionSchema, text: z.string().min(1).max(1_200),
@@ -128,7 +128,7 @@ const hypothesisSchema = z.object({ description: note, evidenceIds: evidenceIdsS
 const explanationFields = { impact: note, suggestion: note };
 const findingExplanation = z.object({ findingId: auditFindingId, ...explanationFields }).strict();
 export const completionSchemas = {
-  audit: z.object({ ...completionFields, explanations: z.array(findingExplanation).max(16),
+  audit: z.object({ ...completionFields, explanations: z.array(findingExplanation).max(auditChecklistFindingLimit),
     hypotheses: z.array(hypothesisSchema).max(6).default([]) }).strict(),
   repair: z.object(completionFields).strict(),
   verify: z.object(completionFields).strict(),
@@ -137,7 +137,7 @@ export const completionSchemas = {
 export const auditReportSchema = z.object({
   ...completionFields, hypotheses: z.array(hypothesisSchema).max(6),
   coverage: z.enum(['complete', 'partial']), limits: z.array(note).max(6),
-  findings: z.array(z.union([findingSchema.extend(explanationFields), scannedFindingSchema.extend(explanationFields)])).max(16),
+  findings: z.array(z.union([findingSchema.extend(explanationFields), scannedFindingSchema.extend(explanationFields)])).max(auditChecklistFindingLimit),
 }).strict();
 export const repairReportSchema = z.object({ ...completionFields, candidate: candidateSchema }).strict();
 export const verificationReportSchema = z.object({

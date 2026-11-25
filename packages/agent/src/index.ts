@@ -5,7 +5,7 @@ export * from './tools.js';
 export { formalVerificationCompletionSchema } from './verification-contracts.js';
 export { createAgentHarness, type AgentFixtureHost, type AgentFixtureReport, type AgentRunOptions, type AgentScope, type FormalAuditReport,
   type FormalOperationsReport, type FormalRepairReport, type FormalRuleExtractionReport, type FormalVerificationReport } from './harness.js';
-export { createFormalAudit } from './formal-audit.js';
+export { createFormalAudit, publishedAuditScan } from './formal-audit.js';
 export { createFormalRepair } from './formal-repair.js';
 export { createFormalVerification } from './formal-verification.js';
 export { createFormalOperations } from './formal-operations.js';

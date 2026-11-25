@@ -1,6 +1,6 @@
-import type { Locale } from '@itervane/contracts';
+import { requiredAuditScanners, type Locale } from '@itervane/contracts';
 import {
-  auditReportSchema, auditScannerSchema, checkKinds, completionSchemas, repairReportSchema, verificationReportSchema,
+  auditReportSchema, checkKinds, completionSchemas, repairReportSchema, verificationReportSchema,
   type AgentEvidence, type AuditReport, type RepairReport, type VerificationReport,
 } from './contracts.js';
 import { agentText } from './messages.js';
@@ -45,15 +45,17 @@ export function finishAudit(evidence: readonly AgentEvidence[], raw: unknown): A
   return explainAudit(evidence, raw, [report.id], report.data);
 }
 
-export function finishFormalAudit(evidence: readonly AgentEvidence[], raw: unknown, locale: Locale): AuditReport | undefined {
+export function finishFormalAudit(evidence: readonly AgentEvidence[], raw: unknown, locale: Locale, publishedCode = false): AuditReport | undefined {
   const scans = evidence.flatMap(({ data, id }) => data.kind === 'scan' ? [{ ...data, id }] : []);
   const reproduction = evidence.filter(item => item.data.kind === 'health_reproduction');
-  if (scans.length !== auditScannerSchema.options.length || new Set(scans.map(scan => scan.scanner)).size !== scans.length
+  const required = requiredAuditScanners(publishedCode);
+  if (scans.length !== required.length || required.some(scanner => !scans.some(scan => scan.scanner === scanner))
     || new Set(scans.map(scan => scan.inspectionSha256)).size !== 1 || reproduction.length > 1) return;
   const partial = scans.some(scan => scan.totalFindings > scan.findings.length);
   const text = agentText(locale).formal;
+  const scope = publishedCode ? text.scopeWithPublished : text.scope;
   return explainAudit(evidence, raw, [...scans, ...reproduction].map(item => item.id), {
-    coverage: partial ? 'partial' : 'complete', limits: partial ? [text.scope, text.truncated] : [text.scope],
+    coverage: partial ? 'partial' : 'complete', limits: partial ? [scope, text.truncated] : [scope],
     findings: scans.flatMap(scan => scan.findings),
   });
 }
