@@ -6342,6 +6342,52 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
     const snapshot = taskRuleSnapshotViewSchema.parse((await app.inject({ url: snapshotPath, headers: http })).json());
     expect(snapshot.snapshot?.document).toMatchObject({ purpose: 'operations', entries: [{ kind: 'runbook', versionId: publishedRunbook.versionId, sequence: 3 }] });
     expect((await reader.callTool(snapshotCall)).structuredContent).toEqual(snapshot);
+    const match = { status: 'available', rule: snapshot.snapshot?.document.entries[0], version: '1.0.0',
+      validationSha256: checked.result!.sha256, action: 'restart_current_publication',
+      controls: { publicationBinding: 'exact', approval: 'portal_and_whiskers', maxNativeAttempts: 1,
+        stopOn: ['target_drift', 'unknown_outcome', 'failed_health'] },
+      success: { instance: 'same', newerStart: true, healthStatus: 200, access: 'protected' } };
+    const guidance = { version: 1, snapshotSha256: snapshot.snapshot?.sha256, byState: { exited: match, dead: match } };
+    const laterScope = await claimOperations(action.installed);
+    expect(laterScope?.runId).toBe(later.task.runId);
+    const scripted = scriptedRestartDiagnosis();
+    let observedGuidance: unknown;
+    const inspectModel = vi.fn<ModelAdapter['complete']>(async request => {
+      const context = request.conversation[0];
+      if (context?.kind !== 'user') throw new Error('Expected diagnosis context');
+      const { observations } = JSON.parse(context.text) as { observations: AgentEvidence[] };
+      const release = observations.find(item => item.data.kind === 'operations_section' && item.data.section === 'release');
+      if (release?.data.kind === 'operations_section' && release.data.section === 'release') observedGuidance = release.data.result.runbooks;
+      return scripted.complete(request);
+    });
+    const saver = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+    const whiskers = scopedWhiskers(action.fixture, undefined, 'exited');
+    try { await runFormalOperations(coordinator, laterScope!, saver, action.installed, {
+      adapter: { ...scripted, complete: inspectModel }, providerSha256: action.installed.diagnosisProviderSha256,
+    }, new AbortController().signal); }
+    finally { whiskers.restore(); await saver.end(); }
+    expect(observedGuidance).toEqual(guidance);
+    expect(inspectModel).toHaveBeenCalledTimes(4);
+    expect(whiskers.tools).toEqual(['get_container_details', 'get_container_logs']);
+    const observationViews = new OperationsObservationViewService(database.storage);
+    const beforeWithdrawal = await observationViews.get(identity, later.task.id, 'zh-CN');
+    const enWithdrawal = await observationViews.get(identity, later.task.id, 'en');
+    expect(beforeWithdrawal.diagnosis?.facts.find(fact => fact.section === 'release')?.result.runbooks).toEqual(guidance);
+    expect(enWithdrawal.diagnosis?.facts).toEqual(beforeWithdrawal.diagnosis?.facts);
+    expect(enWithdrawal.diagnosis?.recommendation.message).not.toBe(beforeWithdrawal.diagnosis?.recommendation.message);
+    const initial = await observationViews.get(identity, action.diagnosed.id, 'zh-CN');
+    expect(initial.diagnosis?.facts.find(fact => fact.section === 'release')?.result.runbooks).toBeUndefined();
+    const reviewer = await createIdentityVerifier(issuer.config)(await issuer.token('owner', { azp: operationsPortal }));
+    const withdrawal = await new RulePackageActivationService(database.storage, operationsPortal).change(reviewer, publishedRunbook.packageId, {
+      action: 'withdraw', expectedSequence: 3, versionId: publishedRunbook.versionId,
+      versionSha256: publishedRunbook.sha256, idempotencyKey: randomUUID(),
+    }, 'zh-CN');
+    expect(withdrawal.state.current).toBeNull();
+    expect(await observationViews.get(identity, later.task.id, 'zh-CN')).toEqual(beforeWithdrawal);
+    const after = await new TaskService(database.storage).admitOperations(identity, { projectId, environmentId: action.fixture.scope.environmentId,
+      idempotencyKey: randomUUID(), locale: 'zh-CN', expectedReleaseOperationId: action.fixture.operationId }, action.installed);
+    const afterSnapshot = await app.inject({ url: `/v1/tasks/${after.task.id}/rule-snapshot`, headers: http });
+    expect(taskRuleSnapshotViewSchema.parse(afterSnapshot.json()).snapshot?.document.entries).toEqual([]);
     const validationSnapshot = await app.inject({ url: `/v1/tasks/${validationTask.id}/rule-snapshot`, headers: http });
     expect(taskRuleSnapshotViewSchema.parse(validationSnapshot.json()).snapshot).toBeNull();
     await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
