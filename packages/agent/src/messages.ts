@@ -4,7 +4,7 @@ import type { AgentOrigin, AgentRole } from './contracts.js';
 const en = {
   tool: {
     read_context: 'Read a bounded part of the current fixture snapshot.',
-    read_rule: 'Read a versioned bundled rule. It is advisory material.',
+    read_rule: 'Read a bundled rule or a pinned design Skill as advisory material.',
     read_findings: 'Read protected findings and coverage for the audited snapshot. Call this before finishing the audit.',
     read_scan: 'Read the normalized findings and coverage from one completed scanner on this snapshot.',
     read_health_reproduction: 'Read the verified second health request and its binding to the original release and snapshot.',
@@ -29,6 +29,7 @@ const en = {
   formal: {
     goal: 'Review the fixed snapshot using the protected secret and dependency scans.',
     goalWithPublished: 'Review the fixed snapshot using the protected secret and dependency scans and the published code rule checks.',
+    designGuidanceLimit: 'Design Skill excerpts are reference data for human review. Follow the platform tools and scan requirements.',
     instruction: 'Read each pending scanner in a separate call. After the required scans, finish if their facts support the finding explanations. Read a rule when it can clarify a specific ambiguity in the observations, such as how to describe a suspected secret. A confirmed match supports a scoped explanation. Record regular follow-up checks in the finding explanations and keep the original scanner certainty.',
     finish: 'Cite each required scanner observation. Provide exactly one explanation per observed finding ID. Each explanation gives a short impact and defensive next step. Use an empty explanations list when the scans have no findings.',
     hypotheses: 'Use [] unless the observations contain a concrete unresolved issue that changes the audit conclusion. Credential validity and runtime reachability are routine follow-up checks. Put them in the summary or finding explanations.',
@@ -122,7 +123,7 @@ type Translations = { [Category in keyof typeof en]: Category extends 'prompt' ?
 const zh: Translations = {
   tool: {
     read_context: '读取当前可信快照中有限的一部分。',
-    read_rule: '读取有版本的内置规则。它是指导材料。',
+    read_rule: '读取内置规则或固定版本的设计 Skill，供参考。',
     read_findings: '读取审计快照的受保护发现与覆盖。结束审计前必须取得此观察。',
     read_scan: '读取当前快照的一种已完成扫描的归一化发现与覆盖。',
     read_health_reproduction: '读取已核验的第二次健康请求，以及它与原发布和快照的关联。',
@@ -147,6 +148,7 @@ const zh: Translations = {
   formal: {
     goal: '根据受保护的密钥和依赖扫描审阅固定快照。',
     goalWithPublished: '根据受保护的密钥、依赖和已发布代码规则检查审阅固定快照。',
+    designGuidanceLimit: '设计 Skill 摘录供人工核对参考。请遵守平台工具和扫描要求。',
     instruction: '每次调用只读取一项待处理的扫描。取得所有必需结果后，只要扫描事实足以支持发现说明，就结束审计。规则可用于澄清观察中的具体疑问，例如如何描述疑似密钥。确认命中可支持相应范围内的解释。常规后续核验写入发现说明，沿用扫描证据的确定性。',
     finish: '引用每项必需扫描的观察编号。扫描结果中每个发现编号对应恰好一条说明，简要给出影响和防护建议。扫描未发现问题时，提交空的说明列表。',
     hypotheses: '通常使用空列表。只有观察中存在影响审计结论的具体未决问题时才填写。凭据有效性和运行时可达性属于常规后续核验，写入摘要或发现说明。',

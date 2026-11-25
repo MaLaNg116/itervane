@@ -589,6 +589,13 @@
       "when": 1795580823127,
       "tag": "0083_current_restart_rule_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1795584937465,
+      "tag": "0084_design_skill_audit_evidence",
+      "breakpoints": true
     }
   ]
 }

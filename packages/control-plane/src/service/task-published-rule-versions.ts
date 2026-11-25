@@ -5,8 +5,9 @@ import type { Transaction } from './access.js';
 import { readPassedCandidateValidation } from './candidate-validations.js';
 import { readRulePackageDocument, readRulePackageReview } from './rule-packages.js';
 
-/** Resolves the exact activation, review and validation linked by authorized historical task references. */
-export async function readPinnedValidatedRules(tx: Transaction, task: { projectId: string }, entries: TaskRuleSnapshot['entries']) {
+/** Resolves immutable package content and the review identified by an authorized task reference. */
+export async function readPinnedRuleVersions(tx: Transaction, task: { projectId: string }, entries: TaskRuleSnapshot['entries']) {
+  if (!entries.length) return [];
   const [project] = await tx.select({ workspaceId: projects.workspaceId }).from(projects).where(eq(projects.id, task.projectId));
   if (!project) throw new Error('task_pinned_rule_scope');
   const rules = [];
@@ -25,8 +26,17 @@ export async function readPinnedValidatedRules(tx: Transaction, task: { projectI
     }
     const document = readRulePackageDocument(row.version);
     const review = readRulePackageReview(row.review, row.version);
-    if (document.kind !== entry.kind || document.kind === 'design_skill' || review.kind !== 'candidate_review' || review.outcome !== 'accepted'
+    if (document.kind !== entry.kind || review.kind !== (document.kind === 'design_skill' ? 'design_review' : 'candidate_review') || review.outcome !== 'accepted'
         || (document.scope.kind === 'project' && document.scope.projectId !== task.projectId)) throw new Error('task_pinned_rule_scope');
+    rules.push({ entry, document, review });
+  }
+  return rules;
+}
+
+export async function readPinnedValidatedRules(tx: Transaction, task: { projectId: string }, entries: TaskRuleSnapshot['entries']) {
+  const rules = [];
+  for (const { entry, document, review } of await readPinnedRuleVersions(tx, task, entries)) {
+    if (document.kind === 'design_skill') throw new Error('task_pinned_rule_validation_kind');
     const { projectId, candidateId, id } = document.validation;
     const { validation, record, candidate } = await readPassedCandidateValidation(tx, projectId, candidateId, id);
     if (JSON.stringify(validation) !== JSON.stringify(document.validation) || JSON.stringify(candidate) !== JSON.stringify(document.candidate)) {

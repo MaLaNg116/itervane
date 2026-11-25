@@ -2,10 +2,22 @@ import { z } from 'zod';
 import { linkedHealthRepairContextSchema } from './formal-repair-retry.js';
 import { localeSchema } from './i18n.js';
 import { sha256Schema } from './inspection.js';
-import { catalogSnapshotSchema } from './preaudit.js';
+import { catalogSnapshotSchema, ruleIdSchema } from './preaudit.js';
 import { idSchema, sourceRefSchema } from './primitives.js';
 import { normalizedScannerFindingSchema } from './qualified-inspection.js';
 import { codeRuleLanguageSchema, publishedCodeScanMatchLimit } from './published-code-scan.js';
+import { publishedRuleReferenceSchema, taskRuleSnapshotLimit } from './task-rule-snapshots.js';
+
+const designSkillReference = publishedRuleReferenceSchema.extend({ kind: z.literal('design_skill') });
+const designVersion = z.string().min(1).max(32);
+export const formalAuditDesignGuidanceSchema = z.strictObject({
+  snapshotSha256: sha256Schema, entries: z.array(z.strictObject({ ruleId: ruleIdSchema,
+    reference: designSkillReference, version: designVersion, guidance: z.string().trim().min(1).max(321),
+  })).min(1).max(taskRuleSnapshotLimit).refine(entries => new Set(entries.map(entry => entry.ruleId)).size === entries.length),
+});
+export const auditDesignSkillEvidenceSchema = z.strictObject({
+  authority: z.literal('advisory'), snapshotSha256: sha256Schema, reference: designSkillReference, version: designVersion,
+});
 
 export const formalAuditInputSchema = z.strictObject({
   version: z.literal(1), taskId: idSchema, runId: idSchema, projectId: idSchema, generation: z.int().positive(),
@@ -13,6 +25,7 @@ export const formalAuditInputSchema = z.strictObject({
   inspection: z.strictObject({ requestId: idSchema, receiptSha256: sha256Schema, snapshotSha256: sha256Schema, planSha256: sha256Schema }),
   catalog: catalogSnapshotSchema,
   healthReproduction: linkedHealthRepairContextSchema.optional(),
+  designGuidance: formalAuditDesignGuidanceSchema.optional(),
 });
 export type FormalAuditInput = z.infer<typeof formalAuditInputSchema>;
 
@@ -37,7 +50,7 @@ const evidence = z.discriminatedUnion('kind', [
     policySha256: sha256Schema, databaseSha256: sha256Schema.nullable(), totalFindings: z.int().min(0).max(auditScanFindingLimit),
     findingIds: z.array(sha256Schema).max(auditFindingsPerScan),
   }),
-  z.strictObject({ kind: z.literal('rule'), id: sha256Schema, ruleId: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/), sha256: sha256Schema }),
+  z.strictObject({ kind: z.literal('rule'), id: sha256Schema, ruleId: ruleIdSchema, sha256: sha256Schema, designSkill: auditDesignSkillEvidenceSchema.optional() }),
   z.strictObject({ kind: z.literal('health_reproduction'), id: sha256Schema, reproduction: linkedHealthRepairContextSchema }),
 ]);
 
