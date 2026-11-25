@@ -21,7 +21,8 @@ from guest_job import ProtocolError, verify_workload_receipt
 from source_wire import (
     CLOSED, GUEST_ERRORS, GUEST_REPAIR_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_MATERIALIZED_SOURCE, MAX_QUALIFIED_RECEIPT,
     MAX_PUBLISHED_INSPECTION_COMMAND, MAX_PUBLISHED_INSPECTION_PROOF,
-    MAX_REPAIR_COMMAND, MAX_REPAIR_RECEIPT, MAX_REQUEST_BYTES, MAX_TRANSFER_BYTES, MAX_VERIFICATION_COMMAND,
+    MAX_PUBLISHED_VERIFICATION_COMMAND, MAX_PUBLISHED_VERIFICATION_PROOF,
+    MAX_REPAIR_COMMAND, MAX_REPAIR_RECEIPT, MAX_REQUEST_BYTES, MAX_TRANSFER_BYTES,
     MAX_VERIFICATION_RECEIPT, MAX_RULE_VALIDATION_COMMAND, MAX_RULE_VALIDATION_PROOF, MAX_OCI_ARCHIVE_BYTES, MAX_OCI_CHUNK_BYTES,
     PACK_TYPE, QUALIFIED_START, RECEIPT, REFS_TYPE, RULE_SAMPLES_START, SOURCE_PORT, START, UPLOAD_TYPE, SourceWire,
 )
@@ -259,14 +260,15 @@ def with_standard_build(receipt, proof, command, wire):
         outcome["baseline"] = observe_standard_baseline(outcome, profile, wire, "healthRegression" in frozen["input"])
     proof["build"] = outcome
     serialized = json.dumps(proof, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    if len(serialized) > MAX_VERIFICATION_RECEIPT:
+    limit = MAX_PUBLISHED_VERIFICATION_PROOF if "publishedCode" in frozen["input"] else MAX_VERIFICATION_RECEIPT
+    if len(serialized) > limit:
         raise GuestFailure("scan-integrity")
     return serialized
 
 
 def inspect_source(repository, identity, commit, repository_id, mode, wire, command=None):
     published = {
-        "verification": (VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT, b"Y"),
+        "verification": (VERIFICATION_COMMAND, MAX_PUBLISHED_VERIFICATION_PROOF, b"Y"),
         "repair": (REPAIR_COMMAND, MAX_REPAIR_RECEIPT, b"H"),
         "repair-observation": (REPAIR_OBSERVATION, MAX_REPAIR_RECEIPT, b"H"),
         "materialized": (MATERIALIZED_SOURCE, MAX_QUALIFIED_RECEIPT, b"N"),
@@ -387,7 +389,7 @@ def serve_source(wire, work):
         wire.send(b"M", verify_objects(repository, identity, commit))
         if scenario in (b"R", b"L", b"V"):
             verify = scenario == b"V"
-            _, command = wire.receive({b"W": MAX_VERIFICATION_COMMAND if verify else MAX_REPAIR_COMMAND})
+            _, command = wire.receive({b"W": MAX_PUBLISHED_VERIFICATION_COMMAND if verify else MAX_REPAIR_COMMAND})
             if not command:
                 raise GuestFailure("guest-input" if verify else "repair-invalid")
             mode = "verification" if verify else "repair-observation" if scenario == b"L" else "repair"
