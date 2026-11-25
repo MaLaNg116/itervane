@@ -1,10 +1,8 @@
 import { deepStrictEqual, equal, match, notEqual, ok, rejects } from 'node:assert/strict';
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 import { getCACertificates, setDefaultCACertificates } from 'node:tls';
 import { promisify } from 'node:util';
@@ -66,6 +64,7 @@ import { openProtectedIngress } from './protected-ingress.js';
 import { readNativeRuleReuse, ruleReuseRevisions, summarizePublishedRuleScan } from './published-rule-reuse.js';
 import { proveDeniedNativeRestore, proveInterruptedNativeRestore, proveNativeRestore } from './restore-proof.js';
 import { proveNativeRestart, type DiagnosisHttp, type DiagnosisReaders, type NativePublishedRunbook } from './restart-proof.js';
+import { boundedExit, exitStatus, firstLine, sourceWorkerEnvironment, startScopedWorker, workerAccount } from './scoped-worker.js';
 
 type NativeDiagnosisPublication = {
   taskId: string; operationId: string; containerId: string; restoreExecutionId?: string;
@@ -90,7 +89,6 @@ const origin = 'https://github.com/MaLaNg116/itervane.git';
 const publicUrl = 'https://itervane.example';
 const standardRuntimePort = 38171; // The port sealed in the OCI runtime plan by runtime_guest.py.
 const controllerAccount = 'itervane-probe';
-const workerAccount = 'itervane-inspection-client';
 const domainName = /^itervane-d2-[a-f0-9-]{36}$/;
 let phase = 'configuration';
 type NativeKomodo = Awaited<ReturnType<typeof openNativeReleaseKomodo>>;
@@ -104,32 +102,6 @@ async function poll<T>(read: () => Promise<T | undefined>, timeoutMs: number, la
     await delay(200);
   }
   throw new Error(`${label}_timeout`);
-}
-
-function exitStatus(child: ChildProcess) {
-  return new Promise<number | null>(resolve => {
-    child.once('error', () => resolve(null));
-    child.once('close', code => resolve(code));
-  });
-}
-
-async function firstLine(child: ChildProcess, timeoutMs = 8_000) {
-  if (!child.stdout) throw new Error('probe_stdout');
-  const lines = createInterface({ input: child.stdout });
-  try {
-    const [first] = await once(lines, 'line', { signal: AbortSignal.timeout(timeoutMs) });
-    return String(first);
-  } finally { lines.close(); child.stdout.resume(); }
-}
-
-async function boundedExit(child: ChildProcess, exit: Promise<number | null>, timeMs: number) {
-  const timeout = new AbortController();
-  try {
-    return await Promise.race([exit, delay(timeMs, undefined, { signal: timeout.signal }).then(() => {
-      child.kill();
-      throw new Error('process_exit_timeout');
-    })]);
-  } finally { timeout.abort(); }
 }
 
 async function withReplacementArchive<T>(shared: string, raw: unknown, exercise: () => Promise<T>) {
@@ -150,11 +122,6 @@ async function withReplacementArchive<T>(shared: string, raw: unknown, exercise:
   }
 }
 
-function sourceWorkerEnvironment(socket: string, controllerUid: string, image: string) {
-  return ['PATH=/usr/bin:/bin', 'LANG=C.UTF-8', `ITERVANE_RUNNER_SOCKET=${socket}`,
-    `ITERVANE_RUNNER_UID=${controllerUid}`, `ITERVANE_RUNNER_IMAGE_SHA256=${image}`, 'ITERVANE_WORKER_LEASE_SECONDS=30'];
-}
-
 function startWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string,
   auditURL?: string, verification?: StandardVerificationProfile, repair: boolean | NpmUpgradeApproval = false,
   ruleProfile?: CodeRuleValidationProfile) {
@@ -166,37 +133,6 @@ function startWorker(bundle: string, socket: string, controllerUid: string, imag
     ...(typeof repair === 'object' ? [`ITERVANE_NPM_REPAIR_APPROVALS=${JSON.stringify([repair])}`] : []),
     ...(ruleProfile ? ['ITERVANE_CANDIDATE_VALIDATION_ENABLED=1', `ITERVANE_CODE_RULE_VALIDATION_PROFILE=${JSON.stringify(ruleProfile)}`] : []),
     'ITERVANE_WORKER_POLL_MS=100'], { DATABASE_URL: databaseUrl });
-}
-
-async function startScopedWorker(bundle: string, environment: string[], secrets: Record<string, string>) {
-  const entries = Object.entries(secrets);
-  const loadSecrets = entries.map(([name, value]) => {
-    match(name, /^[A-Z][A-Z0-9_]*$/);
-    ok(!/[\r\n]/.test(value));
-    return `IFS= read -r ${name}; export ${name};`;
-  }).join(' ');
-  const child = spawn('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/usr/bin/env', '-i', ...environment,
-    '/usr/bin/setpriv', '--no-new-privs', '/bin/bash', '-c',
-    `set -eu; ${loadSecrets} printf "%s\\n" "$$"; exec "$@"`, 'itervane-worker', process.execPath, bundle,
-  ], { stdio: ['pipe', 'pipe', 'pipe'] });
-  const exit = exitStatus(child);
-  child.stderr.resume();
-  child.stdin.on('error', () => undefined);
-  const pidLine = firstLine(child);
-  child.stdin.end(entries.map(([, value]) => value + '\n').join(''));
-  try {
-    const pid = await pidLine;
-    match(pid, /^[1-9][0-9]{0,9}$/);
-    let stopped = false;
-    return { pid, async stop(mode: 'TERM' | 'KILL') {
-      if (stopped) return;
-      stopped = true;
-      await execute('/usr/bin/sudo', ['-n', '-u', workerAccount, '--', '/bin/kill', `-${mode}`, pid], { timeout: 5_000 });
-      const code = await boundedExit(child, exit, 15_000);
-      if (mode === 'TERM') equal(code, 0);
-      else notEqual(code, 0);
-    } };
-  } catch (error) { child.kill(); await boundedExit(child, exit, 5_000); throw error; }
 }
 
 function launchScopedFixtureWorker(bundle: string, socket: string, controllerUid: string, image: string,
