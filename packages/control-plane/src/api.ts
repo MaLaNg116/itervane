@@ -193,6 +193,11 @@ export function createApi(database: Database, config: ApiConfig,
     const result = admissionDtoSchema.parse(await candidateValidation.admit(identity(request), projectId, candidateId, request.body));
     return reply.code(result.replayed ? 200 : 202).send(result);
   });
+  app.post('/v1/projects/:projectId/rule-candidates/:candidateId/package-drafts', async (request, reply) => {
+    const { projectId, candidateId } = parseInput(ruleCandidateParam, request.params);
+    const result = await ruleLibrary.prepareCandidateDraft(identity(request), projectId, candidateId, request.body, request.locale);
+    return reply.code(result.replayed ? 200 : 201).send(result);
+  });
   app.get('/v1/tasks/:taskId/candidate-validation', async request => {
     const { taskId } = parseInput(taskParam, request.params);
     return candidateValidation.get(identity(request), taskId, request.locale);

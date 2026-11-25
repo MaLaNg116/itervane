@@ -1,12 +1,14 @@
 import { and, desc, eq, lt, or } from 'drizzle-orm';
-import { designSkillPackageSchema, idSchema, rulePackageDetailSchema, rulePackageImportResultSchema, rulePackageListQuerySchema,
+import { designSkillPackageSchema, idSchema, prepareCandidatePackageSchema, rulePackageDetailSchema, rulePackageDocumentSchema,
+  rulePackageImportResultSchema, rulePackageListQuerySchema,
   rulePackagePageSchema, rulePackageReviewDtoSchema, rulePackageReviewInputSchema, rulePackageReviewRecordSchema,
-  rulePackageRevisionSchema, translate, type Locale } from '@itervane/contracts';
+  rulePackageRevisionSchema, translate, validatedRulePackageSchema, type Locale, type RulePackageDocument } from '@itervane/contracts';
 import { digest } from '@itervane/rules';
 import type { VerifiedIdentity } from '../auth/identity.js';
 import type { Database } from '../persistence/database.js';
 import { rulePackages, rulePackageReviews, rulePackageVersions } from '../persistence/schema.js';
 import { isHumanWorkspaceOwner, requireActor, requireProject, type Transaction } from './access.js';
+import { readPassedCandidateValidation } from './candidate-validations.js';
 import { DomainError, parseInput } from './errors.js';
 import { databaseNow } from './releases.js';
 
@@ -33,20 +35,30 @@ export async function readRulePackageVersion(tx: Transaction, workspaceId: strin
   return row;
 }
 
-export function readDesignSkillDocument(row: Version) {
-  const document = designSkillPackageSchema.parse(row.document);
+export function readRulePackageDocument(row: Version) {
+  const document = rulePackageDocumentSchema.parse(row.document);
   const projectId = document.scope.kind === 'project' ? document.scope.projectId : null;
+  const validationId = document.kind === 'design_skill' ? null : document.validation.id;
   if (row.packageKey !== document.packageKey || row.version !== document.version || row.projectId !== projectId
-      || digest(JSON.stringify(document)) !== row.sha256) throw new Error('rule_package_version_integrity');
+      || row.validationId !== validationId || digest(JSON.stringify(document)) !== row.sha256) throw new Error('rule_package_version_integrity');
   return document;
 }
 
-export function readDesignSkillReview(row: Review, version: Version) {
+export async function requireRulePackageEvidence(tx: Transaction, document: RulePackageDocument) {
+  if (document.kind === 'design_skill') return;
+  const { projectId, candidateId, id } = document.validation;
+  const { validation } = await readPassedCandidateValidation(tx, projectId, candidateId, id);
+  if (JSON.stringify(validation) !== JSON.stringify(document.validation)
+      || digest(JSON.stringify(document.candidate)) !== validation.candidateSha256) throw new Error('rule_package_validation_integrity');
+}
+
+export function readRulePackageReview(row: Review, version: Version) {
   const document = rulePackageReviewRecordSchema.parse(row.document);
+  const expectedKind = version.validationId ? 'candidate_review' : 'design_review';
   if (document.versionId !== version.id || document.versionId !== row.versionId
       || document.versionSha256 !== version.sha256 || document.versionSha256 !== row.versionSha256
       || document.reviewedBy !== row.reviewedBy || document.grantId !== row.grantId || document.outcome !== row.outcome
-      || digest(JSON.stringify(document)) !== row.sha256) throw new Error('rule_package_review_integrity');
+      || document.kind !== expectedKind || digest(JSON.stringify(document)) !== row.sha256) throw new Error('rule_package_review_integrity');
   return document;
 }
 
@@ -57,8 +69,8 @@ async function currentReview(tx: Transaction, versionId: string, grantId: string
 }
 
 function presentVersion(row: Version, locale: Locale, review?: Review) {
-  const document = readDesignSkillDocument(row);
-  const reviewRecord = review && readDesignSkillReview(review, row);
+  const document = readRulePackageDocument(row);
+  const reviewRecord = review && readRulePackageReview(review, row);
   const reviewState = reviewRecord?.outcome ?? 'draft';
   const summary = rulePackageRevisionSchema.parse({
     packageId: row.packageId, versionId: row.id, packageKey: row.packageKey, version: row.version, sha256: row.sha256,
@@ -76,30 +88,58 @@ export class RulePackageService {
 
   async importDraft(identity: VerifiedIdentity, raw: unknown, locale: Locale) {
     const document = parseInput(designSkillPackageSchema, raw);
-    const sha256 = digest(JSON.stringify(document));
     return this.database.db.transaction(async tx => {
       const actor = await requireLibraryOwner(tx, identity);
       const projectId = document.scope.kind === 'project' ? document.scope.projectId : null;
       if (projectId && (await requireProject(tx, actor, projectId, true)).workspaceId !== actor.workspaceId) throw new DomainError('not_found');
-      await tx.insert(rulePackages).values({ workspaceId: actor.workspaceId, key: document.packageKey })
-        .onConflictDoNothing({ target: [rulePackages.workspaceId, rulePackages.key] });
-      // A single package lock also gives later publication and rollback one ordering.
-      const [pkg] = await tx.select().from(rulePackages).where(and(eq(rulePackages.workspaceId, actor.workspaceId),
-        eq(rulePackages.key, document.packageKey))).for('update');
-      if (!pkg) throw new DomainError('unavailable');
-      const createdAt = await databaseNow(tx);
-      if (createdAt.getTime() >= identity.expiresAt * 1_000) throw new DomainError('unauthenticated');
-      const [existing] = await tx.select().from(rulePackageVersions).where(and(
-        eq(rulePackageVersions.packageId, pkg.id), eq(rulePackageVersions.version, document.version)));
-      if (existing && existing.sha256 !== sha256) throw new DomainError('version_conflict');
-      const row = existing ?? (await tx.insert(rulePackageVersions).values({
-        packageId: pkg.id, workspaceId: actor.workspaceId, packageKey: pkg.key, projectId, version: document.version,
-        sha256, document, submittedBy: actor.principalId, grantId: actor.workspaceGrantId, createdAt,
-      }).returning())[0];
-      if (!row) throw new DomainError('unavailable');
-      const view = presentVersion(row, locale, existing ? await currentReview(tx, row.id, actor.workspaceGrantId) : undefined);
-      return rulePackageImportResultSchema.parse({ version: { ...view.summary, document: view.document, review: view.review }, replayed: Boolean(existing) });
+      return this.saveDraft(tx, actor, identity, document, locale);
     });
+  }
+
+  async prepareCandidateDraft(identity: VerifiedIdentity, projectId: string, candidateId: string, raw: unknown, locale: Locale) {
+    const { scope, validationId, validationSha256, ...metadata } = parseInput(prepareCandidatePackageSchema, raw);
+    return this.database.db.transaction(async tx => {
+      const actor = await requireLibraryOwner(tx, identity);
+      if (!isHumanWorkspaceOwner(identity, actor, actor.workspaceId, this.portalClientId)) throw new DomainError('forbidden');
+      const project = await requireProject(tx, actor, projectId, true);
+      if (project.workspaceId !== actor.workspaceId) throw new DomainError('not_found');
+      const { candidate, validation } = await readPassedCandidateValidation(tx, project.id, candidateId, validationId);
+      if (validation.sha256 !== validationSha256) throw new DomainError('version_conflict');
+      const document = validatedRulePackageSchema.parse({ formatVersion: 1, kind: candidate.kind, ...metadata,
+        scope: scope === 'project' ? { kind: 'project', projectId: project.id } : { kind: 'workspace' }, candidate, validation });
+      return this.saveDraft(tx, actor, identity, document, locale);
+    });
+  }
+
+  private async saveDraft(tx: Transaction, actor: Awaited<ReturnType<typeof requireLibraryOwner>>, identity: VerifiedIdentity,
+    document: RulePackageDocument, locale: Locale) {
+    await tx.insert(rulePackages).values({ workspaceId: actor.workspaceId, key: document.packageKey })
+      .onConflictDoNothing({ target: [rulePackages.workspaceId, rulePackages.key] });
+    // A single package lock gives drafts, publication and rollback one ordering.
+    const [pkg] = await tx.select().from(rulePackages).where(and(eq(rulePackages.workspaceId, actor.workspaceId),
+      eq(rulePackages.key, document.packageKey))).for('update');
+    if (!pkg) throw new DomainError('unavailable');
+    const createdAt = await databaseNow(tx);
+    if (createdAt.getTime() >= identity.expiresAt * 1_000) throw new DomainError('unauthenticated');
+    const projectId = document.scope.kind === 'project' ? document.scope.projectId : null;
+    const validationId = document.kind === 'design_skill' ? null : document.validation.id;
+    const sha256 = digest(JSON.stringify(document));
+    const [existing] = await tx.select().from(rulePackageVersions).where(and(
+      eq(rulePackageVersions.packageId, pkg.id), eq(rulePackageVersions.version, document.version)));
+    if (existing && existing.sha256 !== sha256) throw new DomainError('version_conflict');
+    if (!existing) {
+      const [previous] = await tx.select().from(rulePackageVersions).where(eq(rulePackageVersions.packageId, pkg.id)).limit(1);
+      if (previous && (readRulePackageDocument(previous).kind !== document.kind || (validationId && previous.projectId !== projectId))) {
+        throw new DomainError('version_conflict');
+      }
+    }
+    const row = existing ?? (await tx.insert(rulePackageVersions).values({
+      packageId: pkg.id, workspaceId: actor.workspaceId, packageKey: pkg.key, projectId, version: document.version, validationId,
+      sha256, document, submittedBy: actor.principalId, grantId: actor.workspaceGrantId, createdAt,
+    }).returning())[0];
+    if (!row) throw new DomainError('unavailable');
+    const view = presentVersion(row, locale, existing ? await currentReview(tx, row.id, actor.workspaceGrantId) : undefined);
+    return rulePackageImportResultSchema.parse({ version: { ...view.summary, document: view.document, review: view.review }, replayed: Boolean(existing) });
   }
 
   async get(identity: VerifiedIdentity, rawPackageId: unknown, rawVersionId: unknown, locale: Locale) {
@@ -140,10 +180,14 @@ export class RulePackageService {
       await lockRulePackage(tx, actor.workspaceId, packageId);
       const version = await readRulePackageVersion(tx, actor.workspaceId, packageId, versionId);
       if (version.sha256 !== input.versionSha256) throw new DomainError('version_conflict');
+      const packageDocument = readRulePackageDocument(version);
+      if ((packageDocument.kind === 'design_skill') !== ('designResources' in input.checks)) throw new DomainError('invalid_input');
+      await requireRulePackageEvidence(tx, packageDocument);
       const createdAt = await databaseNow(tx, version.createdAt);
       if (createdAt.getTime() >= identity.expiresAt * 1_000) throw new DomainError('unauthenticated');
       const document = rulePackageReviewRecordSchema.parse({
-        ...input, formatVersion: 1, kind: 'design_review', versionId: version.id, reviewedBy: actor.principalId, grantId: actor.workspaceGrantId,
+        ...input, formatVersion: 1, kind: packageDocument.kind === 'design_skill' ? 'design_review' : 'candidate_review',
+        versionId: version.id, reviewedBy: actor.principalId, grantId: actor.workspaceGrantId,
         outcome: Object.values(input.checks).every(Boolean) ? 'accepted' : 'changes_requested',
       });
       const sha256 = digest(JSON.stringify(document));

@@ -8,7 +8,8 @@ import { rulePackageActivations, rulePackageReviews, rulePackages } from '../per
 import { isHumanWorkspaceOwner, type Transaction } from './access.js';
 import { DomainError, parseInput } from './errors.js';
 import { databaseNow } from './releases.js';
-import { lockRulePackage, readDesignSkillDocument, readDesignSkillReview, readRulePackageVersion, requireLibraryOwner } from './rule-packages.js';
+import { lockRulePackage, readRulePackageDocument, readRulePackageReview, readRulePackageVersion, requireLibraryOwner,
+  requireRulePackageEvidence } from './rule-packages.js';
 
 type Activation = typeof rulePackageActivations.$inferSelect;
 
@@ -66,7 +67,7 @@ export class RulePackageActivationService {
       const current = previous?.action === 'withdraw' ? undefined : previous;
       const version = await readRulePackageVersion(tx, actor.workspaceId, pkg.id, input.versionId);
       if (version.sha256 !== input.versionSha256) throw new DomainError('version_conflict');
-      readDesignSkillDocument(version);
+      const document = readRulePackageDocument(version);
       let reviewId: string | null = null;
       let reviewSha256: string | null = null;
       if (input.action === 'withdraw') {
@@ -83,7 +84,8 @@ export class RulePackageActivationService {
           eq(rulePackageReviews.versionId, version.id), eq(rulePackageReviews.grantId, actor.workspaceGrantId)));
         if (!review || review.reviewedBy !== actor.principalId) throw new DomainError('unsupported_state');
         if (review.sha256 !== input.reviewSha256) throw new DomainError('version_conflict');
-        if (readDesignSkillReview(review, version).outcome !== 'accepted') throw new DomainError('unsupported_state');
+        if (readRulePackageReview(review, version).outcome !== 'accepted') throw new DomainError('unsupported_state');
+        await requireRulePackageEvidence(tx, document);
         reviewId = review.id;
         reviewSha256 = review.sha256;
       }
