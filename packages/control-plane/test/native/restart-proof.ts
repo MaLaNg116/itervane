@@ -23,6 +23,7 @@ type RestartProofInput = {
   db: Awaited<ReturnType<typeof databaseFixture>>; diagnosis: TaskDto; diagnosisSha256: string;
   released: ReleaseRolloutProof; request: DiagnosisHttp; mcp: Client;
   readStopped: () => Promise<OperationsRestartBaseline>; approve: () => Promise<void>; verifyAudit: () => Promise<void>;
+  markPhase: (phase: string) => void;
   expectedRunbook?: NativePublishedRunbook;
 };
 
@@ -75,10 +76,12 @@ async function verifyNativeRunbook({ db, diagnosis, request, mcp, expectedRunboo
 }
 
 export async function proveNativeRestart(input: RestartProofInput, interruption?: RestartInterruption) {
-  const { db, diagnosis, diagnosisSha256, released, request, mcp, readStopped, approve, verifyAudit } = input;
+  const { db, diagnosis, diagnosisSha256, released, request, mcp, readStopped, approve, verifyAudit, markPhase } = input;
+  markPhase('read_stopped');
   const baseline = await readStopped();
   equal(baseline.containerId, released.runtime.containerId);
   const diagnosisPath = `/v1/tasks/${diagnosis.id}`;
+  markPhase('propose');
   const { proposal } = operationsProposalViewSchema.parse(await request(diagnosisPath + '/operations-proposal', {
     payload: { diagnosisSha256 }, status: 201,
   }));
@@ -87,6 +90,7 @@ export async function proveNativeRestart(input: RestartProofInput, interruption?
   equal(proposal.current.manifestDigest, released.manifestDigest);
   const runbook = await verifyNativeRunbook(input, proposal, baseline.state);
   const executionPath = `/v1/operations/proposals/${proposal.id}/execution`;
+  markPhase('portal_approval');
   const payload = { fingerprint: proposal.fingerprint, decisionVersion: 1 };
   await request(executionPath, { portal: true, payload, status: 409 });
   const decisionPath = `/v1/operations/proposals/${proposal.id}/decisions`;
@@ -114,17 +118,20 @@ export async function proveNativeRestart(input: RestartProofInput, interruption?
     }
     throw new Error('native_restart_wait_' + state);
   };
+  markPhase('wait_native_request');
   const waiting = await waitFor('waiting_approval');
   const bound = waiting.view.action;
   ok(bound?.kind === 'continue' && waiting.receipt.environmentHeld);
   equal(bound.executionId, queued.executionId);
   equal(bound.approvalId, waiting.receipt.nativeApprovalId);
   deepStrictEqual(await readStopped(), baseline);
+  markPhase('native_approval');
   await approve();
   deepStrictEqual(await readStopped(), baseline);
   const { approvalId, callSha256, expectedVersion } = bound;
   const continuation = { approvalId, callSha256, expectedVersion, idempotencyKey: randomUUID() };
   const continuePath = `/v1/operations/executions/${queued.executionId}/continue`;
+  markPhase('continue_request');
   await request(continuePath, { payload: continuation, status: 403 });
   const submit = async () => {
     deepStrictEqual(await request(continuePath, { portal: true, payload: continuation, status: 202 }), queued);
@@ -148,6 +155,7 @@ export async function proveNativeRestart(input: RestartProofInput, interruption?
     await submit();
     deepStrictEqual(await request(continuePath, { portal: true, payload: continuation, status: 200 }), { ...queued, replayed: true });
   }
+  markPhase('read_recovery');
   const recovered = await waitFor(interruption ? 'needs_human' : 'succeeded');
   equal(recovered.receipt.nativeApprovalId, approvalId);
   equal(recovered.receipt.environmentHeld, Boolean(interruption));
@@ -155,6 +163,7 @@ export async function proveNativeRestart(input: RestartProofInput, interruption?
   equal(recovered.receipt.recovery?.state, interruption ? 'manual_review' : 'verified');
   equal(recovered.receipt.recovery?.failure, interruption ? 'native_unconfirmed' : null);
 
+  markPhase('verify_receipts');
   const { rows } = await db.admin.query<{ proof: unknown; digest: string; resumes: number; acknowledged: number; slot: string | null;
     send_fence: number; read_fence: number; sender: string; observer: string; send_state: string }>(`
     SELECT result.proof, result.proof_sha256 AS digest, sent.fence AS send_fence, result.fence AS read_fence,
@@ -186,6 +195,7 @@ export async function proveNativeRestart(input: RestartProofInput, interruption?
   ok(proof.observation.startedAt > baseline.startedAt);
   const inspected = (await mcp.callTool({ name: 'get_operations_execution', arguments: { taskId: diagnosis.id } })).structuredContent;
   deepStrictEqual(operationsRestartExecutionViewSchema.parse(inspected), recovered.view);
+  markPhase('verify_native_audit');
   await verifyAudit();
   if (interruption) {
     notEqual(record.observer, record.sender);

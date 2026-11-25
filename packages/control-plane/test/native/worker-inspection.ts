@@ -1960,6 +1960,7 @@ async function probe() {
                     ...(expectedRunbook ? { expectedRunbook } : {}),
                     readStopped: () => verifier.captureRestartBaseline(subject, async () => {}),
                     approve: () => native.approve(containerId, count), verifyAudit: () => native.verifyAudit(target.endpoint.container, count),
+                    markPhase: step => { phase = `operations_native_restart_${count}_${step}`; },
                   }, interrupted ? {
                     environmentId: environment.id,
                     async stopWorker() {
