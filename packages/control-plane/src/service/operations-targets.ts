@@ -9,6 +9,7 @@ import { DomainError, parseInput } from './errors.js';
 import { readOperationsDeployment } from './operations-deployment.js';
 import { freezeOperationsRequest } from './operations-requests.js';
 import { readReleaseTarget, type InstalledReleaseTarget } from './release-targets.js';
+import { readTaskRunbookGuidance } from './task-runbook-guidance.js';
 
 export function readOperationsEnrollment(row: typeof operationsTargets.$inferSelect) {
   const parsed = operationsTargetInputSchema.safeParse(row.document);
@@ -74,13 +75,17 @@ export async function readOperationsObservationTarget(tx: Transaction, actor: Ac
   return { ...deployment, whiskers: enrolled.whiskers, enrollmentRevision: binding.revision, enrollmentSha256: binding.sha256 };
 }
 
-export async function readOperationsReleaseEvidence(tx: Transaction, actor: Actor, request: { document: OperationsRequestBinding; sha256: string }) {
+export async function readOperationsReleaseEvidence(tx: Transaction, actor: Actor, request: { document: OperationsRequestBinding; sha256: string },
+  task?: { id: string; projectId: string }) {
   if (sha256(JSON.stringify(request.document)) !== request.sha256) throw new DomainError('unsupported_state');
   const deployment = await readOperationsObservationTarget(tx, actor, request.document, { includePrevious: true });
   if (freezeOperationsRequest(deployment).sha256 !== request.sha256) throw new DomainError('version_conflict');
   const summarize = (release: Pick<typeof deployment, 'releaseOperationId' | 'manifestDigest' | 'verifiedAt'>) =>
     ({ operationId: release.releaseOperationId, manifestDigest: release.manifestDigest, verifiedAt: release.verifiedAt });
-  const result = { current: summarize(deployment), previous: deployment.previous ? summarize(deployment.previous) : null };
+  if (task && task.projectId !== request.document.projectId) throw new DomainError('version_conflict');
+  const runbooks = task && await readTaskRunbookGuidance(tx, task);
+  const result = { current: summarize(deployment), previous: deployment.previous ? summarize(deployment.previous) : null,
+    ...(runbooks ? { runbooks } : {}) };
   return { proofSha256: sha256(JSON.stringify({ version: 1, requestSha256: request.sha256,
     currentProofSha256: deployment.proofSha256, previousProofSha256: deployment.previous?.proofSha256 ?? null, result })), result };
 }

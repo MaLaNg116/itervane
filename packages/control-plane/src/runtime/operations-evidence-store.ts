@@ -8,6 +8,7 @@ import type { OperationsWorkflowScope } from '../config.js';
 import { operationsDiagnosisReads, runRuntime } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { DomainError, parseInput } from '../service/errors.js';
+import { readTaskRunbookGuidance } from '../service/task-runbook-guidance.js';
 import { BudgetExhausted, ExecutionLost, type ExecutionScope } from './authority.js';
 import type { CurrentExecution, ExecutionCoordinator } from './coordinator.js';
 import { OperationsExecutionError, requireCurrentOperationsTarget } from './operations-execution.js';
@@ -107,7 +108,7 @@ export class OperationsEvidenceStore {
 
   async record(scope: ExecutionScope, operationId: string, raw: unknown, signal?: AbortSignal) {
     parseInput(sha256Schema, operationId);
-    return this.withAuthority(scope, async (tx, _current, { target }) => {
+    return this.withAuthority(scope, async (tx, { task }, { target }) => {
       const evidence = observationForTarget(raw, target);
       const key = readKey(scope.runId, evidence.section);
       const [row] = await tx.select().from(operationsDiagnosisReads).where(key);
@@ -118,6 +119,9 @@ export class OperationsEvidenceStore {
         return readRecordedOperationsEvidence(row, target);
       }
       if (row.fence !== scope.fence || row.workerId !== scope.workerId) throw new ExecutionLost();
+      if (evidence.section === 'release' && JSON.stringify(evidence.result.runbooks) !== JSON.stringify(await readTaskRunbookGuidance(tx, task))) {
+        throw new OperationsExecutionError('operations_invalid_observation');
+      }
       await tx.update(operationsDiagnosisReads).set({
         state: 'recorded', document: evidence, sha256: fingerprint,
         recordedAt: sql`greatest(clock_timestamp(), ${operationsDiagnosisReads.createdAt})`,
