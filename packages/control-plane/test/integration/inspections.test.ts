@@ -92,7 +92,7 @@ import { InspectionService, prepareInspection } from '../../src/service/inspecti
 import { RulePackageActivationService } from '../../src/service/rule-package-activations.js';
 import { LearningCaseService } from '../../src/service/learning-cases.js';
 import { RuleExtractionService } from '../../src/service/rule-extraction.js';
-import { prepareFormalAuditInput } from '../../src/service/formal-audit.js';
+import { FormalAuditService, prepareFormalAuditInput } from '../../src/service/formal-audit.js';
 import { prepareFormalRepairInput } from '../../src/service/formal-repair.js';
 import { FormalReleaseService } from '../../src/service/formal-release.js';
 import { readOperationsDeployment } from '../../src/service/operations-deployment.js';
@@ -4006,7 +4006,10 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
       const manifest = { ...dimensions, sha256: sha256(JSON.stringify(dimensions)) };
       const { basis } = preparePublishedCodeScan(published!.rules, manifest);
       expect(basis.batches[0]?.fileCount).toBe(1);
-      const document = { basis, reports: [{ language: 'javascript', status: 'checked', reportSha256: sha256('synthetic scanner output'), findings: [] }] };
+      const finding = { ruleKey: publishedRule.packageKey, path: 'api/readiness.mjs',
+        start: { line: 1, col: 1, offset: 0 }, end: { line: 1, col: 5, offset: 4 } };
+      const document = { basis, reports: [{ language: 'javascript', status: 'checked', reportSha256: sha256('synthetic scanner output'),
+        findings: [finding] }] };
       return qualifiedInspectionResponseSchema.parse({ ...receipt, scope: { ...receipt.scope, publishedCode },
         snapshot: { ...receipt.snapshot, manifestSha256: manifest.sha256,
           reports: receipt.snapshot.reports.map(report => ({ ...report, snapshotSha256: manifest.sha256 })),
@@ -4025,7 +4028,7 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
     expect(inspect).toHaveBeenCalledTimes(1);
     const reading = new InspectionService(database.storage);
     expect(await reading.get(identity, later.task.id)).toMatchObject({
-      status: 'completed', result: { publishedCode: { status: 'complete', findings: 0, checkedFiles: 1 } },
+      status: 'completed', result: { publishedCode: { status: 'complete', findings: 1, checkedFiles: 1 } },
     });
     const approver = await createIdentityVerifier(issuer.config)(await issuer.token('owner', { azp: portal }));
     const activation = await new RulePackageActivationService(database.storage, portal).change(approver, publishedRule.packageId, {
@@ -4035,7 +4038,39 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
     expect(await new ToolGateway(coordinator, inspected).call(laterScope, 'source.inspect', {}, 'historical-coverage'))
       .toMatchObject({ status: 'success', data: { coverage: 'complete' } });
     expect(inspect).toHaveBeenCalledTimes(1);
-    await coordinator.stop(laterScope, 'runner_unavailable');
+    let requestedEarlyFinish = false;
+    let readPublishedScan = false;
+    const scopedModel = auditModel(request => {
+      const context = request.conversation[0];
+      if (context?.kind !== 'user') throw new Error('Missing audit context');
+      const { completionNeeds } = JSON.parse(context.text) as { completionNeeds: string[] };
+      expect(context.text).not.toContain('api/readiness.mjs');
+      if (completionNeeds.length === 1 && completionNeeds[0] === 'semgrep_ce') {
+        expect(request.tools.some(tool => tool.name === 'finish_role')).toBe(false);
+        if (!requestedEarlyFinish) {
+          requestedEarlyFinish = true;
+          return concludeAudit(request);
+        }
+        readPublishedScan = true;
+        return Promise.resolve(auditTurn('read_scan', { scanner: 'semgrep_ce' }));
+      }
+      return concludeAudit(request);
+    });
+    const auditStorage = PostgresSaver.fromConnString(database.runtimeUrl, { schema: 'itervane_checkpoint' });
+    try {
+      await expect(runFormalAudit(coordinator, laterScope, auditStorage, scopedModel, new AbortController().signal, true, standardVerificationProfile))
+        .resolves.toBe('settled');
+    } finally { await auditStorage.end(); }
+    expect(requestedEarlyFinish && readPublishedScan).toBe(true);
+    const audited = await new FormalAuditService(database.storage).get(identity, later.task.id, 'zh-CN');
+    expect(audited).toMatchObject({ status: 'recorded', result: { status: 'completed', evidence: expect.arrayContaining([
+      expect.objectContaining({ kind: 'scan', scanner: 'semgrep_ce', totalFindings: 1 }),
+    ]), checklist: { coverage: 'complete', findings: [{
+      scanner: 'semgrep_ce', ruleId: publishedRule.packageKey, path: 'api/readiness.mjs', line: 1, certainty: 'confirmed', severity: 'unknown',
+    }] } } });
+    expect((await new TaskService(database.storage).events(identity, later.task.id, 25, 'zh-CN')).at(-1))
+      .toMatchObject({ state: 'needs_human', reason: 'audit_published_rule_review' });
+    expect(await database.storage.db.select().from(formalRepairInputs).where(eq(formalRepairInputs.runId, later.task.runId))).toHaveLength(0);
     const next = await new TaskService(database.storage).admit(identity, { projectId: linked.projectId, source: linked.source,
       dataClass: 'synthetic', purpose: 'Check withdrawn rule snapshot', idempotencyKey: randomUUID() });
     expect(await database.storage.pool.query('SELECT document FROM itervane.task_rule_snapshots WHERE task_id=$1', [next.task.id]))
