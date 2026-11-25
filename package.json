@@ -33,6 +33,8 @@
     "start:restore-worker": "tsx packages/control-plane/src/entries/restore-worker.ts",
     "start:health-worker": "tsx packages/control-plane/src/entries/health-worker.ts",
     "db:migrate": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/migrate.ts",
+    "backup:export": "tsx packages/control-plane/src/entries/backup.ts export",
+    "backup:restore": "tsx packages/control-plane/src/entries/backup.ts restore",
     "bootstrap:owner": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/bootstrap.ts",
     "register:release-target": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/register-release-target.ts",
     "register:operations-target": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/register-operations-target.ts",
