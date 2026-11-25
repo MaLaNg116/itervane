@@ -2,6 +2,8 @@ import hashlib
 import json
 import os
 import socket
+import stat
+import time
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -70,6 +72,35 @@ def published_inspection_request():
 
 
 class ControllerTest(unittest.TestCase):
+    def test_group_socket_still_denies_a_different_peer_uid(self):
+        with TemporaryDirectory() as directory, ThreadPoolExecutor(max_workers=1) as pool:
+            path = Path(directory) / "inspection.sock"
+            stopping = Event()
+            observe, launch = Mock(), Mock()
+            server = pool.submit(controller.run_server, path, os.getuid() + 1, {}, WORKSPACE, observe, launch,
+                                 stopping.is_set, False, False, False, False, False, False, None, None,
+                                 group_socket=True)
+            try:
+                deadline = time.monotonic() + 2
+                while True:
+                    if path.exists() and stat.S_IMODE(path.stat().st_mode) == 0o660:
+                        break
+                    if server.done() or time.monotonic() >= deadline:
+                        self.fail("group socket did not become ready")
+                    time.sleep(0.01)
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    client.settimeout(2)
+                    client.connect(os.fspath(path))
+                    with client.makefile("rb") as reader:
+                        self.assertEqual(json.loads(reader.readline()), controller.rejected("peer_denied"))
+                self.assertEqual(path.stat().st_gid, os.getegid())
+                observe.assert_not_called()
+                launch.assert_not_called()
+            finally:
+                stopping.set()
+                server.result(timeout=2)
+            self.assertFalse(path.exists())
+
     def test_rule_samples_need_explicit_capability_lease_and_bound_command(self):
         data, command = rule_samples_request()
         for enabled, pulse, content, expected in (
