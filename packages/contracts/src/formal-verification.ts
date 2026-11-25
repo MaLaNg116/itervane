@@ -40,6 +40,7 @@ export const formalVerificationInputSchema = formalRepairInputSchema.omit({ find
   profile: verificationProfileSchema,
   subject: subjectSchema,
   healthRegression: operationsHealthRegressionSchema.optional(),
+  publishedCode: z.strictObject({ snapshotSha256: sha256Schema, inspectionScanSha256: sha256Schema, ruleSetSha256: sha256Schema }).optional(),
 }).refine(({ subject, inspection, profile, healthRegression, healthReproduction, generation, runId }) =>
   (subject.kind === 'original') === (subject.manifestSha256 === inspection.snapshotSha256)
   && (!healthRegression || profile.runStandardBaseline === true)

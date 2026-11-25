@@ -2,7 +2,7 @@ import { lstatSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { materializedSourceBasisSchema, publishedInspectionCommandByteLimit, publishedInspectionProofByteLimit,
   qualifiedGuestRepairIssueSchema, qualifiedGuestRuleValidationProofSchema,
-  ruleValidationCommandByteLimit, ruleValidationProofByteLimit, verificationProofByteLimit } from '@itervane/contracts';
+  publishedVerificationProofByteLimit, ruleValidationCommandByteLimit, ruleValidationProofByteLimit, verificationProofByteLimit } from '@itervane/contracts';
 import { scanGuestImage } from '../guest-image-scan.js';
 import { repairQualifiedGuestSnapshot } from '../guest-repair.js';
 import { observeQualifiedRepairTargets } from '../guest-repair-observation.js';
@@ -73,7 +73,8 @@ if (command === 'snapshot' && args.length === 5) {
   try {
     const pending = join(INSPECTION_OUTPUT, 'receipt.pending');
     const report = JSON.stringify(receipt);
-    const maximum = validateRule ? ruleValidationProofByteLimit : verification ? verificationProofByteLimit
+    const maximum = validateRule ? ruleValidationProofByteLimit
+      : verification ? ('publishedCode' in receipt ? publishedVerificationProofByteLimit : verificationProofByteLimit)
       : publishedCode ? publishedInspectionProofByteLimit : Infinity;
     const bounded = Buffer.byteLength(report) > maximum ? '{"code":"scan-integrity"}' : report;
     writeFileSync(pending, bounded, { flag: 'wx', mode: 0o440 });

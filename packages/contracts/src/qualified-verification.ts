@@ -1,17 +1,23 @@
 import { z } from 'zod';
-import { repairCommandByteLimit, repairCommandSchema } from './formal-repair.js';
+import { repairCandidateManifestSchema, repairCommandByteLimit, repairCommandSchema } from './formal-repair.js';
 import { formalVerificationInputSchema } from './formal-verification.js';
-import { sha256Schema, sourceContentLimits } from './inspection.js';
+import { sha256Schema, sourceContentLimits, sourceManifestSchema } from './inspection.js';
+import { publishedCodeRuleSetSchema } from './published-code-rule-set.js';
+import { publishedCodeScanEvidenceSchema } from './published-code-scan.js';
 import { qualifiedStandardBuildProofSchema } from './qualified-standard-build.js';
 import {
-  qualifiedInspectionScopeSchema, qualifiedInspectionSnapshotSchema, qualifiedRunnerRejectionSchema, qualifiedScanReportsSchema,
+  publishedInspectionCommandByteLimit, qualifiedInspectionScopeSchema, qualifiedInspectionSnapshotSchema,
+  qualifiedRunnerRejectionSchema, qualifiedScanReportsSchema,
 } from './qualified-inspection.js';
 
 export const verificationCommandByteLimit = repairCommandByteLimit + 8192;
 export const verificationProofByteLimit = 8 * 1024 * 1024;
+export const publishedVerificationCommandByteLimit = verificationCommandByteLimit + publishedInspectionCommandByteLimit;
+export const publishedVerificationProofByteLimit = 16 * 1024 * 1024;
 export const verificationCommandSchema = z.strictObject({
   input: formalVerificationInputSchema,
   repair: repairCommandSchema.nullable(),
+  publishedCodeRules: publishedCodeRuleSetSchema.optional(),
 });
 
 const scope = qualifiedInspectionScopeSchema.omit({ planSha256: true }).extend({
@@ -23,10 +29,12 @@ const scope = qualifiedInspectionScopeSchema.omit({ planSha256: true }).extend({
   healthFollowup: z.literal(true).optional(),
   ociInputsSha256: sha256Schema.optional(),
   retainStandardImage: z.literal(true).optional(),
-  commandSha256: sha256Schema, commandBytes: z.int().positive().max(verificationCommandByteLimit),
+  publishedCodeRuleSetSha256: sha256Schema.optional(),
+  commandSha256: sha256Schema, commandBytes: z.int().positive().max(publishedVerificationCommandByteLimit),
 });
 export const qualifiedVerificationRequestSchema = scope.extend({ origin: z.string().min(1).max(768) })
-  .refine(request => !request.healthFollowup || request.runStandardBaseline === true);
+  .refine(request => (!request.healthFollowup || request.runStandardBaseline === true)
+    && (Boolean(request.publishedCodeRuleSetSha256) || request.commandBytes <= verificationCommandByteLimit));
 export type QualifiedVerificationRequest = z.infer<typeof qualifiedVerificationRequestSchema>;
 
 export const qualifiedGuestVerificationProofSchema = qualifiedInspectionSnapshotSchema.extend({
@@ -39,14 +47,19 @@ export const qualifiedGuestVerificationProofSchema = qualifiedInspectionSnapshot
     reports: qualifiedScanReportsSchema,
   }).nullable(),
   build: qualifiedStandardBuildProofSchema.optional(),
-}).refine(proof => !proof.target || proof.target.manifestSha256 !== proof.manifestSha256);
+  publishedCode: z.discriminatedUnion('kind', [
+    z.strictObject({ kind: z.literal('original'), manifest: sourceManifestSchema, scan: publishedCodeScanEvidenceSchema }),
+    z.strictObject({ kind: z.literal('repair'), manifest: repairCandidateManifestSchema, scan: publishedCodeScanEvidenceSchema }),
+  ]).optional(),
+}).refine(proof => (!proof.target || proof.target.manifestSha256 !== proof.manifestSha256)
+  && (!proof.publishedCode || (proof.publishedCode.kind === 'repair') === Boolean(proof.target)));
 
 export const qualifiedVerificationResponseSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('verification_receipt'), scope, domainId: z.uuidv4(),
     imageSha256: sha256Schema, originSha256: sha256Schema, commitSha256: sha256Schema,
     cleanupConfirmed: z.literal(true), sessionVerified: z.literal(true), snapshot: qualifiedGuestVerificationProofSchema,
-  }),
+  }).refine(receipt => Boolean(receipt.scope.publishedCodeRuleSetSha256) === Boolean(receipt.snapshot.publishedCode)),
   qualifiedRunnerRejectionSchema,
 ]);
 export type QualifiedVerificationResponse = z.infer<typeof qualifiedVerificationResponseSchema>;

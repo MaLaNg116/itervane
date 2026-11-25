@@ -125,9 +125,11 @@ export async function inspectVerificationSnapshots(source: string, tools: string
   const candidate = join(source, 'candidate');
   const reports = scanVerificationTree(ready, tools, manifest, inputs);
   let target = null;
+  let repaired: ReturnType<typeof readGuestCandidate> | undefined;
   if (input.subject.kind === 'repair') {
     const expected = input.subject.manifestSha256;
-    const changed = readGuestCandidate(candidate, expected).manifest;
+    repaired = readGuestCandidate(candidate, expected);
+    const changed = repaired.manifest;
     if (changed.source.repositoryId !== manifest.source.repositoryId || changed.source.commit !== manifest.source.commit
       || changed.baseSnapshotSha256 !== manifest.sha256 || changed.files.length !== manifest.files.length) throw new Error('scan-integrity');
     target = {
@@ -138,6 +140,14 @@ export async function inspectVerificationSnapshots(source: string, tools: string
   } else if (lstatSync(candidate, { throwIfNoEntry: false })) {
     throw new Error('scan-integrity');
   }
+  let publishedCode;
+  if (command.published) {
+    publishedCode = repaired
+      ? { kind: 'repair', manifest: repaired.manifest, scan: await runPublishedCodeScan(semgrepEngineDirectory, command.published, {
+        files: repaired.files, manifest: { ...repaired.manifest, sha256: input.subject.manifestSha256 },
+      }) }
+      : { kind: 'original', manifest, scan: await runPublishedCodeScan(semgrepEngineDirectory, command.published, fixed) };
+  }
   const checked = readGuestSnapshot(ready);
   if (checked.runId !== runId || checked.mode !== 'verification' || checked.manifest.sha256 !== manifest.sha256
       || await fileDigest(join(tools, 'cache/db/trivy.db'), MAX_DATABASE_BYTES) !== inputs.databaseSha256) throw new Error('scan-integrity');
@@ -145,6 +155,7 @@ export async function inspectVerificationSnapshots(source: string, tools: string
     runId, repositoryId: manifest.source.repositoryId, commit: manifest.source.commit, tree: manifest.tree, manifestSha256: manifest.sha256,
     files: manifest.files.length, totalBytes: manifest.totalBytes, inputsSha256, readOnly: true, offline: true,
     verificationInputSha256: command.inputSha256, commandSha256: sha256(command.bytes), reports, target,
+    ...(publishedCode ? { publishedCode } : {}),
   });
 }
 
