@@ -8,7 +8,7 @@ import { environments, formalReleaseSteps, formalReleaseTargets, releaseCandidat
   taskRuns, tasks } from '../persistence/schema.js';
 import { requireStoredActor, type Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
-import { describeVerifiedRelease, latestReleaseCandidate, readReleaseManifest } from '../service/formal-release.js';
+import { describeVerifiedRelease, latestReleaseCandidate, readReleaseManifest, requireReleaseRules } from '../service/formal-release.js';
 import { requireLinkedRepairReleaseTarget } from '../service/operations-repair-proposals.js';
 import { readReleaseTarget, type InstalledReleaseTarget } from '../service/release-targets.js';
 import { databaseNow } from '../service/releases.js';
@@ -153,7 +153,14 @@ async function verifyAuthority(tx: Transaction, task: TaskRow, release: LockedRe
     throw error;
   }
   const proof = await readPublishedVerification(tx, task, { runId: candidate.runId, generation: task.generation });
-  const evidence = proof ? describeVerifiedRelease(proof, target, mapping) : null;
+  if (!proof) throw new ReleaseAuthorityRejected('release_evidence_changed');
+  const ruleSnapshotSha256 = manifest.verification.ruleSnapshotSha256;
+  try { await requireReleaseRules(tx, task, proof, ruleSnapshotSha256); }
+  catch (error) {
+    if (error instanceof DomainError && error.code === 'version_conflict') throw new ReleaseAuthorityRejected('release_evidence_changed');
+    throw error;
+  }
+  const evidence = describeVerifiedRelease(proof, target, mapping, ruleSnapshotSha256);
   if (!evidence) throw new ReleaseAuthorityRejected('release_evidence_changed');
   const current = formalReleaseManifestSchema.parse({ ...evidence.manifest, validUntil: manifest.validUntil, evidenceVersion: candidate.evidenceVersion });
   if (sha256(JSON.stringify(current)) !== candidate.fingerprint) throw new ReleaseAuthorityRejected('release_evidence_changed');

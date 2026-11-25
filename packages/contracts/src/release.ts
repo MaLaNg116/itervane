@@ -93,6 +93,7 @@ export const formalReleaseManifestSchema = z.strictObject({
     inputSha256: sha256Schema, resultSha256: sha256Schema, receiptSha256: sha256Schema,
     catalogSha256: sha256Schema, profileSha256: sha256Schema, buildSha256: sha256Schema, baselineSha256: sha256Schema,
     source: verificationComparisonCountsSchema.extend({ introduced: z.literal(0), remaining: z.literal(0) }),
+    ruleSnapshotSha256: sha256Schema.optional(),
   }),
   image: z.strictObject({
     manifestDigest: imageDigest, configDigest: imageDigest, archive: qualifiedImageArchiveSchema, runnerImageSha256: sha256Schema,

@@ -19,6 +19,7 @@ import { requireLinkedRepairReleaseTarget } from './operations-repair-proposals.
 import { readFormalReleaseOperationResult } from './release-result.js';
 import { readReleaseTarget } from './release-targets.js';
 import { databaseNow } from './releases.js';
+import { requireCurrentTaskRules } from './task-rule-snapshots.js';
 import { readPublishedVerification } from './verification-result.js';
 
 type Candidate = typeof releaseCandidates.$inferSelect;
@@ -67,7 +68,7 @@ async function requesterCanWrite(tx: Transaction, task: TaskRow) {
 }
 
 export function describeVerifiedRelease(verification: NonNullable<Awaited<ReturnType<typeof readPublishedVerification>>>,
-  target: typeof formalReleaseTargets.$inferSelect, mapping: FormalReleaseTarget) {
+  target: typeof formalReleaseTargets.$inferSelect, mapping: FormalReleaseTarget, ruleSnapshotSha256?: string) {
   const { row, input, result } = verification;
   if (input.healthRegression && (input.subject.kind !== 'repair' || !input.healthReproduction
       || result.evidence.baseline.status !== 'passed' || result.evidence.baseline.healthFollowup?.status !== 'passed')) return null;
@@ -82,6 +83,7 @@ export function describeVerifiedRelease(verification: NonNullable<Awaited<Return
     verification: { inputSha256: row.inputSha256, resultSha256: row.sha256, receiptSha256: row.receiptSha256,
       catalogSha256: input.catalogSha256, profileSha256: mapping.verificationProfileSha256, buildSha256: build.distSha256,
       baselineSha256: baseline.baselineSha256, source: { introduced: source.introduced, resolved: source.resolved, remaining: source.remaining },
+      ...(ruleSnapshotSha256 ? { ruleSnapshotSha256 } : {}),
     },
     image: { manifestDigest: image.manifestDigest, configDigest: image.configDigest, archive: archiveVerification.archive,
       runnerImageSha256: archiveVerification.runnerImageSha256, scanReportSha256: image.scanReportSha256,
@@ -91,6 +93,14 @@ export function describeVerifiedRelease(verification: NonNullable<Awaited<Return
     target: { applicationId: target.applicationId, environmentId: target.environmentId, mappingSha256: target.sha256, revision: target.revision },
   };
   return { manifest, archiveVerification };
+}
+
+export async function requireReleaseRules(tx: Transaction, task: TaskRow, verification: NonNullable<Awaited<ReturnType<typeof readPublishedVerification>>>,
+  ruleSnapshotSha256?: string) {
+  const pinned = await requireCurrentTaskRules(tx, task, 'delivery', ruleSnapshotSha256);
+  const codeRuleSnapshot = pinned?.document.entries.some(entry => entry.kind === 'code_rule') ? pinned.sha256 : undefined;
+  if (verification.input.publishedCode?.snapshotSha256 !== codeRuleSnapshot) throw new DomainError('version_conflict');
+  return pinned;
 }
 
 export async function latestReleaseCandidate(tx: Transaction, taskId: string) {
@@ -156,12 +166,21 @@ async function assessCandidate(tx: Transaction, task: TaskRow, row: Candidate, m
     const [target] = await tx.select().from(formalReleaseTargets).where(eq(formalReleaseTargets.environmentId, row.environmentId)).for('share');
     if (target) readReleaseTarget(target);
     if (target?.sha256 !== manifest.target.mappingSha256 || target.revision !== manifest.target.revision) status = 'evidence_changed';
+    else if ((!last || queued) && !await candidateRulesCurrent(tx, task, manifest.verification.ruleSnapshotSha256)) status = 'evidence_changed';
     else if (last?.action === 'confirm' && (await requireStoredActor(tx, last.actorId)).workspaceGrantId !== last.grantId) status = 'approver_revoked';
     else status = last ? 'confirmed' : 'pending';
   }
   const now = await databaseNow(tx);
   if ((status === 'pending' || status === 'confirmed') && Date.parse(manifest.validUntil) <= now.getTime()) status = 'expired';
   return { status, history, operation, progress, active, now };
+}
+
+async function candidateRulesCurrent(tx: Transaction, task: TaskRow, expectedSha256?: string) {
+  try { await requireCurrentTaskRules(tx, task, 'delivery', expectedSha256); return true; }
+  catch (error) {
+    if (error instanceof DomainError && error.code === 'version_conflict') return false;
+    throw error;
+  }
 }
 
 async function readLatestFormalCandidate(tx: Transaction, task: TaskRow, locale: Locale) {
@@ -203,7 +222,8 @@ export class FormalReleaseService {
       const mapping = readReleaseTarget(target);
       const verification = await readPublishedVerification(tx, task, run);
       if (!verification) throw new DomainError('unsupported_state');
-      const evidence = describeVerifiedRelease(verification, target, mapping);
+      const pinned = await requireReleaseRules(tx, task, verification);
+      const evidence = describeVerifiedRelease(verification, target, mapping, pinned?.sha256);
       if (!evidence) throw new DomainError('unsupported_state');
       const { manifest: basis } = evidence;
 
@@ -288,7 +308,7 @@ export class FormalReleaseService {
       profile: sql<unknown>`${formalVerificationInputs.document}->'profile'` }).from(formalVerificationResults)
       .innerJoin(formalVerificationInputs, eq(formalVerificationInputs.runId, formalVerificationResults.runId))
       .where(eq(formalVerificationResults.runId, runId));
-    if (!proof?.result.archiveVerification) return [];
+    if (!proof?.result.archiveVerification || !await candidateRulesCurrent(tx, task)) return [];
     const targets = await tx.select({ display: targetDisplay, row: formalReleaseTargets }).from(formalReleaseTargets)
       .innerJoin(environments, eq(environments.id, formalReleaseTargets.environmentId))
       .innerJoin(applications, eq(applications.id, formalReleaseTargets.applicationId))
@@ -335,6 +355,7 @@ export class FormalReleaseService {
         const verification = await readPublishedVerification(tx, task, { runId: row.runId, generation: task.generation });
         if (!verification?.result.archiveVerification || verification.row.sha256 !== manifest.verification.resultSha256
             || verification.row.receiptSha256 !== manifest.verification.receiptSha256) throw new DomainError('unsupported_state');
+        await requireReleaseRules(tx, task, verification, manifest.verification.ruleSnapshotSha256);
       }
       const decidedAt = await databaseNow(tx);
       if (identity.expiresAt * 1000 <= decidedAt.getTime()) throw new DomainError('unauthenticated');
