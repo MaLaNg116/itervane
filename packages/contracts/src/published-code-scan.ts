@@ -40,3 +40,4 @@ export const publishedCodeScanEvidenceSchema = z.strictObject({
   sha256: sha256Schema,
   document: z.strictObject({ basis, reports: z.array(report).max(codeRuleLanguageSchema.options.length) }),
 });
+export type PublishedCodeScanEvidence = z.infer<typeof publishedCodeScanEvidenceSchema>;

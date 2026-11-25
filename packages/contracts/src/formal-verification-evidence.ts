@@ -3,9 +3,11 @@ import { sha256Schema } from './inspection.js';
 import { idSchema, sourceRefSchema } from './primitives.js';
 import { healthFollowupObservationSchema } from './qualified-standard-baseline.js';
 import { ociDigestSchema, qualifiedImageArchiveSchema } from './qualified-standard-image.js';
+import { codeRuleLanguageSchema, publishedCodeScanMatchLimit } from './published-code-scan.js';
 
 const count = z.int().min(0).max(4_000);
-export const verificationComparisonCountsSchema = z.strictObject({ introduced: count, resolved: count, remaining: count });
+const sourceCount = z.int().min(0).max(4_000 + codeRuleLanguageSchema.options.length * publishedCodeScanMatchLimit);
+export const verificationComparisonCountsSchema = z.strictObject({ introduced: sourceCount, resolved: sourceCount, remaining: sourceCount });
 export const verificationImageFindingCountsSchema = z.strictObject({ critical: count, high: count, medium: count, low: count, unknown: count });
 export const verificationBaselineFailuresSchema = z.array(z.strictObject({
   id: z.enum(['health', 'version', 'synthetic_data', 'page', 'compiled_asset']),
@@ -26,7 +28,7 @@ export const formalVerificationEvidenceSchema = z.strictObject({
   source: z.discriminatedUnion('status', [
     z.strictObject({ status: z.literal('compared'), ...verificationComparisonCountsSchema.shape }),
     z.strictObject({
-      status: z.literal('unavailable'), scanner: z.enum(['gitleaks', 'trivy']),
+      status: z.literal('unavailable'), scanner: z.enum(['gitleaks', 'trivy', 'semgrep_ce']),
       reason: z.enum(['report_binding', 'incomplete_coverage', 'profile_mismatch']),
     }),
   ]),
