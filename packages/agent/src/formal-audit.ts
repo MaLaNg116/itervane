@@ -12,6 +12,7 @@ import { finishFormalAudit } from './results.js';
 type Scan = QualifiedInspectionReceipt['snapshot']['reports'][number];
 type AuditScan = Pick<Scan, 'version' | 'policySha256' | 'findings' | 'database'> & { scanner: AuditScanner };
 type ProjectedScan = Extract<FormalAuditReceipt['data'], { kind: 'scan' }>;
+type ProjectedRule = Extract<FormalAuditReceipt['data'], { kind: 'rule' }>;
 const severityRank = { critical: 0, high: 1, medium: 2, low: 3, unknown: 4 };
 const auditLimits: AgentSpec['limits'] = {
   maxTurns: 12, maxToolCalls: 8, maxTokens: 20_000, maxContextBytes: 32_768,
@@ -78,18 +79,27 @@ export function createFormalAudit({ input, inspection, checkpointer, model, prov
   }
   const published = publishedAuditScan(receipt);
   if (published) scans.set(published.scanner, projectScan(published, pinned.receiptSha256, document.locale));
-  const rules = new Map(document.catalog.rules.map(rule => {
+  const text = agentText(document.locale).formal;
+  const rules = new Map<string, ProjectedRule>(document.catalog.rules.map(rule => {
     const { guidance, limitation } = rule.material.text[document.locale];
     return [rule.material.id, { kind: 'rule' as const, ruleId: rule.material.id, sha256: rule.sha256,
       guidance: guidance.slice(0, 480).toWellFormed(), limitation: limitation.slice(0, 480).toWellFormed() }];
   }));
+  const { designGuidance } = document;
+  if (designGuidance) {
+    for (const entry of designGuidance.entries) {
+      rules.set(entry.ruleId, { kind: 'rule', ruleId: entry.ruleId, sha256: entry.reference.versionSha256,
+        guidance: entry.guidance, limitation: text.designGuidanceLimit,
+        designSkill: { authority: 'advisory', snapshotSha256: designGuidance.snapshotSha256, reference: entry.reference, version: entry.version } });
+    }
+  }
   const reproduction = document.healthReproduction && {
     kind: 'health_reproduction' as const, reproduction: document.healthReproduction,
     check: 'second_health_request' as const, statusCode: 503 as const,
   };
   if (reproduction && (document.generation !== 2 || document.runId === reproduction.reproduction.previousRunId
       || pinned.snapshotSha256 !== reproduction.reproduction.subjectManifestSha256)) throw new Error('formal_audit_health_binding');
-  if (rules.size !== document.catalog.rules.length) throw new Error('formal_audit_catalog_duplicate');
+  if (rules.size !== document.catalog.rules.length + (designGuidance?.entries.length ?? 0)) throw new Error('formal_audit_catalog_duplicate');
   const host: AgentHost = {
     authorize,
     async observe({ scope: current, call, signal }) {
@@ -105,7 +115,7 @@ export function createFormalAudit({ input, inspection, checkpointer, model, prov
     taskId: document.taskId, runId: document.runId, projectId: document.projectId, generation: document.generation,
     source: document.source, snapshotSha256: pinned.snapshotSha256, catalogSha256: document.catalog.sha256,
     baselineSha256: pinned.planSha256, locale: document.locale,
-    goal: published ? agentText(document.locale).formal.goalWithPublished : agentText(document.locale).formal.goal, limits: auditLimits,
+    goal: (published ? text.goalWithPublished : text.goal) + (designGuidance ? ' ' + text.designGuidanceLimit : ''), limits: auditLimits,
   };
   const harness = createFormalAuditHarness({ checkpointer, model, host }, {
     inputSha256: input.sha256, providerSha256: shaSchema.parse(providerSha256), ruleIds: [...rules.keys()],

@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import { agentText, publishedAuditScan, type FormalAuditReport } from '@itervane/agent';
-import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, idSchema, translate,
+import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, idSchema, localeSchema, translate,
   type FormalAuditResult, type Locale } from '@itervane/contracts';
 import { catalogSnapshot, validCatalog } from '@itervane/rules';
 import { sha256 } from '@itervane/runner';
@@ -9,6 +9,7 @@ import type { Database } from '../persistence/database.js';
 import { formalAuditInputs, formalAuditResults, formalAuditRuntime, runRuntime, taskRuns, tasks } from '../persistence/schema.js';
 import { appendEvent, clearSlot, type ExecutionScope, type TaskRow } from '../runtime/authority.js';
 import { requireActor, requireProject, type Transaction } from './access.js';
+import { readAuditDesignGuidance } from './audit-design-guidance.js';
 import { DomainError, parseInput } from './errors.js';
 import { prepareFormalRepairInput } from './formal-repair.js';
 import { currentInspectionAttempt, inspectionCoverage, readInspectionEvidence } from './inspection-evidence.js';
@@ -25,15 +26,17 @@ export async function prepareFormalAuditInput(tx: Transaction, task: TaskRow, sc
   if (!plan || attempt?.state !== 'recorded' || !attempt.workspaceSha256) throw new DomainError('unavailable');
   const evidence = await readInspectionEvidence(tx, attempt, plan);
   if (inspectionCoverage(evidence.receipt) !== 'complete') throw new DomainError('unavailable');
-  if (!evidence.receipt.snapshot.publishedCode) {
-    const snapshot = await readTaskRuleSnapshot(tx, task);
-    if (snapshot?.document.entries.some(entry => entry.kind === 'code_rule')) throw new DomainError('unavailable');
+  const snapshot = await readTaskRuleSnapshot(tx, task);
+  if (!evidence.receipt.snapshot.publishedCode && snapshot?.document.entries.some(entry => entry.kind === 'code_rule')) {
+    throw new DomainError('unavailable');
   }
   const linked = await readLinkedOperationsRepair(tx, task);
   if (linked && !matchesLinkedRepairSource(linked.frozen, evidence.receipt)) throw new DomainError('version_conflict');
 
   const [stored] = await tx.select().from(formalAuditInputs).where(eq(formalAuditInputs.runId, scope.runId));
   const previous = stored ? formalAuditInputSchema.parse(stored.document) : null;
+  const designGuidance = !previous || previous.designGuidance
+    ? await readAuditDesignGuidance(tx, { projectId: task.projectId, locale: localeSchema.parse(task.locale) }, snapshot) : undefined;
   const catalog = previous?.catalog ?? catalogSnapshot();
   if (!validCatalog(catalog)) throw new Error('formal_audit_catalog_integrity');
   const retry = await readRepairRetry(tx, task, scope);
@@ -49,6 +52,7 @@ export async function prepareFormalAuditInput(tx: Transaction, task: TaskRow, sc
     inspection: { requestId: attempt.requestId, receiptSha256: evidence.sha256, planSha256: plan.sha256,
       snapshotSha256: evidence.receipt.snapshot.manifestSha256 },
     ...(continuation ? { healthReproduction: continuation.previous } : {}),
+    ...(designGuidance ? { designGuidance } : {}),
   });
   const hash = sha256(JSON.stringify(document));
   if (stored && previous) {
@@ -73,7 +77,8 @@ function auditResult(prepared: PreparedAudit, report: FormalAuditReport, provide
       const { scanner, version, policySha256, databaseSha256, totalFindings, findings } = data;
       return { id, kind: data.kind, scanner, version, policySha256, databaseSha256, totalFindings, findingIds: findings.map(item => item.id) };
     }
-    if (data.kind === 'rule') return { id, kind: data.kind, ruleId: data.ruleId, sha256: data.sha256 };
+    if (data.kind === 'rule') return { id, kind: data.kind, ruleId: data.ruleId, sha256: data.sha256,
+      ...(data.designSkill ? { designSkill: data.designSkill } : {}) };
     if (data.kind === 'health_reproduction' && document.healthReproduction
         && JSON.stringify(data.reproduction) === JSON.stringify(document.healthReproduction)) {
       return { id, kind: data.kind, reproduction: data.reproduction };

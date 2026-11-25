@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { auditChecklistFindingLimit, auditFindingsPerScan, auditScanFindingLimit, auditScannerSchema, extractionCaseSchema, idSchema, learningKnowledgeSchema, linkedHealthRepairContextSchema, localeSchema, operationsDiagnosisObservationSchema,
+import { auditChecklistFindingLimit, auditDesignSkillEvidenceSchema, auditFindingsPerScan, auditScanFindingLimit, auditScannerSchema, extractionCaseSchema, idSchema, learningKnowledgeSchema, linkedHealthRepairContextSchema, localeSchema, operationsDiagnosisObservationSchema,
   sourceRefSchema } from '@itervane/contracts';
 import { z } from 'zod';
 import { repairEvidenceDataSchema } from './repair-contracts.js';
@@ -63,6 +63,7 @@ export type ProtectedCheck = z.infer<typeof checkSchema>;
 
 const ruleEvidenceSchema = z.object({
   kind: z.literal('rule'), ruleId: keySchema, sha256: shaSchema, guidance: note, limitation: note,
+  designSkill: auditDesignSkillEvidenceSchema.optional(),
 }).strict();
 const scanEvidenceSchema = z.object({
   kind: z.literal('scan'), scanner: auditScannerSchema, version: z.string().regex(/^\d+\.\d+\.\d+$/),
