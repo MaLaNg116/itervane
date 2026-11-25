@@ -494,12 +494,14 @@ jobs:
               $interrupted.slotReleased and ($interrupted.environmentReleased == false) and
               $interrupted.manualReason == "native_unconfirmed" and ($interrupted.sameWorker == false) and
               $interrupted.readFence > $interrupted.sendFence and $interrupted.httpMcpAgreement' "$report" >/dev/null
-            jq -e '.backup as $backup | .operations.restart as $restart |
+            jq -e --slurpfile stored .reports/p0/runner-oci-artifact.json '.backup as $backup | .operations.restart as $restart | $stored[0] as $archive |
               $backup.version == 1 and ($backup.manifestSha256 | test("^[a-f0-9]{64}$")) and
               ($backup.sourcePostgres | startswith("17.")) and ($backup.targetPostgres | startswith("17.")) and
               $backup.tables > 40 and $backup.archives >= 1 and $backup.configFiles == 3 and ($backup.reconciled == false) and
-              $backup.releaseOperationId == .release.operationId and $backup.manifestDigest == .release.build.baseline.image.manifestDigest and
-              $backup.archive == .release.archiveVerification.archive and
+              $backup.releaseOperationId == .release.operationId and $backup.manifestDigest == .release.manifestDigest and
+              $backup.manifestDigest == $archive.manifestDigest and $archive.workspaceAndStagingEmpty and
+              $backup.archive.format == "oci-layout-tar" and
+              $backup.archive.sha256 == $archive.archiveSha256 and $backup.archive.bytes == $archive.bytes and
               $backup.recoveryEvidenceSha256 == $restart.reused.proofSha256 and
               $backup.unconfirmedEvidenceSha256 == $restart.interrupted.proofSha256 and $backup.nativeUnconfirmedRetained and
               $backup.ruleVersionSha256 == $restart.ruleExtraction.publication.versionSha256 and
