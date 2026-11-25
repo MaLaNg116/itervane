@@ -19,7 +19,7 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   candidateValidationViewSchema, learningCaseCaptureResultSchema, learningCasesViewSchema, ruleExtractionViewSchema, operationsIncidentsViewSchema, operationsIncidentStopResultSchema,
   rulePackageActivationResultSchema, rulePackageActivationViewSchema, rulePackageImportResultSchema,
   operationsRepairViewSchema, operationsSubmissionSchema, standardHealthRepairPath, taskDtoSchema,
-  taskIncidentViewSchema, translate,
+  taskIncidentViewSchema, taskRuleSnapshotViewSchema, translate,
   verificationViewSchema,
   whiskersRestartImageDigest,
   qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
@@ -394,6 +394,7 @@ async function assertCandidatePublication(checked: NonNullable<ReturnType<typeof
     expect(rulePackageImportResultSchema.parse(workspace.json()).version.document.scope).toEqual({ kind: 'workspace' });
     const current = await app.inject({ url: activationPath, headers: { authorization: `Bearer ${bearer}` } });
     expect(rulePackageActivationViewSchema.parse(current.json()).current?.versionId).toBe(draft.versionId);
+    return draft;
   } finally { await app.close(); }
 }
 
@@ -3970,7 +3971,7 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
       } else expect(checked.result).toBeNull();
       if (mode === 'blocked') expect(checked.message).toBe(translate('zh-CN', 'reason.candidate_validation_cleanup_unknown'));
     }
-    await assertCandidatePublication(validated.result!, portal, failedValidationId);
+    const publishedRule = await assertCandidatePublication(validated.result!, portal, failedValidationId);
     const released = await validations.admit(identity, linked.projectId, candidateRecord.id, { ...attempt, idempotencyKey: randomUUID() });
     const obsolete = await processCandidateValidation(released.task, codeValidationOptions('expired'));
     expect(obsolete).toMatchObject({ state: 'running', result: null });
@@ -3994,6 +3995,10 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
     expect(job).toBeTruthy();
     const claim = await new FormalReleaseCoordinator(coordinator, releaseOrigin).claim(job!, randomUUID());
     expect(claim).toMatchObject({ operationId: approved.candidate.operationId, candidateId: release.id, mode: 'import' });
+    const later = await new TaskService(database.storage).admit(identity, { projectId: linked.projectId, source: linked.source,
+      dataClass: 'synthetic', purpose: 'Check published rule snapshot', idempotencyKey: randomUUID() });
+    expect(await database.storage.pool.query('SELECT document FROM itervane.task_rule_snapshots WHERE task_id=$1', [later.task.id]))
+      .toMatchObject({ rows: [{ document: { purpose: 'delivery', entries: [{ kind: 'code_rule', versionId: publishedRule.versionId, sequence: 3 }] } }] });
   }, 75_000);
 
 it('freezes one immutable restart proposal from the settled diagnosis under concurrent requests', async () => {
@@ -6057,7 +6062,7 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
       evaluatorVersion: 1, result: { scenarios: { stale: 'stop_target_drift', unapproved: 'await_approval' },
         recovery: { unknown: 'stop_unknown', verified: 'verified_recovered' } },
     } } } });
-    await assertCandidatePublication(checked.result!, operationsPortal);
+    const publishedRunbook = await assertCandidatePublication(checked.result!, operationsPortal);
     expect((await database.admin.query("SELECT count(*)::int n FROM itervane.checkpoint_write_receipts WHERE run_id=$1 AND graph='rule-extraction'",
       [task.runId])).rows[0]?.n).toBeGreaterThan(0);
     await expect(database.storage.pool.query('UPDATE itervane.rule_extraction_results SET document=document WHERE run_id=$1', [task.runId]))
@@ -6109,11 +6114,20 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
     const validationCall = { name: 'get_candidate_validation', arguments: { taskId: validationTask.id } };
     expect((await reader.callTool(extractionCall)).structuredContent).toEqual(report);
     expect((await reader.callTool(validationCall)).structuredContent).toEqual(checked);
+    const later = await new TaskService(database.storage).admitOperations(identity, { projectId, environmentId: action.fixture.scope.environmentId,
+      idempotencyKey: randomUUID(), locale: 'zh-CN', expectedReleaseOperationId: action.fixture.operationId }, action.installed);
+    const snapshotPath = `/v1/tasks/${later.task.id}/rule-snapshot`;
+    const snapshotCall = { name: 'get_task_rule_snapshot', arguments: { taskId: later.task.id } };
+    const snapshot = taskRuleSnapshotViewSchema.parse((await app.inject({ url: snapshotPath, headers: http })).json());
+    expect(snapshot.snapshot?.document).toMatchObject({ purpose: 'operations', entries: [{ kind: 'runbook', versionId: publishedRunbook.versionId, sequence: 3 }] });
+    expect((await reader.callTool(snapshotCall)).structuredContent).toEqual(snapshot);
+    const validationSnapshot = await app.inject({ url: `/v1/tasks/${validationTask.id}/rule-snapshot`, headers: http });
+    expect(taskRuleSnapshotViewSchema.parse(validationSnapshot.json()).snapshot).toBeNull();
     await database.storage.db.delete(projectMembers).where(eq(projectMembers.principalId, principalId));
     expect((await app.inject({ url, headers: http })).statusCode).toBe(404);
     expect((await app.inject({ url: listing, headers: http })).statusCode).toBe(404);
     expect(await reader.callTool(call)).toMatchObject({ isError: true, structuredContent: { error: { code: 'not_found' } } });
-    for (const request of [extractionCall, validationCall]) {
+    for (const request of [extractionCall, validationCall, snapshotCall]) {
       expect(await reader.callTool(request)).toMatchObject({ isError: true, structuredContent: { error: { code: 'not_found' } } });
     }
   } finally {

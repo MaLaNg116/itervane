@@ -28,6 +28,7 @@ import { RulePackageActivationService } from './service/rule-package-activations
 import { LearningCaseService } from './service/learning-cases.js';
 import { RuleExtractionService } from './service/rule-extraction.js';
 import { CandidateValidationService } from './service/candidate-validations.js';
+import { TaskRuleSnapshotService } from './service/task-rule-snapshots.js';
 import { OperationsObservationViewService } from './service/operations-observation-view.js';
 import { OperationsIncidentsViewService } from './service/operations-incidents-view.js';
 import { OperationsIncidentStopService } from './service/operations-incident-stop.js';
@@ -79,6 +80,7 @@ export function createApi(database: Database, config: ApiConfig,
   const learningCases = new LearningCaseService(database);
   const ruleExtraction = new RuleExtractionService(database, config.ruleExtractionProviderSha256);
   const candidateValidation = new CandidateValidationService(database, config.candidateValidation);
+  const taskRuleSnapshot = new TaskRuleSnapshotService(database);
   const app = Fastify({
     logger: options.logger === false ? false : { level: 'info' },
     logController: new LogController({ disableRequestLogging: true }), requestIdHeader: false, genReqId: () => randomUUID(),
@@ -201,6 +203,10 @@ export function createApi(database: Database, config: ApiConfig,
   app.get('/v1/tasks/:taskId/candidate-validation', async request => {
     const { taskId } = parseInput(taskParam, request.params);
     return candidateValidation.get(identity(request), taskId, request.locale);
+  });
+  app.get('/v1/tasks/:taskId/rule-snapshot', async request => {
+    const { taskId } = parseInput(taskParam, request.params);
+    return taskRuleSnapshot.get(identity(request), taskId, request.locale);
   });
   app.post('/v1/tasks/:taskId/learning-case', async (request, reply) => {
     const { taskId } = parseInput(taskParam, request.params);

@@ -69,7 +69,7 @@ it('serves localized SDK tool discovery and real task start/query/events/cancel 
   const catalog = await first.listTools();
   expect(catalog.tools.map(tool => tool.name).sort()).toEqual(['cancel_task', 'get_audit', 'get_candidate_validation', 'get_preaudit',
     'get_release_candidate', 'get_release_options', 'get_release_result', 'get_repair', 'get_rule', 'get_rule_extraction',
-    'get_source_inspection', 'get_task', 'get_task_events', 'get_verification', 'list_preaudits', 'list_rules', 'preaudit_text',
+    'get_source_inspection', 'get_task', 'get_task_events', 'get_task_rule_snapshot', 'get_verification', 'list_preaudits', 'list_rules', 'preaudit_text',
     'request_release', 'resume_task', 'start_audit']);
   expect(catalog.tools.find(tool => tool.name === 'start_audit')?.description).toBe(translate('zh-CN', 'mcp.start'));
   expect(catalog.tools.find(tool => tool.name === 'get_verification')).toMatchObject({ description: translate('zh-CN', 'mcp.verification'), annotations: { readOnlyHint: true } });
@@ -143,7 +143,7 @@ it('enforces read-only scopes even for direct unadvertised write calls and local
   const readToken = await token('itervane:read'); const reader = await connect(readToken, 'zh-CN');
   expect((await reader.listTools()).tools.map(tool => tool.name).sort()).toEqual(['get_audit', 'get_candidate_validation',
     'get_preaudit', 'get_release_candidate', 'get_release_options', 'get_release_result', 'get_repair', 'get_rule', 'get_rule_extraction',
-    'get_source_inspection', 'get_task', 'get_task_events', 'get_verification', 'list_preaudits', 'list_rules']);
+    'get_source_inspection', 'get_task', 'get_task_events', 'get_task_rule_snapshot', 'get_verification', 'list_preaudits', 'list_rules']);
   for (const body of [rpc('start_audit', input), rpc('request_release', { taskId: randomUUID(), environmentId: randomUUID(), expectedVersion: 1 })]) {
     const write = await fetch(`${address}/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${readToken}`,
       'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' }, body: JSON.stringify(body) });

@@ -10,6 +10,7 @@ import { DomainError, parseInput } from './errors.js';
 import { databaseNow } from './releases.js';
 import { lockRulePackage, readRulePackageDocument, readRulePackageReview, readRulePackageVersion, requireLibraryOwner,
   requireRulePackageEvidence } from './rule-packages.js';
+import { lockRuleLibrary } from './task-rule-snapshots.js';
 
 type Activation = typeof rulePackageActivations.$inferSelect;
 
@@ -49,6 +50,7 @@ export class RulePackageActivationService {
     return this.database.db.transaction(async tx => {
       const actor = await requireLibraryOwner(tx, identity);
       if (!isHumanWorkspaceOwner(identity, actor, actor.workspaceId, this.portalClientId)) throw new DomainError('forbidden');
+      await lockRuleLibrary(tx, actor.workspaceId, true);
       const pkg = await lockRulePackage(tx, actor.workspaceId, packageId);
       const recordedAt = await databaseNow(tx);
       if (recordedAt.getTime() >= identity.expiresAt * 1_000) throw new DomainError('unauthenticated');
