@@ -256,7 +256,8 @@ function frozenReleaseFixture(task: TaskDto) {
       taskId: task.id, runId: task.runId, generation: 1, projectId: task.projectId, source: task.source,
       originalSnapshotSha256: hash('source'), repairedSnapshotSha256: hash('patched source'), diffSha256: hash('patch'),
       verification: { inputSha256: hash('input'), resultSha256: hash('result'), receiptSha256: hash('receipt'), catalogSha256: hash('catalog'),
-        profileSha256: hash('profile'), buildSha256: hash('build'), baselineSha256: hash('baseline'), source: { introduced: 0, resolved: 1, remaining: 0 } },
+        profileSha256: hash('profile'), buildSha256: hash('build'), baselineSha256: hash('baseline'),
+        source: { introduced: 0, resolved: 1, remaining: 0 }, ruleSnapshotSha256: hash('rules') },
       image: { manifestDigest: `sha256:${hash('image')}`, configDigest: `sha256:${hash('image config')}`,
         archive: { format: 'oci-layout-tar', sha256: hash('archive'), bytes: 50_024 }, runnerImageSha256: hash('runner'),
         scanReportSha256: hash('scan'), scanPolicySha256: hash('policy'), findings: { critical: 0, high: 0, medium: 1, low: 0, unknown: 0 } },
@@ -339,6 +340,8 @@ test('uses the exact frozen release for bilingual decisions, closes stale approv
   const englishDialog = page.getByRole('dialog', { name: 'Approve this release candidate?' });
   await expect(englishDialog.getByRole('button', { name: 'Go back' })).toBeFocused();
   await expect(englishDialog.getByText(candidate.fingerprint, { exact: true })).toBeVisible();
+  await expect(englishDialog.getByText('Rule snapshot digest', { exact: true })).toBeVisible();
+  await expect(englishDialog.getByText(candidate.manifest.verification.ruleSnapshotSha256!, { exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(englishDialog).toHaveCount(0);
   await approve.click();
@@ -359,6 +362,7 @@ test('uses the exact frozen release for bilingual decisions, closes stale approv
 
   await panel.getByRole('button', { name: '批准发布', exact: true }).click();
   const chineseDialog = page.getByRole('dialog', { name: '批准此发布候选？' });
+  await expect(chineseDialog.getByText('规则快照摘要', { exact: true })).toBeVisible();
   const confirm = chineseDialog.getByRole('button', { name: '批准发布', exact: true });
   await confirm.click();
   await expect(chineseDialog.getByRole('alert')).toBeVisible();

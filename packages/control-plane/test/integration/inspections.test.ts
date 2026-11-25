@@ -91,6 +91,7 @@ import { requireActor } from '../../src/service/access.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
 import { InspectionService, prepareInspection } from '../../src/service/inspections.js';
 import { RulePackageActivationService } from '../../src/service/rule-package-activations.js';
+import { TaskRuleSnapshotService } from '../../src/service/task-rule-snapshots.js';
 import { LearningCaseService } from '../../src/service/learning-cases.js';
 import { RuleExtractionService } from '../../src/service/rule-extraction.js';
 import { FormalAuditService, prepareFormalAuditInput } from '../../src/service/formal-audit.js';
@@ -1123,8 +1124,11 @@ async function verifyPublishedCodeTrial({ projectId, source }: Pick<TaskDto, 'pr
     expect(attempt?.receipt?.domainId).not.toBe(original?.domainId);
     expect(view.current).toMatchObject({ status: 'recorded', outcome: 'observed', source: { status: 'compared',
       introduced: 0, remaining: 0, resolved: 0 } });
-    expect((await freeze()).candidate.manifest.verification.source).toEqual({ introduced: 0, remaining: 0, resolved: 0 });
-    return { taskId: admitted.id, result: view.current };
+    const { candidate: frozen } = await freeze();
+    expect(frozen.manifest.verification.source).toEqual({ introduced: 0, remaining: 0, resolved: 0 });
+    const rules = await new TaskRuleSnapshotService(database.storage).get(identity, admitted.id, 'zh-CN');
+    expect(frozen.manifest.verification.ruleSnapshotSha256).toBe(rules.snapshot?.sha256);
+    return { taskId: admitted.id, result: view.current, frozen };
   }
   if (mode === 'missing') {
     expect(view.current.status).toBe('reconciling');
@@ -4104,6 +4108,7 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
       if (mode === 'blocked') expect(checked.message).toBe(translate('zh-CN', 'reason.candidate_validation_cleanup_unknown'));
     }
     const publishedRule = await assertCandidatePublication(validated.result!, portal, failedValidationId);
+    await expect(freeze()).rejects.toMatchObject({ code: 'version_conflict' });
     const released = await validations.admit(identity, linked.projectId, candidateRecord.id, { ...attempt, idempotencyKey: randomUUID() });
     const obsolete = await processCandidateValidation(released.task, codeValidationOptions('expired'));
     expect(obsolete).toMatchObject({ state: 'running', result: null });
@@ -4119,6 +4124,11 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
       extraction: { result: { outcome: 'duplicate', existingCandidateId: generated.result?.id } }, candidateSemanticSha256: null,
     } } });
     const cleanVerification = await verifyPublishedCodeTrial(linked, publishedRule.packageKey, 'clean', portal, application.scope.environmentId);
+    const queuedVerification = await verifyPublishedCodeTrial(linked, publishedRule.packageKey, 'clean', portal, application.scope.environmentId);
+    const approver = await createIdentityVerifier(issuer.config)(await issuer.token('owner', { azp: portal }));
+    const { frozen: queuedCandidate } = queuedVerification!;
+    const queuedRelease = await releases.decide(approver, queuedCandidate.id, { action: 'confirm', fingerprint: queuedCandidate.fingerprint,
+      expectedVersion: 0, idempotencyKey: randomUUID() }, 'zh-CN');
     for (const mode of ['incomplete', 'missing', 'introduced'] as const) {
       await verifyPublishedCodeTrial(linked, publishedRule.packageKey, mode, portal, application.scope.environmentId);
     }
@@ -4165,13 +4175,18 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
     expect(await reading.get(identity, later.task.id)).toMatchObject({
       status: 'completed', result: { publishedCode: { status: 'complete', findings: 1, checkedFiles: 1 } },
     });
-    const approver = await createIdentityVerifier(issuer.config)(await issuer.token('owner', { azp: portal }));
     const activation = await new RulePackageActivationService(database.storage, portal).change(approver, publishedRule.packageId, {
       action: 'withdraw', expectedSequence: 3, versionId: publishedRule.versionId, versionSha256: publishedRule.sha256, idempotencyKey: randomUUID(),
     }, 'zh-CN');
     expect(activation.state.current).toBeNull();
     expect((await new VerificationViewService(database.storage).get(identity, cleanVerification!.taskId, 'zh-CN')).current)
       .toEqual(cleanVerification!.result);
+    const staleCandidate = await releases.getView(identity, cleanVerification!.taskId, 'zh-CN');
+    expect(staleCandidate.candidate?.status).toBe('evidence_changed');
+    expect(staleCandidate.availableTargets).toEqual([]);
+    const { frozen } = cleanVerification!;
+    await expect(releases.decide(approver, frozen.id, { action: 'confirm', fingerprint: frozen.fingerprint, expectedVersion: 0,
+      idempotencyKey: randomUUID() }, 'zh-CN')).rejects.toMatchObject({ code: 'unsupported_state' });
     expect(await new ToolGateway(coordinator, inspected).call(laterScope, 'source.inspect', {}, 'historical-coverage'))
       .toMatchObject({ status: 'success', data: { coverage: 'complete' } });
     expect(inspect).toHaveBeenCalledTimes(1);
@@ -4208,6 +4223,18 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
     expect((await new TaskService(database.storage).events(identity, later.task.id, 25, 'zh-CN')).at(-1))
       .toMatchObject({ state: 'needs_human', reason: 'audit_published_rule_review' });
     expect(await database.storage.db.select().from(formalRepairInputs).where(eq(formalRepairInputs.runId, later.task.runId))).toHaveLength(0);
+    const staleJob = await vi.waitFor(async () => {
+      const [available] = await database.storage.boss.fetch(formalReleaseQueue, { includeMetadata: true });
+      if (!available) throw new Error('Waiting for the stale release job');
+      return available;
+    }, { timeout: 5_000, interval: 60 });
+    expect(staleJob.data).toMatchObject({ operationId: queuedRelease.candidate.operationId });
+    await expect(new FormalReleaseCoordinator(coordinator, releaseOrigin).claim(staleJob, randomUUID())).resolves.toBeNull();
+    expect(await database.storage.db.select().from(formalReleaseSteps).where(eq(formalReleaseSteps.operationId, queuedRelease.candidate.operationId!)))
+      .toHaveLength(0);
+    expect((await service.events(identity, queuedVerification!.taskId, 30, 'zh-CN')).at(-1)).toMatchObject({
+      type: 'task.release_blocked', state: 'needs_human', reason: 'release_evidence_changed',
+    });
     const next = await new TaskService(database.storage).admit(identity, { projectId: linked.projectId, source: linked.source,
       dataClass: 'synthetic', purpose: 'Check withdrawn rule snapshot', idempotencyKey: randomUUID() });
     expect(await database.storage.pool.query('SELECT document FROM itervane.task_rule_snapshots WHERE task_id=$1', [next.task.id]))

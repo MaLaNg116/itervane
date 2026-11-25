@@ -31,8 +31,12 @@ export async function recordTaskRuleSnapshot(tx: Transaction, task: { id: string
 }
 
 /** Take the same shared library lock as admission while granting an effect against a frozen snapshot. */
-export async function requireCurrentTaskRules(tx: Transaction, task: { id: string; projectId: string }, purpose: RuleSnapshotPurpose, expectedSha256: string) {
-  if (digest(JSON.stringify(await currentTaskRules(tx, task, purpose))) !== expectedSha256) throw new DomainError('version_conflict');
+export async function requireCurrentTaskRules(tx: Transaction, task: { id: string; projectId: string }, purpose: RuleSnapshotPurpose, expectedSha256?: string) {
+  const active = await currentTaskRules(tx, task, purpose);
+  const pinned = await readTaskRuleSnapshot(tx, task);
+  const changed = pinned ? pinned.sha256 !== digest(JSON.stringify(active)) : active.entries.length > 0;
+  if (changed || (expectedSha256 !== undefined && pinned?.sha256 !== expectedSha256)) throw new DomainError('version_conflict');
+  return pinned;
 }
 
 export async function readTaskRuleSnapshot(tx: Transaction, task: { id: string; projectId: string }) {

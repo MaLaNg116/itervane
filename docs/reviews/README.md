@@ -158,7 +158,8 @@
 | 153 | P4-D2c 第二个登记项目复用规则 | [#153](https://github.com/MaLaNg116/itervane/pull/153)，依赖 #152 | [真实规则复用导读](p4-native-rule-reuse.md) | 13 项托管原生作业通过，第二个项目的正式初检、独立复验和 OCI 归档已核对 |
 | 154 | P4-D3a 固定 Runbook 进入运维诊断 | [#154](https://github.com/MaLaNg116/itervane/pull/154)，依赖 #153 | [运维 Runbook 诊断导读](p4-pinned-runbook-guidance.md) | 287 项单测、4 项 PostgreSQL 与真实 Chrome 双语验收通过 |
 | 155 | P4-D3b Runbook 约束受控重启 | [#155](https://github.com/MaLaNg116/itervane/pull/155)，依赖 #154 | [Runbook 重启授权导读](p4-runbook-restart-authority.md) | 287 项单测、5 项 PostgreSQL 和真实 Chrome 审批验收通过 |
-| 后续批次 | P4-D3c 后续运维任务复用 Runbook | 依赖 [#155](https://github.com/MaLaNg116/itervane/pull/155) | [真实运维复用导读](p4-native-runbook-reuse.md) | TypeScript、原生入口打包与工作流判据校验通过 |
+| 156 | P4-D3c 后续运维任务复用 Runbook | [#156](https://github.com/MaLaNg116/itervane/pull/156)，依赖 #155 | [真实运维复用导读](p4-native-runbook-reuse.md) | TypeScript、原生入口打包与工作流判据校验通过 |
+| 后续批次 | P4-D4a 规则变化后的发布权限 | 依赖 [#156](https://github.com/MaLaNg116/itervane/pull/156) | [规则与发布权限导读](p4-current-release-rules.md) | 287 项单测、4 项真库和真实 Chrome 双语验收通过 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 

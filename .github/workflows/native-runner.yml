@@ -317,6 +317,7 @@ jobs:
               $hit.cleanupConfirmed and $hit.sessionVerified and $clean.cleanupConfirmed and $clean.sessionVerified and $verified.cleanupConfirmed and
               $hit.httpMcpAgreement and $clean.httpMcpAgreement and $hit.bilingual and $clean.bilingual and
               $clean.candidate.status == "pending" and $clean.candidate.verificationResultSha256 == $verified.resultSha256 and
+              $clean.candidate.ruleSnapshotSha256 == $verified.ruleSnapshotSha256 and
               $clean.candidate.deniedWithoutPortal and $clean.candidate.unchangedTarget and $reuse.model == "scripted_anthropic_fixture"' "$report" >/dev/null
             test -s .reports/p0/runner-linked-health-oci-artifact.json
             test -s .reports/p0/runner-rule-reuse-oci-artifact.json
