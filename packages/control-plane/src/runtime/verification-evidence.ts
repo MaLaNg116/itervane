@@ -1,4 +1,5 @@
-import { formalVerificationEvidenceSchema, qualifiedVerificationResponseSchema, type FormalVerificationEvidence, type QualifiedVerificationReceipt } from '@itervane/contracts';
+import { formalVerificationEvidenceSchema, qualifiedVerificationResponseSchema, type FormalVerificationEvidence,
+  type FormalVerificationInput, type PublishedCodeScanEvidence, type QualifiedVerificationReceipt } from '@itervane/contracts';
 import { compareVerificationScans, sha256 } from '@itervane/runner';
 
 function pending(requested: boolean) {
@@ -58,12 +59,21 @@ export function projectVerificationEvidence(receipt: QualifiedVerificationReceip
   });
 }
 
-export function recordedVerificationEvidence(raw: unknown, receiptSha256: string) {
+export function compareRescanEvidence({ scope, snapshot }: QualifiedVerificationReceipt, originalCode?: PublishedCodeScanEvidence) {
+  const candidateCode = snapshot.publishedCode?.scan;
+  const code = scope.publishedCodeRuleSetSha256 || originalCode || candidateCode ? { before: originalCode, after: candidateCode } : undefined;
+  return compareVerificationScans(snapshot, snapshot.target ?? snapshot, code);
+}
+
+export function recordedVerificationEvidence(raw: unknown, receiptSha256: string, input: FormalVerificationInput, originalCode?: PublishedCodeScanEvidence) {
   const receipt = qualifiedVerificationResponseSchema.parse(raw);
-  if (receipt.kind !== 'verification_receipt' || sha256(JSON.stringify(receipt)) !== receiptSha256) {
+  if (receipt.kind !== 'verification_receipt' || sha256(JSON.stringify(receipt)) !== receiptSha256
+      || receipt.scope.verificationInputSha256 !== sha256(JSON.stringify(input))
+      || receipt.scope.publishedCodeRuleSetSha256 !== input.publishedCode?.ruleSetSha256
+      || originalCode?.sha256 !== input.publishedCode?.inspectionScanSha256
+      || originalCode?.document.basis.snapshotSha256 !== input.publishedCode?.snapshotSha256) {
     throw new Error('formal_verification_recorded_receipt');
   }
-  const { snapshot } = receipt;
-  const evidence = projectVerificationEvidence(receipt, compareVerificationScans(snapshot, snapshot.target ?? snapshot));
+  const evidence = projectVerificationEvidence(receipt, compareRescanEvidence(receipt, originalCode));
   return { receipt, evidence };
 }

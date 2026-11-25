@@ -12,7 +12,7 @@ import { formalRescanAttempts, repositories } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { ExecutionLost, type ExecutionScope, type TaskRow } from './authority.js';
 import type { ExecutionCoordinator } from './coordinator.js';
-import { projectVerificationEvidence } from './verification-evidence.js';
+import { compareRescanEvidence, projectVerificationEvidence } from './verification-evidence.js';
 import { readLinkedHealthBasis } from '../service/operations-repair-proposals.js';
 import { prepareFormalVerificationInput } from './verification-input.js';
 
@@ -31,7 +31,7 @@ const uncertain = (requestId: string): Rejection =>
   ({ kind: 'rejected', requestId, domainId: null, code: 'cleanup_unproven', cleanup: 'unknown' });
 
 function dispatch(basis: Basis, attempt: Attempt) {
-  const command = canonicalVerificationCommand({ input: basis.document, repair: basis.repair });
+  const command = canonicalVerificationCommand({ input: basis.document, repair: basis.repair, publishedCodeRules: basis.publishedCodeRules });
   const request = prepareQualifiedVerificationRequest({ requestId: attempt.requestId, fence: attempt.fence,
     workspaceSha256: attempt.workspaceSha256, origin: basis.origin,
   }, command);
@@ -55,10 +55,11 @@ function checked(raw: unknown, plan: ReturnType<typeof dispatch>): Rejection | R
   const original = basis.scan.snapshot;
   if (receipt.commitSha256 !== basis.scan.commitSha256 || snapshot.tree !== original.tree
       || snapshot.files !== original.files || snapshot.totalBytes !== original.totalBytes
+      || (original.publishedCode && receipt.domainId === basis.scan.domainId)
       || (attempt.receiptSha256 && attempt.receiptSha256 !== sha256(JSON.stringify(receipt)))) {
     throw new Error('formal_rescan_receipt_integrity');
   }
-  const comparison = compareVerificationScans(snapshot, snapshot.target ?? snapshot);
+  const comparison = compareRescanEvidence(receipt, original.publishedCode?.scan);
   return { kind: 'scanned', receipt, comparison, evidence: projectVerificationEvidence(receipt, comparison) };
 }
 
@@ -135,7 +136,7 @@ export async function runFormalRescan(coordinator: ExecutionCoordinator, scope: 
   };
   let outcome: Rejection | RescanResult;
   try {
-    const raw = await runner.verify(request, basis.document, basis.repair, authorize, signal);
+    const raw = await runner.verify(request, basis.document, basis.repair, authorize, signal, basis.publishedCodeRules);
     outcome = checked(raw, plan);
     if (outcome.kind === 'scanned' && !pulsed) throw new Error('formal_rescan_authorization_missing');
   } catch { outcome = uncertain(attempt.requestId); }
