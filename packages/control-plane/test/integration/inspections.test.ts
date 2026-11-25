@@ -6241,7 +6241,7 @@ it('queues and resumes a restart through the bound human portal, once per reques
   }
 });
 
-it('projects a redacted verified restart receipt under current HTTP and read-only MCP project access', async () => {
+it.each(['failed health', 'changed rules'] as const)('projects a redacted verified restart receipt under current HTTP and read-only MCP project access (%s)', async scenario => {
   const { action, runtime, approval, binding, claimRecovery, outcomeEvidence } = await restartAwaitingRecovery();
   const { scope } = await claimRecovery();
   const cases = new LearningCaseService(database.storage);
@@ -6417,15 +6417,18 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
     const admission = new OperationsExecutionAdmission(database.storage, action.installed);
     const executionRuntime = new OperationsExecutionCoordinator(coordinator, action.installed, operationsPortal);
     const writerProof = { installationId, installationSha256, credentialSha256 };
+    await expect(proposals.freeze(identity, action.diagnosed.id, { diagnosisSha256: action.diagnosis.sha256 }))
+      .rejects.toMatchObject({ code: 'version_conflict' });
     const freezeRunbook = async (taskId: string, diagnosisSha256: string) => {
       const { proposal } = await proposals.freeze(identity, taskId, { diagnosisSha256 });
       const frozen = readOperationsProposal(proposal);
-      expect(frozen.runbook).toMatchObject({ observedState: 'exited', selection: match });
+      expect(frozen.runbook).toMatchObject({ observedState: 'exited', selection: { controls: match.controls,
+        rule: { packageId: publishedRunbook.packageId, versionId: publishedRunbook.versionId } } });
       await proposalDecisions.decide(reviewer, proposal.id, { action: 'confirm', fingerprint: proposal.fingerprint,
         expectedVersion: 0, idempotencyKey: randomUUID() });
       return { proposalId: proposal.id, fingerprint: proposal.fingerprint, decisionVersion: 1 };
     };
-    const executeRunbook = async (approved: Awaited<ReturnType<typeof freezeRunbook>>, health: 'passed' | 'failed') => {
+    const pauseRunbook = async (approved: Awaited<ReturnType<typeof freezeRunbook>>) => {
       const { execution, schedule } = await admission.enqueue(approved);
       const dispatch = await executionRuntime.claim(await fetchOperationsWakeup(), randomUUID());
       if (!dispatch || dispatch.mode !== 'dispatch') throw new Error('Expected a scoped Runbook dispatch');
@@ -6436,7 +6439,12 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
       const native = { approvalId: randomUUID().replaceAll('-', ''), callSha256: restartRequest.callSha256 };
       await executionRuntime.pauseForRestartApproval(dispatch, native);
       const waiting = await action.fixture.taskService.get(identity, schedule.taskId);
-      await executionRuntime.requestRestartResume(reviewer, execution.id, { ...native, expectedVersion: waiting.version, idempotencyKey: randomUUID() });
+      return { execution, native, baseline, waiting,
+        resume: () => executionRuntime.requestRestartResume(reviewer, execution.id, { ...native, expectedVersion: waiting.version, idempotencyKey: randomUUID() }) };
+    };
+    const executeRunbook = async (approved: Awaited<ReturnType<typeof freezeRunbook>>, health: 'passed' | 'failed') => {
+      const { baseline, execution, native, resume } = await pauseRunbook(approved);
+      await resume();
       const continuation = await executionRuntime.claim(await fetchOperationsWakeup(), randomUUID());
       if (!continuation || continuation.mode !== 'restart_resume') throw new Error('Expected a scoped Runbook continuation');
       const send = { ...native, ...writerProof, runtimeBaselineSha256: sha256(JSON.stringify(baseline)) };
@@ -6455,17 +6463,48 @@ it('projects a redacted verified restart receipt under current HTTP and read-onl
       expect(reservation?.state).toBe(health === 'passed' ? 'recovered' : 'reserved');
     };
     await executeRunbook(await freezeRunbook(later.task.id, beforeWithdrawal.diagnosis!.receiptSha256), 'passed');
-    const nextFailure = await settleProposalDiagnosis('restart', action.fixture);
-    await executeRunbook(await freezeRunbook(nextFailure.task.id, nextFailure.diagnosis.sha256), 'failed');
     const stale = await settleProposalDiagnosis('restart', action.fixture);
     const staleApproval = await freezeRunbook(stale.task.id, stale.diagnosis.sha256);
-    const withdrawal = await new RulePackageActivationService(database.storage, operationsPortal).change(reviewer, publishedRunbook.packageId, {
+    if (scenario === 'failed health') await executeRunbook(staleApproval, 'failed');
+    const queued = scenario === 'changed rules' ? await admission.enqueue(staleApproval) : undefined;
+    const library = new RulePackageActivationService(database.storage, operationsPortal);
+    const withdrawal = await library.change(reviewer, publishedRunbook.packageId, {
       action: 'withdraw', expectedSequence: 3, versionId: publishedRunbook.versionId,
       versionSha256: publishedRunbook.sha256, idempotencyKey: randomUUID(),
     }, 'zh-CN');
     expect(withdrawal.state.current).toBeNull();
     await expect(admission.reserve(staleApproval)).rejects.toMatchObject({ code: 'version_conflict' });
     expect(await observationViews.get(identity, later.task.id, 'zh-CN')).toEqual(beforeWithdrawal);
+    if (queued) {
+      await expect(executionRuntime.claim(await fetchOperationsWakeup(), randomUUID())).resolves.toBeNull();
+      const [closed] = await database.storage.db.select().from(operationsExecutions).where(eq(operationsExecutions.id, queued.execution.id));
+      expect(closed).toMatchObject({ state: 'blocked', blockedReason: 'restart_not_sent' });
+      expect(await database.storage.db.select().from(operationsExecutionIntents).where(eq(operationsExecutionIntents.executionId, queued.execution.id))).toEqual([]);
+      expect((await action.fixture.taskService.events(identity, queued.schedule.taskId, 20, 'en')).at(-1)).toMatchObject({
+        state: 'needs_human', reason: 'operations_restart_rules_changed',
+      });
+      const published = await library.change(reviewer, publishedRunbook.packageId, { action: 'publish', expectedSequence: 4,
+        versionId: publishedRunbook.versionId, versionSha256: publishedRunbook.sha256,
+        reviewSha256: match.rule!.reviewSha256, idempotencyKey: randomUUID(),
+      }, 'zh-CN');
+      expect(published.state.current?.sequence).toBe(5);
+      const fresh = await settleProposalDiagnosis('restart', action.fixture);
+      const pending = await pauseRunbook(await freezeRunbook(fresh.task.id, fresh.diagnosis.sha256));
+      const changed = await library.change(reviewer, publishedRunbook.packageId, { action: 'withdraw', expectedSequence: 5,
+        versionId: publishedRunbook.versionId, versionSha256: publishedRunbook.sha256, idempotencyKey: randomUUID(),
+      }, 'zh-CN');
+      expect(changed.state.current).toBeNull();
+      await expect(pending.resume()).rejects.toMatchObject({ code: 'version_conflict' });
+      await executionRuntime.reconcile(randomUUID(), 'restart');
+      expect((await action.fixture.taskService.events(identity, pending.waiting.id, 20, 'zh-CN')).at(-1)).toMatchObject({
+        state: 'reconciling', reason: 'operations_restart_rules_changed',
+      });
+      const recovery = await executionRuntime.claim(await fetchOperationsWakeup(), randomUUID());
+      if (recovery?.mode !== 'reconcile') throw new Error('Expected read-only reconciliation');
+      await expect(executionRuntime.settleRestartRecovery(recovery, outcomeEvidence)).resolves.toBe('manual_review');
+      expect(await database.storage.db.select().from(operationsRestartResumes).where(eq(operationsRestartResumes.executionId, pending.execution.id))).toEqual([]);
+      expect((await database.storage.db.select().from(operationsExecutions).where(eq(operationsExecutions.id, pending.execution.id)))[0]?.state).toBe('reserved');
+    }
     const after = await new TaskService(database.storage).admitOperations(identity, { projectId, environmentId: action.fixture.scope.environmentId,
       idempotencyKey: randomUUID(), locale: 'zh-CN', expectedReleaseOperationId: action.fixture.operationId }, action.installed);
     const afterSnapshot = await app.inject({ url: `/v1/tasks/${after.task.id}/rule-snapshot`, headers: http });

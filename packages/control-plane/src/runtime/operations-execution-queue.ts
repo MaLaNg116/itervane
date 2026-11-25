@@ -66,7 +66,8 @@ export async function cancelOperationsExecutionWakeup(tx: Transaction, database:
 
 // The caller has closed the parent reservation while holding the environment row lock.
 export async function closeUndispatchedOperationsExecution(tx: Transaction, database: Database, executionId: string,
-  reason: NonNullable<typeof operationsExecutions.$inferSelect['blockedReason']>, actorId: string, workerId?: string) {
+  reason: NonNullable<typeof operationsExecutions.$inferSelect['blockedReason']>, actorId: string, workerId?: string,
+  ruleSnapshotChanged = false) {
   const scheduled = alias(operationsExecutionSchedules, 'execution_schedule');
   const [bound] = await tx.select({ schedule: scheduled, proposal: operationsProposals }).from(scheduled)
     .innerJoin(operationsExecutions, eq(operationsExecutions.id, scheduled.executionId))
@@ -81,7 +82,8 @@ export async function closeUndispatchedOperationsExecution(tx: Transaction, data
   }
   const revoked = reason === 'approval_revoked';
   const detail = revoked ? 'operations_execution_revoked'
-    : reason === 'proposal_expired' ? 'operations_execution_expired' : 'operations_restart_not_sent';
+    : reason === 'proposal_expired' ? 'operations_execution_expired'
+    : ruleSnapshotChanged ? 'operations_restart_rules_changed' : 'operations_restart_not_sent';
   await tx.update(runRuntime).set({ reason: detail }).where(eq(runRuntime.runId, schedule.runId));
   await appendEvent(tx, task, revoked ? 'task.cancelled' : 'task.needs_human', revoked ? 'cancelled' : 'needs_human', {
     actorId, reason: detail, ...(workerId ? { workerId } : {}),

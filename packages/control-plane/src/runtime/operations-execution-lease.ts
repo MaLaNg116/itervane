@@ -21,6 +21,7 @@ import { readOperationsProposal } from '../service/operations-proposals.js';
 import { requireOperationsRestartWriter } from '../service/operations-restart-installations.js';
 import type { InstalledReleaseTarget } from '../service/release-targets.js';
 import { databaseNow } from '../service/releases.js';
+import { requireCurrentTaskRules, TaskRuleSnapshotChanged } from '../service/task-rule-snapshots.js';
 import { appendEvent, assertLeaseLive, assignSlot, clearSlot, ExecutionLost, lockExecution, lockSlot, renewSlot,
   type ExecutionScope } from './authority.js';
 import type { ExecutionCoordinator } from './coordinator.js';
@@ -119,12 +120,24 @@ function wakeupMode({ execution, task, reason, intent }: BoundExecution): Operat
   if (intent && task.state === 'reconciling' && reason === 'operations_execution_reconciling') return 'reconcile';
 }
 
-async function reconcileBlockedRestartResume(tx: Transaction, database: Database, { execution, schedule, task }: BoundExecution, workerId: string) {
+async function blockUnsentRestart(tx: Transaction, database: Database, { execution, task }: Pick<BoundExecution, 'execution' | 'task'>,
+  workerId: string, ruleSnapshotChanged = false) {
+  const [closed] = await tx.update(operationsExecutions).set({ state: 'blocked', blockedReason: 'restart_not_sent',
+    closedAt: sql`GREATEST(${operationsExecutions.createdAt}, clock_timestamp())` })
+    .where(eq(operationsExecutions.id, execution.id)).returning({ id: operationsExecutions.id });
+  if (!closed) throw new ExecutionLost();
+  await closeUndispatchedOperationsExecution(tx, database, execution.id, 'restart_not_sent', task.requestedBy, workerId, ruleSnapshotChanged);
+  await clearSlot(tx);
+}
+
+async function reconcileBlockedRestartResume(tx: Transaction, database: Database, { execution, schedule, task }: BoundExecution, workerId: string,
+  ruleSnapshotChanged = false) {
   const blocked = await blockQueuedRestartResume(tx, execution.id);
   const reason = 'operations_execution_reconciling';
   await tx.update(runRuntime).set({ reason }).where(eq(runRuntime.runId, schedule.runId));
   await appendEvent(tx, task, 'task.operations_execution_recovered', 'reconciling', {
-    workerId, reason, operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, resumeAttempt: blocked.attempt },
+    workerId, reason: ruleSnapshotChanged ? 'operations_restart_rules_changed' : reason,
+    operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, resumeAttempt: blocked.attempt },
   });
   await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation, 'restart');
 }
@@ -212,6 +225,7 @@ export class OperationsExecutionCoordinator {
       const eligible = queue === operationsQueueForAction(action.kind) && !slot.taskId && target.environmentId === this.installation.environmentId
         && target.enrollmentSha256 === this.installation.enrollmentSha256 && (!supportedAction || action.kind === supportedAction);
       let authorized = true;
+      let ruleSnapshotChanged = false;
       if (eligible && mode !== 'reconcile') {
         try {
           const { frozen, whiskers } = await requireOperationsExecutionApproval(tx, diagnosis, proposal, this.installation, execution.decisionVersion);
@@ -222,14 +236,15 @@ export class OperationsExecutionCoordinator {
         catch (error) {
           if (!(error instanceof DomainError)) throw error;
           authorized = false;
+          ruleSnapshotChanged = error instanceof TaskRuleSnapshotChanged;
         }
       }
       if ((await complete()).affected !== 1) return null;
       if (!authorized && mode === 'restart_resume') {
-        await reconcileBlockedRestartResume(tx, database, bound, workerId);
+        await reconcileBlockedRestartResume(tx, database, bound, workerId, ruleSnapshotChanged);
         return null;
       }
-      if (!eligible || !authorized) {
+      if (!eligible || (!authorized && !ruleSnapshotChanged)) {
         await replaceOperationsExecutionWakeup(tx, database, schedule, task.generation, action.kind, slot.taskId ? 1 : 5);
         return null;
       }
@@ -242,6 +257,11 @@ export class OperationsExecutionCoordinator {
         workerId, reason, operationsExecution: { executionId: execution.id, proposalId: execution.proposalId, fence: lease.fence },
       });
       await tx.update(operationsExecutionSchedules).set({ wakeupJobId: null }).where(eq(operationsExecutionSchedules.executionId, execution.id));
+      if (ruleSnapshotChanged) {
+        // The slot fences this database closure. No executable lease leaves the transaction.
+        await blockUnsentRestart(tx, database, bound, workerId, true);
+        return null;
+      }
       const scope = Object.freeze({ ...lease, executionId: execution.id, mode });
       if (mode === 'reconcile' && action.kind === 'restart') await startRestartRecovery(tx, scope);
       if (mode === 'reconcile' && action.kind === 'rollback' && bound.intent?.restorePlan) await startRestoreRecovery(tx, scope);
@@ -549,22 +569,17 @@ export class OperationsExecutionCoordinator {
     });
   }
 
-  async deferRestart(scope: OperationsExecutionLease) {
+  async deferRestart(scope: OperationsExecutionLease, ruleSnapshotChanged = false) {
     return this.withLease(scope, async (tx, bound) => {
       const { execution, schedule, task, proposal, intent, reason } = bound;
       const database = this.coordinator.database;
       if (scope.mode === 'reconcile' || readOperationsProposal(proposal).action.kind !== 'restart') throw new ExecutionLost();
       if (!intent) {
-        const [closed] = await tx.update(operationsExecutions).set({ state: 'blocked', blockedReason: 'restart_not_sent',
-          closedAt: sql`GREATEST(${operationsExecutions.createdAt}, clock_timestamp())` })
-          .where(eq(operationsExecutions.id, execution.id)).returning({ id: operationsExecutions.id });
-        if (!closed) throw new ExecutionLost();
-        await closeUndispatchedOperationsExecution(tx, database, execution.id, 'restart_not_sent', task.requestedBy, scope.workerId);
-        await clearSlot(tx);
+        await blockUnsentRestart(tx, database, bound, scope.workerId, ruleSnapshotChanged);
         return 'not_sent' as const;
       }
       if (reason === 'operations_restart_resume_claimed') {
-        await reconcileBlockedRestartResume(tx, database, bound, scope.workerId);
+        await reconcileBlockedRestartResume(tx, database, bound, scope.workerId, ruleSnapshotChanged);
       } else {
         const request = await readOperationsRestartRequest(tx, execution.id);
         await tx.update(runRuntime).set({ reason: 'operations_execution_reconciling' }).where(eq(runRuntime.runId, schedule.runId));
@@ -607,7 +622,7 @@ export class OperationsExecutionCoordinator {
     idSchema.parse(workerId);
     const database = this.coordinator.database;
     await database.db.transaction(tx => this.coordinator.recoverExpired(tx, workerId));
-    if (supportedAction !== 'rollback') await this.reconcileExpiredRestartApproval(workerId);
+    if (supportedAction !== 'rollback') await this.reconcilePausedRestartApproval(workerId);
     const action = sql<OperationsActionKind>`${operationsProposals.document}#>>'{action,kind}'`;
     const candidates = await database.db.select({ id: operationsExecutionSchedules.executionId, jobId: operationsExecutionSchedules.wakeupJobId, action })
       .from(operationsExecutionSchedules).innerJoin(tasks, eq(tasks.id, operationsExecutionSchedules.taskId))
@@ -636,25 +651,33 @@ export class OperationsExecutionCoordinator {
     }
   }
 
-  private async reconcileExpiredRestartApproval(workerId: string) {
+  private async reconcilePausedRestartApproval(workerId: string) {
     const database = this.coordinator.database;
     const [candidate] = await database.db.select({ id: operationsExecutions.id }).from(operationsExecutions)
       .innerJoin(operationsProposals, eq(operationsProposals.id, operationsExecutions.proposalId))
       .innerJoin(operationsExecutionSchedules, eq(operationsExecutionSchedules.executionId, operationsExecutions.id))
       .innerJoin(tasks, eq(tasks.id, operationsExecutionSchedules.taskId))
       .where(and(eq(operationsExecutions.environmentId, this.installation.environmentId), eq(operationsExecutions.state, 'reserved'),
-        eq(tasks.state, 'waiting_approval'), sql`${operationsProposals.validUntil} <= clock_timestamp()`));
+        eq(tasks.state, 'waiting_approval')));
     if (!candidate) return;
 
     await database.db.transaction(async tx => {
       await lockSlot(tx);
       const current = await lockOperationsExecution(tx, candidate.id);
       if (!current || current.execution.state !== 'reserved' || current.task.state !== 'waiting_approval'
-          || current.reason !== 'operations_execution_native_approval' || current.proposal.validUntil > await databaseNow(tx)) return;
-      const { action, target } = readOperationsProposal(current.proposal);
+          || current.reason !== 'operations_execution_native_approval') return;
+      const { action, target, runbook } = readOperationsProposal(current.proposal);
       if (action.kind !== 'restart' || target.enrollmentSha256 !== this.installation.enrollmentSha256) return;
+      let reason: 'operations_restart_approval_expired' | 'operations_restart_rules_changed' = 'operations_restart_approval_expired';
+      if (current.proposal.validUntil > await databaseNow(tx)) {
+        try { await requireCurrentTaskRules(tx, current.diagnosis, 'operations', runbook?.snapshotSha256); return; }
+        catch (error) {
+          if (!(error instanceof TaskRuleSnapshotChanged)) throw error;
+          reason = 'operations_restart_rules_changed';
+        }
+      }
       // The native request may still exist. The existing hold stays in place during read-only recovery.
-      await reconcileUnavailableRestart(tx, database, { proposalId: current.proposal.id, expiryWorkerId: workerId });
+      await reconcileUnavailableRestart(tx, database, { proposalId: current.proposal.id, workerId, reason });
     });
   }
 

@@ -6,3 +6,5 @@
 2. `bf868d5` 保留三组审批、动作、时间、独立回执摘要及任务版本引用。回执中断组要求单次原生发送与无重复写入，保持环境占用并提示人工核对。 [托管判据](https://github.com/MaLaNg116/itervane/blob/bf868d5/.github/workflows/native-runner.yml)
 
 本地 TypeScript、原生测试入口打包、工作流的 3 项 Runbook 判据语法校验通过。完整托管验收使用实际 PostgreSQL、KVM 交付制品、Komodo、Whiskers、浏览器与 Keycloak 受保护入口，控制面审批身份由签名测试服务提供，模型使用 Anthropic 协议夹具。
+
+托管 `45543604274` 在 `aa66f71d6c398550fa174feed4ff6df27d8c2816` 上完成全部 13 项 KVM 作业。后续诊断 `92272033-a917-4bbe-b90f-507c8735ccbc` 引用发布的 `restart-verified-stopped-app` 版本 `3ded462a-8556-459a-b8d6-a412e938fe6e`，发送代次 15，独立回读代次 16。运行在同一实例，启动时间更新，授权健康为 200、匿名为 401。恢复摘要为 `231456b2ce23fcc7b3e2f57a23060e98a5ab5c0c7fee939a4d07692d0db6688c`。第三次请求回执中断后进入 `native_unconfirmed`，只发送一次，环境保持占用。 [托管作业](https://github.com/MaLaNg116/itervane/actions/runs/45543604274/job/138967783784)

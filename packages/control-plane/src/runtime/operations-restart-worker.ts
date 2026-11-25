@@ -1,4 +1,5 @@
 import { sha256 } from '@itervane/runner';
+import { TaskRuleSnapshotChanged } from '../service/task-rule-snapshots.js';
 import { ExecutionLost } from './authority.js';
 import { withOperationsLeaseHeartbeat, type OperationsExecutionCoordinator, type OperationsExecutionLease } from './operations-execution-lease.js';
 import type { ReleaseRolloutVerifier } from './release-rollout.js';
@@ -22,7 +23,7 @@ export class OperationsRestartWorker {
       catch (error) {
         if (error instanceof ExecutionLost) return 'lease_lost';
         // If the database committed an intent and its reply was lost, the durable state still forces reconciliation.
-        try { return await this.execution.deferRestart(scope); }
+        try { return await this.execution.deferRestart(scope, error instanceof TaskRuleSnapshotChanged); }
         catch (settlement) {
           if (settlement instanceof ExecutionLost) return 'lease_lost';
           throw settlement;
