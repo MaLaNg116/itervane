@@ -575,6 +575,13 @@
       "when": 1795577891686,
       "tag": "0081_runbook_restart_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1795579372017,
+      "tag": "0082_current_release_rule_authority",
+      "breakpoints": true
     }
   ]
 }
