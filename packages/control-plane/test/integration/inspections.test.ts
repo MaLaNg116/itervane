@@ -22,7 +22,8 @@ import { admissionDtoSchema, apiErrorSchema, finishOperationsInputSchema, fixtur
   taskIncidentViewSchema, taskRuleSnapshotViewSchema, translate,
   verificationViewSchema,
   whiskersRestartImageDigest,
-  qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema, type QualifiedInspectionReceipt,
+  qualifiedInspectionResponseSchema, qualifiedRepairObservationRequestSchema, qualifiedRepairRequestSchema, qualifiedScanReportsSchema,
+  repairCandidateManifestSchema, type PublishedCodeScanReport, type QualifiedInspectionReceipt,
   type FormalReleaseManifest, type FormalReleaseTarget, type NpmUpgradeApproval, type OperationsDiagnosisObservation, type OperationsDiagnosisSection,
   type OperationsHealthSignal, type OperationsRestartInstallation,
   type QualifiedInspectionRequest, type QualifiedRepairObservationReceipt, type QualifiedRepairReceipt,
@@ -1011,6 +1012,134 @@ function standardVerificationReceipt(original: QualifiedInspectionReceipt, reque
       },
     },
   };
+}
+
+async function verifyPublishedCodeTrial({ projectId, source }: Pick<TaskDto, 'projectId' | 'source'>, packageKey: string,
+  mode: 'clean' | 'incomplete' | 'missing' | 'introduced', portal: string, environmentId: string) {
+  const tasks = new TaskService(database.storage);
+  const { task: admitted } = await tasks.admit(identity, { projectId, source, dataClass: 'synthetic', purpose: `Rules verification ${mode}`,
+    locale: 'zh-CN', idempotencyKey: randomUUID() });
+  const path = 'api/readiness.mjs';
+  const prefix = 'export const syntheticOne = 1;\nexport const syntheticTwo = 2;\n';
+  const line = 'export const syntheticThree = 3;\n';
+  const text = prefix + line;
+  const range = { startByte: Buffer.byteLength(prefix), endByte: Buffer.byteLength(text), sha256: sha256(line) };
+  let original: QualifiedInspectionReceipt | undefined;
+  let candidate: QualifiedRepairReceipt['snapshot']['candidate'] | undefined;
+  let candidateManifest: ReturnType<typeof repairCandidateManifestSchema.parse> | undefined;
+  const fixtureRunner = inspectionRunner(async (request, authorize, _signal, command) => {
+    await authorize();
+    if (!command) throw new Error('Published inspection must use a pinned command');
+    const { publishedCode, ...legacy } = request;
+    const receipt = testReceipt(legacy, false, mode === 'introduced' ? path : undefined);
+    const file = { path, mode: '100644' as const, bytes: Buffer.byteLength(text), sha256: sha256(text) };
+    const body = { version: 1 as const, source: admitted.source, objectFormat: 'sha1' as const, tree: receipt.snapshot.tree,
+      files: [file], totalBytes: file.bytes };
+    const manifest = { ...body, sha256: sha256(JSON.stringify(body)) };
+    const reports = receipt.snapshot.reports.map(report => ({ ...report, snapshotSha256: manifest.sha256,
+      findings: report.findings.map(finding => ({ ...finding, id: sha256(JSON.stringify([report.scanner, manifest.sha256,
+        finding.ruleId, finding.path, finding.line])) })),
+    }));
+    const scan = preparePublishedCodeScan(command.rules, manifest);
+    const document = { basis: scan.basis, reports: [{ language: 'javascript', status: 'checked',
+      reportSha256: sha256('first invocation'), findings: [] }] };
+    const parsed = qualifiedInspectionResponseSchema.parse({ ...receipt, scope: { ...receipt.scope, publishedCode },
+      snapshot: { ...receipt.snapshot, totalBytes: manifest.totalBytes, manifestSha256: manifest.sha256, reports,
+        publishedCode: { commandSha256: command.binding.commandSha256, manifest, scan: { document, sha256: sha256(JSON.stringify(document)) } } },
+    });
+    if (parsed.kind !== 'receipt') throw new Error('Expected a scoped inspection receipt');
+    original = parsed;
+    return parsed;
+  });
+  const observeRepair: RepairObservationRunner['observeRepair'] = async (request, workspace, targets, authorize) => {
+    await authorize();
+    return repairObservationReceipt(original!, request, workspace, targets, text, range);
+  };
+  const repair: RepairRunner['repair'] = async (request, workspace, patch, authorize) => {
+    await authorize();
+    const receipt = repairReceipt(original!, request, workspace, patch, text);
+    const [change] = receipt.snapshot.candidate.changes;
+    const base = original!.snapshot.publishedCode!.manifest;
+    candidateManifest = repairCandidateManifestSchema.parse({ version: 1, source: base.source, baseSnapshotSha256: base.sha256,
+      files: [{ ...base.files[0], bytes: change!.afterBytes, sha256: change!.afterSha256 }], totalBytes: change!.afterBytes });
+    candidate = { ...receipt.snapshot.candidate, candidateManifestSha256: sha256(JSON.stringify(candidateManifest)) };
+    return { ...receipt, snapshot: { ...receipt.snapshot, candidate } };
+  };
+  const verify = vi.fn<RescanRunner['verify']>(async (coordinates, input, material, authorize, _signal, publishedCodeRules) => {
+    await authorize();
+    const command = canonicalVerificationCommand({ input, repair: material, publishedCodeRules });
+    const first = original!.snapshot.publishedCode!;
+    expect(input.publishedCode).toEqual({ snapshotSha256: first.scan.document.basis.snapshotSha256,
+      inspectionScanSha256: first.scan.sha256, ruleSetSha256: command.published?.sha256 });
+    expect(input.subject.kind).toBe(mode === 'introduced' ? 'repair' : 'original');
+    const request = prepareQualifiedVerificationRequest(coordinates, command);
+    const receipt = standardVerificationReceipt(original!, request, input, false, candidate);
+    if (mode === 'missing') return receipt;
+    const manifest = candidateManifest ?? first.manifest;
+    const scan = preparePublishedCodeScan(command.published!, { ...manifest, sha256: input.subject.manifestSha256 });
+    const finding = { ruleKey: packageKey, path, start: { line: 1, col: 1, offset: 0 }, end: { line: 1, col: 5, offset: 4 } };
+    const report: PublishedCodeScanReport = mode === 'incomplete' ? { language: 'javascript', status: 'unavailable', reason: 'timeout' }
+      : { language: 'javascript', status: 'checked', reportSha256: sha256('second invocation'), findings: mode === 'introduced' ? [finding] : [] };
+    const document = { basis: scan.basis, reports: [report] };
+    const binding = { scan: { document, sha256: sha256(JSON.stringify(document)) } };
+    receipt.snapshot.publishedCode = candidateManifest ? { ...binding, kind: 'repair', manifest: candidateManifest }
+      : { ...binding, kind: 'original', manifest: first.manifest };
+    return receipt;
+  });
+  const complete = auditModel(async request => {
+    const context = request.conversation[0];
+    if (context?.kind !== 'user') throw new Error('Missing verification trial context');
+    const { role, completionNeeds, observations, handoff } = JSON.parse(context.text) as {
+      role: string; completionNeeds: string[]; observations: AgentEvidence[]; handoff: { findings: Array<{ id: string }> };
+    };
+    if (role === 'verify') return scriptedVerification('zh-CN').complete(request);
+    if (role === 'audit') return completionNeeds.includes('semgrep_ce')
+      ? auditTurn('read_scan', { scanner: 'semgrep_ce' }) : concludeAudit(request);
+    const product = observations.find(item => item.data.kind === 'repair_candidate');
+    if (product) return auditTurn('finish_role', { evidenceId: product.id, summary: '已修改允许的源文件。' });
+    const target = observations.find(item => item.data.kind === 'repair_targets');
+    if (!target) return auditTurn('read_repair_targets', { findingIds: handoff.findings.map(finding => finding.id) });
+    return auditTurn('apply_repair_patch', { observationId: target.id, targets: [{ targetIndex: 0, edits: [{
+      startByte: range.startByte, endByte: range.endByte, replacement: '',
+    }] }] });
+  });
+  const candidateValidation = codeValidationOptions('passed');
+  const worker = new DurableWorker(database.storage, database.runtimeUrl, {
+    runner: fixtureRunner, auditModel: complete, candidateValidation: { ...candidateValidation,
+      code: { ...candidateValidation.code!, profile: { ...validationProfile, runnerImageSha256: imageSha256 } } },
+    ...(mode === 'introduced' ? { repair: { protectedPaths: [], runner: { observe: async () => idleRepairRunner(), observeRepair, repair } } } : {}),
+    verification: { profile: standardVerificationProfile, runner: { observe: async () => idleRepairRunner(), verify,
+      verifyArchive: async archive => ({ kind: 'archive_verified', version: 1, runnerImageSha256: imageSha256, archive }),
+    } },
+  });
+  try { await processAdmittedTestTask(worker); } finally { await worker.close(); }
+  expect(verify).toHaveBeenCalledTimes(1);
+  const current = await tasks.get(identity, admitted.id);
+  const view = await new VerificationViewService(database.storage).get(identity, admitted.id, 'zh-CN');
+  const [attempt] = await database.storage.db.select().from(formalRescanAttempts).where(eq(formalRescanAttempts.runId, admitted.runId));
+  const freeze = () => new FormalReleaseService(database.storage, portal).freeze(identity, admitted.id, { environmentId,
+    expectedVersion: current.version }, 'zh-CN');
+  if (mode === 'clean') {
+    expect(attempt?.receipt?.domainId).not.toBe(original?.domainId);
+    expect(view.current).toMatchObject({ status: 'recorded', outcome: 'observed', source: { status: 'compared',
+      introduced: 0, remaining: 0, resolved: 0 } });
+    expect((await freeze()).candidate.manifest.verification.source).toEqual({ introduced: 0, remaining: 0, resolved: 0 });
+    return { taskId: admitted.id, result: view.current };
+  }
+  if (mode === 'missing') {
+    expect(view.current.status).toBe('reconciling');
+    expect(attempt).toMatchObject({ state: 'uncertain', receipt: null });
+  } else if (mode === 'incomplete') {
+    expect(view.current).toMatchObject({ status: 'recorded', outcome: 'incomplete', source: { status: 'unavailable',
+      scanner: 'semgrep_ce', reason: 'incomplete_coverage' } });
+    expect(attempt?.state).toBe('recorded');
+  } else {
+    expect(view.previous).toMatchObject({ status: 'recorded', outcome: 'source_findings', source: { status: 'compared',
+      introduced: 1, remaining: 0, resolved: 1 } });
+    expect(attempt?.state).toBe('recorded');
+  }
+  await expect(freeze()).rejects.toMatchObject({ code: 'unsupported_state' });
+  if (mode === 'introduced') await tasks.cancel(identity, admitted.id, { expectedVersion: current.version });
 }
 
 it.each(['build', 'baseline', 'image', 'artifact'] as const)('binds the standard %s proof to the frozen candidate in the lease transaction', async stage => {
@@ -3989,6 +4118,10 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
     expect(duplicate).toMatchObject({ state: 'succeeded', result: { document: {
       extraction: { result: { outcome: 'duplicate', existingCandidateId: generated.result?.id } }, candidateSemanticSha256: null,
     } } });
+    const cleanVerification = await verifyPublishedCodeTrial(linked, publishedRule.packageKey, 'clean', portal, application.scope.environmentId);
+    for (const mode of ['incomplete', 'missing', 'introduced'] as const) {
+      await verifyPublishedCodeTrial(linked, publishedRule.packageKey, mode, portal, application.scope.environmentId);
+    }
     const later = await new TaskService(database.storage).admit(identity, { projectId: linked.projectId, source: linked.source,
       dataClass: 'synthetic', purpose: 'Check published rule snapshot', idempotencyKey: randomUUID() });
     expect(await database.storage.pool.query('SELECT document FROM itervane.task_rule_snapshots WHERE task_id=$1', [later.task.id]))
@@ -4037,6 +4170,8 @@ it.each(['recovered', 'still unhealthy', 'revoked grant', 'enqueue rollback'] as
       action: 'withdraw', expectedSequence: 3, versionId: publishedRule.versionId, versionSha256: publishedRule.sha256, idempotencyKey: randomUUID(),
     }, 'zh-CN');
     expect(activation.state.current).toBeNull();
+    expect((await new VerificationViewService(database.storage).get(identity, cleanVerification!.taskId, 'zh-CN')).current)
+      .toEqual(cleanVerification!.result);
     expect(await new ToolGateway(coordinator, inspected).call(laterScope, 'source.inspect', {}, 'historical-coverage'))
       .toMatchObject({ status: 'success', data: { coverage: 'complete' } });
     expect(inspect).toHaveBeenCalledTimes(1);
