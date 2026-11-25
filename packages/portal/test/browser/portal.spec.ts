@@ -574,7 +574,18 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
         facts: [
           { section: 'container', evidenceId: containerEvidenceId, proofSha256: hash('normalized state'), result: { state: 'exited', observedAt } },
           { section: 'release', evidenceId: releaseEvidenceId, proofSha256: hash('verified release history'),
-            result: { current: { operationId: releaseOperationId, manifestDigest: candidate.manifest.image.manifestDigest, verifiedAt: observedAt }, previous: null } },
+            result: { current: { operationId: releaseOperationId, manifestDigest: candidate.manifest.image.manifestDigest, verifiedAt: observedAt }, previous: null,
+              runbooks: { version: 1, snapshotSha256: hash('selected Runbook snapshot'), byState: {
+                exited: { status: 'available', version: '1.2.0', validationSha256: hash('Runbook validation'), action: 'restart_current_publication',
+                  rule: { kind: 'runbook', packageId: 'fa827635-4c43-46d3-b29a-38a74a35b18b', packageKey: 'restart-verified-stopped-app',
+                    versionId: '285240ff-4d48-4b98-916f-bee24224c4c9', versionSha256: hash('submitted Runbook'),
+                    reviewSha256: hash('human-reviewed Runbook'), sequence: 3 },
+                  controls: { publicationBinding: 'exact', approval: 'portal_and_whiskers', maxNativeAttempts: 1,
+                    stopOn: ['target_drift', 'unknown_outcome', 'failed_health'] },
+                  success: { instance: 'same', newerStart: true, healthStatus: 200, access: 'protected' } },
+                dead: { status: 'no_match' },
+              } },
+            } },
           { section: 'logs', evidenceId: logsEvidenceId, proofSha256: logDigest,
             result: { observedAt, tailLines: 40, lines: 8, warningLines: 1, errorLines: 2 } },
           { section: 'metrics', evidenceId: metricsEvidenceId, proofSha256: hash('collected metrics'),
@@ -671,10 +682,15 @@ test('diagnoses the visible release with bilingual evidence, scoped retry and li
   await expect(diagnosis.getByText(diagnosisDigest, { exact: true })).toBeVisible();
   await expect(diagnosis.getByText(logDigest, { exact: true })).toBeVisible();
   await expect(diagnosis.getByText('92%', { exact: true })).toBeVisible();
+  await expect(diagnosis.getByText('固定的 Runbook', { exact: true })).toBeVisible();
+  await expect(diagnosis.getByText('restart-verified-stopped-app · 1.2.0', { exact: true })).toBeVisible();
   expect((await motionProbe(page)).disclosures).toBe(beforeDisclosure.disclosures);
   await language(page, 'en');
   await expect(panel.getByText('Exited', { exact: true })).toBeVisible();
   await expect(diagnosis.getByText('Review restarting the published container.', { exact: true })).toBeVisible();
+  const englishRunbook = diagnosis.getByText('Pinned Runbook', { exact: true });
+  if (!(await englishRunbook.isVisible())) await diagnosis.locator('summary').filter({ hasText: 'Diagnosis evidence' }).press('Enter');
+  await expect(englishRunbook).toBeVisible();
 
   const proposal = panel.getByTestId('operations-proposal');
   await proposal.getByRole('button', { name: 'Prepare restart proposal', exact: true }).click();

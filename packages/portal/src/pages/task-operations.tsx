@@ -97,6 +97,8 @@ const sectionLabels = {
 
 function DiagnosisDetails({ diagnosis, observationDigest }: { diagnosis: Diagnosis; observationDigest: string }) {
   const t = useText();
+  const state = diagnosis.facts.find(fact => fact.section === 'container')?.result.state;
+  const stoppedState = state === 'exited' || state === 'dead' ? state : undefined;
   const sections = new Map(diagnosis.facts.map(fact => [fact.evidenceId, fact.section]));
   const citations = (evidenceIds: readonly string[]) =>
     <ul aria-label={t('operationsCitedEvidence')} className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-sm muted">
@@ -121,7 +123,7 @@ function DiagnosisDetails({ diagnosis, observationDigest }: { diagnosis: Diagnos
       <ul className="space-y-3">
         {diagnosis.facts.map(fact => <li key={fact.evidenceId}>
           <h4 className="text-sm font-medium">{t(sectionLabels[fact.section])}</h4>
-          <DiagnosisFactDetails fact={fact} />
+          <DiagnosisFactDetails fact={fact} stoppedState={stoppedState} />
           <dl className="text-sm">
             <dt className="muted">{t('operationsProofDigest')}</dt><dd><code className="break-text">{fact.proofSha256}</code></dd>
           </dl>
@@ -135,15 +137,21 @@ function DiagnosisDetails({ diagnosis, observationDigest }: { diagnosis: Diagnos
   </div>;
 }
 
-function DiagnosisFactDetails({ fact }: { fact: Fact }) {
+function DiagnosisFactDetails({ fact, stoppedState }: { fact: Fact; stoppedState: 'exited' | 'dead' | undefined }) {
   const { locale } = usePortal();
   const t = useText();
   if (fact.section === 'container') return null;
-  if (fact.section === 'release') return <dl className="detail-grid">
-    <div><dt>{t('releaseOperation')}</dt><dd><code className="break-text">{fact.result.current.operationId}</code></dd></div>
-    {fact.result.previous && <div><dt>{t('operationsPreviousRelease')}</dt>
-      <dd><code className="break-text">{fact.result.previous.operationId}</code></dd></div>}
-  </dl>;
+  if (fact.section === 'release') {
+    const runbook = stoppedState && fact.result.runbooks?.byState[stoppedState];
+    return <dl className="detail-grid">
+      <div><dt>{t('releaseOperation')}</dt><dd><code className="break-text">{fact.result.current.operationId}</code></dd></div>
+      {fact.result.previous && <div><dt>{t('operationsPreviousRelease')}</dt>
+        <dd><code className="break-text">{fact.result.previous.operationId}</code></dd></div>}
+      {runbook && <div><dt>{t('operationsPinnedRunbook')}</dt><dd>{runbook.status === 'available'
+        ? <code className="break-text">{runbook.rule.packageKey} · {runbook.version}</code>
+        : t(runbook.status === 'ambiguous' ? 'operationsRunbookAmbiguous' : 'operationsRunbookNoMatch')}</dd></div>}
+    </dl>;
+  }
   const number = new Intl.NumberFormat(locale);
   if (fact.section === 'logs') return <dl className="detail-grid">
     <div><dt>{t('operationsLogLines')}</dt><dd>{number.format(fact.result.lines)}</dd></div>

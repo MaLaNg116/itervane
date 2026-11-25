@@ -23,7 +23,7 @@ async function readEvidence(store: OperationsEvidenceStore, scope: ExecutionScop
 
   if (section === 'release') {
     const fact = await store.withReservation(scope, section, operationId, signal, async (tx, { task }, { request }) =>
-      readOperationsReleaseEvidence(tx, await requireStoredActor(tx, task.requestedBy), request));
+      readOperationsReleaseEvidence(tx, await requireStoredActor(tx, task.requestedBy), request, task));
     return store.record(scope, operationId, { kind: 'operations_section', section, ...fact }, signal);
   }
   const authorize = () => store.withReservation(scope, section, operationId, signal, async () => {});

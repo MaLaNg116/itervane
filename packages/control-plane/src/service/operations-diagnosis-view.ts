@@ -6,6 +6,7 @@ import { operationsDiagnosisReads, operationsDiagnosisResults, operationsDiagnos
 import { readRecordedOperationsEvidence } from '../runtime/operations-evidence-store.js';
 import type { Transaction } from './access.js';
 import { readOperationsDiagnosis, type readOperationsRequest } from './operations-requests.js';
+import { readTaskRunbookGuidance } from './task-runbook-guidance.js';
 
 export async function readPublishedOperationsDiagnosis(tx: Transaction, task: typeof tasks.$inferSelect,
   request: Awaited<ReturnType<typeof readOperationsRequest>>, observation: OperationsObservationReceipt,
@@ -42,6 +43,11 @@ export async function readPublishedOperationsDiagnosis(tx: Transaction, task: ty
     if (fact.evidenceId !== evidenceId || fact.proofSha256 !== data.proofSha256) throw new Error('operations_diagnosis_view_evidence');
     return { fact, data };
   });
+  const release = facts.find(item => item.data.section === 'release')?.data;
+  if (release?.section === 'release' && release.result.runbooks
+      && JSON.stringify(release.result.runbooks) !== JSON.stringify(await readTaskRunbookGuidance(tx, task))) {
+    throw new Error('operations_diagnosis_view_runbooks');
+  }
   return { receipt, sha256: row.sha256, recordedAt: row.createdAt, facts };
 }
 

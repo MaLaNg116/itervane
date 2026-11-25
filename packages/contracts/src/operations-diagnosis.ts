@@ -6,6 +6,8 @@ import {
 } from './operations.js';
 import { idSchema, taskStateSchema } from './primitives.js';
 import { ociDigestSchema } from './qualified-standard-image.js';
+import { runbookCandidateSchema } from './rule-extraction.js';
+import { publishedRuleReferenceSchema } from './task-rule-snapshots.js';
 
 export const operationsDiagnosisInputSchema = z.strictObject({
   version: z.literal(1), taskId: idSchema, runId: idSchema, generation: z.int().positive(),
@@ -20,7 +22,19 @@ export type OperationsDiagnosisSection = z.infer<typeof operationsDiagnosisSecti
 const verifiedRelease = z.strictObject({
   operationId: idSchema, manifestDigest: ociDigestSchema, verifiedAt: z.iso.datetime({ precision: 3 }),
 });
-const releaseEvidence = z.strictObject({ current: verifiedRelease, previous: verifiedRelease.nullable() })
+const runbookChoice = z.discriminatedUnion('status', [
+  z.strictObject({ status: z.literal('available'), rule: publishedRuleReferenceSchema.extend({ kind: z.literal('runbook') }),
+    version: z.string().min(1).max(32), validationSha256: sha256Schema,
+    action: runbookCandidateSchema.shape.action, controls: runbookCandidateSchema.shape.controls, success: runbookCandidateSchema.shape.success }),
+  z.strictObject({ status: z.literal('no_match') }),
+  z.strictObject({ status: z.literal('ambiguous') }),
+]);
+export const operationsRunbookGuidanceSchema = z.strictObject({
+  version: z.literal(1), snapshotSha256: sha256Schema, byState: z.strictObject({ exited: runbookChoice, dead: runbookChoice }),
+});
+export type OperationsRunbookGuidance = z.infer<typeof operationsRunbookGuidanceSchema>;
+
+const releaseEvidence = z.strictObject({ current: verifiedRelease, previous: verifiedRelease.nullable(), runbooks: operationsRunbookGuidanceSchema.optional() })
   .refine(evidence => !evidence.previous || evidence.previous.operationId !== evidence.current.operationId
     && evidence.previous.manifestDigest !== evidence.current.manifestDigest, 'Recovery requires a distinct verified release');
 const observation = { kind: z.literal('operations_section'), proofSha256: sha256Schema };
