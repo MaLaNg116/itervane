@@ -1,5 +1,6 @@
 import express from 'express';
 import { fileURLToPath } from 'node:url';
+import { sendReadiness } from './readiness.mjs';
 
 export function createApp({ mode = 'healthy', version = '0.1.0' } = {}) {
   if (!['healthy', 'unhealthy'].includes(mode)) throw new Error('Unsupported fixture mode');
@@ -11,9 +12,7 @@ export function createApp({ mode = 'healthy', version = '0.1.0' } = {}) {
     response.set('Cache-Control', 'no-store');
     next();
   });
-  app.get('/health', (_request, response) => {
-    response.status(mode === 'healthy' ? 200 : 503).json({ status: mode, version });
-  });
+  app.get('/health', (_request, response) => sendReadiness(response, mode, version));
   app.get('/api/version', (_request, response) => response.json({ version }));
   app.get('/api/demo', (_request, response) => response.json({
     synthetic: true,
