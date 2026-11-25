@@ -297,7 +297,29 @@ jobs:
               $proof.release.version != $original.version and $proof.release.manifestDigest != $original.manifestDigest and
               $proof.release.approvalDeniedWithoutPortal and $proof.release.healthStatus == 200 and $proof.release.httpMcpAgreement and
               ($proof.healthySamples | length) == 2 and $proof.closedReason == "target_changed" and $proof.readOnlyKomodo and $proof.whiskersCleanup' "$report" >/dev/null
+            jq -e '.linkedHealth as $linked | $linked.ruleExtraction.publication as $published | $linked.ruleReuse as $reuse |
+              $reuse.violation as $hit | $reuse.clean as $clean | $clean.verification as $verified |
+              $reuse.originProjectId == $linked.learningCase.origin.projectId and $reuse.projectId != $reuse.originProjectId and
+              $hit.projectId == $reuse.projectId and $clean.projectId == $reuse.projectId and
+              $hit.source.repositoryId == $reuse.repositoryId and $clean.source.repositoryId == $reuse.repositoryId and
+              $hit.source.commit != $clean.source.commit and $hit.scan.manifestSha256 != $clean.scan.manifestSha256 and
+              $hit.runId != $clean.runId and $hit.taskId != $clean.taskId and $hit.domainId != $clean.domainId and
+              $hit.pin == $clean.pin and $hit.pin.packageId == $published.packageId and $hit.pin.packageKey == $published.packageKey and
+              $hit.pin.versionId == $published.versionId and $hit.pin.versionSha256 == $published.versionSha256 and
+              $hit.pin.reviewSha256 == $published.reviewSha256 and $hit.pin.sequence == $published.sequence and
+              $hit.state == "needs_human" and $hit.reason == "audit_published_rule_review" and $hit.candidateDenied and
+              ($hit.scan.findings | length) == 1 and $hit.scan.findings[0].path == "server/readiness.mjs" and
+              $hit.scan.findings[0].ruleKey == $published.packageKey and
+              $hit.scan.findings[0].path != $linked.after.changedPath and
+              $clean.reason == "verification_observed" and $clean.scan.findings == [] and $verified.findings == [] and
+              $verified.manifestSha256 == $clean.scan.manifestSha256 and $verified.ruleSetSha256 == $clean.scan.ruleSetSha256 and
+              $verified.ruleSnapshotSha256 == $clean.scan.ruleSnapshotSha256 and $verified.domainId != $clean.domainId and
+              $hit.cleanupConfirmed and $hit.sessionVerified and $clean.cleanupConfirmed and $clean.sessionVerified and $verified.cleanupConfirmed and
+              $hit.httpMcpAgreement and $clean.httpMcpAgreement and $hit.bilingual and $clean.bilingual and
+              $clean.candidate.status == "pending" and $clean.candidate.verificationResultSha256 == $verified.resultSha256 and
+              $clean.candidate.deniedWithoutPortal and $clean.candidate.unchangedTarget and $reuse.model == "scripted_anthropic_fixture"' "$report" >/dev/null
             test -s .reports/p0/runner-linked-health-oci-artifact.json
+            test -s .reports/p0/runner-rule-reuse-oci-artifact.json
           fi
           if [[ "$NATIVE_SCENARIO" == protected-release-npm ]]; then
             jq -e '.release.repairCategory == "npm_dependency" and .dependency.advisoryId != null' "$report" >/dev/null
@@ -462,6 +484,7 @@ jobs:
             .reports/p0/runner-drift-oci-artifact.json
             .reports/p0/runner-faults-oci-artifact.json
             .reports/p0/runner-linked-health-oci-artifact.json
+            .reports/p0/runner-rule-reuse-oci-artifact.json
             .reports/p0/runner-oci-artifact.json
             .reports/p0/runner-retry-oci-artifact.json
           if-no-files-found: error
