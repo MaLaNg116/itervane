@@ -36,13 +36,16 @@ function selectTool(observations: AgentEvidence[], completionNeeds: readonly str
     return { name: 'read_rule', input: { ruleId: 'bounded-review-context' } };
   }
   if (!scans.some(scan => scan.scanner === 'trivy')) return { name: 'read_scan', input: { scanner: 'trivy' } };
+  if (completionNeeds.includes('semgrep_ce')) return { name: 'read_scan', input: { scanner: 'semgrep_ce' } };
   if (completionNeeds.includes('health_reproduction')) return { name: 'read_health_reproduction', input: {} };
+  const guidance = {
+    gitleaks: { impact: '敏感模式需要所有者确认。', suggestion: '确认影响范围并按需更换凭据。' },
+    trivy: { impact: '依赖命中固定公告，需要核对受影响版本。', suggestion: '核对升级路径并复验受影响依赖。' },
+    semgrep_ce: { impact: '发布规则发现固定的健康失败响应。', suggestion: '由项目维护者核对健康响应逻辑。' },
+  };
   return { name: 'finish_role', input: {
     summary: '已核对隔离扫描的证据和覆盖。', evidenceIds: observations.map(item => item.id),
-    explanations: scans.flatMap(scan => scan.findings.map(item => ({ findingId: item.id,
-      impact: scan.scanner === 'gitleaks' ? '敏感模式需要所有者确认。' : '依赖命中固定公告，需要核对受影响版本。',
-      suggestion: scan.scanner === 'gitleaks' ? '确认影响范围并按需更换凭据。' : '核对升级路径并复验受影响依赖。',
-    }))),
+    explanations: scans.flatMap(scan => scan.findings.map(item => ({ findingId: item.id, ...guidance[scan.scanner] }))),
   } };
 }
 

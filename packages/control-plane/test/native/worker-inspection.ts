@@ -20,8 +20,8 @@ import {
   candidateValidationViewSchema, codeRuleValidationProfileSchema, ruleExtractionViewSchema,
   rulePackageActivationResultSchema, rulePackageActivationViewSchema, rulePackageImportResultSchema,
   qualifiedImageArchiveSchema, qualifiedRepairObservationResponseSchema, qualifiedRepairResponseSchema, qualifiedStandardBuildProofSchema,
-  taskDtoSchema, taskEventDtoSchema, taskEventReasonSchema, translate,
-  type FormalAuditResult, type Locale, type NpmUpgradeApproval, type StandardVerificationProfile, type TaskDto,
+  taskDtoSchema, taskEventDtoSchema, taskEventReasonSchema, translate, verificationViewSchema,
+  type CodeRuleValidationProfile, type FormalAuditResult, type Locale, type NpmUpgradeApproval, type StandardVerificationProfile, type TaskDto,
 } from '@itervane/contracts';
 import { scannerProfiles, sha256 } from '@itervane/runner';
 import { createApi } from '../../src/api.js';
@@ -62,6 +62,7 @@ import { confirmNativeLinkedHealthRepair } from './linked-health-proof.js';
 import type { RegistryImportMarker } from './release-recovery.js';
 import { temporaryRegistry } from './registry-fixture.js';
 import { openProtectedIngress } from './protected-ingress.js';
+import { readNativeRuleReuse, ruleReuseRevisions, summarizePublishedRuleScan } from './published-rule-reuse.js';
 import { proveDeniedNativeRestore, proveInterruptedNativeRestore, proveNativeRestore } from './restore-proof.js';
 import { proveNativeRestart, type DiagnosisHttp, type DiagnosisReaders } from './restart-proof.js';
 
@@ -154,13 +155,15 @@ function sourceWorkerEnvironment(socket: string, controllerUid: string, image: s
 }
 
 function startWorker(bundle: string, socket: string, controllerUid: string, image: string, databaseUrl: string,
-  auditURL?: string, verification?: StandardVerificationProfile, repair: boolean | NpmUpgradeApproval = false) {
+  auditURL?: string, verification?: StandardVerificationProfile, repair: boolean | NpmUpgradeApproval = false,
+  ruleProfile?: CodeRuleValidationProfile) {
   return startScopedWorker(bundle, [...sourceWorkerEnvironment(socket, controllerUid, image),
     ...(auditURL ? ['ITERVANE_AUDIT_MODEL_PROVIDER=anthropic', `ANTHROPIC_BASE_URL=${auditURL}`,
       `ANTHROPIC_MODEL=${auditFixtureModel}`, `ANTHROPIC_API_KEY=${auditFixtureKey}`] : []),
     ...(verification ? [`ITERVANE_VERIFICATION_PROFILE=${JSON.stringify(verification)}`] : []),
     ...(repair ? ['ITERVANE_FORMAL_REPAIR=1'] : []),
     ...(typeof repair === 'object' ? [`ITERVANE_NPM_REPAIR_APPROVALS=${JSON.stringify([repair])}`] : []),
+    ...(ruleProfile ? ['ITERVANE_CANDIDATE_VALIDATION_ENABLED=1', `ITERVANE_CODE_RULE_VALIDATION_PROFILE=${JSON.stringify(ruleProfile)}`] : []),
     'ITERVANE_WORKER_POLL_MS=100'], { DATABASE_URL: databaseUrl });
 }
 
@@ -534,6 +537,7 @@ async function probe() {
           totals, targetRuleId: null, newFindingGroups: totals.introduced, remainingFindingGroups: totals.remaining,
           dispatches: 1, cleanupConfirmed: receipt.cleanupConfirmed, build: snapshot.build ?? null, verificationResultSha256: stored.result_sha,
           archiveVerification: result.archiveVerification ?? null,
+          ...(snapshot.publishedCode ? { publishedCode: summarizePublishedRuleScan(snapshot.publishedCode.scan) } : {}),
           reviewTrial: { input: { sha256: stored.input_sha, document: input }, evidence: result.evidence,
             report: { sections, usage: result.usage, checkpointId: result.checkpointId, outcome: result.review.outcome } },
         };
@@ -1004,11 +1008,12 @@ async function probe() {
         ok(configuration);
         const { providerSha256 } = configuredAuditModel(configuration);
 
+        const nativeRuleProfile = () => codeRuleValidationProfileSchema.parse({
+          version: 1, engine: 'semgrep_ce', engineVersion: '1.170.0', runnerImageSha256: imageSha256,
+          engineInputsSha256: process.env.ITERVANE_NATIVE_RULE_ENGINE_SHA256,
+        });
         const extractNativeLearningCase = async (item: Awaited<ReturnType<typeof captureNativeLearningCase>>, expectedKind: 'code_rule' | 'runbook') => {
-          const codeProfile = expectedKind === 'code_rule' ? codeRuleValidationProfileSchema.parse({
-            version: 1, engine: 'semgrep_ce', engineVersion: '1.170.0', runnerImageSha256: imageSha256,
-            engineInputsSha256: process.env.ITERVANE_NATIVE_RULE_ENGINE_SHA256,
-          }) : undefined;
+          const codeProfile = expectedKind === 'code_rule' ? nativeRuleProfile() : undefined;
           const validationConfig = {
             ITERVANE_CANDIDATE_VALIDATION_ENABLED: '1',
             ...(codeProfile ? { ITERVANE_CODE_RULE_VALIDATION_PROFILE: JSON.stringify(codeProfile) } : {}),
@@ -1117,7 +1122,7 @@ async function probe() {
             equal(current.versionId, version.versionId);
             equal(current.versionSha256, version.sha256);
             equal(current.reviewSha256, reviewed.version.review.sha256);
-            const publication = { ...current, kind: version.kind, validationId: version.document.validation.id,
+            const publication = { ...current, kind: version.kind, packageKey: version.document.packageKey, validationId: version.document.validation.id,
               validationSha256: version.document.validation.sha256, packageId: version.packageId, deniedWithoutPortal: true };
             return { caseId: item.id, caseSha256: item.sha256, taskId: admitted.task.id, resultId: checked.id, resultSha256: checked.sha256,
               candidateKind: expectedKind, candidateSemanticSha256, usage, actions, validation, publication, model: 'scripted_anthropic_fixture' };
@@ -1397,9 +1402,122 @@ async function probe() {
         };
         if (linkedHealthRun) {
           const initial = await recordedVerification(current, false);
-          return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
-            release: first.report, initialBuild: { build: initial.build, archiveVerification: initial.archiveVerification },
-            linkedHealth: await verifyNativeLinkedHealth() };
+          const linkedHealth = await verifyNativeLinkedHealth();
+          const { publication } = linkedHealth.ruleExtraction;
+          phase = 'rule_reuse_enroll_second_project';
+          const reuseProject = projectDtoSchema.parse(await request('/v1/projects', { name: 'Readiness console', slug: 'readiness-console' }));
+          notEqual(project.id, reuseProject.id);
+          const reusePath = `/v1/projects/${reuseProject.id}`;
+          const reuseRepo = repositoryDtoSchema.parse(await request(`${reusePath}/repositories`, { name: 'Readiness console source', url: origin }));
+          notEqual(repository.id, reuseRepo.id);
+          const reuseApp = applicationDtoSchema.parse(await request(`${reusePath}/applications`, { name: 'Readiness console' }));
+          const reuseEnv = environmentDtoSchema.parse(await request(`${reusePath}/environments`, { name: 'Protected reuse', applicationId: reuseApp.id }));
+          phase = 'rule_reuse_protected_target';
+          // The reference network uses fixed ingress addresses. Release it before installing the second fixture edge.
+          await ingress.close();
+          protectedIngress = undefined;
+          const reuseTarget = await komodo.prepare();
+          notEqual(target.binding.deploymentId, reuseTarget.binding.deploymentId);
+          const reuseIngress = protectedIngress = await openProtectedIngress({ ...reuseTarget.endpoint, port: standardRuntimePort }, {
+            traefik: join(proxyDir, 'traefik'), oauth2: join(proxyDir, 'oauth2-proxy'),
+          });
+          const reuseMapping = await registerReleaseTarget(db.storage, { ...targetSettings, ...reuseTarget.binding,
+            environmentId: reuseEnv.id, imageRepository: 'testing/readiness', rolloutCheck: reuseIngress.check,
+            rolloutCheckSha256: fingerprintRolloutCheck(reuseIngress.check) });
+          const reuseClient = new Client({ name: 'itervane-native-rule-reuse', version: '0.0.0' });
+          try {
+            phase = 'rule_reuse_session';
+            const reuseToken = await oidc.token('owner', { aud: `${publicUrl}/mcp`, scope: 'itervane:read itervane:write',
+              exp: Math.floor(Date.now() / 1_000) + 900 });
+            await reuseClient.connect(new StreamableHTTPClientTransport(new URL(`${address}/mcp`), {
+              requestInit: { headers: { Authorization: `Bearer ${reuseToken}`, 'Accept-Language': 'zh-CN' } },
+            }));
+            worker = await startWorker(bundle, socket, controllerUid, imageSha256, db.runtimeUrl, audit.baseURL, automaticProfile, false, nativeRuleProfile());
+            const runReuse = async (example: keyof typeof ruleReuseRevisions) => {
+              phase = `rule_reuse_${example}`;
+              const violated = example === 'violation';
+              const source = { repositoryId: reuseRepo.id, commit: ruleReuseRevisions[example] };
+              const { task: admitted } = admissionDtoSchema.parse((await reuseClient.callTool({ name: 'start_audit', arguments: {
+                projectId: reuseProject.id, source, purpose: `Published readiness rule ${example}`, dataClass: 'synthetic',
+                locale: 'zh-CN', idempotencyKey: randomUUID(),
+              } })).structuredContent);
+              deepStrictEqual(admitted.source, source);
+              equal(admitted.projectId, reuseProject.id);
+              const expected = violated ? 'needs_human' : 'waiting_input';
+              const reason = violated ? 'audit_published_rule_review' : 'verification_observed';
+              const settled = await poll(async () => {
+                const actual = taskDtoSchema.parse(await request(`/v1/tasks/${admitted.id}`));
+                if (['queued', 'running'].includes(actual.state)) return;
+                const status = (await db.admin.query('SELECT reason FROM itervane.run_runtime WHERE run_id=$1', [actual.runId])).rows[0];
+                if (actual.state !== expected || status?.reason !== reason) {
+                  console.error(JSON.stringify({ phase, state: actual.state, reason: taskEventReasonSchema.safeParse(status?.reason).data ?? null }));
+                  throw new Error('rule_reuse_unexpected_task_state');
+                }
+                return actual;
+              }, 340_000, phase);
+              equal(settled.runId, admitted.runId);
+              const evidence = await readNativeRuleReuse(settled, publication, violated ? 1 : 0, { request, mcp: reuseClient, admin: db.admin });
+              await assertDrained(controllerUid, staging);
+              return { settled, evidence: { ...evidence, reason } };
+            };
+            const violation = await runReuse('violation');
+            const rejectedScope = { environmentId: reuseEnv.id, expectedVersion: violation.settled.version };
+            await rejects(request(`/v1/tasks/${violation.settled.id}/release-candidate`, rejectedScope), /fixture_http_409/);
+            equal((await db.admin.query('SELECT run_id FROM itervane.formal_verification_inputs WHERE run_id=$1', [violation.settled.runId])).rowCount, 0);
+            const clean = await runReuse('clean');
+            phase = 'rule_reuse_compare_independent_verification';
+            const verified = await recordedVerification(clean.settled, false);
+            const { publishedCode: rechecked, reviewTrial } = verified;
+            ok(rechecked && reviewTrial.input.document.publishedCode);
+            const { scan: before } = clean.evidence;
+            equal(verified.baseSnapshotSha256, before.manifestSha256);
+            equal(verified.targetManifestSha256, before.manifestSha256);
+            equal(rechecked.manifestSha256, before.manifestSha256);
+            deepStrictEqual(rechecked.findings, []);
+            deepStrictEqual(rechecked.batches, before.batches);
+            deepStrictEqual(rechecked.profile, before.profile);
+            equal(rechecked.ruleSetSha256, before.ruleSetSha256);
+            equal(rechecked.ruleSnapshotSha256, before.ruleSnapshotSha256);
+            deepStrictEqual(reviewTrial.input.document.publishedCode, { snapshotSha256: before.ruleSnapshotSha256,
+              inspectionScanSha256: before.evidenceSha256, ruleSetSha256: rechecked.ruleSetSha256 });
+            deepStrictEqual(verified.totals, { introduced: 0, resolved: 0, remaining: 0 });
+            notEqual(verified.domainId, clean.evidence.domainId);
+            notEqual(verified.domainId, violation.evidence.domainId);
+            const readback = verificationViewSchema.parse(await request(`/v1/tasks/${clean.settled.id}/verification`, undefined, false, 'zh-CN'));
+            deepStrictEqual(verificationViewSchema.parse((await reuseClient.callTool({ name: 'get_verification',
+              arguments: { taskId: clean.settled.id } })).structuredContent), readback);
+            ok(readback.current.status === 'recorded' && readback.current.outcome === 'observed');
+            equal(readback.current.resultSha256, verified.verificationResultSha256);
+
+            phase = 'rule_reuse_confirm_release_gate';
+            const frozen = formalReleaseCandidateDtoSchema.parse((await reuseClient.callTool({ name: 'request_release', arguments: {
+              taskId: clean.settled.id, environmentId: reuseEnv.id, expectedVersion: clean.settled.version,
+            } })).structuredContent);
+            equal(frozen.status, 'pending');
+            equal(frozen.manifest.projectId, reuseProject.id);
+            equal(frozen.manifest.verification.resultSha256, verified.verificationResultSha256);
+            equal(frozen.manifest.target.environmentId, reuseEnv.id);
+            equal(frozen.manifest.target.mappingSha256, reuseMapping.fingerprint);
+            equal(frozen.manifest.image.archive.sha256, verified.archiveVerification?.archive.sha256);
+            await rejects(request(`/v1/release-candidates/${frozen.id}/decisions`, { action: 'confirm',
+              fingerprint: frozen.fingerprint, expectedVersion: 0, idempotencyKey: randomUUID() }), /fixture_http_403/);
+            equal((await db.admin.query('SELECT id FROM itervane.release_operations WHERE environment_id=$1', [reuseEnv.id])).rowCount, 0);
+            await reuseTarget.assertUnchanged();
+            const ruleReuse = { originProjectId: project.id, projectId: reuseProject.id, repositoryId: reuseRepo.id,
+              violation: { ...violation.evidence, candidateDenied: true },
+              clean: { ...clean.evidence, verifiedBuild: { build: verified.build, archiveVerification: verified.archiveVerification },
+                verification: { ...rechecked, domainId: verified.domainId, receiptSha256: verified.receiptSha256,
+                  resultSha256: verified.verificationResultSha256, cleanupConfirmed: verified.cleanupConfirmed },
+                candidate: { id: frozen.id, status: frozen.status, target: frozen.manifest.target, image: frozen.manifest.image.manifestDigest,
+                  verificationResultSha256: frozen.manifest.verification.resultSha256, deniedWithoutPortal: true, unchangedTarget: true },
+              }, model: 'scripted_anthropic_fixture' };
+            return { sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
+              release: first.report, initialBuild: { build: initial.build, archiveVerification: initial.archiveVerification },
+              linkedHealth: { ...linkedHealth, ruleReuse } };
+          } finally {
+            try { await worker?.stop('TERM'); worker = undefined; }
+            finally { await reuseClient.close(); }
+          }
         }
 
         const verifyNativeRestore = async (second: Awaited<ReturnType<typeof publish>>) => {
