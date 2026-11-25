@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:17@sha256:0d938e975177bef9f1f61f3f9dbcf2e0aa0a139568f66d3415ed8892eb97f6ac
+    environment:
+      POSTGRES_USER: itervane_admin
+      POSTGRES_DB: itervane
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    ports:
+      - "127.0.0.1:${ITERVANE_REFERENCE_PG_PORT:?Prepare the reference directory}:5432"
+    volumes:
+      - database:/var/lib/postgresql/data
+      - ./postgres-password:/run/secrets/postgres-password:ro
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/10-itervane.sql:ro
+    healthcheck:
+      test: [CMD, pg_isready, -h, "127.0.0.1", -U, itervane_admin, -d, itervane]
+      interval: 2s
+      timeout: 3s
+      retries: 50
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.2@sha256:c68e286cacd87b942ac1939a0a1481461109d6acd3a57dc496969a319a76bbf0
+    command: [start, --http-enabled=true, --import-realm]
+    env_file: ./keycloak.env
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres
+      KC_DB_URL_DATABASE: itervane_identity
+      KC_DB_USERNAME: itervane_idp
+      JAVA_OPTS_KC_HEAP: "-Xms128m -Xmx512m"
+    ports:
+      - "127.0.0.1:${ITERVANE_REFERENCE_IDP_PORT:?Prepare the reference directory}:8080"
+    volumes:
+      - ./itervane-realm.json:/opt/keycloak/data/import/itervane-realm.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  database:
