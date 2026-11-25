@@ -582,6 +582,13 @@
       "when": 1795579372017,
       "tag": "0082_current_release_rule_authority",
       "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1795580823127,
+      "tag": "0083_current_restart_rule_authority",
+      "breakpoints": true
     }
   ]
 }

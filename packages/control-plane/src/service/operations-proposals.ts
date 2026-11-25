@@ -13,7 +13,7 @@ import { readOperationsTaskRecord } from './operations-records.js';
 import { freezeOperationsRequest } from './operations-requests.js';
 import { readOperationsObservationTarget } from './operations-targets.js';
 import { databaseNow } from './releases.js';
-import { requireCurrentTaskRules } from './task-rule-snapshots.js';
+import { requireCurrentTaskRules, TaskRuleSnapshotChanged } from './task-rule-snapshots.js';
 
 type Row = typeof operationsProposals.$inferSelect;
 
@@ -46,13 +46,16 @@ export async function readOperationsProposalBasis(tx: Transaction, task: typeof 
   if (freezeOperationsRequest(target).sha256 !== request.sha256) throw new DomainError('version_conflict');
   const releaseFact = diagnosis.facts.find(({ data }) => data.section === 'release');
   const guidance = releaseFact?.data.section === 'release' ? releaseFact.data.result.runbooks : undefined;
+  if (recommendation.code === 'review_restart') {
+    const pinned = await requireCurrentTaskRules(tx, task, 'operations', guidance?.snapshotSha256);
+    if (!guidance && pinned?.document.entries.length) throw new TaskRuleSnapshotChanged();
+  }
   const selection = recommendation.code === 'review_restart' ? guidance?.byState[state] : undefined;
   if (selection?.status === 'ambiguous') throw new DomainError('unsupported_state');
   let runbook: OperationsProposal['runbook'];
   if (guidance && releaseFact && selection?.status === 'available') {
     const { evidenceId } = releaseFact.fact;
     if (!recommendation.evidenceIds.includes(evidenceId)) throw new DomainError('unsupported_state');
-    await requireCurrentTaskRules(tx, task, 'operations', guidance.snapshotSha256);
     runbook = operationsRunbookBindingSchema.parse({ snapshotSha256: guidance.snapshotSha256, evidenceId, observedState: state, selection });
   }
   let action: OperationsProposal['action'] = { kind: 'restart' };

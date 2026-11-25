@@ -8,6 +8,10 @@ import { requireActor, requireProject, type Transaction } from './access.js';
 import { DomainError } from './errors.js';
 import { databaseNow } from './releases.js';
 
+export class TaskRuleSnapshotChanged extends DomainError {
+  constructor() { super('version_conflict'); }
+}
+
 export async function lockRuleLibrary(tx: Transaction, workspaceId: string, writing: boolean) {
   await tx.execute(sql`SELECT itervane.lock_rule_library(${workspaceId}::uuid, ${writing}::boolean)`);
 }
@@ -35,7 +39,7 @@ export async function requireCurrentTaskRules(tx: Transaction, task: { id: strin
   const active = await currentTaskRules(tx, task, purpose);
   const pinned = await readTaskRuleSnapshot(tx, task);
   const changed = pinned ? pinned.sha256 !== digest(JSON.stringify(active)) : active.entries.length > 0;
-  if (changed || (expectedSha256 !== undefined && pinned?.sha256 !== expectedSha256)) throw new DomainError('version_conflict');
+  if (changed || (expectedSha256 !== undefined && pinned?.sha256 !== expectedSha256)) throw new TaskRuleSnapshotChanged();
   return pinned;
 }
 
