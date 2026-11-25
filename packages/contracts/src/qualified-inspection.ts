@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { codeRuleValidationProfileSchema } from './code-rule-profile.js';
 import { scannerDatabaseSchema, scannerReasonSchema, scannerStatusSchema, sha256Schema, sourceManifestSchema } from './inspection.js';
 import { publishedCodeScanEvidenceSchema } from './published-code-scan.js';
 
@@ -51,6 +52,10 @@ export const publishedInspectionProofByteLimit = 12 * 1024 * 1024;
 const publishedInspectionBinding = z.strictObject({
   commandSha256: sha256Schema, commandBytes: z.int().min(1).max(publishedInspectionCommandByteLimit), runnerImageSha256: sha256Schema,
 });
+export const publishedInspectionBasisSchema = z.strictObject({
+  binding: publishedInspectionBinding, snapshotSha256: sha256Schema, profile: codeRuleValidationProfileSchema,
+}).refine(basis => basis.binding.runnerImageSha256 === basis.profile.runnerImageSha256);
+export type PublishedInspectionBasis = z.infer<typeof publishedInspectionBasisSchema>;
 export const publishedInspectionProofSchema = z.strictObject({
   commandSha256: sha256Schema, manifest: sourceManifestSchema, scan: publishedCodeScanEvidenceSchema,
 });

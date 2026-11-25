@@ -16,14 +16,19 @@ import { readInspectionPlan } from './inspections.js';
 import { matchesLinkedRepairSource, readLinkedHealthBasis, readLinkedOperationsRepair, requireCurrentLinkedHealthRepair }
   from './operations-repair-proposals.js';
 import { readRepairRetry } from './repair-retry.js';
+import { readTaskRuleSnapshot } from './task-rule-snapshots.js';
 
 // The current Worker calls this under its authorized lease before yielding to the audit stage.
 export async function prepareFormalAuditInput(tx: Transaction, task: TaskRow, scope: ExecutionScope) {
   const plan = await readInspectionPlan(tx, task, scope.runId);
   const attempt = await currentInspectionAttempt(tx, scope.runId);
   if (!plan || attempt?.state !== 'recorded' || !attempt.workspaceSha256) throw new DomainError('unavailable');
-  const evidence = readInspectionEvidence(attempt, plan);
+  const evidence = await readInspectionEvidence(tx, attempt, plan);
   if (inspectionCoverage(evidence.receipt) !== 'complete') throw new DomainError('unavailable');
+  if (!evidence.receipt.snapshot.publishedCode) {
+    const snapshot = await readTaskRuleSnapshot(tx, task);
+    if (snapshot?.document.entries.some(entry => entry.kind === 'code_rule')) throw new DomainError('unavailable');
+  }
   const linked = await readLinkedOperationsRepair(tx, task);
   if (linked && !matchesLinkedRepairSource(linked.frozen, evidence.receipt)) throw new DomainError('version_conflict');
 

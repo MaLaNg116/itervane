@@ -51,6 +51,9 @@ const verified = {
   result: z.strictObject({
     requestId: idSchema, receiptSha256: sha256Schema, snapshotSha256: sha256Schema, recordedAt: z.iso.datetime(),
     files: z.int().min(1).max(5000), scans: z.tuple([scanSummary, scanSummary]),
+    publishedCode: z.strictObject({ status: z.enum(['complete', 'incomplete']), evidenceSha256: sha256Schema,
+      ruleSnapshotSha256: sha256Schema, checkedFiles: z.int().min(0).max(sourceContentLimits.maxFiles), findings: z.int().min(0).max(4_000),
+    }).optional(),
   }),
 };
 
@@ -68,8 +71,9 @@ export const sourceInspectionDtoSchema = z.discriminatedUnion('status', [
     ctx.addIssue({ code: 'custom', message: 'Inspection binding mismatch' });
   }
   if ('result' in value) {
-    const scans = value.result.scans;
-    if (value.scanCompleted !== scans.every(scan => scan.status === 'completed') || scans.some((scan, index) =>
+    const { scans, publishedCode, files } = value.result;
+    if (value.scanCompleted !== (scans.every(scan => scan.status === 'completed') && publishedCode?.status !== 'incomplete')
+      || (publishedCode && publishedCode.checkedFiles > files) || scans.some((scan, index) =>
       scan.scanner !== value.plan.document.scanners[index]?.scanner || (scan.status === 'completed'
         ? scan.reason !== null || (scan.scanner === 'trivy') !== (scan.database !== null)
         : scan.reason === null || scan.findingsCount !== 0 || scan.database !== null))) {

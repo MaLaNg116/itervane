@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { toolResultSchema, type ToolResult } from '@itervane/contracts';
+import { toolResultSchema, type CodeRuleValidationProfile, type ToolResult } from '@itervane/contracts';
 import { repositories, runRuntime, toolCalls } from '../persistence/schema.js';
 import type { Transaction } from '../service/access.js';
 import { DomainError } from '../service/errors.js';
@@ -18,8 +18,8 @@ export const preflightTools = Object.freeze({
 
 export class ToolGateway {
   private readonly inspection: SourceInspection;
-  constructor(readonly coordinator: ExecutionCoordinator, runner?: InspectionRunner) {
-    this.inspection = new SourceInspection(coordinator, runner);
+  constructor(readonly coordinator: ExecutionCoordinator, runner?: InspectionRunner, ruleProfile?: CodeRuleValidationProfile) {
+    this.inspection = new SourceInspection(coordinator, runner, ruleProfile);
   }
 
   async call(scope: ExecutionScope, name: string, args: unknown, callKey: string, signal?: AbortSignal): Promise<ToolResult> {

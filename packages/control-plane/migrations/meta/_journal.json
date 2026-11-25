@@ -547,6 +547,13 @@
       "when": 1795534864862,
       "tag": "0077_task_rule_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1795537844058,
+      "tag": "0078_published_inspection_basis",
+      "breakpoints": true
     }
   ]
 }

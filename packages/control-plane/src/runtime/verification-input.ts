@@ -8,6 +8,7 @@ import { inspectionCoverage } from '../service/inspection-evidence.js';
 import { readLinkedHealthBasis } from '../service/operations-repair-proposals.js';
 import { readPublishedRepairCommand } from '../service/repair-result.js';
 import { verificationProfileFingerprint } from '../service/repair-retry.js';
+import { readTaskRuleSnapshot } from '../service/task-rule-snapshots.js';
 import type { ExecutionScope, TaskRow } from './authority.js';
 import { repairBasis } from './repair-execution.js';
 
@@ -55,6 +56,11 @@ async function verificationMaterial(tx: Transaction, { input, scan }: Basis): Pr
 // The Worker supplies the trusted profile and holds the current authorized lease in this transaction.
 export async function prepareFormalVerificationInput(tx: Transaction, task: TaskRow, scope: ExecutionScope, profile: VerificationProfile) {
   const basis = await repairBasis(tx, task, scope);
+  // A published rule scan must be repeated in independent verification before it can qualify a release.
+  const rules = await readTaskRuleSnapshot(tx, task);
+  if (basis.scan.snapshot.publishedCode || rules?.document.entries.some(entry => entry.kind === 'code_rule')) {
+    throw new DomainError('unavailable');
+  }
   if (basis.input.retry && basis.input.retry.verificationProfileSha256 !== verificationProfileFingerprint(profile)) throw new DomainError('conflict');
   const { subject, repair } = await verificationMaterial(tx, basis);
   const { findingIds: _findingIds, ...base } = basis.input.document;
