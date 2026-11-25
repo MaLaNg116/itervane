@@ -10,7 +10,8 @@ import {
   qualifiedRepairObservationRequestSchema, qualifiedRepairObservationResponseSchema,
   qualifiedRepairRequestSchema, qualifiedRepairResponseSchema, sha256Schema,
   qualifiedImageArchiveSchema, qualifiedOciArchiveVerificationSchema, type QualifiedImageArchive, type QualifiedOciArchiveVerification,
-  qualifiedVerificationRequestSchema, qualifiedVerificationResponseSchema, verificationProofByteLimit, type FormalVerificationInput,
+  publishedVerificationProofByteLimit, qualifiedVerificationRequestSchema, qualifiedVerificationResponseSchema, verificationProofByteLimit,
+  type FormalVerificationInput, type PublishedCodeRuleSet,
   qualifiedRuleValidationResponseSchema, ruleValidationProofByteLimit, type QualifiedRuleValidationRequest,
   type QualifiedRuleValidationResponse,
   type QualifiedInspectionReceipt, type QualifiedInspectionRequest, type QualifiedInspectionResponse,
@@ -25,7 +26,7 @@ import { canonicalRepairCommand, canonicalRepairObservation, protectedRepairPath
 import { scanFindingId } from './scan-finding-id.js';
 import { sourcePath } from './snapshot.js';
 import { requirePublishedInspectionCommand, verifyPublishedInspectionProof, type PublishedInspectionCommand } from './published-inspection-command.js';
-import { canonicalVerificationCommand } from './verification-command.js';
+import { canonicalVerificationCommand, verifyPublishedVerificationProof } from './verification-command.js';
 import { canonicalRuleValidationCommand, prepareQualifiedRuleValidationRequest, verifyQualifiedRuleValidationReceipt, type RuleValidationCoordinates } from './rule-validation-command.js';
 
 const requestLimit = 2048;
@@ -151,6 +152,7 @@ export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificatio
     healthFollowup: healthRegression ? true : undefined,
     ociInputsSha256: profile.ociInputsSha256,
     retainStandardImage: profile.retainStandardImage,
+    publishedCodeRuleSetSha256: command.published?.sha256,
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
   };
   if (Object.entries(bindings).some(([key, value]) => scope[key as keyof typeof bindings] !== value)) {
@@ -201,6 +203,7 @@ export function verifyQualifiedVerificationReceipt(receipt: QualifiedVerificatio
   if (subject.kind === 'repair'
     ? target?.patchSha256 !== subject.patchSha256 || target?.manifestSha256 !== subject.manifestSha256
     : target !== null || snapshot.manifestSha256 !== subject.manifestSha256) throw new Error('runner_verification_target_binding');
+  verifyPublishedVerificationProof(receipt, command);
   verifyReportBindings(snapshot.reports, snapshot.manifestSha256);
   if (build?.status === 'built'
       && [...snapshot.reports, ...(target?.reports ?? [])].some(report => report.status !== 'completed')) {
@@ -227,6 +230,7 @@ export function prepareQualifiedVerificationRequest(coordinates: VerificationCoo
     ...(healthRegression ? { healthFollowup: true } : {}),
     ...(profile.ociInputsSha256 ? { ociInputsSha256: profile.ociInputsSha256 } : {}),
     ...(profile.retainStandardImage ? { retainStandardImage: profile.retainStandardImage } : {}),
+    ...(command.published ? { publishedCodeRuleSetSha256: command.published.sha256 } : {}),
     commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
   });
 }
@@ -452,15 +456,15 @@ export class QualifiedInspectionClient {
   }
 
   async verify(coordinates: VerificationCoordinates, input: FormalVerificationInput, repair: VerificationCommand['repair'],
-    authorize: () => Promise<void>, signal?: AbortSignal): Promise<QualifiedVerificationResponse> {
-    const command = canonicalVerificationCommand({ input, repair });
+    authorize: () => Promise<void>, signal?: AbortSignal, publishedCodeRules?: PublishedCodeRuleSet): Promise<QualifiedVerificationResponse> {
+    const command = canonicalVerificationCommand({ input, repair, publishedCodeRules });
     const request = prepareQualifiedVerificationRequest(coordinates, command);
     if (request.runnerImageSha256 !== this.imageSha256) throw new Error('runner_verification_image_binding');
     return this.execute(request, authorize, signal, line => {
       const response = qualifiedVerificationResponseSchema.parse(JSON.parse(line));
       if (response.kind === 'verification_receipt') verifyQualifiedVerificationReceipt(response, request, command);
       return response;
-    }, command.bytes, verificationProofByteLimit + 8192);
+    }, command.bytes, (command.published ? publishedVerificationProofByteLimit : verificationProofByteLimit) + 8192);
   }
 
   async validateRuleSamples(coordinates: RuleValidationCoordinates, candidate: unknown, reference: Parameters<typeof canonicalRuleValidationCommand>[1],

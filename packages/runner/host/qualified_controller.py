@@ -26,6 +26,7 @@ from session_boundary import SESSION_URI, SessionRejected, prepare_session
 from source_gateway import COMMIT, RegisteredOrigin, SourceGateway, SourceRejected
 from source_wire import (GUEST_REPAIR_ERRORS, MAX_OCI_CHUNK_BYTES, MAX_QUALIFIED_RECEIPT, MAX_REPAIR_COMMAND,
                          MAX_PUBLISHED_INSPECTION_COMMAND, MAX_PUBLISHED_INSPECTION_PROOF,
+                         MAX_PUBLISHED_VERIFICATION_COMMAND, MAX_PUBLISHED_VERIFICATION_PROOF,
                          MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT, MAX_RULE_VALIDATION_COMMAND, OCI_ARCHIVE_FORMAT)
 
 
@@ -58,6 +59,7 @@ OCI_INPUTS = "ociInputsSha256"
 RETAIN_IMAGE = "retainStandardImage"
 MATERIALIZED_SOURCE = "materializedFrom"
 PUBLISHED_CODE = "publishedCode"
+PUBLISHED_VERIFICATION = "publishedCodeRuleSetSha256"
 PEER = struct.Struct("3i")
 
 
@@ -101,6 +103,8 @@ def parse_request(line):
         fields = fields | {MATERIALIZED_SOURCE}
     if operation is None and PUBLISHED_CODE in data:
         fields = fields | {PUBLISHED_CODE}
+    if verification and PUBLISHED_VERIFICATION in data:
+        fields = fields | {PUBLISHED_VERIFICATION}
     if build:
         fields = fields | {BUILD_PROFILE}
         if RUN_BASELINE in data:
@@ -128,6 +132,8 @@ def parse_request(line):
         digests += (BUILD_PROFILE,)
     if OCI_INPUTS in fields:
         digests += (OCI_INPUTS,)
+    if PUBLISHED_VERIFICATION in fields:
+        digests += (PUBLISHED_VERIFICATION,)
     patterns = {name: IMAGE_DIGEST for name in (*digests, "workspaceSha256")}
     patterns["commit"] = COMMIT
     for name, pattern in patterns.items():
@@ -149,6 +155,8 @@ def parse_request(line):
             raise ValueError("invalid published inspection command binding")
     if repair or verification:
         limit = MAX_VERIFICATION_COMMAND if verification else MAX_REPAIR_COMMAND
+        if PUBLISHED_VERIFICATION in fields:
+            limit = MAX_PUBLISHED_VERIFICATION_COMMAND
         if type(data["commandBytes"]) is not int or not 0 < data["commandBytes"] <= limit:
             raise ValueError("invalid command size")
     if not isinstance(data["origin"], str) or not 0 < len(data["origin"]) <= 768:
@@ -179,7 +187,9 @@ def json_digest(value):
 
 
 def require_verification_command(command, request):
-    if not isinstance(command, dict) or command.keys() != {"input", "repair"}:
+    expected_rules = request.get(PUBLISHED_VERIFICATION)
+    fields = {"input", "repair", "publishedCodeRules"} if expected_rules else {"input", "repair"}
+    if not isinstance(command, dict) or command.keys() != fields:
         raise ValueError("invalid verification command")
     frozen = command["input"]
     source = {"repositoryId": request["repositoryId"], "commit": request["commit"]}
@@ -199,6 +209,17 @@ def require_verification_command(command, request):
         raise ValueError("verification command evidence mismatch")
     if ("healthRegression" in frozen) != (HEALTH_FOLLOWUP in request):
         raise ValueError("verification health follow-up mismatch")
+    if (PUBLISHED_CODE in frozen) != (expected_rules is not None):
+        raise ValueError("verification published rule evidence missing")
+    if expected_rules is not None:
+        binding = frozen[PUBLISHED_CODE]
+        rules = command["publishedCodeRules"]
+        snapshot = require_published_rule_scope(rules, request, request["runnerImageSha256"])
+        if (not isinstance(binding, dict) or binding.keys() != {"snapshotSha256", "inspectionScanSha256", "ruleSetSha256"}
+            or not all(isinstance(value, str) and IMAGE_DIGEST.fullmatch(value) for value in binding.values())
+            or binding["ruleSetSha256"] != expected_rules or json_digest(rules) != expected_rules
+            or binding["snapshotSha256"] != snapshot.get("sha256")):
+            raise ValueError("verification published rule binding mismatch")
     if HEALTH_FOLLOWUP in request:
         case = frozen["healthRegression"]
         digests = ("diagnosisSha256", "publicationProofSha256", "sampleEvidenceSha256")
@@ -218,6 +239,17 @@ def require_verification_command(command, request):
         raise ValueError("verification repair evidence mismatch")
 
 
+def require_published_rule_scope(rules, request, image_sha256):
+    snapshot = rules.get("snapshot") if isinstance(rules, dict) else None
+    profile = rules.get("profile") if isinstance(rules, dict) else None
+    document = snapshot.get("document") if isinstance(snapshot, dict) else None
+    if (not isinstance(document, dict) or document.get("purpose") != "delivery"
+        or any(document.get(key) != request[key] for key in ("taskId", "projectId"))
+        or not isinstance(profile, dict) or profile.get("runnerImageSha256") != image_sha256):
+        raise ValueError("published rule command authority mismatch")
+    return snapshot
+
+
 def require_published_inspection_command(command, request):
     fields = {"version", "rules"}
     if MATERIALIZED_SOURCE in request:
@@ -225,14 +257,7 @@ def require_published_inspection_command(command, request):
     if (not isinstance(command, dict) or command.keys() != fields or type(command["version"]) is not int
         or command["version"] != 1 or command.get(MATERIALIZED_SOURCE) != request.get(MATERIALIZED_SOURCE)):
         raise ValueError("invalid published inspection command")
-    rules = command["rules"]
-    snapshot = rules.get("snapshot") if isinstance(rules, dict) else None
-    profile = rules.get("profile") if isinstance(rules, dict) else None
-    document = snapshot.get("document") if isinstance(snapshot, dict) else None
-    if (not isinstance(document, dict) or document.get("purpose") != "delivery"
-        or any(document.get(key) != request[key] for key in ("taskId", "projectId"))
-        or not isinstance(profile, dict) or profile.get("runnerImageSha256") != request[PUBLISHED_CODE]["runnerImageSha256"]):
-        raise ValueError("published inspection command authority mismatch")
+    require_published_rule_scope(command["rules"], request, request[PUBLISHED_CODE]["runnerImageSha256"])
 
 
 def read_command(connection, request):
@@ -393,9 +418,24 @@ def verification_proof_matches(request, snapshot, image_sha256):
         and snapshot.get("verificationInputSha256") == request["verificationInputSha256"]
         and snapshot.get("commandSha256") == request["commandSha256"]
         and build_proof_matches(request, snapshot)
+        and published_verification_proof_matches(request, snapshot, same_snapshot)
         and (("target" in snapshot and target is None) if same_snapshot
              else isinstance(target, dict) and target.get("manifestSha256") == request["targetManifestSha256"])
     )
+
+
+def published_verification_proof_matches(request, snapshot, same_snapshot):
+    expected_rules = request.get(PUBLISHED_VERIFICATION)
+    if expected_rules is None:
+        return PUBLISHED_CODE not in snapshot
+    measured = snapshot.get(PUBLISHED_CODE)
+    if not isinstance(measured, dict) or measured.get("kind") != ("original" if same_snapshot else "repair"):
+        return False
+    scan = measured.get("scan")
+    document = scan.get("document") if isinstance(scan, dict) else None
+    basis = document.get("basis") if isinstance(document, dict) else None
+    return (isinstance(basis, dict) and basis.get("manifestSha256") == request["targetManifestSha256"]
+            and basis.get("ruleSetSha256") == expected_rules)
 
 
 def response_for(request, result):
@@ -428,7 +468,7 @@ def response_for(request, result):
                                 if MATERIALIZED_SOURCE in request else "materializedCandidateSha256" not in snapshot)
         published = request.get(PUBLISHED_CODE)
         proof = snapshot.get(PUBLISHED_CODE)
-        publication_matches = (PUBLISHED_CODE not in snapshot if published is None else
+        publication_matches = verification or (PUBLISHED_CODE not in snapshot if published is None else
                                isinstance(proof, dict) and proof.get("commandSha256") == published["commandSha256"]
                                and result.imageSha256 == published["runnerImageSha256"])
         if (repair_matches and materialized_matches and publication_matches
@@ -515,7 +555,7 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
     rule_samples = request.get("operation") == VALIDATE_RULE_SAMPLES
     published_code = PUBLISHED_CODE in request
     if (request["workspaceSha256"] != fingerprint or (repair and not enable_repair)
-        or ((rule_samples or published_code) and not enable_rule_samples)
+        or ((rule_samples or published_code or PUBLISHED_VERIFICATION in request) and not enable_rule_samples)
         or (verification and not enable_verification) or (BUILD_PROFILE in request and not enable_standard_build)
         or (RUN_BASELINE in request and not enable_baseline) or (OCI_INPUTS in request and not enable_oci)
         or (RETAIN_IMAGE in request and not enable_retention)):
@@ -577,8 +617,11 @@ def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping
                                                   enable_repair, enable_verification, enable_standard_build, enable_baseline,
                                                   enable_oci, enable_retention, verify_archive, read_archive, enable_rule_samples)
                         encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
-                        limit = MAX_VERIFICATION_RECEIPT if result["kind"] == "verification_receipt" else (
-                            MAX_PUBLISHED_INSPECTION_PROOF if PUBLISHED_CODE in result.get("scope", {}) else MAX_QUALIFIED_RECEIPT)
+                        scope = result.get("scope", {})
+                        if result["kind"] == "verification_receipt":
+                            limit = MAX_PUBLISHED_VERIFICATION_PROOF if PUBLISHED_VERIFICATION in scope else MAX_VERIFICATION_RECEIPT
+                        else:
+                            limit = MAX_PUBLISHED_INSPECTION_PROOF if PUBLISHED_CODE in scope else MAX_QUALIFIED_RECEIPT
                         if len(encoded) > limit + 8192:
                             encoded = b'{"kind":"rejected","requestId":null,"code":"cleanup_unproven","cleanup":"unknown","domainId":null}\n'
                         connection.settimeout(HANDSHAKE_SECONDS)
@@ -674,7 +717,8 @@ def main():
             job = SourceProbe(SourceGateway(origin, request["commit"]), repository_id=request["repositoryId"],
                               repair_command=None if verification or published_code is not None else command,
                               repair_observation=request.get("operation") == OBSERVE_REPAIR, verification_command=command if verification else None,
-                              artifact_store=storage, materialized_source=materialized, published_code_command=command if published_code is not None else None)
+                              artifact_store=storage, materialized_source=materialized, published_code_command=command if published_code is not None else None,
+                              published_verification=PUBLISHED_VERIFICATION in request)
             try:
                 result = probe(libvirt, libvirt_qemu, root, image, digest, cancelled, "inspect", True, source_override=job)
                 if storage is None or job.pending_archive is None:

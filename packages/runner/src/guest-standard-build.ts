@@ -2,7 +2,7 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync, write
 import { dirname, join } from 'node:path';
 import {
   qualifiedGuestVerificationProofSchema, qualifiedStandardBuildProofSchema, standardBuildDispatchSchema, standardBuildProfileSchema,
-  verificationProofByteLimit, type QualifiedStandardBuildProof,
+  publishedVerificationProofByteLimit, type QualifiedStandardBuildProof,
 } from '@itervane/contracts';
 import { readGuestCandidate } from './guest-repair.js';
 import { readBoundedFile } from './guest-snapshot.js';
@@ -22,7 +22,7 @@ export function stageGuestStandardBuild(source: string, scanReceipt: string, too
   const { input } = command;
   const { profile, subject } = input;
   const proof = qualifiedGuestVerificationProofSchema.parse(JSON.parse(
-    readBoundedFile(scanReceipt, verificationProofByteLimit).toString('utf8'),
+    readBoundedFile(scanReceipt, publishedVerificationProofByteLimit).toString('utf8'),
   ));
   if (!profile.buildProfileSha256 || proof.build !== undefined || proof.runId !== fixed.runId
       || proof.commit !== input.source.commit || proof.repositoryId !== input.source.repositoryId

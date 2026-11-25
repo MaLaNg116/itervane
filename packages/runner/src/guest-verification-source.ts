@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { verificationCommandByteLimit } from '@itervane/contracts';
+import { publishedVerificationCommandByteLimit } from '@itervane/contracts';
 import { publishGuestVerificationCandidate } from './guest-repair.js';
 import { readBoundedFile, readGuestSnapshotData } from './guest-snapshot.js';
 import { canonicalVerificationCommand } from './verification-command.js';
@@ -8,7 +8,7 @@ export const verificationCommandName = 'verification-command.json';
 const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 export function readGuestVerificationSource(source: string) {
-  const commandBytes = readBoundedFile(join(source, verificationCommandName), verificationCommandByteLimit);
+  const commandBytes = readBoundedFile(join(source, verificationCommandName), publishedVerificationCommandByteLimit);
   const command = canonicalVerificationCommand(JSON.parse(decoder.decode(commandBytes)));
   const fixed = readGuestSnapshotData(join(source, 'ready'));
   const { input } = command;

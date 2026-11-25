@@ -865,6 +865,7 @@ it('recovers an uncertain rescan only on the original idle Runner and retains th
   const [inspection] = await database.storage.db.select().from(inspectionAttempts);
   const original = qualifiedInspectionResponseSchema.parse(inspection?.receipt);
   if (original.kind !== 'receipt') throw new Error('Missing original inspection');
+  const { publishedCode: _inspectionCode, ...originalSnapshot } = original.snapshot;
   let status = idleRepairRunner();
   const verify = vi.fn<RescanRunner['verify']>(async (coordinates, input, repair, authorize) => {
     await authorize();
@@ -875,7 +876,7 @@ it('recovers an uncertain rescan only on the original idle Runner and retains th
     const domainId = randomUUID();
     return { kind: 'verification_receipt', scope: bound, domainId, commitSha256: original.commitSha256,
       imageSha256, originSha256: original.originSha256, cleanupConfirmed: true, sessionVerified: true,
-      snapshot: { ...original.snapshot, runId: domainId, inputsSha256: bound.scannerInputsSha256, target: null,
+      snapshot: { ...originalSnapshot, runId: domainId, inputsSha256: bound.scannerInputsSha256, target: null,
         commandSha256: bound.commandSha256, verificationInputSha256: bound.verificationInputSha256 },
     };
   });
@@ -987,11 +988,12 @@ function standardVerificationReceipt(original: QualifiedInspectionReceipt, reque
     }))),
   } : null;
   const dist = { sha256: sha256('measured build'), files: 3, bytes: 220 };
+  const { publishedCode: _inspectionCode, ...originalSnapshot } = original.snapshot;
   return {
     kind: 'verification_receipt', scope: bound, domainId, commitSha256: original.commitSha256, imageSha256,
     originSha256: original.originSha256, cleanupConfirmed: true, sessionVerified: true,
     snapshot: {
-      ...original.snapshot, runId: domainId, inputsSha256: bound.scannerInputsSha256, target,
+      ...originalSnapshot, runId: domainId, inputsSha256: bound.scannerInputsSha256, target,
       commandSha256: bound.commandSha256, verificationInputSha256: bound.verificationInputSha256,
       build: {
         status: 'built', version: 1, runId: domainId, buildProfileSha256: profile.buildProfileSha256,
