@@ -72,6 +72,8 @@ function CandidateDetails({ candidate, target, result }: {
         <div><dt>{t('releaseFingerprint')}</dt><dd><code className="break-text">{candidate.fingerprint}</code></dd></div>
         <div><dt>{t('releaseSourceSnapshot')}</dt><dd><code className="break-text">{manifest.repairedSnapshotSha256}</code></dd></div>
         <div><dt>{t('verificationResult')}</dt><dd><code className="break-text">{manifest.verification.resultSha256}</code></dd></div>
+        {manifest.verification.ruleSnapshotSha256 && <div><dt>{t('releaseRuleSnapshot')}</dt>
+          <dd><code className="break-text">{manifest.verification.ruleSnapshotSha256}</code></dd></div>}
         {candidate.operationId && <div><dt>{t('releaseOperation')}</dt><dd><code className="break-text">{candidate.operationId}</code></dd></div>}
       </dl>
     </Disclosure>
@@ -166,6 +168,8 @@ export function TaskRelease({ task, canWrite }: { task: Pick<TaskDto, 'id' | 'pr
             <DialogDescription>{t(copy.help)}</DialogDescription>
             <dl className="detail-grid">
               <div><dt>{t('releaseFingerprint')}</dt><dd><code className="break-text">{candidate.fingerprint}</code></dd></div>
+              {candidate.manifest.verification.ruleSnapshotSha256 && <div><dt>{t('releaseRuleSnapshot')}</dt>
+                <dd><code className="break-text">{candidate.manifest.verification.ruleSnapshotSha256}</code></dd></div>}
               <div><dt>{t('verificationImageDigest')}</dt><dd><code className="break-text">{candidate.manifest.image.manifestDigest}</code></dd></div>
             </dl>
             {decide.error && <Failure error={decide.error} locale={locale} />}
