@@ -168,7 +168,16 @@ function InspectionDetails({ inspection }: { inspection: SourceInspectionDto }) 
           </div>
           {scan?.reason && <p className="muted">{t(scanReason[scan.reason])}</p>}
         </li>;
-      })}</ul>
+      })}{result?.publishedCode && <li className="py-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <strong>{t('publishedCodeScan')}</strong>
+          <Badge variant={result.publishedCode.status === 'complete' ? 'success' : 'warning'}>
+            {t(result.publishedCode.status === 'complete' ? 'scanCompleted' : 'inspectionIncomplete')}
+          </Badge>
+          <span className="muted">{t('scanFiles')} {result.publishedCode.checkedFiles}</span>
+          <span className="muted">{t('scanFindings')} {result.publishedCode.findings}</span>
+        </div>
+      </li>}</ul>
     </>}
     <p className="muted">{t('scannerCoverage')}</p>
   </>;
