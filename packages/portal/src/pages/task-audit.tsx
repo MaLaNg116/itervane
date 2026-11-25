@@ -1,10 +1,11 @@
-import { formalAuditDtoSchema, type FormalAuditResult } from '@itervane/contracts';
+import { formalAuditDtoSchema, type AuditScanner, type FormalAuditResult } from '@itervane/contracts';
 import { Failure, Loading, Panel } from '../components.js';
 import { usePortal, useRemote, useText } from '../context.js';
 import { Badge } from '../ui/badge.js';
 
 const severityLabels = { unknown: 'auditSeverityUnknown', low: 'auditSeverityLow', medium: 'auditSeverityMedium',
   high: 'auditSeverityHigh', critical: 'auditSeverityCritical' } as const;
+const scannerNames: Record<AuditScanner, string> = { gitleaks: 'gitleaks', trivy: 'trivy', semgrep_ce: 'Semgrep CE' };
 
 export function TaskAudit({ taskId }: { taskId: string }) {
   const { locale } = usePortal(); const t = useText();
@@ -32,7 +33,7 @@ function AuditResult({ result, sha256 }: { result: FormalAuditResult; sha256: st
       {checklist.findings.length === 0 && <p className="muted">{t('auditNoFindings')}</p>}
       {checklist.findings.length > 0 && <ul className="space-y-3" aria-label={t('scanFindings')}>
         {checklist.findings.map(finding => <li key={finding.id} className="rounded-md border p-3">
-          <div className="flex flex-wrap items-center gap-2"><strong>{finding.scanner} <code>{finding.ruleId}</code></strong>
+          <div className="flex flex-wrap items-center gap-2"><strong>{scannerNames[finding.scanner]} <code>{finding.ruleId}</code></strong>
             <Badge>{t(severityLabels[finding.severity])}</Badge>
             <Badge variant={finding.certainty === 'suspected' ? 'warning' : 'info'}>{t(finding.certainty === 'suspected' ? 'auditSuspected' : 'auditConfirmed')}</Badge>
           </div>
@@ -53,7 +54,7 @@ function AuditResult({ result, sha256 }: { result: FormalAuditResult; sha256: st
       <summary>{t('auditEvidence')}</summary>
       <p><code className="break-text">{sha256}</code></p>
       <ul>{result.evidence.map(item => <li key={item.id}>
-        {item.kind === 'scan' ? <><strong>{item.scanner} {item.version}</strong> · {t('scanFindings')} {item.totalFindings}</>
+        {item.kind === 'scan' ? <><strong>{scannerNames[item.scanner]} {item.version}</strong> · {t('scanFindings')} {item.totalFindings}</>
           : <strong>{item.kind === 'rule' ? item.ruleId : t('auditHealthReproduction')}</strong>}
         <br /><code className="break-text">{item.id}</code>
       </li>)}</ul>

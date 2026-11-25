@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { agentText, type FormalAuditReport } from '@itervane/agent';
+import { agentText, publishedAuditScan, type FormalAuditReport } from '@itervane/agent';
 import { formalAuditDtoSchema, formalAuditInputSchema, formalAuditResultSchema, idSchema, translate,
   type FormalAuditResult, type Locale } from '@itervane/contracts';
 import { catalogSnapshot, validCatalog } from '@itervane/rules';
@@ -64,7 +64,9 @@ type PreparedAudit = Awaited<ReturnType<typeof prepareFormalAuditInput>>;
 
 function auditResult(prepared: PreparedAudit, report: FormalAuditReport, provider: FormalAuditResult['provider']) {
   const { document, inspection } = prepared;
-  const observed = new Map(inspection.snapshot.reports.flatMap(scan =>
+  const published = publishedAuditScan(inspection);
+  const scans = [...inspection.snapshot.reports, ...(published ? [published] : [])];
+  const observed = new Map(scans.flatMap(scan =>
     scan.findings.map(finding => [finding.id, { ...finding, scanner: scan.scanner }] as const)));
   const evidence = report.evidence.map(({ id, data }) => {
     if (data.kind === 'scan') {
@@ -114,13 +116,18 @@ export async function publishFormalAudit(tx: Transaction, task: TaskRow, scope: 
     finalizedFence: scope.fence, workerId: scope.workerId, sha256: hash, document });
   const completed = document.status === 'completed';
   const blockedReproduction = completed && Boolean(document.checklist?.findings.length) && Boolean(await readLinkedHealthBasis(tx, task));
-  const handoff = completed && !blockedReproduction ? await prepareFormalRepairInput(tx, task, scope) : undefined;
+  const blockedPublished = completed && document.checklist?.findings.some(finding => finding.scanner === 'semgrep_ce');
+  const handoff = completed && !blockedReproduction && !blockedPublished ? await prepareFormalRepairInput(tx, task, scope) : undefined;
   const findings = handoff?.document.findingIds.length ?? 0;
+  // Wait for the independent rescan to accept the pinned rule set before starting verification.
+  const canVerify = allowVerification && prepared.inspection.snapshot.publishedCode === undefined;
   const next = allowRepair && findings > 0 ? 'repair_pending'
-    : allowVerification && completed && findings === 0 && !blockedReproduction ? 'verification_pending' : null;
-  const reason = next ?? (blockedReproduction ? 'operations_reproduction_unavailable' : completed ? 'audit_ready' : 'audit_needs_human');
+    : canVerify && handoff && findings === 0 ? 'verification_pending' : null;
+  const needsReview = !completed || blockedReproduction || blockedPublished;
+  const reason = next ?? (blockedReproduction ? 'operations_reproduction_unavailable'
+    : blockedPublished ? 'audit_published_rule_review' : completed ? 'audit_ready' : 'audit_needs_human');
   await tx.update(runRuntime).set({ reason, resumePending: false, waitingForTaskId: null }).where(eq(runRuntime.runId, scope.runId));
-  await appendEvent(tx, task, 'task.audit_recorded', next ? 'running' : completed && !blockedReproduction ? 'waiting_input' : 'needs_human', {
+  await appendEvent(tx, task, 'task.audit_recorded', next ? 'running' : needsReview ? 'needs_human' : 'waiting_input', {
     workerId: scope.workerId, reason, audit: { runId: scope.runId, auditResultSha256: hash },
   });
   if (!next) await clearSlot(tx);

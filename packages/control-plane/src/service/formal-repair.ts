@@ -11,7 +11,8 @@ import { readRepairRetry } from './repair-retry.js';
 export function isRepairableAudit(document: unknown) {
   const audit = formalAuditResultSchema.safeParse(document).data;
   return audit?.status === 'completed' && audit.checklist !== null
-    && audit.checklist.hypotheses.length === 0 && audit.checklist.findings.length > 0;
+    && audit.checklist.hypotheses.length === 0 && audit.checklist.findings.length > 0
+    && audit.checklist.findings.every(finding => finding.scanner !== 'semgrep_ce');
 }
 
 // The caller holds the current authorized execution lease for this run.
@@ -25,6 +26,7 @@ export async function prepareFormalRepairInput(tx: Transaction, task: TaskRow, s
   const audit = formalAuditResultSchema.parse(current.audit.document);
   const checklist = audit.checklist;
   if (audit.status !== 'completed' || checklist?.coverage !== 'complete' || checklist.hypotheses.length) throw new DomainError('unavailable');
+  if (checklist.findings.some(finding => finding.scanner === 'semgrep_ce')) throw new DomainError('unsupported_state');
   if (task.id !== scope.taskId || scope.generation !== task.generation || audit.generation !== task.generation
     || audit.taskId !== task.id || audit.projectId !== task.projectId || audit.runId !== scope.runId || audit.locale !== task.locale
     || input.taskId !== task.id || input.projectId !== task.projectId || input.runId !== scope.runId || input.generation !== task.generation
