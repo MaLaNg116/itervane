@@ -218,7 +218,11 @@ jobs:
             (.published.manifestSha256 | test("^[a-f0-9]{64}$")) and (.published.evidenceSha256 | test("^[a-f0-9]{64}$")) and
             .published.scannerStatuses == ["completed", "completed"] and (.published.fileCounts[0] > 0) and
             (.published.findings | any(.path == "server/app.mjs" and .ruleKey == "published-health-javascript")) and
-            .published.denied == {code: "lease_lost", cleanup: "not_started", domainId: null}
+            .published.denied == {code: "lease_lost", cleanup: "not_started", domainId: null} and
+            .rechecked.domainId != .published.domainId and .rechecked.cleanupConfirmed and .rechecked.sessionVerified and
+            .rechecked.imageSha256 == .published.imageSha256 and .rechecked.manifestSha256 == .published.manifestSha256 and
+            .rechecked.findings == .published.findings and
+            (.rechecked.evidenceSha256 | test("^[a-f0-9]{64}$")) and (.rechecked.ruleSetSha256 | test("^[a-f0-9]{64}$"))
           ' .reports/p0/runner-rule-samples.json >/dev/null
       - name: Require native reproduction, bounded repair and independent health receipts
         if: matrix.scenario == 'standard-build'

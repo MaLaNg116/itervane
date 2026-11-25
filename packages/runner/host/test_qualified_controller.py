@@ -381,6 +381,33 @@ class ControllerTest(unittest.TestCase):
             result = Result("inspection_passed", inspection={**proof, **changed}, **options)
             self.assertEqual(controller.response_for(data, result), controller.rejected("job_failed", data["requestId"], "confirmed", domain))
 
+    def test_published_verification_binds_rules_and_requires_its_engine(self):
+        data, frozen = verification_request()
+        rules = {"snapshot": {"sha256": "a" * 64, "document": {"taskId": data["taskId"], "projectId": data["projectId"], "purpose": "delivery"}},
+                 "profile": {"runnerImageSha256": data["runnerImageSha256"]}}
+        rules_sha256 = controller.json_digest(rules)
+        frozen["publishedCode"] = {"snapshotSha256": "a" * 64, "inspectionScanSha256": "b" * 64, "ruleSetSha256": rules_sha256}
+        command = {"input": frozen, "repair": None, "publishedCodeRules": rules}
+        body = json.dumps(command).encode()
+        data[controller.PUBLISHED_VERIFICATION] = rules_sha256
+        data.update(verificationInputSha256=controller.json_digest(frozen), commandSha256=hashlib.sha256(body).hexdigest(), commandBytes=len(body))
+        controller.require_verification_command(command, data)
+        with self.assertRaises(ValueError):
+            controller.require_verification_command({**command, "publishedCodeRules": {**rules, "other": 1}}, data)
+        server, client = socket.socketpair()
+        launch = Mock()
+        with server, client:
+            client.sendall(json.dumps(data).encode() + b"\n")
+            outcome = controller.serve_connection(server, os.getuid(), {ORIGIN: ORIGIN}, WORKSPACE, Mock(), launch,
+                                                  lambda: False, enable_verification=True)
+            self.assertEqual(outcome, controller.rejected("not_ready", data["requestId"]))
+        launch.assert_not_called()
+        proof = {"publishedCode": {"kind": "original", "scan": {"document": {
+            "basis": {"manifestSha256": data["targetManifestSha256"], "ruleSetSha256": rules_sha256}}}}}
+        self.assertTrue(controller.published_verification_proof_matches(data, proof, True))
+        self.assertFalse(controller.published_verification_proof_matches(data, proof, False))
+        self.assertFalse(controller.published_verification_proof_matches(data, {}, True))
+
     def test_standard_build_is_denied_before_launch_unless_enabled(self):
         request, frozen = verification_request()
         request[controller.BUILD_PROFILE] = "9" * 64

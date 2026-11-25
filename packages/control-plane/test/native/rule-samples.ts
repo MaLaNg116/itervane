@@ -106,4 +106,32 @@ const published = {
   scannerStatuses: scanned.snapshot.reports.map(report => report.status),
   denied: { code: sourceDenied.code, cleanup: sourceDenied.cleanup, domainId: sourceDenied.domainId },
 };
-console.log(JSON.stringify({ profile, correct, wrong, denied, mismatched, published }));
+const rechecked = await runner.verify({ requestId: randomUUID(), fence: 2, workspaceSha256: idle.workspaceSha256, origin: sourceRequest.origin }, {
+  version: 1, taskId: destination.taskId, runId: scanRunId, projectId: destination.projectId, generation: 1,
+  source, locale: 'en', dataClass: 'synthetic',
+  inspection: { requestId: scanned.scope.requestId, planSha256: plan.sha256,
+    receiptSha256: sha256(JSON.stringify(scanned)), snapshotSha256: proof.manifest.sha256 },
+  audit: { checkpointId: randomUUID(), inputSha256: sha256('trusted probe input'), resultSha256: sha256('trusted probe result') },
+  catalogSha256: sha256('trusted probe catalog'),
+  profile: { id: 'rule-rescan-probe', policySha256: sha256('trusted probe policy'), baselineSha256: sha256('no app build'),
+    runnerImageSha256: imageSha256, scannerInputsSha256: scanned.snapshot.inputsSha256 },
+  subject: { kind: 'original', manifestSha256: proof.manifest.sha256 },
+  publishedCode: { snapshotSha256: publishedCommand.rules.input.snapshot.sha256, inspectionScanSha256: proof.scan.sha256,
+    ruleSetSha256: publishedCommand.rules.sha256 },
+}, null, authorize, undefined, publishedCommand.rules.input);
+if (rechecked.kind !== 'verification_receipt') throw new Error(JSON.stringify({ code: rechecked.code, cleanup: rechecked.cleanup }));
+const second = rechecked.snapshot.publishedCode;
+ok(second?.kind === 'original');
+equal(second.manifest.sha256, proof.manifest.sha256);
+deepStrictEqual(second.scan.document.basis, proof.scan.document.basis);
+const secondFindings = second.scan.document.reports.flatMap(report => report.status === 'checked' ? report.findings : []);
+deepStrictEqual(secondFindings, findings);
+ok(rechecked.snapshot.reports.every(report => report.status === 'completed'));
+notEqual(rechecked.domainId, scanned.domainId);
+ok((await runner.observe())?.state === 'idle');
+console.log(JSON.stringify({ profile, correct, wrong, denied, mismatched, published, rechecked: {
+  domainId: rechecked.domainId, imageSha256: rechecked.imageSha256, cleanupConfirmed: rechecked.cleanupConfirmed,
+  sessionVerified: rechecked.sessionVerified, manifestSha256: second.manifest.sha256, evidenceSha256: second.scan.sha256,
+  ruleSetSha256: second.scan.document.basis.ruleSetSha256,
+  findings: secondFindings.map(({ path, ruleKey }) => ({ path, ruleKey })),
+} }));
