@@ -5,7 +5,7 @@ import pg from 'pg';
 import { assertDisposableDatabase } from './database.js';
 
 const execute = promisify(execFile);
-export async function temporaryPostgres() {
+export async function temporaryPostgres({ isolated = false }: { isolated?: boolean } = {}) {
   const nonce = randomUUID(); const name = `itervane-test-pg-${nonce}`;
   let attempted = false; let probe: pg.Pool | undefined; let closing: Promise<void> | undefined;
   const close = () => closing ??= (async () => {
@@ -16,7 +16,7 @@ export async function temporaryPostgres() {
     }
   })();
   try {
-    let url = process.env.DATABASE_URL;
+    let url = isolated ? undefined : process.env.DATABASE_URL;
     if (!url) {
       const password = randomUUID();
       const image = process.env.ITERVANE_POSTGRES_IMAGE ?? 'postgres:17@sha256:0d938e975177bef9f1f61f3f9dbcf2e0aa0a139568f66d3415ed8892eb97f6ac';
@@ -40,6 +40,6 @@ export async function temporaryPostgres() {
     const version = (await probe.query<{ version: string }>("SELECT current_setting('server_version') AS version")).rows[0]?.version ?? '';
     if (!/^17\./.test(version)) throw new Error('PostgreSQL 17 required');
     await probe.end(); probe = undefined;
-    return { url, version, close };
+    return { url, version, ...(attempted ? { containerName: name } : {}), close };
   } catch (error) { await close(); throw error; }
 }

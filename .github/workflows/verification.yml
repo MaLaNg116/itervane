@@ -35,6 +35,8 @@ jobs:
         run: node --test fixtures/runner/standard-web-baseline.test.mjs
       - name: Real PostgreSQL 17 domain, Worker recovery and external MCP
         run: pnpm test:integration
+      - name: Export and restore across independent PostgreSQL 17 clusters
+        run: pnpm probe:backup
       - name: Authenticated MCP protocol smoke
         run: pnpm probe:mcp
       - name: Evaluation preparation and trusted fixture
