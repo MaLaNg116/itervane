@@ -1,5 +1,4 @@
 import { deepStrictEqual, equal, ok, rejects } from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,7 +9,6 @@ import { rulePackageActivationResultSchema, rulePackageImportResultSchema } from
 import { temporaryPostgres } from '../../../verification/src/postgres-fixture.js';
 import { createApi } from '../../src/api.js';
 import { createIdentityVerifier } from '../../src/auth/identity.js';
-import { postgresBackupClient } from '../../src/persistence/backup-postgres.js';
 import { exportBackup, restoreBackup } from '../../src/persistence/backup.js';
 import { openDatabase } from '../../src/persistence/database.js';
 import { migrateDatabase } from '../../src/persistence/migrate.js';
@@ -18,17 +16,10 @@ import { DurableWorker } from '../../src/runtime/worker.js';
 import { bootstrapOwner, ResourceService } from '../../src/service/resources.js';
 import { TaskRuleSnapshotService } from '../../src/service/task-rule-snapshots.js';
 import { TaskService } from '../../src/service/tasks.js';
+import { fixtureBackupClient } from '../helpers/backup-client.js';
 import { identityFixture } from '../helpers/identity.js';
 
 type Fixture = Awaited<ReturnType<typeof temporaryPostgres>>;
-
-function nativeClient(fixture: Fixture, database: string, role: string) {
-  const { containerName } = fixture;
-  if (!containerName) throw new Error('backup_probe_requires_fixture');
-  return postgresBackupClient(database, (tool, args) => spawn('docker',
-    ['exec', '--interactive', containerName, tool, ...args, '--host=/var/run/postgresql', `--username=${role}`],
-    { stdio: ['pipe', 'pipe', 'ignore'] }));
-}
 
 async function runtimeRole(ownerUrl: string) {
   const url = new URL(ownerUrl);
@@ -120,8 +111,8 @@ async function verifyBackup(source: Fixture, target: Fixture, root: string) {
   const issuer = await identityFixture();
   let seeded: Awaited<ReturnType<typeof seed>>;
   try { seeded = await seed(source, issuer); } finally { await issuer.close(); }
-  const backups = nativeClient(source, 'itervane_test', 'itervane_test');
-  const restore = nativeClient(target, 'itervane_recovered', 'itervane_backup_probe_owner');
+  const backups = fixtureBackupClient(source, 'itervane_test', 'itervane_test');
+  const restore = fixtureBackupClient(target, 'itervane_recovered', 'itervane_backup_probe_owner');
   const admin = new pg.Pool({ connectionString: target.url, max: 1 });
   try {
     await admin.query('CREATE ROLE itervane_backup_probe_owner LOGIN');

@@ -55,6 +55,7 @@ import { npmReleaseApproval, standardNpmReleaseFiles } from '../../../verificati
 import { openNativeWhiskersReadScope } from '../../../portal/test/native/whiskers-read.js';
 import { openNativeWhiskersRestartScope } from '../../../portal/test/native/whiskers-restart-scope.js';
 import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from './audit-provider.js';
+import { proveNativeBackup } from './backup-proof.js';
 import { proveKnownKomodoRecovery, proveUnknownKomodoDispatch, recoverRecordedReleaseForRollout } from './komodo-release-proof.js';
 import type { KomodoInterruption, runKomodoReleaseFixture } from './komodo-release-worker.js';
 import { proveInstalledHealthProbe } from './health-proof.js';
@@ -2007,9 +2008,24 @@ async function probe() {
         const operations = operationsRun ? await verifyNativeObservation() : undefined;
         const restartReadback = operationsRun ? await verifyRestartReadback() : undefined;
         const restart = operationsRun ? await verifyNativeRestart() : undefined;
+        let backup: Awaited<ReturnType<typeof proveNativeBackup>> | undefined;
+        if (restart && process.env.ITERVANE_NATIVE_BACKUP === '1') {
+          phase = 'protected_release_backup_recovery';
+          const reuse = restart.reused.runbook;
+          ok(reuse);
+          backup = await proveNativeBackup({ database: db, source: postgres, runnerArchives: join(dirname(shared), 'artifacts'),
+            configuration: ['restart-installation.json', 'restart-guardrails.json', 'restart-roles.json'].map(file => join(shared, file)),
+            async stopControlPlane() { await client.close(); await api?.close(); api = undefined; },
+            anonymousStatus: () => ingress.anonymousHealthStatus(),
+            publication: { operationId, image: { archive: qualifiedImageArchiveSchema.parse(image.archive), manifestDigest: image.manifestDigest },
+              recovered: restart.reused, unknown: restart.interrupted,
+              runbook: { ...reuse.selection.rule, snapshotSha256: reuse.snapshotSha256, diagnosisRunId: restart.reused.diagnosisRunId } },
+          });
+        }
         return {
           sourceFingerprint: await sourceFingerprint(), postgres: postgres.version, imageSha256,
           ...(operations ? { operations: { ...operations, whiskersCleanup: true, restartReadback, restart } } : {}),
+          ...(backup ? { backup } : {}),
           ...('before' in prepared
             ? { retry: { before: prepared.before, after, retrySha256: prepared.retrySha256, generation } }
             : ('dependencyPatchSha256' in prepared
@@ -2557,7 +2573,7 @@ async function probe() {
 try { console.log(JSON.stringify(await probe())); }
 catch (error) {
   const message = error instanceof Error && (taskEventReasonSchema.safeParse(error.message).success
-    || /^(?:[a-z_]+_timeout|fixture_(?:diagnosis_)?http_[1-5][0-9]{2}|verification_fixture_phase_[a-z_]{1,56}|(?:protected_ingress|release_(?:rollout|registry|komodo))_[a-z_]{1,48})$/.test(error.message))
+    || /^(?:[a-z_]+_timeout|fixture_(?:diagnosis_)?http_[1-5][0-9]{2}|verification_fixture_phase_[a-z_]{1,56}|(?:protected_ingress|release_(?:rollout|registry|komodo)|backup|restore)_[a-z_]{1,48})$/.test(error.message))
     ? ` (${error.message})` : '';
   console.error(`Native Worker inspection failed during ${phase}${message}.`);
   process.exitCode = 1;
