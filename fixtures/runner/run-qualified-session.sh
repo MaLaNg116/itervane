@@ -274,6 +274,8 @@ PY
     check_archive initialBuild "${archive_reports[0]}"
     archive_reports+=("$reports/runner-linked-health-oci-artifact.json")
     check_archive linkedHealth.verifiedBuild "${archive_reports[1]}"
+    archive_reports+=("$reports/runner-rule-reuse-oci-artifact.json")
+    check_archive linkedHealth.ruleReuse.clean.verifiedBuild "${archive_reports[2]}"
   elif [[ "$scenario" == protected-release* ]]; then
     archive_path=retry.after
     if [[ "$scenario" == protected-release-npm ]]; then archive_path=dependency.after; fi
