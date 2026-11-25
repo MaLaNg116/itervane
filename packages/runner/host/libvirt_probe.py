@@ -22,13 +22,16 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from native_job import SCENARIOS, JobEvidence, JobRejected, ProbeJob, start_channel_events
-from native_source import SourceEvidence, SourceProbe, maintainer_source
+from native_source import RuleSamplesProbe, SourceEvidence, SourceProbe, maintainer_source
 from session_boundary import SESSION_URI, SessionRejected, prepare_session, process_exited, verify_qemu_process
 
 
 URI = "qemu:///system"
 ARCH = "x86_64"
 MACHINE = "q35"
+CPU_MODEL = "qemu64"
+V2_FEATURES = ("cx16", "lahf_lm", "pni", "popcnt", "sse4.1", "sse4.2", "ssse3")
+NESTED_VIRTUALIZATION = ("vmx", "svm")
 VCPU = 2
 RAM_KIB = 2 * 1024 * 1024
 DISK_BYTES = 8 * 1024**3
@@ -56,6 +59,7 @@ class Result:
     source: SourceEvidence | None = None
     inspection: dict | None = None
     repair: dict | None = None
+    ruleSamples: dict | None = None
 
 
 def check_kvm():
@@ -111,6 +115,13 @@ def domain_xml(name, run_id, disk, port=None):
     xml.SubElement(root, "memory", unit="KiB").text = str(RAM_KIB)
     xml.SubElement(root, "currentMemory", unit="KiB").text = str(RAM_KIB)
     xml.SubElement(root, "vcpu", placement="static").text = str(VCPU)
+    # Add only the instruction set required by the sealed tool to the portable baseline CPU.
+    cpu = xml.SubElement(root, "cpu", mode="custom", match="exact", check="partial")
+    xml.SubElement(cpu, "model", fallback="forbid").text = CPU_MODEL
+    for feature in V2_FEATURES:
+        xml.SubElement(cpu, "feature", name=feature, policy="require")
+    for feature in NESTED_VIRTUALIZATION:
+        xml.SubElement(cpu, "feature", name=feature, policy="disable")
     os_config = xml.SubElement(root, "os")
     xml.SubElement(os_config, "type", arch=ARCH, machine=MACHINE).text = "hvm"
     xml.SubElement(os_config, "boot", dev="hd")
@@ -145,6 +156,15 @@ def profile_issue(document, disk, port=None):
         return "platform"
     if vcpu.text != str(VCPU) or vcpu.get("current", str(VCPU)) != str(VCPU):
         return "vcpu"
+    cpu = root.find("cpu")
+    if (cpu is None or cpu.get("mode") != "custom" or cpu.get("match") != "exact" or cpu.get("check") not in ("partial", "full")
+            or cpu.findtext("model") not in (CPU_MODEL, CPU_MODEL + "-v1")
+            or cpu.find("model").get("fallback") != "forbid"):
+        return "cpu-model"
+    features = {feature.get("name"): feature.get("policy") for feature in cpu.findall("feature")}
+    if (not all(features.get(name) == "require" for name in V2_FEATURES)
+            or not all(features.get(name) == "disable" for name in NESTED_VIRTUALIZATION)):
+        return "cpu-model"
     if any(root.findtext(event) != "destroy" for event in ("on_poweroff", "on_reboot", "on_crash")):
         return "lifecycle-policy"
     for tag in ("memory", "currentMemory"):
@@ -284,6 +304,8 @@ def ping_guest(libvirt, qemu, domain, check_deadline):
 
 def libvirt_issue(error, phase):
     message = str(error).lower()
+    if "cpu" in message and any(detail in message for detail in ("not compatible", "not supported", "does not provide", "failed to find")):
+        return phase + "-cpu-incompatible"
     if "permission denied" in message:
         return phase + "-permission"
     if "too long" in message and "socket" in message:
@@ -414,7 +436,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
                     code = "cleanup_unproven"
             else:
                 code = "cleanup_unproven"
-    if code in ("passed", "job_passed", "source_passed", "inspection_passed", "repair_passed"):
+    if code in ("passed", "job_passed", "source_passed", "inspection_passed", "repair_passed", "rule_samples_recorded"):
         try:
             check_deadline()
         except Rejected as error:
@@ -431,6 +453,7 @@ def run_guest(libvirt, qemu, root, image, digest, check_deadline, job=None, sess
         source=job.evidence if isinstance(job, SourceProbe) and code in ("source_passed", "inspection_passed", "repair_passed") else None,
         inspection=job.inspection if isinstance(job, SourceProbe) and code == "inspection_passed" else None,
         repair=job.repair if isinstance(job, SourceProbe) and code == "repair_passed" else None,
+        ruleSamples=job.proof if isinstance(job, RuleSamplesProbe) and code == "rule_samples_recorded" else None,
     )
 
 
@@ -518,7 +541,8 @@ def main():
     except Rejected as error:
         result = Result(str(error))
     payload = asdict(result)
-    del payload["repair"]
+    # The standalone lifecycle CLI keeps its output contract. Qualified jobs use the controller protocol.
+    del payload["repair"], payload["ruleSamples"]
     print(json.dumps(payload))
 
 

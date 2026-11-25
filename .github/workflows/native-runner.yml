@@ -31,6 +31,7 @@ on:
       - 'scripts/prepare-runner-inspection.ts'
       - 'scripts/prepare-runner-build-dependencies.ts'
       - 'scripts/prepare-runner-oci-inputs.sh'
+      - 'scripts/prepare-runner-rule-engine.py'
       - 'scripts/probe-qualified-runner.ts'
       - 'scripts/scanner-tools.ts'
       - 'package.json'
@@ -51,7 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [regression, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm, protected-release-drift, protected-release-faults, protected-release-operations, protected-release-restore, protected-release-restore-authorization, protected-release-linked-health]
+        scenario: [regression, rule-samples, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm, protected-release-drift, protected-release-faults, protected-release-operations, protected-release-restore, protected-release-restore-authorization, protected-release-linked-health]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -69,6 +70,7 @@ jobs:
           apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
           extras=()
           if [[ "${{ matrix.scenario }}" == standard-oci || "${{ matrix.scenario }}" == protected-release* ]]; then extras+=(skopeo); fi
+          if [[ "${{ matrix.scenario }}" == rule-samples ]]; then extras+=(python3-pip); fi
           sudo -n apt-get "${apt_options[@]}" update -qq
           sudo -n apt-get "${apt_options[@]}" install -y --no-install-recommends gdisk guestfish guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils "${extras[@]}"
           dpkg-query -W gdisk guestfish guestfs-tools libvirt-daemon-system python3-libvirt qemu-system-x86 > .reports/p0/kvm-packages.txt
@@ -111,9 +113,18 @@ jobs:
           bash scripts/prepare-runner-oci-inputs.sh "$payload" > .reports/p0/kvm-oci-inputs.json
           test -s "$payload/inputs.json"
           printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
+      - name: Prepare the pinned rule engine
+        id: rule-engine
+        if: steps.capability.outputs.available == 'true' && matrix.scenario == 'rule-samples'
+        run: |
+          scratch=$(mktemp -d "$RUNNER_TEMP/itervane-rule-engine.XXXXXXXX")
+          payload="$scratch/itervane-semgrep"
+          /usr/bin/python3 scripts/prepare-runner-rule-engine.py "$payload" > .reports/p0/kvm-rule-engine-inputs.json
+          test -s "$payload/inputs.json"
+          printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
       - name: Prepare sealed build inputs for the selected trial
         id: build
-        if: steps.capability.outputs.available == 'true' && matrix.scenario != 'regression'
+        if: steps.capability.outputs.available == 'true' && matrix.scenario != 'regression' && matrix.scenario != 'rule-samples'
         env:
           BUILD_SCENARIO: ${{ matrix.scenario }}
         run: |
@@ -157,11 +168,12 @@ jobs:
           INSPECTION_PAYLOAD: ${{ steps.inspection.outputs.payload }}
           BUILD_PAYLOAD: ${{ steps.build.outputs.payload }}
           OCI_PAYLOAD: ${{ steps.oci.outputs.payload }}
+          RULE_ENGINE_PAYLOAD: ${{ steps.rule-engine.outputs.payload }}
         run: |
           args=("$PROBE_DIRECTORY" "$INSPECTION_PAYLOAD")
           if [[ -n "$BUILD_PAYLOAD" ]]; then args+=("$BUILD_PAYLOAD"); fi
           if [[ -n "$OCI_PAYLOAD" ]]; then args+=("$OCI_PAYLOAD"); fi
-          sudo -n bash fixtures/runner/prepare-probe-image.sh "${args[@]}"
+          sudo -n env ITERVANE_RULE_ENGINE_INPUTS="$RULE_ENGINE_PAYLOAD" bash fixtures/runner/prepare-probe-image.sh "${args[@]}"
           sudo -n cat "$PROBE_DIRECTORY/image.json" > .reports/p0/kvm-image.json
           case "$INSPECTION_PAYLOAD" in
             "$RUNNER_TEMP"/itervane-scan.????????/itervane-inspection)
@@ -182,6 +194,25 @@ jobs:
             bash fixtures/ingress/prepare-proxies.sh "$ITERVANE_NATIVE_RELEASE_PROXIES"
           fi
           bash fixtures/runner/run-native-session.sh "$PROBE_DIRECTORY" "$NATIVE_SCENARIO"
+      - name: Require independent rule samples and cleanup receipts
+        if: matrix.scenario == 'rule-samples'
+        env:
+          KVM_AVAILABLE: ${{ steps.capability.outputs.available }}
+        run: |
+          test "$KVM_AVAILABLE" = true
+          jq -e --slurpfile engine .reports/p0/kvm-rule-engine-inputs.json '
+            .profile.engineInputsSha256 == $engine[0].engineInputsSha256 and
+            .profile.engineVersion == $engine[0].engineVersion and
+            .correct.proof.result.status == "passed" and
+            [.correct.proof.result.samples[].matches] == [1,0,0] and
+            .wrong.proof.result.status == "failed" and
+            [.wrong.proof.result.samples[].matches] == [1,0,1] and
+            .correct.domainId != .wrong.domainId and
+            ([.correct,.wrong] | all(.cleanupConfirmed and .sessionVerified)) and
+            .sourceRevision == env.GITHUB_SHA and (.sourceTree | test("^[a-f0-9]{40}$")) and .stagingEmpty and
+            .denied.code == "lease_lost" and .denied.cleanup == "not_started" and
+            .mismatched.code == "not_ready" and .mismatched.cleanup == "not_started"
+          ' .reports/p0/runner-rule-samples.json >/dev/null
       - name: Require native reproduction, bounded repair and independent health receipts
         if: matrix.scenario == 'standard-build'
         env:
@@ -389,6 +420,8 @@ jobs:
             .reports/p0/kvm-session-host.json
             .reports/p0/kvm-image.json
             .reports/p0/kvm-inspection-inputs.json
+            .reports/p0/kvm-rule-engine-inputs.json
+            .reports/p0/runner-rule-samples.json
             .reports/p0/kvm-build-inputs.json
             .reports/p0/kvm-oci-inputs.json
             .reports/p0/kvm-packages.txt

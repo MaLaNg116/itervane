@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { sha256Schema } from './inspection.js';
 import { idSchema } from './primitives.js';
 import { ruleIdSchema } from './preaudit.js';
+import { qualifiedRunnerRejectionSchema } from './qualified-inspection.js';
+import { codeRuleCandidateSchema } from './rule-extraction.js';
 
 export const ruleSampleKinds = ['violation', 'corrected', 'lookalike'] as const;
 export const ruleSampleKindSchema = z.enum(ruleSampleKinds);
@@ -25,9 +27,13 @@ export type CodeRuleValidationBasis = z.infer<typeof codeRuleValidationBasisSche
 
 export const ruleSampleFailureSchema = z.enum(['engine_unavailable', 'timeout', 'command_failed', 'invalid_report', 'version_mismatch', 'incomplete_coverage', 'invalid_match']);
 const reportBinding = { ...sampleBinding.shape };
+const commandFailureDetail = z.strictObject({ exitCode: z.int().min(1).max(255), cause: z.enum([
+  'dependency', 'import', 'filesystem', 'illegal_instruction', 'core_exit', 'other',
+]) });
 export const codeRuleSampleObservationSchema = z.discriminatedUnion('status', [
   z.strictObject({ ...reportBinding, status: z.literal('checked'), reportSha256: sha256Schema, matches: z.int().min(0).max(256) }),
-  z.strictObject({ ...reportBinding, status: z.literal('unavailable'), reason: ruleSampleFailureSchema }),
+  z.strictObject({ ...reportBinding, status: z.literal('unavailable'), reason: ruleSampleFailureSchema, detail: commandFailureDetail.optional() })
+    .refine(value => value.detail === undefined || value.reason === 'command_failed'),
 ]);
 export type CodeRuleSampleObservation = z.infer<typeof codeRuleSampleObservationSchema>;
 export const codeRuleSampleResultSchema = z.strictObject({
@@ -35,6 +41,30 @@ export const codeRuleSampleResultSchema = z.strictObject({
   samples: z.array(codeRuleSampleObservationSchema).length(3),
 });
 export type CodeRuleSampleResult = z.infer<typeof codeRuleSampleResultSchema>;
+
+export const codeRuleValidationCommandSchema = z.strictObject({
+  version: z.literal(1), basis: codeRuleValidationBasisSchema, candidate: codeRuleCandidateSchema,
+});
+export const ruleValidationCommandByteLimit = 32 * 1024;
+export const ruleValidationProofByteLimit = 8 * 1024;
+export const qualifiedRuleValidationRequestSchema = z.strictObject({
+  version: z.literal(1), operation: z.literal('validate_rule_samples'),
+  requestId: z.uuidv4(), taskId: z.uuidv4(), runId: z.uuidv4(), projectId: z.uuidv4(),
+  generation: z.int().min(1).max(2_147_483_647), fence: z.int().min(1).max(2_147_483_647),
+  workspaceSha256: sha256Schema, runnerImageSha256: sha256Schema, basisSha256: sha256Schema, engineInputsSha256: sha256Schema,
+  commandSha256: sha256Schema, commandBytes: z.int().min(1).max(ruleValidationCommandByteLimit),
+});
+export type QualifiedRuleValidationRequest = z.infer<typeof qualifiedRuleValidationRequestSchema>;
+export const qualifiedGuestRuleValidationProofSchema = z.strictObject({
+  version: z.literal(1), commandSha256: sha256Schema, result: codeRuleSampleResultSchema,
+});
+export const qualifiedRuleValidationResponseSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('rule_samples_receipt'), scope: qualifiedRuleValidationRequestSchema, domainId: z.uuidv4(),
+    imageSha256: sha256Schema, cleanupConfirmed: z.literal(true), sessionVerified: z.literal(true), proof: qualifiedGuestRuleValidationProofSchema }),
+  qualifiedRunnerRejectionSchema,
+]);
+export type QualifiedRuleValidationResponse = z.infer<typeof qualifiedRuleValidationResponseSchema>;
+export type QualifiedRuleValidationReceipt = Extract<QualifiedRuleValidationResponse, { kind: 'rule_samples_receipt' }>;
 
 export const runbookSelectionContextSchema = z.strictObject({
   observedState: z.enum(['exited', 'dead', 'running', 'unknown']),

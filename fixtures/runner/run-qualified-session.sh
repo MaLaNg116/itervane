@@ -16,6 +16,7 @@ digest=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1])
 node=$(command -v node)
 case "$scenario" in
   regression) features=(--enable-repair --enable-verification) ;;
+  rule-samples) features=(--enable-rule-samples) ;;
   standard-build) features=(--enable-repair --enable-verification --enable-standard-build --enable-standard-baseline) ;;
   standard-oci|protected-release|protected-release-npm|protected-release-drift|protected-release-faults|protected-release-operations|protected-release-restore|protected-release-restore-authorization|protected-release-linked-health)
     artifacts="$directory/artifacts"
@@ -28,7 +29,9 @@ esac
 
 sudo -n useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$worker"
 sudo -n install -d -m 0755 -o "$runner" -g "$runner" "$shared"
-pnpm exec esbuild scripts/probe-qualified-runner.ts --bundle --platform=node --format=esm --target=node24 \
+probe=scripts/probe-qualified-runner.ts
+if [[ "$scenario" == rule-samples ]]; then probe=packages/control-plane/test/native/rule-samples.ts; fi
+pnpm exec esbuild "$probe" --bundle --platform=node --format=esm --target=node24 \
   --outfile=.reports/p0/qualified-client.mjs
 sudo -n install -m 0444 .reports/p0/qualified-client.mjs "$shared/client.mjs"
 
@@ -38,7 +41,13 @@ sudo -n systemd-run --quiet --unit="$unit" --uid="$runner" --gid="$runner" \
   --setenv="XDG_CONFIG_HOME=/home/$runner/.config" --setenv="XDG_CACHE_HOME=/home/$runner/.cache" --setenv=LANG=C.UTF-8 \
   /usr/bin/python3 -I -B "$directory/code/packages/runner/host/qualified_controller.py" \
   "$sock" "$stage" "$directory/probe.raw" "$digest" "$(id -u "$worker")" "${features[@]}" https://github.com/MaLaNg116/itervane.git
-trap 'sudo -n systemctl stop "$unit"' EXIT
+stop_session() {
+  sudo -n systemctl stop "$unit"
+  if [[ "$1" -ne 0 ]]; then
+    sudo -n journalctl --unit "$unit" --grep '^itervane-domain-result ' --lines 20 --output cat --no-pager >&2 || true
+  fi
+}
+trap 'stop_session "$?"' EXIT
 for attempt in {1..100}; do
   if sudo -n test -S "$sock"; then break; fi
   sleep 0.1
@@ -63,6 +72,19 @@ assert_empty() {
   staged=$(sudo -n find "$stage" -mindepth 1 -print -quit) || return 1
   [[ -z "$active" && -z "$staged" ]]
 }
+
+if [[ "$scenario" == rule-samples ]]; then
+  inputs=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["engineInputsSha256"])' "$reports/kvm-rule-engine-inputs.json")
+  [[ "$inputs" =~ ^[0-9a-f]{64}$ ]]
+  assert_empty
+  as_client "$inputs" > "$reports/runner-rule-samples.pending"
+  assert_empty
+  jq --arg revision "$(git rev-parse HEAD)" --arg tree "$(git rev-parse 'HEAD^{tree}')" \
+    '. + {sourceRevision: $revision, sourceTree: $tree, stagingEmpty: true}' \
+    "$reports/runner-rule-samples.pending" > "$reports/runner-rule-samples.json"
+  rm -- "$reports/runner-rule-samples.pending"
+  exit
+fi
 
 if [[ "$scenario" == regression ]]; then
 sudo -n /usr/bin/python3 -I -B - "$sock" > "$reports/runner-qualified-peer.json" <<'PY'

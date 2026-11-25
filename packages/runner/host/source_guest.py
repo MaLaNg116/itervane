@@ -21,8 +21,8 @@ from guest_job import ProtocolError, verify_workload_receipt
 from source_wire import (
     CLOSED, GUEST_ERRORS, GUEST_REPAIR_ERRORS, MAX_FILES, MAX_INSPECTION_RECEIPT, MAX_MATERIALIZED_SOURCE, MAX_QUALIFIED_RECEIPT,
     MAX_REPAIR_COMMAND, MAX_REPAIR_RECEIPT, MAX_REQUEST_BYTES, MAX_TRANSFER_BYTES, MAX_VERIFICATION_COMMAND,
-    MAX_VERIFICATION_RECEIPT, MAX_OCI_ARCHIVE_BYTES, MAX_OCI_CHUNK_BYTES, PACK_TYPE, QUALIFIED_START, RECEIPT,
-    REFS_TYPE, SOURCE_PORT, START, UPLOAD_TYPE, SourceWire,
+    MAX_VERIFICATION_RECEIPT, MAX_RULE_VALIDATION_COMMAND, MAX_RULE_VALIDATION_PROOF, MAX_OCI_ARCHIVE_BYTES, MAX_OCI_CHUNK_BYTES,
+    PACK_TYPE, QUALIFIED_START, RECEIPT, REFS_TYPE, RULE_SAMPLES_START, SOURCE_PORT, START, UPLOAD_TYPE, SourceWire,
 )
 
 
@@ -33,6 +33,7 @@ REPAIR_COMMAND = INSPECTION_REQUEST.with_name("repair-command.json")
 REPAIR_OBSERVATION = INSPECTION_REQUEST.with_name("repair-observation.json")
 VERIFICATION_COMMAND = INSPECTION_REQUEST.with_name("verification-command.json")
 MATERIALIZED_SOURCE = INSPECTION_REQUEST.with_name("materialized-source.json")
+RULE_SAMPLES_COMMAND = INSPECTION_REQUEST.with_name("rule-validation-command.json")
 INSPECTION_RECEIPT = Path("/var/lib/itervane-inspection-output/receipt.json")
 BUILD_INPUT = Path("/var/lib/itervane-build-input")
 BUILD_RECEIPT = Path("/var/lib/itervane-build-output/receipt.json")
@@ -327,10 +328,41 @@ def send_image_archive(wire, archive):
     wire.send(b"Q")
 
 
+def validate_rule_samples(wire, start):
+    if len(start) != RULE_SAMPLES_START.size:
+        raise GuestFailure("guest-input")
+    identity, = RULE_SAMPLES_START.unpack(start)
+    domain_id = str(uuid.UUID(bytes=identity))
+    _, command = wire.receive({b"W": MAX_RULE_VALIDATION_COMMAND})
+    if not command:
+        raise GuestFailure("guest-input")
+    requested = False
+    with RULE_SAMPLES_COMMAND.open("xb") as stream:
+        stream.write(command)
+        os.fchmod(stream.fileno(), 0o440)
+    try:
+        INSPECTION_REQUEST.touch(mode=0o600, exist_ok=False)
+        requested = True
+        proof = read_inspection(wait_receipt(INSPECTION_RECEIPT, MAX_RULE_VALIDATION_PROOF, wire), None)
+        if proof.keys() != {"version", "commandSha256", "result"} or proof["commandSha256"] != hashlib.sha256(command).hexdigest():
+            raise GuestFailure("scan-integrity")
+        payload = json.dumps({"domainId": domain_id, "proof": proof}, separators=(",", ":")).encode("ascii")
+        if len(payload) > MAX_RULE_VALIDATION_PROOF:
+            raise GuestFailure("scan-integrity")
+        wire.send(b"Z", payload)
+    finally:
+        if requested:
+            INSPECTION_REQUEST.unlink()
+        RULE_SAMPLES_COMMAND.unlink()
+
+
 def serve_source(wire, work):
     wire.greeting()
     scenario, start = wire.receive({b"S": START.size, b"A": START.size, b"F": QUALIFIED_START.size, b"B": QUALIFIED_START.size,
-                                    b"R": QUALIFIED_START.size, b"L": QUALIFIED_START.size, b"V": QUALIFIED_START.size})
+                                    b"R": QUALIFIED_START.size, b"L": QUALIFIED_START.size, b"V": QUALIFIED_START.size,
+                                    b"T": RULE_SAMPLES_START.size})
+    if scenario == b"T":
+        return validate_rule_samples(wire, start)
     if scenario in (b"F", b"B", b"R", b"L", b"V") and len(start) == QUALIFIED_START.size:
         identity, commit_bytes, repository = QUALIFIED_START.unpack(start)
         repository_id = str(uuid.UUID(bytes=repository))

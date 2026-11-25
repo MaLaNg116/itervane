@@ -20,12 +20,12 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from libvirt_probe import IMAGE_DIGEST, Rejected, Result, check_kvm, closed, connect, locked_workspace, probe, start_channel_events
-from native_source import SourceProbe
+from native_source import RuleSamplesProbe, SourceProbe
 from oci_artifacts import ArtifactStore
 from session_boundary import SESSION_URI, SessionRejected, prepare_session
 from source_gateway import COMMIT, RegisteredOrigin, SourceGateway, SourceRejected
 from source_wire import (GUEST_REPAIR_ERRORS, MAX_OCI_CHUNK_BYTES, MAX_QUALIFIED_RECEIPT, MAX_REPAIR_COMMAND,
-                         MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT, OCI_ARCHIVE_FORMAT)
+                         MAX_VERIFICATION_COMMAND, MAX_VERIFICATION_RECEIPT, MAX_RULE_VALIDATION_COMMAND, OCI_ARCHIVE_FORMAT)
 
 
 REQUEST_LIMIT = 2048
@@ -41,12 +41,15 @@ FIELDS = {*IDS, *COUNTERS, "version", "planSha256", "workspaceSha256", "commit",
 REPAIR = "apply_repair"
 OBSERVE_REPAIR = "observe_repair"
 VERIFY_SOURCE = "verify_source"
+VALIDATE_RULE_SAMPLES = "validate_rule_samples"
 REPAIR_OPERATIONS = (REPAIR, OBSERVE_REPAIR)
 REPAIR_DIGESTS = ("repairInputSha256", "baseSnapshotSha256", "commandSha256")
 REPAIR_FIELDS = (FIELDS - {"planSha256"}) | {"operation", "operationId", "commandBytes", *REPAIR_DIGESTS}
 VERIFY_DIGESTS = ("verificationInputSha256", "baseSnapshotSha256", "targetManifestSha256",
                   "runnerImageSha256", "scannerInputsSha256", "commandSha256")
 VERIFY_FIELDS = (FIELDS - {"planSha256"}) | {"operation", "commandBytes", *VERIFY_DIGESTS}
+RULE_SAMPLE_DIGESTS = ("workspaceSha256", "runnerImageSha256", "basisSha256", "engineInputsSha256", "commandSha256")
+RULE_SAMPLE_FIELDS = {"operation", "version", "commandBytes", *IDS[:-1], *COUNTERS, *RULE_SAMPLE_DIGESTS}
 BUILD_PROFILE = "buildProfileSha256"
 RUN_BASELINE = "runStandardBaseline"
 HEALTH_FOLLOWUP = "healthFollowup"
@@ -80,6 +83,14 @@ def parse_request(line):
     if not isinstance(data, dict):
         raise ValueError("invalid request fields")
     operation = data.get("operation")
+    if operation == VALIDATE_RULE_SAMPLES:
+        if (data.keys() != RULE_SAMPLE_FIELDS or type(data["version"]) is not int or data["version"] != 1
+                or not all(is_v4(data[name]) for name in IDS[:-1])
+                or not all(type(data[name]) is int and 0 < data[name] <= 2147483647 for name in COUNTERS)
+                or type(data["commandBytes"]) is not int or not 0 < data["commandBytes"] <= MAX_RULE_VALIDATION_COMMAND
+                or not all(isinstance(data[name], str) and IMAGE_DIGEST.fullmatch(data[name]) for name in RULE_SAMPLE_DIGESTS)):
+            raise ValueError("Invalid rule samples request")
+        return data
     repair = operation in REPAIR_OPERATIONS
     verification = operation == VERIFY_SOURCE
     build = verification and BUILD_PROFILE in data
@@ -212,6 +223,17 @@ def read_command(connection, request):
     if hashlib.sha256(data).hexdigest() != request["commandSha256"]:
         raise ValueError("runner command digest mismatch")
     command = json.loads(data, object_pairs_hook=unique_fields)
+    if request["operation"] == VALIDATE_RULE_SAMPLES:
+        if (not isinstance(command, dict) or command.keys() != {"version", "basis", "candidate"}
+                or type(command["version"]) is not int or command["version"] != 1
+                or not isinstance(command["basis"], dict) or not isinstance(command["candidate"], dict)
+                or command["candidate"].get("kind") != "code_rule" or json_digest(command["basis"]) != request["basisSha256"]):
+            raise ValueError("Invalid rule samples command binding")
+        profile = command["basis"].get("profile")
+        if (not isinstance(profile, dict) or profile.get("runnerImageSha256") != request["runnerImageSha256"]
+                or profile.get("engineInputsSha256") != request["engineInputsSha256"]):
+            raise ValueError("Invalid rule samples profile binding")
+        return bytes(data)
     if request["operation"] == VERIFY_SOURCE:
         require_verification_command(command, request)
         return bytes(data)
@@ -346,13 +368,21 @@ def verification_proof_matches(request, snapshot, image_sha256):
 
 def response_for(request, result):
     request_id = request["requestId"]
+    rule_samples = request.get("operation") == VALIDATE_RULE_SAMPLES
+    if rule_samples and result.code == "rule_samples_recorded" and result.cleanupConfirmed and result.sessionVerified:
+        proof = result.ruleSamples
+        if (result.runId and result.imageSha256 == request["runnerImageSha256"] and isinstance(proof, dict)
+                and proof.keys() == {"version", "commandSha256", "result"} and proof["commandSha256"] == request["commandSha256"]
+                and isinstance(proof["result"], dict) and proof["result"].get("basisSha256") == request["basisSha256"]):
+            return {"kind": "rule_samples_receipt", "scope": request, "domainId": result.runId,
+                    "imageSha256": result.imageSha256, "cleanupConfirmed": True, "sessionVerified": True, "proof": proof}
     repair = request.get("operation") in REPAIR_OPERATIONS
     verification = request.get("operation") == VERIFY_SOURCE
     observation = request.get("operation") == OBSERVE_REPAIR
     expected_code = "repair_passed" if repair else "inspection_passed"
     snapshot = result.repair if repair else result.inspection
     if (
-        result.code == expected_code and result.cleanupConfirmed and result.sessionVerified
+        not rule_samples and result.code == expected_code and result.cleanupConfirmed and result.sessionVerified
         and result.runId and result.imageSha256 and result.source and isinstance(snapshot, dict) and snapshot
     ):
         evidence = snapshot.get("observation" if observation else "candidate") if repair else None
@@ -418,7 +448,7 @@ def stream_archive(connection, store, archive, image_sha256, stopping):
 
 def serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping,
                      enable_repair=False, enable_verification=False, enable_standard_build=False, enable_baseline=False,
-                     enable_oci=False, enable_retention=False, verify_archive=None, read_archive=None):
+                     enable_oci=False, enable_retention=False, verify_archive=None, read_archive=None, enable_rule_samples=False):
     connection.settimeout(HANDSHAKE_SECONDS)
     _, uid, _ = PEER.unpack(connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, PEER.size))
     if uid != worker_uid:
@@ -444,13 +474,15 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
         return rejected("invalid_request")
     repair = request.get("operation") in REPAIR_OPERATIONS
     verification = request.get("operation") == VERIFY_SOURCE
+    rule_samples = request.get("operation") == VALIDATE_RULE_SAMPLES
     if (request["workspaceSha256"] != fingerprint or (repair and not enable_repair)
+        or (rule_samples and not enable_rule_samples)
         or (verification and not enable_verification) or (BUILD_PROFILE in request and not enable_standard_build)
         or (RUN_BASELINE in request and not enable_baseline) or (OCI_INPUTS in request and not enable_oci)
         or (RETAIN_IMAGE in request and not enable_retention)):
         return rejected("not_ready", request["requestId"])
-    origin = origins.get(request["origin"])
-    if origin is None:
+    origin = None if rule_samples else origins.get(request["origin"])
+    if not rule_samples and origin is None:
         return rejected("origin_denied", request["requestId"])
     connection.settimeout(HANDSHAKE_SECONDS)
     connection.sendall(READY)
@@ -461,14 +493,20 @@ def serve_connection(connection, worker_uid, origins, fingerprint, observe, laun
     if first != b"K" or stopping():
         return rejected("lease_lost", request["requestId"])
     try:
-        command = read_command(connection, request) if repair or verification else None
+        command = read_command(connection, request) if repair or verification or rule_samples else None
     except (OSError, ValueError, RecursionError):
         return rejected("invalid_request", request["requestId"])
     if stopping():
         return rejected("lease_lost", request["requestId"])
     with LiveConnection(connection, stopping) as live:
         result = launch(request, origin, live.cancelled, command)
-    return response_for(request, result)
+    response = response_for(request, result)
+    if response["kind"] == "rejected":
+        diagnostics = {"code": result.code, "profile": result.profileIssue, "job": result.jobIssue}
+        safe = {key: value for key, value in diagnostics.items()
+                if value is not None and re.fullmatch(r"[a-z0-9_-]{1,96}", value)}
+        print("itervane-domain-result " + json.dumps(safe, separators=(",", ":")), file=sys.stderr, flush=True)
+    return response
 
 
 def socket_parent(path):
@@ -481,7 +519,7 @@ def socket_parent(path):
 
 
 def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping, enable_repair, enable_verification,
-               enable_standard_build, enable_baseline, enable_oci, enable_retention, verify_archive, read_archive):
+               enable_standard_build, enable_baseline, enable_oci, enable_retention, verify_archive, read_archive, enable_rule_samples=False):
     socket_parent(path)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(os.fspath(path))
@@ -498,7 +536,7 @@ def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping
                     try:
                         result = serve_connection(connection, worker_uid, origins, fingerprint, observe, launch, stopping,
                                                   enable_repair, enable_verification, enable_standard_build, enable_baseline,
-                                                  enable_oci, enable_retention, verify_archive, read_archive)
+                                                  enable_oci, enable_retention, verify_archive, read_archive, enable_rule_samples)
                         encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
                         limit = MAX_VERIFICATION_RECEIPT if result["kind"] == "verification_receipt" else MAX_QUALIFIED_RECEIPT
                         if len(encoded) > limit + 8192:
@@ -536,7 +574,7 @@ def main():
         features = set()
         artifact_store = None
         while allowed and allowed[0] in ("--enable-repair", "--enable-verification", "--enable-standard-build",
-                                        "--enable-standard-baseline", "--enable-standard-oci", "--artifact-store"):
+                                        "--enable-standard-baseline", "--enable-standard-oci", "--enable-rule-samples", "--artifact-store"):
             flag = allowed.pop(0)
             if flag in features:
                 raise ValueError("duplicate capability")
@@ -579,10 +617,14 @@ def main():
 
         def launch(request, origin, cancelled, command):
             verification = request.get("operation") == VERIFY_SOURCE
-            if verification and request["runnerImageSha256"] != digest:
+            rule_samples = request.get("operation") == VALIDATE_RULE_SAMPLES
+            if (verification or rule_samples) and request["runnerImageSha256"] != digest:
                 return Result("config_required")
             if not workspace_idle(libvirt, root, image, fingerprint):
                 return Result("pending_cleanup")
+            if rule_samples:
+                return probe(libvirt, libvirt_qemu, root, image, digest, cancelled, "inspect", True,
+                             source_override=RuleSamplesProbe(command))
             storage = artifact_store if RETAIN_IMAGE in request else None
             materialized = (json.dumps(request[MATERIALIZED_SOURCE], separators=(",", ":")).encode("ascii")
                             if MATERIALIZED_SOURCE in request else None)
@@ -608,7 +650,7 @@ def main():
         run_server(path, worker_uid, origins, fingerprint, observe, launch, stopped,
                    "--enable-repair" in features, "--enable-verification" in features, "--enable-standard-build" in features,
                    "--enable-standard-baseline" in features, "--enable-standard-oci" in features, artifact_store is not None,
-                   verify_archive if artifact_store else None, read_archive if artifact_store else None)
+                   verify_archive if artifact_store else None, read_archive if artifact_store else None, "--enable-rule-samples" in features)
     except (ImportError, OSError, ValueError, Rejected, SessionRejected, SourceRejected):
         print("Qualified inspection controller could not start.", file=sys.stderr)
         return 1

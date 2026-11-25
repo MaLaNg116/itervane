@@ -82,6 +82,14 @@ it.each(['version_mismatch', 'incomplete_coverage', 'invalid_match', 'command_fa
     expect(summarizeCodeRuleSamples(basis, [result('violation'), failed, result('lookalike')]).status).toBe('unavailable');
   });
 
+it('records only an exit code and a bounded category from scanner failure output', () => {
+  const { basis } = prepareCodeRuleValidation(code, reference, profile);
+  const result = normalizeCodeRuleSample(basis, 'violation', { exitCode: 1, stdout: 'untrusted report',
+    stderr: 'ModuleNotFoundError: No module named "untrusted module detail"' });
+  expect(result).toMatchObject({ status: 'unavailable', reason: 'command_failed', detail: { exitCode: 1, cause: 'import' } });
+  expect(JSON.stringify(result)).not.toContain('untrusted');
+});
+
 it('requires Runbook scope, both approvals, attempts and independent protected readback', () => {
   if (runbook.kind !== 'runbook') throw new Error('Invalid Runbook fixture');
   expect(evaluateRunbookSamples(runbook)).toEqual({

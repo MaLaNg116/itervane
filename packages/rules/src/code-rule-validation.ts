@@ -31,7 +31,16 @@ export function prepareCodeRuleValidation(rawCandidate: unknown, reference: { ca
   return { sha256: digest(JSON.stringify(basis)), basis, config, files };
 }
 
-type ScannerRun = { exitCode: number | null; timedOut?: boolean; stdout: string };
+type ScannerRun = { exitCode: number | null; timedOut?: boolean; stdout: string; stderr?: string };
+
+function commandFailureCause(output: string) {
+  if (/CPU ISA level is lower than required|Illegal instruction|semgrep-core exit code:\s*-4\b/i.test(output)) return 'illegal_instruction';
+  if (/error while loading shared libraries|cannot open shared object file|GLIBC_[0-9.]+.*not found/i.test(output)) return 'dependency';
+  if (/ModuleNotFoundError:|ImportError:/i.test(output)) return 'import';
+  if (/PermissionError:|Read-only file system|No space left on device|File size limit exceeded/i.test(output)) return 'filesystem';
+  if (/semgrep-core (?:exit code:|exited with)/i.test(output)) return 'core_exit';
+  return 'other';
+}
 
 export function normalizeCodeRuleSample(basis: CodeRuleValidationBasis, name: RuleSampleKind, run: ScannerRun): CodeRuleSampleObservation {
   const sample = basis.samples.find(item => item.name === name);
@@ -40,7 +49,8 @@ export function normalizeCodeRuleSample(basis: CodeRuleValidationBasis, name: Ru
     ({ ...sample, status: 'unavailable' as const, reason });
   if (run.timedOut) return unavailable('timeout');
   if (run.exitCode === null) return unavailable('engine_unavailable');
-  if (run.exitCode !== 0) return unavailable('command_failed');
+  if (run.exitCode !== 0) return { ...unavailable('command_failed'), detail: { exitCode: run.exitCode,
+    cause: commandFailureCause((run.stderr ?? '') + '\n' + run.stdout) } };
   if (!run.stdout.isWellFormed() || Buffer.byteLength(run.stdout) > maxSemgrepReportBytes) return unavailable('invalid_report');
   let raw: unknown;
   try { raw = JSON.parse(run.stdout); } catch { return unavailable('invalid_report'); }

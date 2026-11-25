@@ -7,10 +7,10 @@ from pathlib import Path
 from uuid import UUID
 
 from guest_job import ProtocolError
-from native_source import SourceProbe, maintainer_source
+from native_source import RuleSamplesProbe, SourceProbe, maintainer_source
 from oci_artifacts import ArtifactStore
 from source_gateway import SourceRejected
-from source_wire import CLOSED, OCI_ARCHIVE_FORMAT, QUALIFIED_START, RECEIPT, START, SourceWire
+from source_wire import CLOSED, MAX_RULE_VALIDATION_PROOF, OCI_ARCHIVE_FORMAT, QUALIFIED_START, RECEIPT, RULE_SAMPLES_START, START, SourceWire
 
 
 RUN = "06d5d64c-664b-4c02-9bcc-48cec79e7696"
@@ -83,6 +83,25 @@ class SourceExchangeTest(unittest.TestCase):
             with self.subTest(frames=len(frames)), self.assertRaises(ProtocolError):
                 self.exchange(frames)
             self.assertIsNone(self.probe.evidence)
+
+    def test_rule_samples_use_a_distinct_frame_and_bind_the_guest_to_the_command(self):
+        command = b'{"version":1}'
+        proof = {"commandSha256": hashlib.sha256(command).hexdigest()}
+        self.probe = RuleSamplesProbe(command)
+        code, guest = self.exchange([(b"Z", json.dumps({"domainId": RUN, "proof": proof}).encode())])
+        self.assertEqual(code, "rule_samples_recorded")
+        self.assertEqual(guest.receive({b"T": RULE_SAMPLES_START.size})[1], RULE_SAMPLES_START.pack(self.identity))
+        self.assertEqual(guest.receive({b"W": len(command)})[1], command)
+        self.assertEqual(self.probe.proof, proof)
+        for payload in (
+            json.dumps({"domainId": "replaced", "proof": proof}).encode(),
+            json.dumps({"domainId": RUN, "proof": {"commandSha256": "changed"}}).encode(),
+            b"x" * (MAX_RULE_VALIDATION_PROOF + 1),
+        ):
+            self.probe = RuleSamplesProbe(command)
+            with self.assertRaises(ProtocolError):
+                self.exchange([(b"Z", payload)])
+            self.assertIsNone(self.probe.proof)
 
     def test_scan_receipt_must_match_the_acquired_objects_and_run(self):
         self.probe.inspect = True

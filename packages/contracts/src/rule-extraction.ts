@@ -12,7 +12,7 @@ const candidateBase = {
   key: ruleIdSchema, text: z.strictObject({ en: localized, 'zh-CN': localized }),
 };
 const sampleText = limitedTextSchema.pipe(z.string().max(1_600));
-const codeCandidate = z.strictObject({
+export const codeRuleCandidateSchema = z.strictObject({
   ...candidateBase, kind: z.literal('code_rule'),
   check: z.strictObject({ engine: z.literal('semgrep_ce'), language: z.enum(['javascript', 'typescript']),
     pattern: shortText, patternNot: shortText.optional(),
@@ -37,7 +37,7 @@ const runbookCandidate = z.strictObject({
   }),
 }).refine(value => [value.samples.eligible, value.samples.stale, value.samples.unapproved]
   .every(sample => value.when.observedStates.includes(sample.observedState)));
-export const learningCandidateSchema = z.discriminatedUnion('kind', [codeCandidate, runbookCandidate]);
+export const learningCandidateSchema = z.discriminatedUnion('kind', [codeRuleCandidateSchema, runbookCandidate]);
 export type LearningCandidate = z.infer<typeof learningCandidateSchema>;
 
 export const learningCaseReferenceSchema = z.strictObject({ caseId: idSchema, sha256: sha256Schema });

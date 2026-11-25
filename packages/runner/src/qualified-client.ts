@@ -11,6 +11,8 @@ import {
   qualifiedRepairRequestSchema, qualifiedRepairResponseSchema, sha256Schema,
   qualifiedImageArchiveSchema, qualifiedOciArchiveVerificationSchema, type QualifiedImageArchive, type QualifiedOciArchiveVerification,
   qualifiedVerificationRequestSchema, qualifiedVerificationResponseSchema, verificationProofByteLimit, type FormalVerificationInput,
+  qualifiedRuleValidationRequestSchema, qualifiedRuleValidationResponseSchema, ruleValidationProofByteLimit, type QualifiedRuleValidationRequest,
+  type QualifiedRuleValidationResponse,
   type QualifiedInspectionReceipt, type QualifiedInspectionRequest, type QualifiedInspectionResponse,
   type InspectionPlan, type QualifiedInspectionScope, type QualifiedInspectionStatus,
   type QualifiedRepairReceipt, type QualifiedRepairRequest, type QualifiedRepairResponse, type RepairPatch, type RepairWorkspace,
@@ -23,6 +25,7 @@ import { canonicalRepairCommand, canonicalRepairObservation, protectedRepairPath
 import { scanFindingId } from './scan-finding-id.js';
 import { sourcePath } from './snapshot.js';
 import { canonicalVerificationCommand } from './verification-command.js';
+import { canonicalRuleValidationCommand, verifyQualifiedRuleValidationReceipt } from './rule-validation-command.js';
 
 const requestLimit = 2048;
 const responseLimit = 4 * 1024 * 1024 + 8192;
@@ -39,6 +42,7 @@ type RepairRequest = QualifiedRepairRequest | QualifiedRepairObservationRequest;
 type RepairReceipt = QualifiedRepairReceipt | QualifiedRepairObservationReceipt;
 type VerificationCoordinates = Pick<QualifiedVerificationRequest, 'requestId' | 'fence' | 'workspaceSha256' | 'origin'>;
 type VerificationCommand = ReturnType<typeof canonicalVerificationCommand>;
+type RuleValidationCoordinates = Pick<QualifiedRuleValidationRequest, 'requestId' | 'taskId' | 'runId' | 'projectId' | 'generation' | 'fence' | 'workspaceSha256'>;
 
 class SocketReader {
   private readonly iterator;
@@ -456,8 +460,26 @@ export class QualifiedInspectionClient {
     }, command.bytes, verificationProofByteLimit + 8192);
   }
 
-  private async execute<Response extends QualifiedInspectionResponse | QualifiedRepairResponse | QualifiedRepairObservationResponse | QualifiedVerificationResponse>(
-    request: QualifiedInspectionRequest | RepairRequest | QualifiedVerificationRequest, authorize: () => Promise<void>, signal: AbortSignal | undefined,
+  async validateRuleSamples(coordinates: RuleValidationCoordinates, candidate: unknown, reference: Parameters<typeof canonicalRuleValidationCommand>[1],
+    profile: unknown, authorize: () => Promise<void>, signal?: AbortSignal): Promise<QualifiedRuleValidationResponse> {
+    const command = canonicalRuleValidationCommand(candidate, reference, profile);
+    const { profile: checkedProfile } = command.prepared.basis;
+    if (checkedProfile.runnerImageSha256 !== this.imageSha256) throw new Error('runner_rule_validation_image_binding');
+    const request = qualifiedRuleValidationRequestSchema.parse({ ...coordinates, version: 1, operation: 'validate_rule_samples',
+      runnerImageSha256: checkedProfile.runnerImageSha256, basisSha256: command.prepared.sha256, engineInputsSha256: checkedProfile.engineInputsSha256,
+      commandSha256: sha256(command.bytes), commandBytes: command.bytes.length,
+    });
+    return this.execute(request, authorize, signal, line => {
+      const response = qualifiedRuleValidationResponseSchema.parse(JSON.parse(line));
+      if (response.kind === 'rule_samples_receipt') verifyQualifiedRuleValidationReceipt(response, request, command);
+      return response;
+    }, command.bytes, ruleValidationProofByteLimit + 4096);
+  }
+
+  private async execute<Response extends QualifiedInspectionResponse | QualifiedRepairResponse | QualifiedRepairObservationResponse | QualifiedVerificationResponse
+    | QualifiedRuleValidationResponse>(
+    request: QualifiedInspectionRequest | RepairRequest | QualifiedVerificationRequest | QualifiedRuleValidationRequest,
+    authorize: () => Promise<void>, signal: AbortSignal | undefined,
     decode: (line: string) => Response, command?: Buffer,
     maximum = command ? repairResponseLimit : responseLimit,
   ): Promise<Response | Rejected> {

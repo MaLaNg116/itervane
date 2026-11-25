@@ -11,6 +11,8 @@ TOOLS = Path("/usr/local/libexec/itervane-inspection")
 SOURCE = Path("/var/lib/itervane-inspection-source/ready")
 OUTPUT = Path("/var/lib/itervane-inspection-output")
 PORT = Path("/dev/virtio-ports/org.itervane.runner.source.0")
+RULE_SAMPLES_COMMAND = SOURCE.parent / "rule-validation-command.json"
+RULE_ENGINE = Path("/usr/local/libexec/itervane-semgrep")
 
 
 def verify_boundary():
@@ -20,10 +22,13 @@ def verify_boundary():
     status = Path("/proc/self/status").read_text(encoding="ascii")
     if "NoNewPrivs:\t1\n" not in status:
         raise RuntimeError()
-    readonly = [SOURCE / "worktree", SOURCE / "npm", TOOLS / "policy", TOOLS / "cache"]
-    candidate = SOURCE.with_name("candidate")
-    if candidate.exists() or candidate.is_symlink():
-        readonly.extend((candidate / "worktree", candidate / "npm"))
+    if RULE_SAMPLES_COMMAND.is_file() and not RULE_SAMPLES_COMMAND.is_symlink():
+        readonly = [SOURCE.parent, TOOLS, RULE_ENGINE]
+    else:
+        readonly = [SOURCE / "worktree", SOURCE / "npm", TOOLS / "policy", TOOLS / "cache"]
+        candidate = SOURCE.with_name("candidate")
+        if candidate.exists() or candidate.is_symlink():
+            readonly.extend((candidate / "worktree", candidate / "npm"))
     for path in readonly:
         if not os.statvfs(path).f_flag & os.ST_RDONLY:
             raise RuntimeError()
