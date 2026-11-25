@@ -1,8 +1,8 @@
 import { Annotation, END, START, StateGraph, type BaseCheckpointSaver } from '@langchain/langgraph';
-import type { FormalRepairRetryContext, LinkedHealthRepairContext, OperationsDiagnosisInput } from '@itervane/contracts';
+import { requiredAuditScanners, type FormalRepairRetryContext, type LinkedHealthRepairContext, type OperationsDiagnosisInput } from '@itervane/contracts';
 import type { ConversationEntry, ModelAdapter } from '@itervane/model';
 import {
-  agentSpecSchema, auditScannerSchema, checkKinds, sha256, type AgentSpec, type AgentEvidence, type AgentOrigin,
+  agentSpecSchema, checkKinds, sha256, type AgentSpec, type AgentEvidence, type AgentOrigin,
   type Candidate, type AuditReport, type AgentRole, type DeliveryRole,
 } from './contracts.js';
 import { agentPrompt, agentText, type AgentReason, type Feedback } from './messages.js';
@@ -26,7 +26,8 @@ export interface AgentHost {
 }
 export type AgentFixtureHost = AgentHost;
 type HarnessOptions = { model: ModelAdapter; checkpointer: BaseCheckpointSaver; host: AgentHost };
-type FormalAuditProfile = { origin: 'formal_audit'; inputSha256: string; providerSha256: string; ruleIds: readonly string[]; healthReproduction?: true };
+type FormalAuditProfile = { origin: 'formal_audit'; inputSha256: string; providerSha256: string; ruleIds: readonly string[];
+  healthReproduction?: true; publishedCode?: true };
 type FormalRepairProfile = { origin: 'formal_repair'; inputSha256: string; providerSha256: string; findings: readonly RepairFindingSummary[];
   previousVerification?: FormalRepairRetryContext; healthReproduction?: LinkedHealthRepairContext };
 type FormalVerificationProfile = {
@@ -90,7 +91,7 @@ function currentEvidence(state: AgentState) {
 function missingObservations(role: AgentRole, entries: AgentEvidence[], profile: HarnessProfile) {
   const { origin } = profile;
   if (origin === 'formal_audit') return [
-    ...auditScannerSchema.options.filter(scanner => !hasObservation(entries, { name: 'read_scan', args: { scanner } })),
+    ...requiredAuditScanners(profile.publishedCode === true).filter(scanner => !hasObservation(entries, { name: 'read_scan', args: { scanner } })),
     ...(profile.healthReproduction && !hasObservation(entries, { name: 'read_health_reproduction', args: {} }) ? ['health_reproduction'] : []),
   ];
   if (origin === 'formal_repair') {
@@ -186,10 +187,10 @@ function nextRole(state: AgentState, role: DeliveryRole): AgentState {
   return { ...state, role, currentEvidence: [], stalled: 0, feedback: null };
 }
 
-function finish(state: AgentState, spec: AgentSpec, input: unknown, origin: AgentOrigin): AgentState | undefined {
+function finish(state: AgentState, spec: AgentSpec, input: unknown, origin: AgentOrigin, publishedCode: boolean): AgentState | undefined {
   const evidence = currentEvidence(state);
   if (origin === 'formal_audit') {
-    const audit = finishFormalAudit(evidence, input, spec.locale);
+    const audit = finishFormalAudit(evidence, input, spec.locale, publishedCode);
     if (!audit) return;
     const audited = { ...state, audit };
     return audit.coverage === 'complete' && !audit.hypotheses.length
@@ -285,6 +286,7 @@ function createHarness<Profile extends HarnessProfile>({ model, checkpointer, ho
     const extracting = profile.origin === 'formal_rule_extraction';
     const ruleIds = profile.origin === 'formal_audit' ? profile.ruleIds : [];
     const linkedHealth = profile.origin === 'formal_audit' && profile.healthReproduction === true;
+    const publishedCode = profile.origin === 'formal_audit' && profile.publishedCode === true;
     const repairFindingIds = repairing ? profile.findings.map(item => item.id) : [];
     if (repairing && profile.healthReproduction) repairFindingIds.push(profile.healthReproduction.receiptSha256);
     const threadPrefix = formal ? initialRole(origin) : 'fixture-agent';
@@ -292,6 +294,7 @@ function createHarness<Profile extends HarnessProfile>({ model, checkpointer, ho
       agentReport<Profile['origin']>(origin, spec, bindingSha256, status, reason, state, checkpointId);
     const permits = (state: AgentState, call: PlannedTool) => canCall(state.role, call.name, origin)
       && (!formal || call.name !== 'read_rule' || ruleIds.includes(call.args.ruleId))
+      && (call.name !== 'read_scan' || requiredAuditScanners(publishedCode).includes(call.args.scanner))
       && (call.name !== 'read_health_reproduction' || linkedHealth)
       && (!repairing || !currentEvidence(state).some(item => item.data.kind === 'repair_candidate'))
       && (call.name !== 'read_verification' || pendingVerificationSections(currentEvidence(state)).includes(call.args.section))
@@ -363,7 +366,7 @@ function createHarness<Profile extends HarnessProfile>({ model, checkpointer, ho
         if (before) return { state: before };
         const system = agentPrompt(spec.locale, state.role, origin);
         const entries = currentEvidence(state);
-        const tools = toolDefinitions(spec.locale, state.role, entries, origin, ruleIds, repairFindingIds, linkedHealth);
+        const tools = toolDefinitions(spec.locale, state.role, entries, origin, ruleIds, repairFindingIds, linkedHealth, publishedCode);
         const reservedBytes = Buffer.byteLength(system) + (formal ? Buffer.byteLength(JSON.stringify(tools)) : 0);
         const messages = conversation(spec, state, entries, profile, reservedBytes);
         if (!messages) return { state: stopped(state, 'context_budget') };
@@ -394,7 +397,7 @@ function createHarness<Profile extends HarnessProfile>({ model, checkpointer, ho
               return { state: stalled(state, 'verification_text_too_long') };
             }
           }
-          return { state: finish(state, spec, call.input, origin) ?? stalled(state, 'insufficient_evidence') };
+          return { state: finish(state, spec, call.input, origin, publishedCode) ?? stalled(state, 'insufficient_evidence') };
         }
         const planned = plannedToolSchema.safeParse({ name: call.name, args: call.input });
         if (!planned.success || !permits(state, planned.data)) return { state: stalled(state, 'invalid_call') };

@@ -5,6 +5,7 @@ import { sha256Schema } from './inspection.js';
 import { catalogSnapshotSchema } from './preaudit.js';
 import { idSchema, sourceRefSchema } from './primitives.js';
 import { normalizedScannerFindingSchema } from './qualified-inspection.js';
+import { codeRuleLanguageSchema, publishedCodeScanMatchLimit } from './published-code-scan.js';
 
 export const formalAuditInputSchema = z.strictObject({
   version: z.literal(1), taskId: idSchema, runId: idSchema, projectId: idSchema, generation: z.int().positive(),
@@ -16,8 +17,15 @@ export const formalAuditInputSchema = z.strictObject({
 export type FormalAuditInput = z.infer<typeof formalAuditInputSchema>;
 
 export const auditModelProtocolSchema = z.enum(['anthropic', 'openai']);
-export const auditScannerSchema = z.enum(['gitleaks', 'trivy']);
+const platformAuditScanners = ['gitleaks', 'trivy'] as const;
+export const auditScannerSchema = z.enum([...platformAuditScanners, 'semgrep_ce']);
+export type AuditScanner = z.infer<typeof auditScannerSchema>;
+export function requiredAuditScanners(publishedCode: boolean): readonly AuditScanner[] {
+  return publishedCode ? auditScannerSchema.options : platformAuditScanners;
+}
 export const auditFindingsPerScan = 8;
+export const auditChecklistFindingLimit = auditScannerSchema.options.length * auditFindingsPerScan;
+export const auditScanFindingLimit = codeRuleLanguageSchema.options.length * publishedCodeScanMatchLimit;
 export const formalAuditReasonSchema = z.enum([
   'audit_complete', 'audit_incomplete', 'manual_review', 'deadline', 'turn_budget', 'tool_budget', 'token_budget',
   'context_budget', 'no_progress', 'provider_error', 'invalid_receipt', 'interrupted_action', 'incompatible_checkpoint',
@@ -26,7 +34,7 @@ const auditText = z.string().trim().min(1).max(480);
 const citations = z.array(sha256Schema).min(1).max(8).refine(ids => new Set(ids).size === ids.length);
 const evidence = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('scan'), id: sha256Schema, scanner: auditScannerSchema, version: z.string().regex(/^\d+\.\d+\.\d+$/),
-    policySha256: sha256Schema, databaseSha256: sha256Schema.nullable(), totalFindings: z.int().min(0).max(2000),
+    policySha256: sha256Schema, databaseSha256: sha256Schema.nullable(), totalFindings: z.int().min(0).max(auditScanFindingLimit),
     findingIds: z.array(sha256Schema).max(auditFindingsPerScan),
   }),
   z.strictObject({ kind: z.literal('rule'), id: sha256Schema, ruleId: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/), sha256: sha256Schema }),
@@ -45,7 +53,7 @@ export const formalAuditResultSchema = z.strictObject({
     hypotheses: z.array(z.strictObject({ description: auditText, evidenceIds: citations })).max(6),
     findings: z.array(normalizedScannerFindingSchema.extend({
       scanner: auditScannerSchema, certainty: z.enum(['confirmed', 'suspected']), impact: auditText, suggestion: auditText,
-    })).max(2 * auditFindingsPerScan),
+    })).max(auditChecklistFindingLimit),
   }).nullable(),
 }).refine(record => (record.status === 'completed') === (record.reason === 'audit_complete')
   && (record.status === 'completed' ? record.checklist?.coverage === 'complete' : true));

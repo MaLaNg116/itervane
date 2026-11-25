@@ -1,29 +1,51 @@
 import {
-  formalAuditInputSchema, qualifiedInspectionResponseSchema, type FormalAuditInput, type Locale, type QualifiedInspectionReceipt,
+  formalAuditInputSchema, qualifiedInspectionResponseSchema, requiredAuditScanners,
+  type AuditScanner, type FormalAuditInput, type Locale, type QualifiedInspectionReceipt,
 } from '@itervane/contracts';
 import type { ModelAdapter } from '@itervane/model';
 import type { BaseCheckpointSaver } from '@langchain/langgraph';
-import { auditFindingsPerScan, auditScannerSchema, formalReceiptSchema, sha256, shaSchema, type AgentSpec, type FormalAuditReceipt } from './contracts.js';
+import { auditFindingsPerScan, formalReceiptSchema, sha256, shaSchema, type AgentSpec, type FormalAuditReceipt } from './contracts.js';
 import { createFormalAuditHarness, type AgentHost, type AgentRunOptions } from './harness.js';
 import { agentText } from './messages.js';
 import { finishFormalAudit } from './results.js';
 
 type Scan = QualifiedInspectionReceipt['snapshot']['reports'][number];
+type AuditScan = Pick<Scan, 'version' | 'policySha256' | 'findings' | 'database'> & { scanner: AuditScanner };
+type ProjectedScan = Extract<FormalAuditReceipt['data'], { kind: 'scan' }>;
 const severityRank = { critical: 0, high: 1, medium: 2, low: 3, unknown: 4 };
 const auditLimits: AgentSpec['limits'] = {
   maxTurns: 12, maxToolCalls: 8, maxTokens: 20_000, maxContextBytes: 32_768,
   maxDurationMs: 90_000, maxStalledTurns: 3, maxRepairs: 1,
 };
 
-function projectScan(scan: Scan, inspectionSha256: string, locale: Locale): Extract<FormalAuditReceipt['data'], { kind: 'scan' }> {
+export function publishedAuditScan(receipt: QualifiedInspectionReceipt): AuditScan | undefined {
+  const { scope, snapshot } = receipt;
+  const recorded = snapshot.publishedCode;
+  if (!recorded) return;
+  const { scan } = recorded;
+  const { basis, reports } = scan.document;
+  if (sha256(JSON.stringify(scan.document)) !== scan.sha256 || recorded.commandSha256 !== scope.publishedCode?.commandSha256
+      || basis.taskId !== scope.taskId || basis.projectId !== scope.projectId || basis.manifestSha256 !== snapshot.manifestSha256
+      || basis.source.repositoryId !== scope.repositoryId || basis.source.commit !== scope.commit
+      || basis.profile.runnerImageSha256 !== receipt.imageSha256 || reports.some(report => report.status === 'unavailable')) {
+    throw new Error('formal_audit_published_scan_binding');
+  }
+  const findings = reports.flatMap(report => report.status === 'checked' ? report.findings.map(match => ({
+    id: sha256(JSON.stringify([scan.sha256, match.ruleKey, match.path, match.start, match.end])),
+    ruleId: match.ruleKey, path: match.path, line: match.start.line, severity: 'unknown' as const,
+  })) : []);
+  return { scanner: 'semgrep_ce', version: basis.profile.engineVersion, policySha256: basis.ruleSetSha256, findings, database: null };
+}
+
+function projectScan(scan: AuditScan, inspectionSha256: string, locale: Locale): ProjectedScan {
   const text = agentText(locale).formal;
-  const dependency = scan.scanner === 'trivy';
+  const title = { gitleaks: text.secret, trivy: text.dependency, semgrep_ce: text.publishedRule }[scan.scanner];
   // The authoritative receipt retains the exact path. Only a line number and opaque finding ID reach the model.
   const findings = scan.findings.toSorted((left, right) =>
     severityRank[left.severity] - severityRank[right.severity] || left.id.localeCompare(right.id))
     .slice(0, auditFindingsPerScan).map(({ id, ruleId, severity, line }) => ({
-      id, ruleId, severity, certainty: dependency ? 'confirmed' as const : 'suspected' as const,
-      title: dependency ? text.dependency : text.secret, location: line === null ? text.file : `${text.line} ${line}`,
+      id, ruleId, severity, certainty: scan.scanner === 'gitleaks' ? 'suspected' as const : 'confirmed' as const,
+      title, location: line === null ? text.file : `${text.line} ${line}`,
     }));
   return { kind: 'scan', scanner: scan.scanner, version: scan.version, inspectionSha256, policySha256: scan.policySha256,
     databaseSha256: scan.database?.sha256 ?? null, totalFindings: scan.findings.length, findings };
@@ -48,12 +70,14 @@ export function createFormalAudit({ input, inspection, checkpointer, model, prov
     || receipt.snapshot.runId !== receipt.domainId || receipt.snapshot.repositoryId !== scope.repositoryId || receipt.snapshot.commit !== scope.commit
     || pinned.snapshotSha256 !== receipt.snapshot.manifestSha256) throw new Error('formal_audit_receipt_binding');
 
-  const reports = new Map(receipt.snapshot.reports.map(scan => [scan.scanner, scan]));
-  const scans = new Map(auditScannerSchema.options.map(scanner => {
-    const scan = reports.get(scanner);
+  const scans = new Map<AuditScanner, ProjectedScan>();
+  for (const scanner of requiredAuditScanners(false)) {
+    const scan = receipt.snapshot.reports.find(report => report.scanner === scanner);
     if (!scan || scan.status !== 'completed' || scan.snapshotSha256 !== pinned.snapshotSha256) throw new Error('formal_audit_scan_incomplete');
-    return [scanner, projectScan(scan, pinned.receiptSha256, document.locale)] as const;
-  }));
+    scans.set(scanner, projectScan(scan, pinned.receiptSha256, document.locale));
+  }
+  const published = publishedAuditScan(receipt);
+  if (published) scans.set(published.scanner, projectScan(published, pinned.receiptSha256, document.locale));
   const rules = new Map(document.catalog.rules.map(rule => {
     const { guidance, limitation } = rule.material.text[document.locale];
     return [rule.material.id, { kind: 'rule' as const, ruleId: rule.material.id, sha256: rule.sha256,
@@ -80,11 +104,13 @@ export function createFormalAudit({ input, inspection, checkpointer, model, prov
   const spec: AgentSpec = {
     taskId: document.taskId, runId: document.runId, projectId: document.projectId, generation: document.generation,
     source: document.source, snapshotSha256: pinned.snapshotSha256, catalogSha256: document.catalog.sha256,
-    baselineSha256: pinned.planSha256, locale: document.locale, goal: agentText(document.locale).formal.goal, limits: auditLimits,
+    baselineSha256: pinned.planSha256, locale: document.locale,
+    goal: published ? agentText(document.locale).formal.goalWithPublished : agentText(document.locale).formal.goal, limits: auditLimits,
   };
   const harness = createFormalAuditHarness({ checkpointer, model, host }, {
     inputSha256: input.sha256, providerSha256: shaSchema.parse(providerSha256), ruleIds: [...rules.keys()],
     ...(reproduction ? { healthReproduction: true as const } : {}),
+    ...(published ? { publishedCode: true as const } : {}),
   });
   return {
     async run(options?: AgentRunOptions) {
@@ -104,7 +130,7 @@ export function createFormalAudit({ input, inspection, checkpointer, model, prov
         const { summary, evidenceIds, hypotheses, findings } = report.audit;
         const audit = finishFormalAudit(report.evidence, { summary, evidenceIds, hypotheses,
           explanations: findings.map(({ id, impact, suggestion }) => ({ findingId: id, impact, suggestion })),
-        }, document.locale);
+        }, document.locale, Boolean(published));
         if (JSON.stringify(audit) !== JSON.stringify(report.audit)) throw new Error('formal_audit_checkpoint_conclusion');
       }
       return report;

@@ -1,4 +1,5 @@
-import { finishOperationsInputSchema, finishRuleExtractionInputSchema, operationsDiagnosisSections, operationsDiagnosisSectionSchema, type Locale } from '@itervane/contracts';
+import { finishOperationsInputSchema, finishRuleExtractionInputSchema, operationsDiagnosisSections, operationsDiagnosisSectionSchema,
+  requiredAuditScanners, type Locale } from '@itervane/contracts';
 import type { ToolDefinition } from '@itervane/model';
 import { z } from 'zod';
 import {
@@ -95,12 +96,12 @@ export function hasObservation(evidence: readonly AgentEvidence[], call: Planned
   });
 }
 
-function formalCompletionSchema(evidence: readonly AgentEvidence[], hypothesisGuidance: string) {
+function formalCompletionSchema(evidence: readonly AgentEvidence[], hypothesisGuidance: string, minimum: number) {
   const findingIds = evidence.flatMap(({ data }) => data.kind === 'scan' ? data.findings.map(item => item.id) : []);
   const audit = completionSchemas.audit;
   const explanation = audit.shape.explanations.element;
   return audit.extend({
-    evidenceIds: z.array(z.enum(evidence.map(item => item.id))).min(auditScannerSchema.options.length).max(evidence.length),
+    evidenceIds: z.array(z.enum(evidence.map(item => item.id))).min(minimum).max(evidence.length),
     explanations: z.array(findingIds.length ? explanation.extend({ findingId: z.enum(findingIds) }) : explanation).length(findingIds.length),
     hypotheses: audit.shape.hypotheses.describe(hypothesisGuidance),
   });
@@ -124,13 +125,15 @@ function operationsCompletionInputs(evidence: readonly AgentEvidence[]) {
 }
 
 export function toolDefinitions(locale: Locale, role: AgentRole, evidence: readonly AgentEvidence[],
-  origin: AgentOrigin, ruleIds: readonly string[] = [], repairFindingIds: readonly string[] = [], linkedHealth = false): ToolDefinition[] {
+  origin: AgentOrigin, ruleIds: readonly string[] = [], repairFindingIds: readonly string[] = [], linkedHealth = false,
+  publishedCode = false): ToolDefinition[] {
   const messages = agentText(locale);
   const text = messages.tool;
   const formal = origin === 'formal_audit';
   const sections = contextSectionSchema.options.filter(section => !hasObservation(evidence, { name: 'read_context', args: { section } }));
   const checks = checkKindSchema.options.filter(check => !hasObservation(evidence, { name: 'check_candidate', args: { check } }));
-  const scanners = auditScannerSchema.options.filter(scanner => !hasObservation(evidence, { name: 'read_scan', args: { scanner } }));
+  const requiredScanners = requiredAuditScanners(publishedCode);
+  const scanners = requiredScanners.filter(scanner => !hasObservation(evidence, { name: 'read_scan', args: { scanner } }));
   const pendingReproduction = linkedHealth && !hasObservation(evidence, { name: 'read_health_reproduction', args: {} });
   const rules = ruleIds.filter(ruleId => !hasObservation(evidence, { name: 'read_rule', args: { ruleId } }));
   const pendingVerification = origin === 'formal_verification' ? pendingVerificationSections(evidence) : [];
@@ -166,7 +169,8 @@ export function toolDefinitions(locale: Locale, role: AgentRole, evidence: reado
   let finish: z.ZodType | null;
   let finishDescription: string = text.finish_role;
   if (formal) {
-    finish = role === 'audit' && scanners.length === 0 && !pendingReproduction ? formalCompletionSchema(evidence, messages.formal.hypotheses) : null;
+    finish = role === 'audit' && scanners.length === 0 && !pendingReproduction
+      ? formalCompletionSchema(evidence, messages.formal.hypotheses, requiredScanners.length) : null;
     finishDescription = messages.formal.finish;
   } else if (origin === 'formal_repair') {
     finish = candidates.length ? finishRepairInputSchema.extend({ evidenceId: z.enum(candidates) }) : null;
