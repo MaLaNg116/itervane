@@ -558,7 +558,8 @@ export const formalRescanAttempts = domain.table('formal_rescan_attempts', {
     AND ${t.settledFence} >= ${t.fence} AND ${t.settledWorkerId} IS NOT NULL AND ${t.settledAt} IS NOT NULL)) IS TRUE`),
   check('formal_rescan_attempt_receipt', sql`((${t.state} <> 'recorded' AND ${t.receiptSha256} IS NULL AND ${t.receipt} IS NULL) OR (
     ${t.state} = 'recorded' AND ${t.settledFence} = ${t.fence} AND ${t.settledWorkerId} = ${t.workerId}
-    AND ${t.receiptSha256} ~ '^[a-f0-9]{64}$' AND octet_length(${t.receipt}::text) <= 9437184
+    AND ${t.receiptSha256} ~ '^[a-f0-9]{64}$' AND octet_length(${t.receipt}::text)
+      <= CASE WHEN ${t.receipt}#>>'{scope,publishedCodeRuleSetSha256}' IS NULL THEN 9437184 ELSE 18874368 END
     AND ${t.receipt}->>'kind' = 'verification_receipt' AND ${t.receipt}->'cleanupConfirmed' = 'true'::jsonb
     AND ${t.receipt}->'sessionVerified' = 'true'::jsonb AND ${t.receipt}->>'originSha256' = ${t.originSha256}
     AND ${t.receipt}->>'imageSha256' = ${t.imageSha256} AND ${t.receipt}->>'domainId' = ${t.receipt}#>>'{snapshot,runId}'
