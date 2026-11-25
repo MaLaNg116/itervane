@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { freezeOperationsProposalSchema, idSchema, komodoReleaseTargetSchema, operationsProposalSchema, operationsRestorePlanSchema,
-  type OperationsProposal, type OperationsRestorePlan } from '@itervane/contracts';
+  operationsRunbookBindingSchema, type OperationsProposal, type OperationsRestorePlan } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { eq } from 'drizzle-orm';
 import type { VerifiedIdentity } from '../auth/identity.js';
@@ -13,6 +13,7 @@ import { readOperationsTaskRecord } from './operations-records.js';
 import { freezeOperationsRequest } from './operations-requests.js';
 import { readOperationsObservationTarget } from './operations-targets.js';
 import { databaseNow } from './releases.js';
+import { requireCurrentTaskRules } from './task-rule-snapshots.js';
 
 type Row = typeof operationsProposals.$inferSelect;
 
@@ -43,10 +44,21 @@ export async function readOperationsProposalBasis(tx: Transaction, task: typeof 
   const requester = await requireStoredActor(tx, task.requestedBy);
   const target = await readOperationsObservationTarget(tx, requester, request.document, { includePrevious: recommendation.code === 'review_rollback' });
   if (freezeOperationsRequest(target).sha256 !== request.sha256) throw new DomainError('version_conflict');
+  const releaseFact = diagnosis.facts.find(({ data }) => data.section === 'release');
+  const guidance = releaseFact?.data.section === 'release' ? releaseFact.data.result.runbooks : undefined;
+  const selection = recommendation.code === 'review_restart' ? guidance?.byState[state] : undefined;
+  if (selection?.status === 'ambiguous') throw new DomainError('unsupported_state');
+  let runbook: OperationsProposal['runbook'];
+  if (guidance && releaseFact && selection?.status === 'available') {
+    const { evidenceId } = releaseFact.fact;
+    if (!recommendation.evidenceIds.includes(evidenceId)) throw new DomainError('unsupported_state');
+    await requireCurrentTaskRules(tx, task, 'operations', guidance.snapshotSha256);
+    runbook = operationsRunbookBindingSchema.parse({ snapshotSha256: guidance.snapshotSha256, evidenceId, observedState: state, selection });
+  }
   let action: OperationsProposal['action'] = { kind: 'restart' };
   let restorePlan: OperationsRestorePlan | undefined;
   if (recommendation.code === 'review_rollback') {
-    const release = diagnosis.facts.find(({ data }) => data.section === 'release')?.data;
+    const release = releaseFact?.data;
     const priorFact = release?.section === 'release' ? release.result.previous : undefined;
     const previous = target.previous;
     if (!previous || !priorFact || previous.releaseOperationId !== previousReleaseOperationId
@@ -66,7 +78,7 @@ export async function readOperationsProposalBasis(tx: Transaction, task: typeof 
   const validUntil = new Date(diagnosis.recordedAt.getTime() + target.approvalTtlSeconds * 1_000);
   return { run, environmentId, validUntil, diagnosedAt: diagnosis.recordedAt, whiskers: target.whiskers, publishedVersion: target.version, restorePlan, document: {
     version: 1 as const, diagnosis: { taskId: task.id, runId: run.id, sha256: diagnosis.sha256, observedAt },
-    target: request.document, targetProofSha256: target.proofSha256, action, validUntil: validUntil.toISOString(),
+    target: request.document, targetProofSha256: target.proofSha256, action, validUntil: validUntil.toISOString(), ...(runbook ? { runbook } : {}),
   } };
 }
 

@@ -12,7 +12,7 @@ export async function lockRuleLibrary(tx: Transaction, workspaceId: string, writ
   await tx.execute(sql`SELECT itervane.lock_rule_library(${workspaceId}::uuid, ${writing}::boolean)`);
 }
 
-export async function recordTaskRuleSnapshot(tx: Transaction, task: { id: string; projectId: string }, purpose: RuleSnapshotPurpose) {
+async function currentTaskRules(tx: Transaction, task: { id: string; projectId: string }, purpose: RuleSnapshotPurpose) {
   const [project] = await tx.select({ workspaceId: projects.workspaceId }).from(projects).where(eq(projects.id, task.projectId));
   if (!project) throw new DomainError('not_found');
   await lockRuleLibrary(tx, project.workspaceId, false);
@@ -21,8 +21,18 @@ export async function recordTaskRuleSnapshot(tx: Transaction, task: { id: string
   `);
   const parsed = taskRuleSnapshotSchema.safeParse({ version: 1, taskId: task.id, projectId: task.projectId, purpose, entries: selected?.entries });
   if (!parsed.success) throw new DomainError('unavailable');
+  return parsed.data;
+}
+
+export async function recordTaskRuleSnapshot(tx: Transaction, task: { id: string; projectId: string }, purpose: RuleSnapshotPurpose) {
+  const document = await currentTaskRules(tx, task, purpose);
   await tx.insert(taskRuleSnapshots).values({ taskId: task.id, projectId: task.projectId, purpose,
-    sha256: digest(JSON.stringify(parsed.data)), document: parsed.data, createdAt: await databaseNow(tx) });
+    sha256: digest(JSON.stringify(document)), document, createdAt: await databaseNow(tx) });
+}
+
+/** Take the same shared library lock as admission while granting an effect against a frozen snapshot. */
+export async function requireCurrentTaskRules(tx: Transaction, task: { id: string; projectId: string }, purpose: RuleSnapshotPurpose, expectedSha256: string) {
+  if (digest(JSON.stringify(await currentTaskRules(tx, task, purpose))) !== expectedSha256) throw new DomainError('version_conflict');
 }
 
 export async function readTaskRuleSnapshot(tx: Transaction, task: { id: string; projectId: string }) {
