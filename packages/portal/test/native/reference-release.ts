@@ -24,9 +24,12 @@ import { untilResult } from './reference-browser.js';
 import { registerReferenceTarget } from './reference-registration.js';
 import { proveReferenceOperations } from './reference-operations.js';
 import { proveReferenceCodeRule, referenceHealthRevision } from './reference-code-rule.js';
+import { proveReferenceRestore } from './reference-restore.js';
 
 const execute = promisify(execFile);
 export const referenceReleaseRevision = '37ac62431fd9bf7b2a6c0f4b3f15d5d5f1f030b8';
+const referenceRestorePreviousRevision = '3a719ca44f306d30cdf2d27e9a6d3b954ed656f0';
+const referenceRestoreCurrentRevision = '5b9db1015069be891233231a7b947831ac46fe39';
 const standardRuntimePort = 38171;
 
 export type ReferenceToolCall = (name: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -59,6 +62,7 @@ export async function proveReferenceDevelopment(options: {
   operations?: { modelUrl: string; runbook: boolean; configureApi: (settings: Record<string, string>) => Promise<void> };
   healthRule?: { modelUrl: string; codeProfile: CodeRuleValidationProfile; sourceUrl: string;
     configureApi: (settings: Record<string, string>) => Promise<void> };
+  restore?: { modelUrl: string; configureApi: (settings: Record<string, string>) => Promise<void> };
 }) {
   const { client, page, projectId, repositoryId } = options;
   const shared = dirname(options.workerBundle);
@@ -84,10 +88,11 @@ export async function proveReferenceDevelopment(options: {
     return response.json() as Promise<unknown>;
   };
   try {
-    const commit = options.healthRule ? referenceHealthRevision : referenceReleaseRevision;
+    const commit = options.restore ? referenceRestorePreviousRevision : options.healthRule ? referenceHealthRevision : referenceReleaseRevision;
+    const dependencyRepair = commit === referenceReleaseRevision;
     const { task: initial } = admissionDtoSchema.parse(await call('start_audit', {
       projectId, source: { repositoryId, commit }, dataClass: 'public',
-      purpose: options.healthRule ? 'Release the pinned application for a health follow-up' : 'Repair and release the pinned synthetic reference application',
+      purpose: dependencyRepair ? 'Repair and release the pinned synthetic reference application' : 'Verify and release the pinned synthetic reference application',
       locale: 'en', idempotencyKey: randomUUID(),
     }));
     equal(initial.projectId, projectId);
@@ -96,7 +101,7 @@ export async function proveReferenceDevelopment(options: {
     const { current: verification, task } = await waitForReferenceVerification(call, taskId, runId => runId === initial.runId);
     ok(verification.source.status === 'compared');
     deepStrictEqual({ introduced: verification.source.introduced, resolved: verification.source.resolved,
-      remaining: verification.source.remaining }, { introduced: 0, resolved: options.healthRule ? 0 : 1, remaining: 0 });
+      remaining: verification.source.remaining }, { introduced: 0, resolved: Number(dependencyRepair), remaining: 0 });
     ok(verification.build.status === 'built' && verification.baseline.status === 'passed' && verification.image.status === 'scanned');
     const inspection = sourceInspectionDtoSchema.parse(await call('get_source_inspection', { taskId }));
     const audit = formalAuditDtoSchema.parse(await call('get_audit', { taskId }));
@@ -106,7 +111,7 @@ export async function proveReferenceDevelopment(options: {
     equal(audit.result.inspectionSha256, inspection.result.receiptSha256);
     equal(audit.result.snapshotSha256, inspection.result.snapshotSha256);
     let patchSha256: string | undefined;
-    if (options.healthRule) equal(audit.result.checklist?.findings.length, 0);
+    if (!dependencyRepair) equal(audit.result.checklist?.findings.length, 0);
     else {
       const repair = formalRepairDtoSchema.parse(await call('get_repair', { taskId }));
       ok(repair.status === 'recorded' && repair.result.status === 'candidate_ready');
@@ -276,6 +281,34 @@ export async function proveReferenceDevelopment(options: {
     const inspectionGuestId = idSchema.parse(guests?.inspection);
     const verificationGuestId = idSchema.parse(guests?.verification);
     notEqual(inspectionGuestId, verificationGuestId);
+    if (options.restore) {
+      phase = 'second_release';
+      const { task: admitted } = admissionDtoSchema.parse(await call('start_audit', {
+        projectId, source: { repositoryId, commit: referenceRestoreCurrentRevision }, dataClass: 'public',
+        purpose: 'Publish the other verified revision for the restore exercise', locale: 'en', idempotencyKey: randomUUID(),
+      }));
+      notEqual(admitted.id, task.id);
+      notEqual(admitted.runId, task.runId);
+      const next = await waitForReferenceVerification(call, admitted.id, runId => runId === admitted.runId);
+      ok(next.current.source.status === 'compared' && next.current.source.remaining === 0);
+      const second = await publish(next.task, next.current);
+      equal(second.candidate.manifest.source.commit, referenceRestoreCurrentRevision);
+      equal(candidate.manifest.source.commit, referenceRestorePreviousRevision);
+      equal(second.proof.mappingSha256, proof.mappingSha256);
+      equal(second.proof.update.deploymentId, proof.update.deploymentId);
+      notEqual(second.proof.operationId, proof.operationId);
+      notEqual(second.proof.manifestDigest, proof.manifestDigest);
+      notEqual(second.proof.runtime.configDigest, proof.runtime.configDigest);
+      notEqual(second.proof.runtime.version, proof.runtime.version);
+      notEqual(second.proof.runtime.containerId, proof.runtime.containerId);
+      phase = 'version_restore';
+      const versionRestore = await proveReferenceRestore({ directory: options.directory, origin: options.origin, projectId, page,
+        read: call, mcpToken: options.mcpToken, ...options.restore, database, databaseUrl: options.databaseUrl, shared, ca,
+        deployment: target, ingress, mapping, previous: proof, current: second.proof });
+      return { versionRestore: { ...versionRestore, deploymentId: target.binding.deploymentId, environmentId: mapping.environmentId,
+        mappingSha256: mapping.fingerprint, previousRevision: referenceRestorePreviousRevision, currentRevision: referenceRestoreCurrentRevision,
+        model: 'scripted_anthropic_fixture' } };
+    }
     let operations: Awaited<ReturnType<typeof proveReferenceOperations>> | undefined;
     if (options.operations) {
       phase = 'operations';
@@ -292,6 +325,7 @@ export async function proveReferenceDevelopment(options: {
   } catch (error) {
     if (phase === 'operations' && error instanceof Error && /^reference_operations_[a-z_]+$/.test(error.message)) throw error;
     if (phase === 'code_rule' && error instanceof Error && /^reference_code_rule_[a-z_]+$/.test(error.message)) throw error;
+    if (phase === 'version_restore' && error instanceof Error && /^reference_restore_[a-z_]+$/.test(error.message)) throw error;
     throw new Error('reference_release_' + phase);
   } finally {
     try { await resources.worker?.stop('TERM'); }

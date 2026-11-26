@@ -27,7 +27,8 @@ const [mode, workerBundle] = args;
 const runbookMode = mode === '--native-runbook';
 const operationsMode = mode === '--native-operations' || runbookMode;
 const codeRuleMode = mode === '--native-code-rule';
-const releaseMode = mode === '--native-release' || operationsMode || codeRuleMode;
+const restoreMode = mode === '--native-version-restore';
+const releaseMode = mode === '--native-release' || operationsMode || codeRuleMode || restoreMode;
 if (args.length && (args.length !== 2 || (!releaseMode && mode !== '--native-runner') || process.platform !== 'linux'
   || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted'
   || !workerBundle || !/^\/var\/lib\/libvirt\/images\/itervane-native\.[a-zA-Z0-9]{8}\/qualified\/worker\.mjs$/.test(workerBundle))) {
@@ -215,9 +216,9 @@ try {
       if (codeRuleMode) {
         codeProfile = codeRuleValidationProfileSchema.parse(JSON.parse(profiles.ITERVANE_CODE_RULE_VALIDATION_PROFILE ?? 'null'));
         equal(codeProfile.runnerImageSha256, image);
-      } else releaseSettings.push('ITERVANE_FORMAL_REPAIR=1', `ITERVANE_NPM_REPAIR_APPROVALS=${JSON.stringify([npmReleaseApproval])}`);
+      } else if (!restoreMode) releaseSettings.push('ITERVANE_FORMAL_REPAIR=1', `ITERVANE_NPM_REPAIR_APPROVALS=${JSON.stringify([npmReleaseApproval])}`);
     }
-    auditProvider = await auditProtocolFixture({ dependencyRepair: releaseMode && !codeRuleMode, linkedHealth: codeRuleMode });
+    auditProvider = await auditProtocolFixture({ dependencyRepair: releaseMode && !codeRuleMode && !restoreMode, linkedHealth: codeRuleMode });
     nativeWorker = await startScopedWorker(workerBundle, [...runnerEnvironment, ...releaseSettings,
       'ITERVANE_WORKER_POLL_MS=100', 'ITERVANE_AUDIT_MODEL_PROVIDER=anthropic',
       `ANTHROPIC_BASE_URL=${auditProvider.baseURL}`, `ANTHROPIC_MODEL=${auditFixtureModel}`],
@@ -295,10 +296,12 @@ try {
         });
       };
       const operations = operationsMode ? { modelUrl: auditProvider.baseURL, runbook: runbookMode, configureApi } : undefined;
+      const restore = restoreMode ? { modelUrl: auditProvider.baseURL, configureApi } : undefined;
       if (codeRuleMode) ok(codeProfile);
       const healthRule = codeProfile ? { modelUrl: auditProvider.baseURL, codeProfile, configureApi, sourceUrl: referenceSource } : undefined;
       development = await proveReferenceDevelopment({ directory, origin: install.portal, page, client, mcpToken,
-        ...resources, ...releaseWorkerSettings, ...(operations ? { operations } : {}), ...(healthRule ? { healthRule } : {}) });
+        ...resources, ...releaseWorkerSettings, ...(operations ? { operations } : {}), ...(healthRule ? { healthRule } : {}),
+        ...(restore ? { restore } : {}) });
     } else {
       ok(taskId);
       phase = 'mcp_read_task';
@@ -335,7 +338,7 @@ try {
     keycloakError: Boolean(document.getElementById('kc-error-message')), callbackPath: location.pathname === '/auth/callback',
     portalLanguageSelector: Boolean(document.querySelector('select[aria-label="Language"],select[aria-label="显示语言"]')),
   })).catch(() => undefined);
-  const detail = error instanceof Error && /^reference_(?:release|operations|code_rule)_[a-z_]+$/.test(error.message) ? error.message : undefined;
+  const detail = error instanceof Error && /^reference_(?:release|operations|code_rule|restore)_[a-z_]+$/.test(error.message) ? error.message : undefined;
   console.error(JSON.stringify({ error: 'reference_probe_failed', phase, detail, loginView }));
   process.exitCode = 1;
 } finally {
