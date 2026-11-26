@@ -15,6 +15,8 @@ on:
       - 'packages/portal/test/native/reference-release.ts'
       - 'packages/portal/test/native/reference-operations.ts'
       - 'packages/portal/test/native/reference-registration.ts'
+      - 'packages/portal/test/native/reference-browser.ts'
+      - 'packages/portal/test/native/reference-learning.ts'
       - 'packages/control-plane/test/helpers/**'
       - 'packages/control-plane/test/native/**'
       - 'packages/contracts/src/**'
@@ -259,6 +261,17 @@ jobs:
             $operations.independentReader and $operations.incidentRecovered and $operations.executionSlotReleased and $operations.httpMcpAgreement and
             $operations.healthStatus == 200 and ($operations.anonymousStatus == 401 or $operations.anonymousStatus == 403) and
             ([$operations.diagnosisSha256, $operations.recoverySha256] | all(test("^[a-f0-9]{64}$")))' \
+            .reports/p0/runner-reference-development.json >/dev/null
+      - name: Require approved Runbook reuse in a later reference recovery
+        if: matrix.scenario == 'reference-development-1'
+        run: |
+          jq -e '.development.operations as $first | $first.runbook as $rule | $rule.reused as $later |
+            $first.recoverySha256 == $rule.recoverySha256 and $rule.publication.sequence == 1 and
+            $later.releaseOperationId == $first.releaseOperationId and $later.incidentId != $first.incidentId and
+            $later.runId != $first.runId and $later.approvalId != $first.approvalId and $later.executionId != $first.executionId and
+            $later.sampleSequence > $first.sampleSequence and $later.incidentRecovered and $later.nativeApproval and
+            ([$rule.caseSha256, $rule.candidateSha256, $rule.publication.versionSha256, $rule.publication.reviewSha256,
+            $rule.publication.validationSha256, $later.ruleSnapshotSha256, $later.recoverySha256] | all(test("^[a-f0-9]{64}$")))' \
             .reports/p0/runner-reference-development.json >/dev/null
       - name: Require the clean installation and authenticated audit receipt
         if: matrix.scenario == 'protected-release-linked-health' && steps.capability.outputs.available == 'true'
