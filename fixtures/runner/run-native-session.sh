@@ -18,7 +18,7 @@ reports="$PWD/.reports/p0"
 stage="$directory/staging"
 code="$directory/code"
 sealed_image="$directory/probe.raw"
-sudo -n chgrp "$runner_user" "$sealed_image"
+sudo -n chgrp kvm "$sealed_image"
 sudo -n chmod 0440 "$sealed_image"
 
 as_runner() {

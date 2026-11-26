@@ -5,33 +5,21 @@ test "${PROBE_HOST_ENVIRONMENT:-}" = github-hosted
 directory=$(realpath -- "$1")
 runner_user=itervane-probe
 runner_home=/home/itervane-probe
-marker_dir=/run/itervane-probe-private
+source packages/runner/ops/dedicated-session.sh
 
 sudo -n useradd --system --user-group --groups kvm --create-home \
   --home-dir "$runner_home" --shell /usr/sbin/nologin "$runner_user"
 sudo -n chmod 0700 "$runner_home"
 runner_uid=$(id -u "$runner_user")
 runtime="/run/user/$runner_uid"
-sudo -n install -d -m 0700 -o "$runner_user" -g "$runner_user" -- "$directory/staging" "$directory/code" "$runtime"
+sudo -n install -d -m 0700 -o "$runner_user" -g "$runner_user" -- "$directory/staging" "$directory/code"
 sudo -n chgrp kvm /dev/kvm
 sudo -n chmod 0660 /dev/kvm
-sudo -n mkdir -m 0711 "$marker_dir"
-sudo -n install -m 0600 /dev/null "$marker_dir/control-plane.marker"
-printf '%s\n' 'synthetic host-only marker' | sudo -n tee "$marker_dir/control-plane.marker" >/dev/null
+if [[ "${2:-}" = reference-install ]]; then exit 0; fi
 
 # The distro's AppArmor rules govern the daemon's QEMU exec transition. The
 # session is pre-started with no bounding capabilities before the NNP client.
-sudo -n systemd-run --quiet --unit=itervane-probe-libvirtd --uid="$runner_user" --gid="$runner_user" \
-  --property=Type=exec --property=CapabilityBoundingSet= --property=AmbientCapabilities= --property=UMask=0077 \
-  --setenv="XDG_RUNTIME_DIR=$runtime" --setenv="XDG_CONFIG_HOME=$runner_home/.config" \
-  --setenv="XDG_CACHE_HOME=$runner_home/.cache" --setenv=LANG=C.UTF-8 /usr/sbin/libvirtd
-for attempt in {1..100}; do
-  if sudo -n test -S "$runtime/libvirt/libvirt-sock"; then
-    break
-  fi
-  sleep 0.1
-done
-sudo -n test -S "$runtime/libvirt/libvirt-sock"
+itervane_start_libvirt "$runner_user" itervane-probe-libvirtd
 
 error_file=$(mktemp)
 trap 'rm -f -- "$error_file"' EXIT

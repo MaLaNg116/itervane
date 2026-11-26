@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/native-runner.yml'
       - 'packages/runner/host/**'
+      - 'packages/runner/ops/**'
       - 'packages/runner/src/**'
       - 'packages/control-plane/src/**'
       - 'packages/control-plane/migrations/**'
@@ -31,6 +32,7 @@ on:
       - 'scripts/prepare-runner-inspection.ts'
       - 'scripts/prepare-runner-build-dependencies.ts'
       - 'scripts/prepare-runner-oci-inputs.sh'
+      - 'scripts/reference-runner-profile.ts'
       - 'scripts/prepare-runner-rule-engine.py'
       - 'scripts/probe-qualified-runner.ts'
       - 'scripts/scanner-tools.ts'
@@ -80,10 +82,16 @@ jobs:
         if: steps.capability.outputs.available == 'true'
         env:
           PROBE_HOST_ENVIRONMENT: ${{ runner.environment }}
+          NATIVE_SCENARIO: ${{ matrix.scenario }}
         run: |
           directory=$(sudo -n mktemp -d /var/lib/libvirt/images/itervane-native.XXXXXXXX)
+          sudo -n chown root:root "$directory"
           sudo -n chmod 0711 "$directory"
-          bash fixtures/runner/prepare-native-session.sh "$directory"
+          if [[ "$NATIVE_SCENARIO" == protected-release-linked-health ]]; then
+            bash fixtures/runner/prepare-native-session.sh "$directory" reference-install
+          else
+            bash fixtures/runner/prepare-native-session.sh "$directory"
+          fi
           printf 'directory=%s\n' "$directory" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         if: steps.capability.outputs.available == 'true'
@@ -195,6 +203,16 @@ jobs:
             bash fixtures/ingress/prepare-proxies.sh "$ITERVANE_NATIVE_RELEASE_PROXIES"
           fi
           bash fixtures/runner/run-native-session.sh "$PROBE_DIRECTORY" "$NATIVE_SCENARIO"
+      - name: Reconstruct installation profiles from the sealed guest inputs
+        if: matrix.scenario == 'protected-release-linked-health' && steps.capability.outputs.available == 'true'
+        env:
+          SCANNER_INPUTS: ${{ steps.inspection.outputs.payload }}
+          BUILD_INPUTS: ${{ steps.build.outputs.payload }}
+          OCI_INPUTS: ${{ steps.oci.outputs.payload }}
+          RULE_INPUTS: ${{ steps.rule-engine.outputs.payload }}
+        run: |
+          pnpm --silent reference:runner-profile .reports/p0/kvm-image.json "$SCANNER_INPUTS/inputs.json" "$BUILD_INPUTS/profile.json" \
+            "$OCI_INPUTS/inputs.json" "$RULE_INPUTS/inputs.json" > .reports/p0/runner-reference-profile.env
       - name: Require independent rule samples and cleanup receipts
         if: matrix.scenario == 'rule-samples'
         env:
@@ -511,6 +529,9 @@ jobs:
             .reports/p0/kvm-build-inputs.json
             .reports/p0/kvm-oci-inputs.json
             .reports/p0/kvm-packages.txt
+            .reports/p0/runner-installed-status.json
+            .reports/p0/runner-reference-connection.env
+            .reports/p0/runner-reference-profile.env
             .reports/p0/runner-vm*.json
             .reports/p0/runner-qualified-*.json
             .reports/p0/runner-worker-inspection.json

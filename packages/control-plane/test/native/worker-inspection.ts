@@ -328,10 +328,11 @@ async function probe() {
   const protectedRun = buildMode === 'protected-release' || dependencyRun || driftRun || faultRun || operationsRun || restoreRun || linkedHealthRun;
   const ociRun = buildMode === 'standard-oci' || protectedRun;
   const buildRun = buildMode === 'standard-build' || buildMode === 'standard-build-missing-cache' || ociRun;
+  const expectedSocket = linkedHealthRun ? '/run/itervane-reference-runner/inspection.sock' : bundle?.replace(/\/worker\.mjs$/, '/inspection.sock');
   if (process.platform !== 'linux' || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted' || process.env.DATABASE_URL
     || process.env.ITERVANE_POSTGRES_IMAGE || (extra.length !== 0 && (extra.length !== (ociRun ? 4 : 3) || !buildRun))
     || !bundle?.startsWith('/var/lib/libvirt/images/itervane-native.')
-    || !socket?.endsWith('/qualified/inspection.sock') || !controllerUid || !/^[1-9][0-9]{0,9}$/.test(controllerUid)
+    || !socket || socket !== expectedSocket || !controllerUid || !/^[1-9][0-9]{0,9}$/.test(controllerUid)
     || !imageSha256 || !/^[a-f0-9]{64}$/.test(imageSha256) || !staging?.endsWith('/staging')
     || repairBundle !== bundle.replace(/\/worker\.mjs$/, '/repair-worker.mjs')
     || verificationBundle !== bundle.replace(/\/worker\.mjs$/, '/verification-worker.mjs')) throw new Error('worker_probe_config');

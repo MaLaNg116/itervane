@@ -598,13 +598,17 @@ def socket_parent(path):
 
 
 def run_server(path, worker_uid, origins, fingerprint, observe, launch, stopping, enable_repair, enable_verification,
-               enable_standard_build, enable_baseline, enable_oci, enable_retention, verify_archive, read_archive, enable_rule_samples=False):
+               enable_standard_build, enable_baseline, enable_oci, enable_retention, verify_archive, read_archive,
+               enable_rule_samples=False, group_socket=False):
     socket_parent(path)
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
         server.bind(os.fspath(path))
         inode = path.lstat().st_ino
         try:
             server.listen(2)
+            if group_socket:
+                os.chown(path, -1, os.getegid(), follow_symlinks=False)
+                os.chmod(path, 0o660)
             server.settimeout(0.5)
             while not stopping():
                 try:
@@ -657,7 +661,8 @@ def main():
         features = set()
         artifact_store = None
         while allowed and allowed[0] in ("--enable-repair", "--enable-verification", "--enable-standard-build",
-                                        "--enable-standard-baseline", "--enable-standard-oci", "--enable-rule-samples", "--artifact-store"):
+                                        "--enable-standard-baseline", "--enable-standard-oci", "--enable-rule-samples",
+                                        "--artifact-store", "--group-socket"):
             flag = allowed.pop(0)
             if flag in features:
                 raise ValueError("duplicate capability")
@@ -738,7 +743,8 @@ def main():
         run_server(path, worker_uid, origins, fingerprint, observe, launch, stopped,
                    "--enable-repair" in features, "--enable-verification" in features, "--enable-standard-build" in features,
                    "--enable-standard-baseline" in features, "--enable-standard-oci" in features, artifact_store is not None,
-                   verify_archive if artifact_store else None, read_archive if artifact_store else None, "--enable-rule-samples" in features)
+                   verify_archive if artifact_store else None, read_archive if artifact_store else None,
+                   "--enable-rule-samples" in features, "--group-socket" in features)
     except (ImportError, OSError, ValueError, Rejected, SessionRejected, SourceRejected):
         print("Qualified inspection controller could not start.", file=sys.stderr)
         return 1
