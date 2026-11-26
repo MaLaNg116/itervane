@@ -10,7 +10,7 @@ Itervane connects three evidence-based loops:
 
 ## Status
 
-The [reference installation](docs/reference-installation.md) starts a fresh loopback control plane with PostgreSQL, Keycloak and the bilingual portal. It also configures an OIDC client for external MCP.
+The [reference installation](docs/reference-installation.md) starts a fresh loopback control plane with PostgreSQL, Keycloak and the bilingual portal. It also configures an OIDC client for external MCP. See the [source release guide](docs/source-release.md) to verify and build an archive, and the [component notices](docs/release-components.md) for pinned versions and licenses.
 
 Itervane has a durable task control plane, a bilingual portal, external MCP and a qualified path for fixed-source inspection. [Blueprint v6](docs/blueprint-v6.md) and the [TypeScript + PostgreSQL implementation plan v2](docs/implementation-plan-v2-ts-postgresql.md) describe the three MVP workflows and their acceptance criteria. The [review index](docs/reviews/README.md) tracks the evidence for each batch.
 
