@@ -19,7 +19,7 @@ case "$scenario" in
   regression) features=(--enable-repair --enable-verification) ;;
   rule-samples) features=(--enable-rule-samples --enable-verification) ;;
   standard-build) features=(--enable-repair --enable-verification --enable-standard-build --enable-standard-baseline) ;;
-  standard-oci|protected-release|protected-release-npm|protected-release-drift|protected-release-faults|protected-release-operations|protected-release-restore|protected-release-restore-authorization|protected-release-linked-health|reference-development-[123]|reference-code-rule)
+  standard-oci|protected-release|protected-release-npm|protected-release-drift|protected-release-faults|protected-release-operations|protected-release-restore|protected-release-restore-authorization|protected-release-linked-health|reference-development-[123]|reference-code-rule|reference-version-restore)
     artifacts="$directory/artifacts"
     sudo -n install -d -m 0700 -o "$runner" -g "$runner" "$artifacts"
     features=(--enable-repair --enable-verification --enable-standard-build --enable-standard-baseline --enable-standard-oci --artifact-store "$artifacts")
@@ -214,6 +214,7 @@ if [[ "$scenario" == reference-* ]]; then
   pnpm --filter @itervane/portal build
   roles=(health-worker)
   if [[ "$scenario" == reference-development-* ]]; then roles+=(restart-worker); fi
+  if [[ "$scenario" == reference-version-restore ]]; then roles=(restore-worker); fi
   for role in "${roles[@]}"; do
     pnpm exec esbuild "packages/control-plane/src/entries/$role.ts" --bundle --platform=node --format=esm --target=node24 \
       '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
@@ -226,6 +227,10 @@ if [[ "$scenario" == reference-* ]]; then
   if [[ "$scenario" == reference-code-rule ]]; then
     reference_mode=--native-code-rule
     reference_report=runner-reference-code-rule
+  fi
+  if [[ "$scenario" == reference-version-restore ]]; then
+    reference_mode=--native-version-restore
+    reference_report=runner-reference-version-restore
   fi
   pnpm --silent probe:reference-install "$reference_mode" "$shared/worker.mjs" > "$reports/$reference_report.pending"
   assert_empty

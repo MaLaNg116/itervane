@@ -18,6 +18,7 @@ on:
       - 'packages/portal/test/native/reference-browser.ts'
       - 'packages/portal/test/native/reference-learning.ts'
       - 'packages/portal/test/native/reference-code-rule.ts'
+      - 'packages/portal/test/native/reference-restore.ts'
       - 'packages/control-plane/test/helpers/**'
       - 'packages/control-plane/test/native/**'
       - 'packages/contracts/src/**'
@@ -71,6 +72,7 @@ jobs:
           - scenario: reference-development-3
             referenceDevelopment: true
           - scenario: reference-code-rule
+          - scenario: reference-version-restore
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -295,6 +297,14 @@ jobs:
             ([$case.patchSha256, $case.learned.caseSha256, $case.learned.publication.versionSha256,
               $case.learned.publication.reviewSha256, $case.reused.clean.snapshotSha256] | all(test("^[a-f0-9]{64}$")))' \
             .reports/p0/runner-reference-code-rule.json >/dev/null
+      - name: Require a verified historical version on the same protected target
+        if: matrix.scenario == 'reference-version-restore'
+        env:
+          KVM_AVAILABLE: ${{ steps.capability.outputs.available }}
+        run: |
+          test "$KVM_AVAILABLE" = true
+          jq -e --arg tree "$(git rev-parse 'HEAD^{tree}')" -f fixtures/runner/reference-version-restore.jq \
+            .reports/p0/runner-reference-version-restore.json >/dev/null
       - name: Require the clean installation and authenticated audit receipt
         if: matrix.scenario == 'protected-release-linked-health' && steps.capability.outputs.available == 'true'
         run: |
@@ -625,6 +635,7 @@ jobs:
             .reports/p0/runner-reference-audit.json
             .reports/p0/runner-reference-development.json
             .reports/p0/runner-reference-code-rule.json
+            .reports/p0/runner-reference-version-restore.json
             .reports/p0/runner-vm*.json
             .reports/p0/runner-qualified-*.json
             .reports/p0/runner-worker-inspection.json
