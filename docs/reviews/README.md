@@ -170,7 +170,8 @@
 | 165 | P5-B4 三次独立参考开发与发布验收 | [#165](https://github.com/MaLaNg116/itervane/pull/165)，依赖 #164 | [参考发布导读](p5-reference-release.md) | 本地基础验证通过，三次完整开发闭环待托管验收 |
 | 166 | P5-B5 三次独立参考健康诊断和恢复 | [#166](https://github.com/MaLaNg116/itervane/pull/166)，依赖 #165 | [参考运维导读](p5-reference-operations.md) | 本地类型、单测和验收谓词通过，托管原生恢复待验 |
 | 167 | P5-B6 参考环境 Runbook 学习与复用 | [#167](https://github.com/MaLaNg116/itervane/pull/167)，依赖 #166 | [参考 Runbook 导读](p5-reference-runbook.md) | 本地类型和单测通过，真实案例、门户发布与后续处置待托管联验 |
-| P5-C1 | 参考运行独立性核对 | 依赖 [#167](https://github.com/MaLaNg116/itervane/pull/167) | [验收汇总导读](p5-reference-evidence.md) | 本地通过缺失、混版、重复域和重复批准拒绝检查，待实际报告 |
+| 168 | P5-C1 参考运行独立性核对 | [#168](https://github.com/MaLaNg116/itervane/pull/168)，依赖 #167 | [验收汇总导读](p5-reference-evidence.md) | 本地通过缺失、混版、重复域和重复批准拒绝检查，待实际报告 |
+| P5-B7 | 参考环境代码规则复用 | 依赖 [#168](https://github.com/MaLaNg116/itervane/pull/168) | [代码规则导读](p5-reference-code-rule.md) | 本地基础验证和拒绝谓词通过，六个 KVM 回执待验 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 

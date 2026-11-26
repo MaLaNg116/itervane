@@ -7,7 +7,7 @@ directory=$(realpath -- "$1")
 scenario=${2:-regression}
 case "$scenario" in
   regression|rule-samples|standard-build|standard-build-missing-cache|standard-oci|protected-release|protected-release-npm|protected-release-drift|protected-release-faults|protected-release-operations|protected-release-restore|protected-release-restore-authorization|protected-release-linked-health) ;;
-  reference-development-[123]) ;;
+  reference-development-[123]|reference-code-rule) ;;
   *) exit 1 ;;
 esac
 runner_user=itervane-probe

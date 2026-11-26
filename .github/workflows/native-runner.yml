@@ -17,6 +17,7 @@ on:
       - 'packages/portal/test/native/reference-registration.ts'
       - 'packages/portal/test/native/reference-browser.ts'
       - 'packages/portal/test/native/reference-learning.ts'
+      - 'packages/portal/test/native/reference-code-rule.ts'
       - 'packages/control-plane/test/helpers/**'
       - 'packages/control-plane/test/native/**'
       - 'packages/contracts/src/**'
@@ -69,6 +70,7 @@ jobs:
             referenceDevelopment: true
           - scenario: reference-development-3
             referenceDevelopment: true
+          - scenario: reference-code-rule
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -87,10 +89,10 @@ jobs:
         run: |
           apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
           extras=()
-          if [[ "$NATIVE_SCENARIO" == standard-oci || "$NATIVE_SCENARIO" == protected-release* || "$NATIVE_SCENARIO" == reference-development-* ]]; then
+          if [[ "$NATIVE_SCENARIO" == standard-oci || "$NATIVE_SCENARIO" == protected-release* || "$NATIVE_SCENARIO" == reference-* ]]; then
             extras+=(skopeo)
           fi
-          if [[ "$NATIVE_SCENARIO" == rule-samples || "$NATIVE_SCENARIO" == protected-release-linked-health || "$NATIVE_SCENARIO" == reference-development-* ]]; then
+          if [[ "$NATIVE_SCENARIO" == rule-samples || "$NATIVE_SCENARIO" == protected-release-linked-health || "$NATIVE_SCENARIO" == reference-* ]]; then
             extras+=(python3-pip)
           fi
           sudo -n apt-get "${apt_options[@]}" update -qq
@@ -107,7 +109,7 @@ jobs:
           directory=$(sudo -n mktemp -d /var/lib/libvirt/images/itervane-native.XXXXXXXX)
           sudo -n chown root:root "$directory"
           sudo -n chmod 0711 "$directory"
-          if [[ "$NATIVE_SCENARIO" == protected-release-linked-health || "$NATIVE_SCENARIO" == reference-development-* ]]; then
+          if [[ "$NATIVE_SCENARIO" == protected-release-linked-health || "$NATIVE_SCENARIO" == reference-* ]]; then
             bash fixtures/runner/prepare-native-session.sh "$directory" reference-install
           else
             bash fixtures/runner/prepare-native-session.sh "$directory"
@@ -135,7 +137,7 @@ jobs:
           printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
       - name: Prepare the pinned OCI basis for the image trial
         id: oci
-        if: steps.capability.outputs.available == 'true' && (matrix.scenario == 'standard-oci' || startsWith(matrix.scenario, 'protected-release') || matrix.referenceDevelopment == true)
+        if: steps.capability.outputs.available == 'true' && (matrix.scenario == 'standard-oci' || startsWith(matrix.scenario, 'protected-release') || startsWith(matrix.scenario, 'reference-'))
         run: |
           payload="$RUNNER_TEMP/itervane-oci-inputs"
           bash scripts/prepare-runner-oci-inputs.sh "$payload" > .reports/p0/kvm-oci-inputs.json
@@ -143,7 +145,7 @@ jobs:
           printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
       - name: Prepare the pinned rule engine
         id: rule-engine
-        if: steps.capability.outputs.available == 'true' && (matrix.scenario == 'rule-samples' || matrix.scenario == 'protected-release-linked-health' || matrix.referenceDevelopment == true)
+        if: steps.capability.outputs.available == 'true' && (matrix.scenario == 'rule-samples' || matrix.scenario == 'protected-release-linked-health' || startsWith(matrix.scenario, 'reference-'))
         run: |
           scratch=$(mktemp -d "$RUNNER_TEMP/itervane-rule-engine.XXXXXXXX")
           payload="$scratch/itervane-semgrep"
@@ -160,7 +162,7 @@ jobs:
           scratch=$(mktemp -d "$RUNNER_TEMP/itervane-build.XXXXXXXX")
           payload="$scratch/itervane-build-inputs"
           args=("$payload")
-          if [[ "$BUILD_SCENARIO" == standard-oci || "$BUILD_SCENARIO" == protected-release* || "$BUILD_SCENARIO" == reference-development-* ]]; then
+          if [[ "$BUILD_SCENARIO" == standard-oci || "$BUILD_SCENARIO" == protected-release* || "$BUILD_SCENARIO" == reference-* ]]; then
             oci=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ociInputsSha256"])' .reports/p0/kvm-oci-inputs.json)
             args+=("$oci")
           fi
@@ -210,7 +212,7 @@ jobs:
             *) exit 1 ;;
           esac
       - name: Reconstruct installation profiles from the sealed guest inputs
-        if: steps.capability.outputs.available == 'true' && (matrix.scenario == 'protected-release-linked-health' || matrix.referenceDevelopment == true)
+        if: steps.capability.outputs.available == 'true' && (matrix.scenario == 'protected-release-linked-health' || startsWith(matrix.scenario, 'reference-'))
         env:
           SCANNER_INPUTS: ${{ steps.inspection.outputs.payload }}
           BUILD_INPUTS: ${{ steps.build.outputs.payload }}
@@ -228,7 +230,7 @@ jobs:
           ITERVANE_NATIVE_BACKUP: ${{ matrix.scenario == 'protected-release-operations' && '1' || '0' }}
         run: |
           test -s .reports/p0/kvm-inspection-inputs.json
-          if [[ "$NATIVE_SCENARIO" == protected-release* || "$NATIVE_SCENARIO" == reference-development-* ]]; then
+          if [[ "$NATIVE_SCENARIO" == protected-release* || "$NATIVE_SCENARIO" == reference-* ]]; then
             export ITERVANE_NATIVE_RELEASE_PROXIES="$RUNNER_TEMP/itervane-release-proxies"
             bash fixtures/ingress/prepare-proxies.sh "$ITERVANE_NATIVE_RELEASE_PROXIES"
           fi
@@ -273,6 +275,26 @@ jobs:
             ([$rule.caseSha256, $rule.candidateSha256, $rule.publication.versionSha256, $rule.publication.reviewSha256,
             $rule.publication.validationSha256, $later.ruleSnapshotSha256, $later.recoverySha256] | all(test("^[a-f0-9]{64}$")))' \
             .reports/p0/runner-reference-development.json >/dev/null
+      - name: Verify protected health repair and independent code rule reuse
+        if: matrix.scenario == 'reference-code-rule'
+        env:
+          KVM_AVAILABLE: ${{ steps.capability.outputs.available }}
+        run: |
+          test "$KVM_AVAILABLE" = true
+          jq -e --arg tree "$(git rev-parse 'HEAD^{tree}')" '.development.healthCodeRule as $case |
+            .sourceTree == $tree and .scenario == "reference-code-rule" and
+            .cleanInstallation and .qualifiedRunner and .workspaceAndStagingEmpty and .browserPkce and .externalMcpPkce and
+            $case.confirmationDeniedWithMcp and $case.model == "scripted_anthropic_fixture" and
+            $case.before.status == 503 and $case.after.status == 200 and $case.after.protectedHealthSequence > 0 and
+            $case.originalOperationId != $case.after.operationId and $case.originalProjectId != $case.reused.projectId and
+            $case.learned.publication.sequence == 1 and $case.reused.violation.blocked and $case.reused.violation.findings == 1 and
+            $case.reused.clean.waitingApproval and $case.reused.clean.findings == 0 and
+            ([$case.before.domainId, $case.after.domainId, $case.learned.validationGuestId, $case.reused.violation.scanDomainId,
+              $case.reused.clean.scanDomainId, $case.reused.clean.verificationDomainId] |
+              all(type == "string" and test("^[a-f0-9-]{36}$")) and (unique | length) == 6) and
+            ([$case.patchSha256, $case.learned.caseSha256, $case.learned.publication.versionSha256,
+              $case.learned.publication.reviewSha256, $case.reused.clean.snapshotSha256] | all(test("^[a-f0-9]{64}$")))' \
+            .reports/p0/runner-reference-code-rule.json >/dev/null
       - name: Require the clean installation and authenticated audit receipt
         if: matrix.scenario == 'protected-release-linked-health' && steps.capability.outputs.available == 'true'
         run: |
@@ -602,6 +624,7 @@ jobs:
             .reports/p0/runner-reference-profile.env
             .reports/p0/runner-reference-audit.json
             .reports/p0/runner-reference-development.json
+            .reports/p0/runner-reference-code-rule.json
             .reports/p0/runner-vm*.json
             .reports/p0/runner-qualified-*.json
             .reports/p0/runner-worker-inspection.json

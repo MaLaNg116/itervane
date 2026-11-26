@@ -12,4 +12,6 @@
 
 第二轮日志定位到路径核对。安装器现在在移除前五个位置参数之前，先将镜像和状态目录与原始绝对路径逐一比对，再把剩余 HTTPS 源交给 Controller。 [路径核对日志](https://github.com/MaLaNg116/itervane/actions/runs/45750374337/job/139676445559)
 
+`c183c6d` 的 `protected-release-linked-health` 作业已通过。宿主创建真实 KVM VM 描述符，参考 Worker 查到 Controller 的空闲状态，镜像摘要与独立封存记录一致。保留三项连接坐标、四项正式配置与受保护发布回执。该证据覆盖参考安装器和原生下游场景。 [托管作业](https://github.com/MaLaNg116/itervane/actions/runs/45751244238/job/139679377488)
+
 参考启动使用 systemd 临时单元，需要在主机重启后用相同输入重新启动。完整参考环境的实际身份、模型和下游服务联跑、每条正向路径的独立运行次数，以及正式版本发布由 P5 后续批次验证。
