@@ -10,7 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { parseEnv, promisify } from 'node:util';
 import { chromium, expect, type Page } from '@playwright/test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { formalAuditDtoSchema, sourceInspectionDtoSchema, taskDtoSchema, type FormalAuditDto } from '@itervane/contracts';
+import { formalAuditDtoSchema, sourceInspectionDtoSchema, taskDtoSchema } from '@itervane/contracts';
 import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from '../../../control-plane/test/native/audit-provider.js';
 import { sourceWorkerEnvironment, startScopedWorker } from '../../../control-plane/test/native/scoped-worker.js';
 
@@ -124,20 +124,18 @@ async function queueDemo(page: Page, useRunner: boolean) {
 }
 
 async function waitForAudit(page: Page, taskId: string) {
-  let recorded: Extract<FormalAuditDto, { status: 'recorded' }> | undefined;
-  await until(async () => {
-    const response = await page.request.get(`/v1/tasks/${taskId}/audit`, { headers: { 'Accept-Language': 'en' }, timeout: 5_000 });
-    equal(response.status(), 200);
-    const audit = formalAuditDtoSchema.parse(await response.json());
-    if (audit.status !== 'recorded') return false;
-    equal(audit.result.status, 'completed');
-    equal(audit.result.checklist?.coverage, 'complete');
-    ok(audit.result.trace.length > 0);
-    recorded = audit;
-    return true;
-  }, 190_000);
-  ok(recorded);
-  return recorded;
+  const response = await page.waitForResponse(async observed => {
+    if (observed.request().method() !== 'GET' || new URL(observed.url()).pathname !== `/v1/tasks/${taskId}/audit`
+      || observed.status() !== 200) return false;
+    const audit = formalAuditDtoSchema.safeParse(await observed.json().catch(() => null));
+    return audit.success && audit.data.locale === 'zh-CN' && audit.data.status === 'recorded';
+  }, { timeout: 190_000 });
+  const audit = formalAuditDtoSchema.parse(await response.json());
+  ok(audit.status === 'recorded');
+  equal(audit.result.status, 'completed');
+  equal(audit.result.checklist?.coverage, 'complete');
+  ok(audit.result.trace.length > 0);
+  return audit;
 }
 
 const temp = await mkdtemp(join(tmpdir(), 'itervane-reference-test-'));
@@ -225,7 +223,7 @@ try {
   try {
     phase = 'mcp_connect';
     await client.connect(new StreamableHTTPClientTransport(new URL(install.mcp), { requestInit: { headers: {
-      Authorization: `Bearer ${token}`, 'Accept-Language': 'zh-CN',
+      Authorization: `Bearer ${token}`, 'Accept-Language': 'en',
     } } }));
     phase = 'mcp_read_scopes';
     const { tools } = await client.listTools();
@@ -244,7 +242,7 @@ try {
       equal(audit.result.snapshotSha256, inspection.result.snapshotSha256);
       deepStrictEqual(audit.result, portalAudit.result);
       equal(audit.sha256, portalAudit.sha256);
-      equal(audit.locale, 'zh-CN'); equal(portalAudit.locale, 'en');
+      equal(audit.locale, 'en'); equal(portalAudit.locale, 'zh-CN');
       notEqual(audit.message, portalAudit.message);
       verifiedAudit = { taskId, auditSha256: audit.sha256, scanSha256: inspection.result.receiptSha256,
         snapshotSha256: inspection.result.snapshotSha256, model: 'scripted_anthropic_fixture' };
