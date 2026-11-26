@@ -15,6 +15,7 @@ runtime="/run/user/$runner_uid"
 sudo -n install -d -m 0700 -o "$runner_user" -g "$runner_user" -- "$directory/staging" "$directory/code"
 sudo -n chgrp kvm /dev/kvm
 sudo -n chmod 0660 /dev/kvm
+if [[ "${2:-}" = reference-install ]]; then exit 0; fi
 
 # The distro's AppArmor rules govern the daemon's QEMU exec transition. The
 # session is pre-started with no bounding capabilities before the NNP client.
