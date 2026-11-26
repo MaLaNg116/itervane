@@ -1,0 +1,81 @@
+name: Source Release
+
+on:
+  push:
+    branches: [main, 'feat/**']
+    paths:
+      - '.github/workflows/source-release.yml'
+      - 'scripts/package-source-release.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'docs/release-components.md'
+      - 'docs/source-release.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.14.0
+      - name: Install the pinned builder and locked dependencies
+        run: |
+          npm install --global pnpm@11.9.0 --ignore-scripts
+          pnpm install --frozen-lockfile --ignore-scripts
+      - name: Check repeatability and checksums on the same Git tree
+        run: |
+          mkdir -p .reports
+          pnpm --silent release:source .reports/source-release
+          pnpm --silent release:source "$RUNNER_TEMP/itervane-release-repeat"
+          diff -qr .reports/source-release "$RUNNER_TEMP/itervane-release-repeat"
+          cd .reports/source-release
+          sha256sum --check SHA256SUMS
+      - name: Reinstall from the archive with real PostgreSQL, Keycloak and Chrome
+        run: |
+          artifacts="$GITHUB_WORKSPACE/.reports/source-release"
+          release=$(jq -er '.release' "$artifacts/release-manifest.json")
+          filename="itervane-${release#v}.tar.gz"
+          archive_hash=$(jq -er --arg name "$filename" '.files[] | select(.filename == $name) | .sha256' "$artifacts/release-manifest.json")
+          lockfile_hash=$(jq -er '.lockfile.sha256' "$artifacts/release-manifest.json")
+          tree=$(git rev-parse 'HEAD^{tree}')
+          test "$(jq -er '.tree' "$artifacts/release-manifest.json")" = "$tree"
+          unpacked="$RUNNER_TEMP/itervane-source-install"
+          mkdir "$unpacked"
+          tar -xzf "$artifacts/$filename" -C "$unpacked"
+          cd "$unpacked/itervane-${release#v}"
+          test -f LICENSE && test -f docs/release-components.md && test ! -e .git && test ! -e .env
+          printf '%s  pnpm-lock.yaml\n' "$lockfile_hash" | sha256sum --check
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm build:portal
+          pnpm --silent probe:reference-install > "$RUNNER_TEMP/itervane-archive-install.json"
+          jq -e --arg tree "$tree" --arg archive "$archive_hash" '
+            select(.cleanInstallation and .initializedTwice and .browserPkce and .externalMcpPkce and
+              .mcpScopeAndAudienceVerified and .taskHeldForRunner and .locales == ["en", "zh-CN"]) |
+            . + {sourceTree: $tree, archiveSha256: $archive}
+          ' "$RUNNER_TEMP/itervane-archive-install.json" > "$GITHUB_WORKSPACE/.reports/source-install.json"
+      - name: Retain the checked release assets
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: source-release-assets
+          path: .reports/source-release/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain the archive installation receipt
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: source-release-installation
+          path: .reports/source-install.json
+          if-no-files-found: error
+          retention-days: 14
