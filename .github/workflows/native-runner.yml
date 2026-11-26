@@ -187,6 +187,7 @@ jobs:
           PROBE_DIRECTORY: ${{ steps.session.outputs.directory }}
           PROBE_HOST_ENVIRONMENT: ${{ runner.environment }}
           NATIVE_SCENARIO: ${{ matrix.scenario }}
+          ITERVANE_NATIVE_BACKUP: ${{ matrix.scenario == 'protected-release-operations' && '1' || '0' }}
         run: |
           test -s .reports/p0/kvm-inspection-inputs.json
           if [[ "$NATIVE_SCENARIO" == protected-release* ]]; then
@@ -481,6 +482,19 @@ jobs:
               $interrupted.slotReleased and ($interrupted.environmentReleased == false) and
               $interrupted.manualReason == "native_unconfirmed" and ($interrupted.sameWorker == false) and
               $interrupted.readFence > $interrupted.sendFence and $interrupted.httpMcpAgreement' "$report" >/dev/null
+            jq -e --slurpfile stored .reports/p0/runner-oci-artifact.json '.backup as $backup | .operations.restart as $restart | $stored[0] as $archive |
+              $backup.version == 1 and ($backup.manifestSha256 | test("^[a-f0-9]{64}$")) and
+              ($backup.sourcePostgres | startswith("17.")) and ($backup.targetPostgres | startswith("17.")) and
+              $backup.tables > 40 and $backup.archives >= 1 and $backup.configFiles == 3 and ($backup.reconciled == false) and
+              $backup.releaseOperationId == .release.operationId and $backup.manifestDigest == .release.manifestDigest and
+              $backup.manifestDigest == $archive.manifestDigest and $archive.workspaceAndStagingEmpty and
+              $backup.archive.format == "oci-layout-tar" and
+              $backup.archive.sha256 == $archive.archiveSha256 and $backup.archive.bytes == $archive.bytes and
+              $backup.recoveryEvidenceSha256 == $restart.reused.proofSha256 and
+              $backup.unconfirmedEvidenceSha256 == $restart.interrupted.proofSha256 and $backup.nativeUnconfirmedRetained and
+              $backup.ruleVersionSha256 == $restart.ruleExtraction.publication.versionSha256 and
+              $backup.ruleSnapshotSha256 == $restart.reused.runbook.snapshotSha256 and
+              ([$backup.anonymousDuringBackup, $backup.anonymousAfterRestore] | all(. == 401 or . == 403))' "$report" >/dev/null
           fi
       - name: Retain independent KVM evidence
         if: always()

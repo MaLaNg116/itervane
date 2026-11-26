@@ -14,12 +14,19 @@ export async function databaseFixture(base = process.env.DATABASE_URL) {
   let admin: pg.Pool | undefined;
   let storage: Awaited<ReturnType<typeof openDatabase>> | undefined;
   let createdDatabase = false; let createdRole = false;
+  let disconnected: Promise<void> | undefined;
   let closing: Promise<void> | undefined;
+  function disconnect() {
+    disconnected ??= (async () => {
+      const pools = await Promise.allSettled([storage?.close(), admin?.end()]);
+      if (pools.some(result => result.status === 'rejected')) throw new Error('Test database pools did not close');
+    })();
+    return disconnected;
+  }
   function close(): Promise<void> {
     closing ??= (async () => {
       try {
-        const pools = await Promise.allSettled([storage?.close(), admin?.end()]);
-        if (pools.some(result => result.status === 'rejected')) throw new Error('Test database pools did not close');
+        await disconnect();
         // 数据库和角色名称完全由本次随机值生成；不删除提供给测试驱动器的原数据库。
         if (createdDatabase && /^itervane_test_[a-f0-9]{12}$/.test(databaseName)) {
           const marker = await cluster.query("SELECT shobj_description(oid, 'pg_database') AS marker FROM pg_database WHERE datname=$1", [databaseName]);
@@ -70,7 +77,7 @@ export async function databaseFixture(base = process.env.DATABASE_URL) {
           itervane.environments, itervane.applications, itervane.repositories, itervane.project_members,
           itervane.projects, itervane.workspace_members, itervane.workspaces, itervane.principals`);
         await control.query('INSERT INTO itervane.execution_slot(id) VALUES (1)');
-      }, close,
+      }, disconnect, close,
     };
   } catch (error) { await close(); throw error; }
 }
