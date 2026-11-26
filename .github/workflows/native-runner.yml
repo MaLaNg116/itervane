@@ -616,3 +616,44 @@ jobs:
             .reports/p0/runner-retry-oci-artifact.json
           if-no-files-found: error
           retention-days: 14
+
+  reference-repeatability:
+    needs: kvm-evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Download the reference reports from this workflow run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .reports/reference-proofs
+          if ! gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir .reports/reference-proofs \
+            --name kvm-reference-development-1-evidence --name kvm-reference-development-2-evidence \
+            --name kvm-reference-development-3-evidence >/dev/null 2>&1; then
+            printf '%s\n' 'Could not download the three reference run artifacts.' >&2
+            exit 1
+          fi
+      - name: Verify three independent development and operations runs
+        run: |
+          report_dir=.reports/reference-proofs
+          reports=()
+          for index in 1 2 3; do
+            report="$report_dir/kvm-reference-development-$index-evidence/runner-reference-development.json"
+            test -s "$report"
+            reports+=("$report")
+          done
+          jq -s -e --arg tree "$(git rev-parse 'HEAD^{tree}')" --arg workflow "$GITHUB_RUN_ID" \
+            -f fixtures/runner/reference-evidence.jq "${reports[@]}" > "$report_dir/summary.json"
+      - name: Retain the verified independence summary
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: native-reference-repeatability
+          path: .reports/reference-proofs/summary.json
+          if-no-files-found: error
+          retention-days: 14
