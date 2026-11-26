@@ -12,6 +12,7 @@ on:
       - 'packages/control-plane/migrations/**'
       - 'packages/portal/src/**'
       - 'packages/portal/test/native/reference-install.ts'
+      - 'packages/portal/test/native/reference-release.ts'
       - 'packages/control-plane/test/helpers/**'
       - 'packages/control-plane/test/native/**'
       - 'packages/contracts/src/**'
@@ -57,6 +58,13 @@ jobs:
       fail-fast: false
       matrix:
         scenario: [regression, rule-samples, standard-build, standard-build-missing-cache, standard-oci, protected-release, protected-release-npm, protected-release-drift, protected-release-faults, protected-release-operations, protected-release-restore, protected-release-restore-authorization, protected-release-linked-health]
+        include:
+          - scenario: reference-development-1
+            referenceDevelopment: true
+          - scenario: reference-development-2
+            referenceDevelopment: true
+          - scenario: reference-development-3
+            referenceDevelopment: true
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -70,11 +78,17 @@ jobs:
       - name: Install native lifecycle tools on the disposable host
         if: steps.capability.outputs.available == 'true'
         timeout-minutes: 8
+        env:
+          NATIVE_SCENARIO: ${{ matrix.scenario }}
         run: |
           apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
           extras=()
-          if [[ "${{ matrix.scenario }}" == standard-oci || "${{ matrix.scenario }}" == protected-release* ]]; then extras+=(skopeo); fi
-          if [[ "${{ matrix.scenario }}" == rule-samples || "${{ matrix.scenario }}" == protected-release-linked-health ]]; then extras+=(python3-pip); fi
+          if [[ "$NATIVE_SCENARIO" == standard-oci || "$NATIVE_SCENARIO" == protected-release* || "$NATIVE_SCENARIO" == reference-development-* ]]; then
+            extras+=(skopeo)
+          fi
+          if [[ "$NATIVE_SCENARIO" == rule-samples || "$NATIVE_SCENARIO" == protected-release-linked-health || "$NATIVE_SCENARIO" == reference-development-* ]]; then
+            extras+=(python3-pip)
+          fi
           sudo -n apt-get "${apt_options[@]}" update -qq
           sudo -n apt-get "${apt_options[@]}" install -y --no-install-recommends gdisk guestfish guestfs-tools libvirt-daemon-system libvirt-clients python3-libvirt qemu-system-x86 qemu-utils "${extras[@]}"
           dpkg-query -W gdisk guestfish guestfs-tools libvirt-daemon-system python3-libvirt qemu-system-x86 > .reports/p0/kvm-packages.txt
@@ -89,7 +103,7 @@ jobs:
           directory=$(sudo -n mktemp -d /var/lib/libvirt/images/itervane-native.XXXXXXXX)
           sudo -n chown root:root "$directory"
           sudo -n chmod 0711 "$directory"
-          if [[ "$NATIVE_SCENARIO" == protected-release-linked-health ]]; then
+          if [[ "$NATIVE_SCENARIO" == protected-release-linked-health || "$NATIVE_SCENARIO" == reference-development-* ]]; then
             bash fixtures/runner/prepare-native-session.sh "$directory" reference-install
           else
             bash fixtures/runner/prepare-native-session.sh "$directory"
@@ -117,7 +131,7 @@ jobs:
           printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
       - name: Prepare the pinned OCI basis for the image trial
         id: oci
-        if: steps.capability.outputs.available == 'true' && (matrix.scenario == 'standard-oci' || startsWith(matrix.scenario, 'protected-release'))
+        if: steps.capability.outputs.available == 'true' && (matrix.scenario == 'standard-oci' || startsWith(matrix.scenario, 'protected-release') || matrix.referenceDevelopment == true)
         run: |
           payload="$RUNNER_TEMP/itervane-oci-inputs"
           bash scripts/prepare-runner-oci-inputs.sh "$payload" > .reports/p0/kvm-oci-inputs.json
@@ -125,7 +139,7 @@ jobs:
           printf 'payload=%s\n' "$payload" >> "$GITHUB_OUTPUT"
       - name: Prepare the pinned rule engine
         id: rule-engine
-        if: steps.capability.outputs.available == 'true' && (matrix.scenario == 'rule-samples' || matrix.scenario == 'protected-release-linked-health')
+        if: steps.capability.outputs.available == 'true' && (matrix.scenario == 'rule-samples' || matrix.scenario == 'protected-release-linked-health' || matrix.referenceDevelopment == true)
         run: |
           scratch=$(mktemp -d "$RUNNER_TEMP/itervane-rule-engine.XXXXXXXX")
           payload="$scratch/itervane-semgrep"
@@ -142,11 +156,11 @@ jobs:
           scratch=$(mktemp -d "$RUNNER_TEMP/itervane-build.XXXXXXXX")
           payload="$scratch/itervane-build-inputs"
           args=("$payload")
-          if [[ "$BUILD_SCENARIO" == standard-oci || "$BUILD_SCENARIO" == protected-release* ]]; then
+          if [[ "$BUILD_SCENARIO" == standard-oci || "$BUILD_SCENARIO" == protected-release* || "$BUILD_SCENARIO" == reference-development-* ]]; then
             oci=$(/usr/bin/python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ociInputsSha256"])' .reports/p0/kvm-oci-inputs.json)
             args+=("$oci")
           fi
-          if [[ "$BUILD_SCENARIO" == protected-release-npm ]]; then args+=(approved-npm); fi
+          if [[ "$BUILD_SCENARIO" == protected-release-npm || "$BUILD_SCENARIO" == reference-development-* ]]; then args+=(approved-npm); fi
           pnpm exec tsx scripts/prepare-runner-build-dependencies.ts "${args[@]}" | tee "$scratch/preparation.log"
           test -s "$payload/profile.json"
           tail -n 1 "$scratch/preparation.log" > .reports/p0/kvm-build-inputs.json
@@ -191,6 +205,16 @@ jobs:
               ;;
             *) exit 1 ;;
           esac
+      - name: Reconstruct installation profiles from the sealed guest inputs
+        if: steps.capability.outputs.available == 'true' && (matrix.scenario == 'protected-release-linked-health' || matrix.referenceDevelopment == true)
+        env:
+          SCANNER_INPUTS: ${{ steps.inspection.outputs.payload }}
+          BUILD_INPUTS: ${{ steps.build.outputs.payload }}
+          OCI_INPUTS: ${{ steps.oci.outputs.payload }}
+          RULE_INPUTS: ${{ steps.rule-engine.outputs.payload }}
+        run: |
+          pnpm --silent reference:runner-profile .reports/p0/kvm-image.json "$SCANNER_INPUTS/inputs.json" "$BUILD_INPUTS/profile.json" \
+            "$OCI_INPUTS/inputs.json" "$RULE_INPUTS/inputs.json" > .reports/p0/runner-reference-profile.env
       - name: Verify source snapshots, offline scanners and guest lifecycle on KVM
         if: steps.capability.outputs.available == 'true'
         env:
@@ -200,21 +224,29 @@ jobs:
           ITERVANE_NATIVE_BACKUP: ${{ matrix.scenario == 'protected-release-operations' && '1' || '0' }}
         run: |
           test -s .reports/p0/kvm-inspection-inputs.json
-          if [[ "$NATIVE_SCENARIO" == protected-release* ]]; then
+          if [[ "$NATIVE_SCENARIO" == protected-release* || "$NATIVE_SCENARIO" == reference-development-* ]]; then
             export ITERVANE_NATIVE_RELEASE_PROXIES="$RUNNER_TEMP/itervane-release-proxies"
             bash fixtures/ingress/prepare-proxies.sh "$ITERVANE_NATIVE_RELEASE_PROXIES"
           fi
           bash fixtures/runner/run-native-session.sh "$PROBE_DIRECTORY" "$NATIVE_SCENARIO"
-      - name: Reconstruct installation profiles from the sealed guest inputs
-        if: matrix.scenario == 'protected-release-linked-health' && steps.capability.outputs.available == 'true'
+      - name: Require independent development release evidence
+        if: matrix.referenceDevelopment == true
         env:
-          SCANNER_INPUTS: ${{ steps.inspection.outputs.payload }}
-          BUILD_INPUTS: ${{ steps.build.outputs.payload }}
-          OCI_INPUTS: ${{ steps.oci.outputs.payload }}
-          RULE_INPUTS: ${{ steps.rule-engine.outputs.payload }}
+          NATIVE_SCENARIO: ${{ matrix.scenario }}
+          KVM_AVAILABLE: ${{ steps.capability.outputs.available }}
         run: |
-          pnpm --silent reference:runner-profile .reports/p0/kvm-image.json "$SCANNER_INPUTS/inputs.json" "$BUILD_INPUTS/profile.json" \
-            "$OCI_INPUTS/inputs.json" "$RULE_INPUTS/inputs.json" > .reports/p0/runner-reference-profile.env
+          test "$KVM_AVAILABLE" = true
+          jq -e --arg scenario "$NATIVE_SCENARIO" --arg tree "$(git rev-parse 'HEAD^{tree}')" '
+            .development as $d |
+            .scenario == $scenario and .sourceTree == $tree and .cleanInstallation and .qualifiedRunner and .workspaceAndStagingEmpty and
+            .browserPkce and .ownerPasswordChanged and .externalMcpPkce and .mcpScopeAndAudienceVerified and
+            .locales == ["en", "zh-CN"] and
+            $d.controlPlaneIdentity == "native_keycloak" and $d.ingressIdentity == "native_keycloak" and $d.model == "scripted_anthropic_fixture" and
+            $d.portalApproval and $d.mcpApprovalDenied and $d.operationObserved and $d.executionSlotReleased and
+            $d.inspectionGuestId != $d.verificationGuestId and $d.healthStatus == 200 and ($d.anonymousStatus == 401 or $d.anonymousStatus == 403) and
+            ([$d.auditSha256, $d.patchSha256, $d.verificationSha256] | all(test("^[a-f0-9]{64}$"))) and
+            ($d.manifestDigest | test("^sha256:[a-f0-9]{64}$")) and ($d.runtimeVersion | test("^candidate-[a-f0-9]{16}$"))' \
+            .reports/p0/runner-reference-development.json >/dev/null
       - name: Require the clean installation and authenticated audit receipt
         if: matrix.scenario == 'protected-release-linked-health' && steps.capability.outputs.available == 'true'
         run: |
@@ -543,6 +575,7 @@ jobs:
             .reports/p0/runner-reference-connection.env
             .reports/p0/runner-reference-profile.env
             .reports/p0/runner-reference-audit.json
+            .reports/p0/runner-reference-development.json
             .reports/p0/runner-vm*.json
             .reports/p0/runner-qualified-*.json
             .reports/p0/runner-worker-inspection.json

@@ -19,7 +19,7 @@ case "$scenario" in
   regression) features=(--enable-repair --enable-verification) ;;
   rule-samples) features=(--enable-rule-samples --enable-verification) ;;
   standard-build) features=(--enable-repair --enable-verification --enable-standard-build --enable-standard-baseline) ;;
-  standard-oci|protected-release|protected-release-npm|protected-release-drift|protected-release-faults|protected-release-operations|protected-release-restore|protected-release-restore-authorization|protected-release-linked-health)
+  standard-oci|protected-release|protected-release-npm|protected-release-drift|protected-release-faults|protected-release-operations|protected-release-restore|protected-release-restore-authorization|protected-release-linked-health|reference-development-[123])
     artifacts="$directory/artifacts"
     sudo -n install -d -m 0700 -o "$runner" -g "$runner" "$artifacts"
     features=(--enable-repair --enable-verification --enable-standard-build --enable-standard-baseline --enable-standard-oci --artifact-store "$artifacts")
@@ -43,7 +43,7 @@ pnpm exec esbuild "$probe" --bundle --platform=node --format=esm --target=node24
 sudo -n install -m 0444 .reports/p0/qualified-client.mjs "$shared/client.mjs"
 
 reference_session=
-if [[ "$scenario" == protected-release-linked-health ]]; then
+if [[ "$scenario" == protected-release-linked-health || "$scenario" == reference-development-* ]]; then
   reference_session=itervane-reference-libvirt.service
   unit=itervane-reference-runner.service
   sock=/run/itervane-reference-runner/inspection.sock
@@ -187,7 +187,7 @@ pnpm exec esbuild packages/control-plane/src/entries/worker.ts --bundle --platfo
   '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
   --outfile=.reports/p0/qualified-worker.mjs
 sudo -n install -m 0444 .reports/p0/qualified-worker.mjs "$shared/worker.mjs"
-if [[ -n "$reference_session" ]]; then
+if [[ "$scenario" == protected-release-linked-health ]]; then
   pnpm --filter @itervane/portal build
   pnpm --silent probe:reference-install --native-runner "$shared/worker.mjs" > "$reports/runner-reference-audit.json"
   assert_empty
@@ -200,15 +200,25 @@ pnpm exec esbuild packages/control-plane/test/native/worker-verification.ts --bu
   '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
   --outfile=.reports/p0/verification-worker.mjs
 sudo -n install -m 0444 .reports/p0/verification-worker.mjs "$shared/verification-worker.mjs"
-if [[ "$scenario" == standard-oci || "$scenario" == protected-release* ]]; then
+if [[ "$scenario" == standard-oci || "$scenario" == protected-release* || "$scenario" == reference-development-* ]]; then
   sudo -n install -d -m 0755 "$shared/release-tools"
   sudo -n install -m 0444 packages/runner/host/{materialize_oci,oci_layout,oci_artifacts,source_wire,guest_job}.py "$shared/release-tools/"
 fi
-if [[ "$scenario" == protected-release* ]]; then
+if [[ "$scenario" == protected-release* || "$scenario" == reference-development-* ]]; then
   pnpm exec esbuild packages/control-plane/src/entries/release-worker.ts --bundle --platform=node --format=esm --target=node24 \
     '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
     --outfile=.reports/p0/qualified-release-worker.mjs
   sudo -n install -m 0444 .reports/p0/qualified-release-worker.mjs "$shared/release-worker.mjs"
+fi
+if [[ "$scenario" == reference-development-* ]]; then
+  pnpm --filter @itervane/portal build
+  pnpm --silent probe:reference-install --native-release "$shared/worker.mjs" > "$reports/runner-reference-development.pending"
+  assert_empty
+  jq --arg scenario "$scenario" --arg tree "$(git rev-parse 'HEAD^{tree}')" \
+    '. + {scenario: $scenario, sourceTree: $tree, workspaceAndStagingEmpty: true}' \
+    "$reports/runner-reference-development.pending" > "$reports/runner-reference-development.json"
+  rm -- "$reports/runner-reference-development.pending"
+  exit
 fi
 if [[ "$scenario" == protected-release-operations ]]; then
   pnpm exec esbuild packages/control-plane/src/entries/restart-worker.ts --bundle --platform=node --format=esm --target=node24 \

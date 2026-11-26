@@ -34,7 +34,7 @@ API 和 Worker 从各自的环境文件读取配置。以 `reference:init` 返�
 
 1. 创建项目，登记公开的 HTTPS 仓库，提交固定 Git 版本并查看任务事件。未接入合格 Runner 的任务进入等待。
 2. 在外部 MCP 客户端预登记 `reference:init` 输出的客户端 ID 与回调。走授权码加 PKCE，申请 `itervane:read`。读回同一任务及检查状态。写操作使用显式申请的 `itervane:write`，并继续核对项目权限。
-3. 接入执行宿主、验证配置及模型后可启用实际审计和复验。受保护应用入口及已登记的 Komodo、Whiskers 和 Registry 由维护者按后续步骤配置。 [参考 KVM Runner](reference-runner-installation.md) · [应用入口](../fixtures/ingress/reference/README.md) · [运维环境](control-plane-restart.md)
+3. 接入执行宿主、验证配置及模型后可启用实际审计和复验。按发布步骤登记 Komodo、Registry 和受保护应用入口，再配置运维环境中的 Whiskers。 [参考 KVM Runner](reference-runner-installation.md) · [受保护发布](reference-release-installation.md) · [运维环境](control-plane-restart.md)
 
 控制台仅监听本机回环。需要团队访问时，使用受保护的 HTTPS 入口和正式 Keycloak issuer，按安装说明配置确切的回调、网站来源、访问令牌和代理日志策略。暂停 Compose 服务会保留数据库卷。升级前使用冷备流程。 [冷备恢复](control-plane-backup.md)
 
