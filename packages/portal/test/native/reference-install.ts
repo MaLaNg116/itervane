@@ -24,7 +24,8 @@ const referenceSource = 'https://github.com/MaLaNg116/itervane.git';
 const referenceRevision = '49799e18f4f63cf22767a9cd8054cab979b9b6d2';
 const args = process.argv.slice(2);
 const [mode, workerBundle] = args;
-const operationsMode = mode === '--native-operations';
+const runbookMode = mode === '--native-runbook';
+const operationsMode = mode === '--native-operations' || runbookMode;
 const releaseMode = mode === '--native-release' || operationsMode;
 if (args.length && (args.length !== 2 || (!releaseMode && mode !== '--native-runner') || process.platform !== 'linux'
   || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted'
@@ -276,7 +277,7 @@ try {
     if (releaseMode) {
       phase = 'reference_development';
       ok(releaseWorkerSettings && auditProvider);
-      const operations = operationsMode ? { modelUrl: auditProvider.baseURL,
+      const operations = operationsMode ? { modelUrl: auditProvider.baseURL, runbook: runbookMode,
         async configureApi(settings: Record<string, string>) {
           await nativeWorker?.stop('TERM');
           nativeWorker = undefined;

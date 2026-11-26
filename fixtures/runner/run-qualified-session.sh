@@ -218,7 +218,9 @@ if [[ "$scenario" == reference-development-* ]]; then
       --outfile=".reports/p0/reference-$role.mjs"
     sudo -n install -m 0444 ".reports/p0/reference-$role.mjs" "$shared/$role.mjs"
   done
-  pnpm --silent probe:reference-install --native-operations "$shared/worker.mjs" > "$reports/runner-reference-development.pending"
+  reference_mode=--native-operations
+  if [[ "$scenario" == reference-development-1 ]]; then reference_mode=--native-runbook; fi
+  pnpm --silent probe:reference-install "$reference_mode" "$shared/worker.mjs" > "$reports/runner-reference-development.pending"
   assert_empty
   jq --arg scenario "$scenario" --arg tree "$(git rev-parse 'HEAD^{tree}')" \
     '. + {scenario: $scenario, sourceTree: $tree, workspaceAndStagingEmpty: true}' \

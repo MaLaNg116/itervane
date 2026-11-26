@@ -40,7 +40,7 @@ export async function proveReferenceDevelopment(options: {
   workerBundle: string;
   runnerEnvironment: string[];
   verificationProfile: StandardVerificationProfile;
-  operations?: { modelUrl: string; configureApi: (settings: Record<string, string>) => Promise<void> };
+  operations?: { modelUrl: string; runbook: boolean; configureApi: (settings: Record<string, string>) => Promise<void> };
 }) {
   const { client, page, projectId, repositoryId } = options;
   const shared = dirname(options.workerBundle);
@@ -240,7 +240,7 @@ export async function proveReferenceDevelopment(options: {
     if (options.operations) {
       phase = 'operations';
       await resources.worker.stop('TERM');
-      operations = await proveReferenceOperations({ origin: options.origin, directory: options.directory, page, client,
+      operations = await proveReferenceOperations({ origin: options.origin, directory: options.directory, projectId, page, client,
         mcpToken: options.mcpToken, ...options.operations, database, databaseUrl: options.databaseUrl, shared, ca, deployment: target,
         ingress, mapping, registryOrigin: registry.origin, imageRepository: 'testing/standard', release: proof, image: imported });
     }
