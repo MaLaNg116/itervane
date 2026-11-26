@@ -24,10 +24,12 @@
 | 确定性开发对照 | `display` 和 `pagination` 均完成 | 每项 13 轮、10 次工具，合计 5,965 ms |
 | Anthropic 实际多步开发 | 两项均进入人工介入。独立重跑 `display` 时，回放工具结果的请求返回 HTTP 503 | 分别记录 2,697 和 2,616 token，合计 13,703 ms |
 | Anthropic 正式审计合成场景 | 疑似凭证项完成，依赖项在连续无进展后进入人工介入 | 分别记录 7,776 和 7,713 token，合计 35,463 ms |
+| Anthropic 正式模板修复合成场景 | 使用登记模板生成候选，候选文件的修改前后摘要、路径和字节数均通过独立核对 | 3 轮、2 次工具、5,536 token，13,485 ms |
+| Anthropic 正式运维诊断合成场景 | 对已停止实例读取容器、发布记录和日志，建议审查版本恢复。对运行实例增加指标读取，建议继续观察 | 分别记录 9,625 和 10,617 token，合计 38,029 ms |
 | OpenAI 协议合成诊断 | `display` 的首个请求返回 HTTP 503，任务进入人工介入 | 请求未返回用量 |
 
-合成样例和托管记录都有独立判据。本机端点的多步表现保留为本次结果，发布材料继续以具体场景、协议和实际服务为单位。 [评测样例](../evaluation/README.md) · [模型配置](release-components.md)
+合成样例和托管记录都有独立判据。本机端点的多步表现保留为本次结果，运维诊断只读取合成观察。实际执行、审批和受保护健康由 KVM 参考场景单独核对。 [评测样例](../evaluation/README.md) · [模型配置](release-components.md)
 
 ## English
 
-The hosted report covers three independent reference installs. It records actual end-to-end delivery and recovery durations, evidence-backed finding counts, the verified OCI archive size and PostgreSQL storage size. Model usage is taken from the persisted records. Hosted model responses are scripted and run without external model requests. The table above includes the observed outcomes of the separate authorized loopback model trials, including the provider errors and the formal audit that required human intervention.
+The hosted report covers three independent reference installs. It records actual end-to-end delivery and recovery durations, evidence-backed finding counts, the verified OCI archive size and PostgreSQL storage size. Model usage is taken from the persisted records. Hosted model responses are scripted and run without external model requests. The table also records the authorized loopback model trials, including verified template repair, read-only diagnosis of stopped and running cases, provider errors, and the audit that required human intervention.
