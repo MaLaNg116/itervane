@@ -7,3 +7,7 @@
 3. `fc23759` 在独立托管作业中要求合格的 KVM、固定代码树、历史镜像、不同容器、独立读取栅栏、获批执行、授权健康和匿名拒绝。摘要只保留版本、标识、指纹与上下游核对结果。 [托管流程](https://github.com/MaLaNg116/itervane/blob/fc23759/.github/workflows/native-runner.yml) · [摘要判据](https://github.com/MaLaNg116/itervane/blob/fc23759/fixtures/runner/reference-version-restore.jq)
 
 本地严格类型和 287 项单测、两份 Shell 的语法通过，Ubuntu jq 通过一正六负。两个源码版本的 `package.json` 与锁文件和参考输入一致。实际版本恢复以托管回执为准。模型使用固定 Anthropic 协议响应；应答丢失、过期、撤销及失效执行者继续由既有原生恢复回归验收。 [恢复应答中断](p3-c-native-restore-takeover.md) · [恢复授权失效](p3-c-native-restore-authority.md)
+
+首轮托管作业执行到恢复安装。复现检查确认完整发布登记会被 Komodo 只读适配器的严格参数校验拒绝。夹具现在沿用生产 Restore Worker 的 `targetForKomodo`，独立读回使用同一绑定字段，并给每一步安装验证保留脱敏诊断。 [首轮作业](https://github.com/MaLaNg116/itervane/actions/runs/45764974089/job/139723603517) · [生产字段转换](../../packages/control-plane/src/runtime/formal-komodo-steps.ts)
+
+`131d2a3` 的托管 KVM 作业通过。回执绑定代码树 `5cbcae50f72365d8679da2de5280c4bee9c7981e`，获批的历史镜像与读回一致，容器已更换，独立读取栅栏晚于发送。健康 200，匿名 401，MCP 越权提交被拒，双语结果和全局执行槽均完成核对。 [真实指定版本恢复](https://github.com/MaLaNg116/itervane/actions/runs/45769785132/job/139739391770)
