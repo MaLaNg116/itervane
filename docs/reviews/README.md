@@ -172,7 +172,8 @@
 | 167 | P5-B6 参考环境 Runbook 学习与复用 | [#167](https://github.com/MaLaNg116/itervane/pull/167)，依赖 #166 | [参考 Runbook 导读](p5-reference-runbook.md) | 本地类型和单测通过，真实案例、门户发布与后续处置待托管联验 |
 | 168 | P5-C1 参考运行独立性核对 | [#168](https://github.com/MaLaNg116/itervane/pull/168)，依赖 #167 | [验收汇总导读](p5-reference-evidence.md) | [开发和运维各三次独立运行，汇总通过](https://github.com/MaLaNg116/itervane/actions/runs/45754056814/job/139709157241) |
 | 169 | P5-B7 参考环境代码规则复用 | [#169](https://github.com/MaLaNg116/itervane/pull/169)，依赖 #168 | [代码规则导读](p5-reference-code-rule.md) | [六个 KVM 回执和实际发布规则复用](https://github.com/MaLaNg116/itervane/actions/runs/45755933921/job/139694423777) |
-| P5-B8 | 参考安装的指定版本恢复 | 依赖 [#169](https://github.com/MaLaNg116/itervane/pull/169) | [参考恢复导读](p5-reference-version-restore.md) | 本地类型、单测和摘要正反样例通过，托管实际恢复待验 |
+| 170 | P5-B8 参考安装的指定版本恢复 | [#170](https://github.com/MaLaNg116/itervane/pull/170)，依赖 #169 | [参考恢复导读](p5-reference-version-restore.md) | 本地基础安装、类型、单测和摘要正反样例通过，[托管实际恢复待验](https://github.com/MaLaNg116/itervane/actions/runs/45764974089/job/139723603517) |
+| P5-C2 | 参考安装的历史数据库升级 | 依赖 [#170](https://github.com/MaLaNg116/itervane/pull/170) | [参考升级导读](p5-reference-upgrade.md) | 本地真实 PostgreSQL 从 63 条迁移到 85 条，旧任务消费与幂等读回通过 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 

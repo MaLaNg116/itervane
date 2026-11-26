@@ -73,6 +73,31 @@ jobs:
         run: pnpm test:portal
       - name: Clean reference install with real OIDC login and external MCP
         run: pnpm probe:reference-install
+      - name: Check out the pinned control-plane upgrade baseline
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: 50fe5b16b5c3ff23dc3cfc9fd5928e3fd42681d8
+          path: .reports/reference-upgrade-baseline
+          persist-credentials: false
+      - name: Upgrade a populated PostgreSQL 17 installation and resume its existing queue
+        run: |
+          legacy=.reports/reference-upgrade-baseline
+          pnpm --dir "$legacy" install --frozen-lockfile --ignore-scripts
+          pnpm --silent probe:reference-install --upgrade-from "$legacy" > .reports/reference-upgrade.pending
+          jq -e --arg tree "$(git rev-parse 'HEAD^{tree}')" --arg baseline "$(git -C "$legacy" rev-parse HEAD)" '
+            select(.initializedTwice and .browserPkce and .externalMcpPkce and .mcpScopeAndAudienceVerified and .locales == ["en", "zh-CN"] and
+              .postgresMajor == 17 and .upgrade.baseline == $baseline and .upgrade.priorOwnerRetained and .upgrade.restrictedRuntime and
+              .upgrade.queuedJobPreserved and .upgrade.legacyTaskConsumedWithRunnerGate and .upgrade.idempotentReplay and
+              .upgrade.formerMigrations > 0 and .upgrade.appliedMigrations > .upgrade.formerMigrations and
+              (.upgrade.migrationLedgerSha256 | test("^[a-f0-9]{64}$"))) | . + {sourceTree: $tree}
+          ' .reports/reference-upgrade.pending > .reports/reference-upgrade.json
+      - name: Retain sanitized upgrade evidence
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reference-installation-upgrade
+          path: .reports/reference-upgrade.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Sanitized browser verification evidence
         if: always()
         run: test ! -f .reports/p1-c/browser.json || cat .reports/p1-c/browser.json
