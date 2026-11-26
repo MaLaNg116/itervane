@@ -41,6 +41,24 @@ jobs:
         run: pnpm probe:mcp
       - name: Evaluation preparation and trusted fixture
         run: pnpm probe:evaluation
+      - name: Summarize deterministic and PostgreSQL regression evidence
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          jq -e --arg tree "$tree" --slurpfile database .reports/p0/database.json '
+            $database[0] as $db |
+            select(.success == true and .numPassedTests > 0 and .numFailedTests == 0 and $db.status == "passed" and
+              any($db.checks[]; .id == "postgresql-17" and .status == "passed")) |
+            {sourceTree: $tree, postgres: ($db.checks[] | select(.id == "postgresql-17") | .detail),
+             integration: {passed: .numPassedTests, skipped: .numPendingTests, failed: .numFailedTests},
+             deterministic: {typesAndUnit: true, runnerHost: true, healthProbe: true, appBackup: true, mcp: true, fixture: true}}
+          ' .reports/p0/database-tests.json > .reports/verification-regression.json
+      - name: Retain the sanitized regression evidence
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: verification-regression
+          path: .reports/verification-regression.json
+          if-no-files-found: error
+          retention-days: 14
 
   portal:
     runs-on: ubuntu-24.04
