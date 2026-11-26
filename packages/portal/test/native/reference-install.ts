@@ -10,9 +10,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { parseEnv, promisify } from 'node:util';
 import { chromium, expect, type Page } from '@playwright/test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { codeRuleValidationProfileSchema, formalAuditDtoSchema, projectDtoSchema, repositoryDtoSchema, sourceInspectionDtoSchema,
+import { admissionDtoSchema, codeRuleValidationProfileSchema, formalAuditDtoSchema, projectDtoSchema, repositoryDtoSchema, sourceInspectionDtoSchema,
   standardVerificationProfileSchema, taskDtoSchema, type CodeRuleValidationProfile, type StandardVerificationProfile } from '@itervane/contracts';
 import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from '../../../control-plane/test/native/audit-provider.js';
+import { attestReferenceUpgrade, prepareReferenceUpgrade } from '../../../control-plane/test/native/reference-upgrade.js';
 import { sourceWorkerEnvironment, startScopedWorker } from '../../../control-plane/test/native/scoped-worker.js';
 import { npmReleaseApproval } from '../../../verification/src/native/npm-release-fixture.js';
 import { proveReferenceDevelopment } from './reference-release.js';
@@ -23,13 +24,16 @@ const host = '127.0.0.1';
 const referenceSource = 'https://github.com/MaLaNg116/itervane.git';
 const referenceRevision = '49799e18f4f63cf22767a9cd8054cab979b9b6d2';
 const args = process.argv.slice(2);
-const [mode, workerBundle] = args;
+const [mode, target] = args;
+const upgradeFrom = mode === '--upgrade-from' ? target : undefined;
+const workerBundle = upgradeFrom ? undefined : target;
 const runbookMode = mode === '--native-runbook';
 const operationsMode = mode === '--native-operations' || runbookMode;
 const codeRuleMode = mode === '--native-code-rule';
 const restoreMode = mode === '--native-version-restore';
 const releaseMode = mode === '--native-release' || operationsMode || codeRuleMode || restoreMode;
-if (args.length && (args.length !== 2 || (!releaseMode && mode !== '--native-runner') || process.platform !== 'linux'
+if (upgradeFrom && args.length !== 2) throw new Error('reference_upgrade_config');
+if (!upgradeFrom && args.length && (args.length !== 2 || (!releaseMode && mode !== '--native-runner') || process.platform !== 'linux'
   || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted'
   || !workerBundle || !/^\/var\/lib\/libvirt\/images\/itervane-native\.[a-zA-Z0-9]{8}\/qualified\/worker\.mjs$/.test(workerBundle))) {
   throw new Error('reference_native_runner_config');
@@ -75,7 +79,8 @@ function serve(directory: string, role: 'api' | 'worker') {
   } };
 }
 
-async function tokenForMcp(page: Page, install: { issuer: string; mcpClientId: string; mcpRedirectUri: string }, write: boolean) {
+async function tokenForMcp(page: Page, install: { issuer: string; mcpClientId: string; mcpRedirectUri: string }, write: boolean,
+  enterCredentials?: () => Promise<void>) {
   const verifier = randomBytes(32).toString('base64url');
   const state = randomBytes(20).toString('hex');
   const redirect = new URL(install.mcpRedirectUri);
@@ -95,6 +100,7 @@ async function tokenForMcp(page: Page, install: { issuer: string; mcpClientId: s
       scope: write ? 'openid itervane:read itervane:write' : 'openid itervane:read', state, code_challenge_method: 'S256',
       code_challenge: createHash('sha256').update(verifier).digest('base64url') }).toString();
     await page.goto(url.href, { waitUntil: 'domcontentloaded' });
+    await enterCredentials?.();
     await until(async () => Boolean(code));
     phase = 'mcp_token';
     const exchange = async (parameters: Record<string, string>) => {
@@ -118,6 +124,20 @@ async function tokenForMcp(page: Page, install: { issuer: string; mcpClientId: s
       return current.token;
     };
   } finally { await close(server); }
+}
+
+async function enterKeycloakCredentials(page: Page, username: string, currentPassword: string, newPassword?: string) {
+  phase = 'keycloak_credentials';
+  await page.locator('#username').fill(username);
+  await page.locator('#password').fill(currentPassword);
+  await page.locator('#kc-login').click();
+  if (newPassword) {
+    phase = 'initial_password_form';
+    await page.locator('#password-new').fill(newPassword);
+    await page.locator('#password-confirm').fill(newPassword);
+    phase = 'initial_password_submit';
+    await page.getByRole('button', { name: 'Submit', exact: true }).click();
+  }
 }
 
 async function prepareProject(page: Page, useRunner: boolean) {
@@ -185,17 +205,51 @@ try {
   const ports = (await availablePorts()).map(String);
   phase = 'prepare';
   const prepared = await execute(process.execPath, ['--import', 'tsx', entry, 'prepare', directory, ...ports]);
-  const { project } = JSON.parse(prepared.stdout) as { project: string };
+  const { project, portal, issuer } = JSON.parse(prepared.stdout) as { project: string; portal: string; issuer: string };
   ok(/^itervane-reference-[a-f0-9]{16}$/.test(project));
   compose = ['compose', '--project-name', project, '--project-directory', directory, '--env-file', join(directory, '.env'),
     '--file', join(directory, 'compose.yml')];
   phase = 'compose';
   await execute('docker', [...compose, 'config', '--quiet'], { env: composeEnv, timeout: 15_000 });
   await execute('docker', [...compose, 'up', '--detach', '--wait', '--wait-timeout', '120'], { env: composeEnv, timeout: 300_000 });
+  const login = parseEnv(await readFile(join(directory, 'owner-login.env'), 'utf8'));
+  const { ITERVANE_OWNER_USERNAME: username, ITERVANE_OWNER_INITIAL_PASSWORD: initialPassword } = login;
+  ok(username && initialPassword);
+  const password = randomBytes(24).toString('hex');
+  let upgradeSeed: Awaited<ReturnType<typeof prepareReferenceUpgrade>> | undefined;
+  if (upgradeFrom) {
+    phase = 'upgrade_legacy_identity';
+    await until(async () => {
+      try {
+        const response = await fetch(issuer + '/.well-known/openid-configuration', { signal: AbortSignal.timeout(1_500), redirect: 'error' });
+        return response.ok && (await response.json() as { issuer?: string }).issuer === issuer;
+      } catch { return false; }
+    }, 90_000);
+    browser = await chromium.launch({ channel: 'chrome' });
+    const legacyContext = await browser.newContext({ locale: 'en-US', reducedMotion: 'reduce' });
+    try {
+      const legacyPage = loginPage = await legacyContext.newPage();
+      legacyPage.setDefaultTimeout(15_000);
+      const token = await tokenForMcp(legacyPage, { issuer, mcpClientId: 'itervane-mcp',
+        mcpRedirectUri: `http://${host}:${ports[3]}/callback` }, true,
+      () => enterKeycloakCredentials(legacyPage, username, initialPassword, password));
+      phase = 'upgrade_legacy_seed';
+      upgradeSeed = await prepareReferenceUpgrade(directory, upgradeFrom, await token());
+    } finally { await legacyContext.close(); }
+  }
   phase = 'initialize';
   const setup = await execute(process.execPath, ['--import', 'tsx', entry, 'init', directory], { timeout: 140_000 });
   const install = JSON.parse(setup.stdout) as { portal: string; issuer: string; mcp: string; mcpClientId: string; mcpRedirectUri: string };
+  equal(install.portal, portal);
+  equal(install.issuer, issuer);
+  phase = 'upgrade_migration_ledger';
+  const upgrade = upgradeSeed && await attestReferenceUpgrade(directory, upgradeSeed);
+  phase = 'initialize_repeat';
   await execute(process.execPath, ['--import', 'tsx', entry, 'init', directory], { timeout: 140_000 });
+  if (upgradeSeed) {
+    phase = 'upgrade_migration_repeat';
+    deepStrictEqual(await attestReferenceUpgrade(directory, upgradeSeed), upgrade);
+  }
   phase = 'serve';
   api = serve(directory, 'api');
   if (workerBundle) {
@@ -232,24 +286,15 @@ try {
   equal((await fetch(install.portal + '/v1/me')).status, 401);
 
   phase = 'browser_launch';
-  const login = parseEnv(await readFile(join(directory, 'owner-login.env'), 'utf8'));
-  browser = await chromium.launch({ channel: 'chrome' });
+  browser ??= await chromium.launch({ channel: 'chrome' });
   const context = await browser.newContext({ baseURL: install.portal, locale: 'en-US', reducedMotion: 'reduce' });
   const page = loginPage = await context.newPage();
   page.setDefaultTimeout(15_000);
   phase = 'browser_login';
   await page.goto(install.portal);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  phase = 'keycloak_credentials';
-  await page.locator('#username').fill(login.ITERVANE_OWNER_USERNAME!);
-  await page.locator('#password').fill(login.ITERVANE_OWNER_INITIAL_PASSWORD!);
-  await page.locator('#kc-login').click();
-  phase = 'initial_password_form';
-  const password = randomBytes(24).toString('hex');
-  await page.locator('#password-new').fill(password);
-  await page.locator('#password-confirm').fill(password);
-  phase = 'initial_password_submit';
-  await page.getByRole('button', { name: 'Submit', exact: true }).click();
+  if (upgradeSeed) await enterKeycloakCredentials(page, username, password);
+  else await enterKeycloakCredentials(page, username, initialPassword, password);
   phase = 'portal_callback';
   await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible({ timeout: 20_000 });
 
@@ -261,7 +306,8 @@ try {
   phase = 'mcp_authorization';
   const authPage = await context.newPage();
   loginPage = authPage;
-  const mcpToken = await tokenForMcp(authPage, install, releaseMode);
+  const writeAccess = releaseMode || Boolean(upgradeSeed);
+  const mcpToken = await tokenForMcp(authPage, install, writeAccess);
   phase = 'mcp_resource_binding';
   equal((await fetch(install.portal + '/v1/me', { headers: { Authorization: `Bearer ${await mcpToken()}` } })).status, 401);
   const client = new Client({ name: 'reference-install', version: '0.0.0' });
@@ -278,8 +324,8 @@ try {
     phase = 'mcp_read_scopes';
     const { tools } = await client.listTools();
     ok(tools.some(tool => tool.name === 'get_task'));
-    equal(tools.some(tool => tool.name === 'start_audit'), releaseMode);
-    equal(tools.some(tool => tool.name === 'request_release'), releaseMode);
+    equal(tools.some(tool => tool.name === 'start_audit'), writeAccess);
+    equal(tools.some(tool => tool.name === 'request_release'), writeAccess);
     if (releaseMode) {
       phase = 'reference_development';
       ok(releaseWorkerSettings && auditProvider);
@@ -326,8 +372,26 @@ try {
         equal(inspection.status, 'blocked'); equal(inspection.sourceFetched, false);
       }
     }
+    if (upgradeSeed) {
+      phase = 'upgrade_task_readback';
+      const legacyTaskId = upgradeSeed.task.id;
+      await page.bringToFront();
+      await page.evaluate(id => { location.hash = '#/tasks/' + id; }, legacyTaskId);
+      await expect(page.getByRole('heading', { name: '任务详情', exact: true })).toBeVisible();
+      await expect(page.getByText('任务正在等待经过验证的 Runner。', { exact: true })).toBeVisible({ timeout: 20_000 });
+      const oldTask = taskDtoSchema.parse((await client.callTool({ name: 'get_task', arguments: { taskId: legacyTaskId } })).structuredContent);
+      equal(oldTask.id, legacyTaskId);
+      equal(oldTask.runId, upgradeSeed.task.runId);
+      equal(oldTask.projectId, upgradeSeed.task.projectId);
+      equal(oldTask.state, 'waiting_input');
+      deepStrictEqual(oldTask.source, upgradeSeed.task.source);
+      const replay = admissionDtoSchema.parse((await client.callTool({ name: 'start_audit', arguments: upgradeSeed.request })).structuredContent);
+      equal(replay.replayed, true);
+      deepStrictEqual(replay.task, oldTask);
+    }
   } finally { await client.close(); }
-  console.log(JSON.stringify({ cleanInstallation: true, isolatedRuntimeConfiguration: true, initializedTwice: true,
+  console.log(JSON.stringify({ ...(upgrade ? { upgrade: { ...upgrade, legacyTaskConsumedWithRunnerGate: true, idempotentReplay: true } }
+    : { cleanInstallation: true }), isolatedRuntimeConfiguration: true, initializedTwice: true,
     keycloak: '26.8.2', postgresMajor: 17, browserPkce: true, ownerPasswordChanged: true, locales: ['en', 'zh-CN'],
     externalMcpPkce: true, mcpScopeAndAudienceVerified: true,
     ...(development ? { qualifiedRunner: true, development }
