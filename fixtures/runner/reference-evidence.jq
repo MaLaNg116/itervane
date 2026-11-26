@@ -4,6 +4,18 @@ def independent($count; $pattern):
 
 def digest: "^[a-f0-9]{64}$";
 def uuid: "^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$";
+def positive_integer: type == "number" and . > 0 and (floor == .);
+def recorded_usage:
+  type == "object" and ([.turns, .toolCalls, .tokens] | all(.[]; positive_integer)) and .toolCalls <= .turns;
+
+def measured($development; $operations):
+  $development.measurements as $delivery |
+  $development.model == "scripted_anthropic_fixture" and $operations.model == "scripted_anthropic_fixture"
+  and ([$delivery.deliveryDurationMs, $delivery.databaseBytes, $delivery.archiveBytes, $operations.recoveryDurationMs] |
+    all(.[]; positive_integer))
+  and $delivery.findings == {introduced: 0, resolved: 1, remaining: 0}
+  and ([$delivery.auditUsage, $delivery.repairUsage, $delivery.verificationUsage, $operations.diagnosisUsage] |
+    all(.[]; recorded_usage));
 
 def qualified:
   .development as $d | $d.operations as $o |
@@ -16,7 +28,8 @@ def qualified:
   and $o.releaseOperationId == $d.operationId and $o.admissions == 1 and $o.portalApproval == true
   and $o.nativeApproval == true and $o.independentReader == true and $o.incidentRecovered == true
   and $o.executionSlotReleased == true and $o.httpMcpAgreement == true and $o.healthStatus == 200
-  and ($o.anonymousStatus == 401 or $o.anonymousStatus == 403);
+  and ($o.anonymousStatus == 401 or $o.anonymousStatus == 403)
+  and measured($d; $o);
 
 sort_by(.scenario)
 | if ($tree | test("^[a-f0-9]{40}$")) and ($workflow | test("^[0-9]+$"))
@@ -34,14 +47,19 @@ sort_by(.scenario)
     and (map(.development.operations.approvalId) | independent(3; "^[a-f0-9]{32}$"))
     and (map(.development.operations.recoverySha256) | independent(3; digest))
   then {
-    version: 1, sourceTree: $tree, workflowRun: $workflow, developmentRuns: 3, operationsRuns: 3,
+    version: 2, sourceTree: $tree, workflowRun: $workflow, developmentRuns: 3, operationsRuns: 3,
+    model: {mode: "scripted_anthropic_fixture", externalProviderRequests: 0},
     runs: map({
       scenario, projectId: .development.projectId, developmentTaskId: .development.taskId,
       inspectionGuestId: .development.inspectionGuestId, verificationGuestId: .development.verificationGuestId,
       releaseOperationId: .development.operationId, updateId: .development.updateId,
       operationsTaskId: .development.operations.taskId, incidentId: .development.operations.incidentId,
       approvalId: .development.operations.approvalId, executionId: .development.operations.executionId,
-      recoverySha256: .development.operations.recoverySha256
+      recoverySha256: .development.operations.recoverySha256,
+      measurements: (.development.measurements + {
+        recoveryDurationMs: .development.operations.recoveryDurationMs,
+        diagnosisUsage: .development.operations.diagnosisUsage
+      })
     })
   }
   else error("reference run evidence is incomplete, inconsistent or reused")
