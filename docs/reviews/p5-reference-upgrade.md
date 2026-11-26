@@ -7,3 +7,5 @@
 3. `bb1081d` 固定旧版源码与依赖，并由托管任务保留绑定当前代码树的脱敏摘要。`070dc2a` 记录升级前冷备、完成数据迁移、启用进程和故障恢复步骤。 [托管验收](https://github.com/MaLaNg116/itervane/blob/bb1081d/.github/workflows/verification.yml) · [安装与升级](../reference-installation.md#升级既有参考安装)
 
 本地用真实服务从 63 条迁移升级至 85 条。第二次初始化保留原账本、原维护者、任务和队列，迁移账本 SHA-256 为 `fac97685f0700149f5216d5fe02001cd98b0fbef308d6ccd59b46d7efa25b3ab`。严格类型与 287 项单测也通过。托管的操作系统、镜像与源码回执由本批检查记录，升级前冷备的实际数据库与 OCI 恢复另有专门演练。 [原生冷备演练](p5-native-backup-recovery.md)
+
+`aeb8e4d` 的 Ubuntu 托管浏览器作业通过，保留的升级回执与本地迁移数和账本摘要一致。旧队列任务由升后 Worker 消费并进入 Runner 闸门，原幂等键继续返回同一任务。 [托管升级回执](https://github.com/MaLaNg116/itervane/actions/runs/45766177221/job/139727509716)

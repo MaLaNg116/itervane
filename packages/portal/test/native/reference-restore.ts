@@ -11,6 +11,7 @@ import { sha256 } from '@itervane/runner';
 import { workerConfig } from '../../../control-plane/src/config.js';
 import type { Database } from '../../../control-plane/src/persistence/database.js';
 import { configuredAuditModel } from '../../../control-plane/src/runtime/formal-audit.js';
+import { targetForKomodo } from '../../../control-plane/src/runtime/formal-komodo-steps.js';
 import { KomodoReleaseClient } from '../../../control-plane/src/runtime/release-komodo.js';
 import { readPublishedOperationsDeployment } from '../../../control-plane/src/service/operations-deployment.js';
 import { auditFixtureKey, auditFixtureModel } from '../../../control-plane/test/native/audit-provider.js';
@@ -49,7 +50,7 @@ export async function proveReferenceRestore(input: ReferenceRestoreInput) {
   const { page, read, database, databaseUrl, deployment, ingress, mapping, previous, current } = input;
   const scope = { projectId: input.projectId, environmentId: mapping.environmentId };
   const history = () => database.db.transaction(tx => readPublishedOperationsDeployment(tx, scope, { includePrevious: true }));
-  let phase = 'installation';
+  let phase = 'publication_history';
   const workers: Awaited<ReturnType<typeof startScopedWorker>>[] = [];
   const native = await openNativeWhiskersReadScope();
   try {
@@ -60,15 +61,19 @@ export async function proveReferenceRestore(input: ReferenceRestoreInput) {
     equal(publication.containerId, current.runtime.containerId);
     equal(publication.previous?.releaseOperationId, previous.operationId);
     equal(publication.previous?.manifestDigest, previous.manifestDigest);
+    phase = 'operations_enrollment';
     const enrollment = await registerReferenceTarget(input.directory, 'operations-target', {
       environmentId: mapping.environmentId, releaseTargetRevision: mapping.revision, releaseTargetSha256: mapping.fingerprint,
       whiskers: { origin: native.origin, serverId: native.serverId },
     }) as { environmentId: string; fingerprint: string };
     equal(enrollment.environmentId, mapping.environmentId);
+    phase = 'reader_binding';
     const reader = await deployment.provisionRestartReader();
     notEqual(reader.actorId, deployment.credentials.actorId);
-    const adapter = KomodoReleaseClient.readOnly(publication.releaseTarget, reader);
+    const target = targetForKomodo(publication.releaseTarget);
+    const adapter = KomodoReleaseClient.readOnly(target, reader);
     await adapter.verifyInstallation();
+    phase = 'api_activation';
     const provider = { ITERVANE_AUDIT_MODEL_PROVIDER: 'anthropic', ANTHROPIC_BASE_URL: input.modelUrl, ANTHROPIC_MODEL: auditFixtureModel };
     const model = workerConfig({ DATABASE_URL: databaseUrl, ...provider, ANTHROPIC_API_KEY: auditFixtureKey }).auditModel;
     ok(model);
@@ -77,6 +82,7 @@ export async function proveReferenceRestore(input: ReferenceRestoreInput) {
       ITERVANE_OPERATIONS_ENROLLMENT_SHA256: enrollment.fingerprint, ITERVANE_OPERATIONS_DIAGNOSIS_PROVIDER_SHA256: providerSha256,
       ITERVANE_OPERATIONS_RELEASE_TARGET_SHA256: mapping.fingerprint };
     await input.configureApi({ ...installed, ITERVANE_OPERATIONS_API_ENABLED: '1', ITERVANE_RESTORE_API_ENABLED: '1' });
+    phase = 'diagnosis_worker';
     const workerEnv = ['PATH=/usr/bin:/bin', 'LANG=C.UTF-8', 'ITERVANE_WORKER_POLL_MS=250', 'ITERVANE_WORKER_LEASE_SECONDS=30',
       ...Object.entries(installed).map(([key, value]) => `${key}=${value}`)];
     workers.push(await startScopedWorker(join(input.shared, 'worker.mjs'), [...workerEnv,
@@ -87,7 +93,7 @@ export async function proveReferenceRestore(input: ReferenceRestoreInput) {
     await deployment.setOwnedContainerRunning(false, { containerId: current.runtime.containerId,
       reference: current.runtime.imageReference, configDigest: current.runtime.configDigest });
     const activeImage = { manifestDigest: current.manifestDigest, configDigest: current.runtime.configDigest };
-    const inspectStopped = () => adapter.inspectStoppedRuntime(publication.releaseTarget, activeImage, current.runtime.network, async () => {});
+    const inspectStopped = () => adapter.inspectStoppedRuntime(target, activeImage, current.runtime.network, async () => {});
     const stopped = await inspectStopped();
     equal(stopped.containerId, current.runtime.containerId);
     const { task } = admissionDtoSchema.parse(await read('start_operations_diagnosis', {
@@ -206,7 +212,7 @@ export async function proveReferenceRestore(input: ReferenceRestoreInput) {
     notEqual(proof.update.updateId, current.update.updateId);
     notEqual(proof.update.updateId, previous.update.updateId);
     ok(proof.fence > row.send_fence);
-    const observed = await adapter.inspectRuntime(publication.releaseTarget, { manifestDigest: previous.manifestDigest,
+    const observed = await adapter.inspectRuntime(target, { manifestDigest: previous.manifestDigest,
       configDigest: previous.runtime.configDigest }, previous.runtime.network, async () => {});
     equal(observed.containerId, proof.runtime.containerId);
     const restored = await history();
