@@ -165,7 +165,8 @@
 | 160 | P5-A1 控制面冷备和独立恢复 | [#160](https://github.com/MaLaNg116/itervane/pull/160)，依赖 #159 | [冷备与独立恢复导读](p5-backup-restore.md) | 两套 PostgreSQL 17.12 恢复 89 张表与配置 |
 | 161 | P5-A2 原生发布档案和运维回执恢复 | [#161](https://github.com/MaLaNg116/itervane/pull/161)，依赖 #160 | [原生冷备演练导读](p5-native-backup-recovery.md) | TypeScript、原生打包和基础真库演练通过，托管验收待完成 |
 | 162 | P5-B1 参考控制面干净安装 | [#162](https://github.com/MaLaNg116/itervane/pull/162)，依赖 #161 | [参考安装导读](p5-reference-install.md) | 实际 PostgreSQL、Keycloak、Chrome 和外部 MCP 已在本地联验 |
-| P5-B2 | 参考 KVM Runner 安装 | 依赖 [#162](https://github.com/MaLaNg116/itervane/pull/162) | [参考 Runner 导读](p5-reference-runner.md) | 287 项单测、82 项 Linux Runner 用例和固定配置校验通过，待托管 KVM 联验 |
+| 163 | P5-B2 参考 KVM Runner 安装 | [#163](https://github.com/MaLaNg116/itervane/pull/163)，依赖 #162 | [参考 Runner 导读](p5-reference-runner.md) | 287 项单测、82 项 Linux Runner 用例和固定配置校验通过，待托管 KVM 联验 |
+| P5-B3 | 参考安装与正式审计联验 | 依赖 [#163](https://github.com/MaLaNg116/itervane/pull/163) | [参考审计导读](p5-reference-audit.md) | 本地干净安装与 287 项单测通过，真实 Runner 正式审计待托管验证 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 

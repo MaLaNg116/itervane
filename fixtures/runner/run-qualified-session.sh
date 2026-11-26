@@ -187,6 +187,11 @@ pnpm exec esbuild packages/control-plane/src/entries/worker.ts --bundle --platfo
   '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
   --outfile=.reports/p0/qualified-worker.mjs
 sudo -n install -m 0444 .reports/p0/qualified-worker.mjs "$shared/worker.mjs"
+if [[ -n "$reference_session" ]]; then
+  pnpm --filter @itervane/portal build
+  pnpm --silent probe:reference-install --native-runner "$shared/worker.mjs" > "$reports/runner-reference-audit.json"
+  assert_empty
+fi
 pnpm exec esbuild packages/control-plane/test/native/worker-repair.ts --bundle --platform=node --format=esm --target=node24 \
   '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
   --outfile=.reports/p0/repair-worker.mjs
