@@ -23,7 +23,7 @@ import type { openProtectedIngress } from '../../../control-plane/test/native/pr
 import { startScopedWorker } from '../../../control-plane/test/native/scoped-worker.js';
 import type { openNativeReleaseKomodo } from '../../../verification/src/native/komodo-probe.js';
 import { portalPost, untilResult } from './reference-browser.js';
-import { publishReferenceRunbook, type ReferenceRunbook } from './reference-learning.js';
+import { publishReferenceRule, type ReferenceRule } from './reference-learning.js';
 import { registerReferenceTarget } from './reference-registration.js';
 import { openNativeWhiskersRestartScope } from './whiskers-restart-scope.js';
 
@@ -112,7 +112,7 @@ export async function proveReferenceOperations(input: OperationInputs) {
       ITERVANE_RESTART_WHISKERS_WRITE_KEY: native.writeKey, ITERVANE_RESTART_PROBE_SECRET: ingress.probeSecret }));
 
     const whiskers = native;
-    const trial = async (round: 1 | 2, published?: ReferenceRunbook) => {
+    const trial = async (round: 1 | 2, published?: ReferenceRule) => {
       phase = 'health_incident';
       const first = await untilResult(async () => (await database.pool.query<{ sequence: string }>(
         "SELECT sequence::text FROM itervane.operations_health_samples WHERE environment_id=$1 AND binding->>'releaseOperationId'=$2 AND signal->>'status'='healthy' ORDER BY sequence DESC LIMIT 1",
@@ -292,15 +292,15 @@ export async function proveReferenceOperations(input: OperationInputs) {
     const first = await trial(1);
     if (!input.runbook) return first;
     phase = 'runbook_publication';
-    const learned = await publishReferenceRunbook({ page, client: input.client, origin: input.origin, projectId: input.projectId,
-      taskId: first.taskId, runId: first.runId, recoverySha256: first.recoverySha256 });
+    const learned = await publishReferenceRule({ page, client: input.client, origin: input.origin, projectId: input.projectId,
+      taskId: first.taskId, runId: first.runId, evidenceSha256: first.recoverySha256, kind: 'runbook' });
     const reused = await trial(2, learned.publication);
     notEqual(reused.incidentId, first.incidentId);
     notEqual(reused.runId, first.runId);
     notEqual(reused.approvalId, first.approvalId);
     notEqual(reused.executionId, first.executionId);
     ok(reused.sampleSequence > first.sampleSequence && reused.ruleSnapshotSha256);
-    return { ...first, runbook: { ...learned, reused } };
+    return { ...first, runbook: { ...learned, recoverySha256: learned.evidenceSha256, reused } };
   } catch {
     throw new Error('reference_operations_' + phase);
   } finally {
