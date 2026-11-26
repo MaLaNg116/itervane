@@ -168,7 +168,8 @@
 | 163 | P5-B2 参考 KVM Runner 安装 | [#163](https://github.com/MaLaNg116/itervane/pull/163)，依赖 #162 | [参考 Runner 导读](p5-reference-runner.md) | 287 项单测、82 项 Linux Runner 用例和固定配置校验通过，待托管 KVM 联验 |
 | 164 | P5-B3 参考安装与正式审计联验 | [#164](https://github.com/MaLaNg116/itervane/pull/164)，依赖 #163 | [参考审计导读](p5-reference-audit.md) | 本地干净安装与 287 项单测通过，真实 Runner 正式审计待托管验证 |
 | 165 | P5-B4 三次独立参考开发与发布验收 | [#165](https://github.com/MaLaNg116/itervane/pull/165)，依赖 #164 | [参考发布导读](p5-reference-release.md) | 本地基础验证通过，三次完整开发闭环待托管验收 |
-| P5-B5 | 三次独立参考健康诊断和恢复 | 依赖 [#165](https://github.com/MaLaNg116/itervane/pull/165) | [参考运维导读](p5-reference-operations.md) | 本地类型、单测和验收谓词通过，托管原生恢复待验 |
+| 166 | P5-B5 三次独立参考健康诊断和恢复 | [#166](https://github.com/MaLaNg116/itervane/pull/166)，依赖 #165 | [参考运维导读](p5-reference-operations.md) | 本地类型、单测和验收谓词通过，托管原生恢复待验 |
+| P5-B6 | 参考环境 Runbook 学习与复用 | 依赖 [#166](https://github.com/MaLaNg116/itervane/pull/166) | [参考 Runbook 导读](p5-reference-runbook.md) | 本地类型和单测通过，真实案例、门户发布与后续处置待托管联验 |
 
 2026-11-20 首批合入复核覆盖 #1–#8，按依赖顺序合入 `main`，保留分项提交。每个 PR 的已审查版本、检查和合并提交可从上表追溯。合入前核对项目权限、撤权、任务事务和执行租约，复跑 73 项单元与 66 项真实 PostgreSQL 集成测试。源码检查仍只准备计划和验证可信样例，有限预审的报告仍不授予发布资格。正式 VM 执行、部署和运维依赖各自的后续验收。
 
