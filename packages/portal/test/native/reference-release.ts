@@ -8,7 +8,7 @@ import type { Page } from '@playwright/test';
 import {
   admissionDtoSchema, applicationDtoSchema, environmentDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema,
   formalReleaseDecisionResultSchema, formalReleaseResultSchema, formalReleaseViewSchema, formalRepairDtoSchema,
-  idSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sourceInspectionDtoSchema, taskDtoSchema,
+  formalVerificationResultSchema, idSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sourceInspectionDtoSchema, taskDtoSchema,
   verificationViewSchema, type CodeRuleValidationProfile, type RecordedVerificationView, type StandardVerificationProfile, type TaskDto,
 } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
@@ -90,6 +90,7 @@ export async function proveReferenceDevelopment(options: {
   try {
     const commit = options.restore ? referenceRestorePreviousRevision : options.healthRule ? referenceHealthRevision : referenceReleaseRevision;
     const dependencyRepair = commit === referenceReleaseRevision;
+    const deliveryStarted = performance.now();
     const { task: initial } = admissionDtoSchema.parse(await call('start_audit', {
       projectId, source: { repositoryId, commit }, dataClass: 'public',
       purpose: dependencyRepair ? 'Repair and release the pinned synthetic reference application' : 'Verify and release the pinned synthetic reference application',
@@ -111,6 +112,7 @@ export async function proveReferenceDevelopment(options: {
     equal(audit.result.inspectionSha256, inspection.result.receiptSha256);
     equal(audit.result.snapshotSha256, inspection.result.snapshotSha256);
     let patchSha256: string | undefined;
+    let repairUsage: typeof audit.result.usage | undefined;
     if (!dependencyRepair) equal(audit.result.checklist?.findings.length, 0);
     else {
       const repair = formalRepairDtoSchema.parse(await call('get_repair', { taskId }));
@@ -121,6 +123,7 @@ export async function proveReferenceDevelopment(options: {
       ]);
       equal(repair.result.candidate.manifestSha256, verification.candidateManifestSha256);
       patchSha256 = repair.result.candidate.patchSha256;
+      repairUsage = repair.result.usage;
     }
     notEqual(inspection.result.receiptSha256, verification.receiptSha256);
 
@@ -256,6 +259,7 @@ export async function proveReferenceDevelopment(options: {
       return { candidate, operationId, proof, imported, anonymousStatus };
     };
     const { candidate, operationId, proof, imported, anonymousStatus } = await publish(task, verification);
+    const deliveryDurationMs = Math.round(performance.now() - deliveryStarted);
     if (options.healthRule) {
       phase = 'code_rule';
       const healthCodeRule = await proveReferenceCodeRule({ origin: options.origin, directory: options.directory, page, client, read: call,
@@ -316,12 +320,26 @@ export async function proveReferenceDevelopment(options: {
         mcpToken: options.mcpToken, ...options.operations, database, databaseUrl: options.databaseUrl, shared, ca, deployment: target,
         ingress, mapping, registryOrigin: registry.origin, imageRepository: 'testing/standard', release: proof, image: imported });
     }
+    phase = 'measurements';
+    const [storedVerification] = (await database.pool.query<{ document: unknown; sha256: string }>(
+      'SELECT document, sha256 FROM itervane.formal_verification_results WHERE run_id=$1', [task.runId],
+    )).rows;
+    equal(storedVerification?.sha256, verification.resultSha256);
+    const verified = formalVerificationResultSchema.parse(storedVerification?.document);
+    equal(verified.status, 'reviewed');
+    equal(verified.runId, task.runId);
+    const [storage] = (await database.pool.query<{ bytes: number }>('SELECT pg_database_size(current_database())::double precision AS bytes')).rows;
+    ok(storage && Number.isSafeInteger(storage.bytes) && storage.bytes > 0);
+    const measurements = { deliveryDurationMs, databaseBytes: storage.bytes, archiveBytes: candidate.manifest.image.archive.bytes,
+      findings: { introduced: verification.source.introduced, resolved: verification.source.resolved, remaining: verification.source.remaining },
+      auditUsage: audit.result.usage, repairUsage, verificationUsage: verified.usage };
     return { taskId, runId: task.runId, projectId, candidateId: candidate.id, operationId, updateId: proof.update.updateId,
       revision: referenceReleaseRevision, inspectionGuestId, verificationGuestId, auditSha256: audit.sha256,
       patchSha256, verificationSha256: verification.resultSha256,
       manifestDigest: proof.manifestDigest, runtimeVersion: proof.runtime.version, anonymousStatus, healthStatus: proof.runtime.healthStatus,
       controlPlaneIdentity: 'native_keycloak', ingressIdentity: 'native_keycloak', model: 'scripted_anthropic_fixture',
-      mcpApprovalDenied: true, portalApproval: true, operationObserved: true, executionSlotReleased: true, ...(operations ? { operations } : {}) };
+      mcpApprovalDenied: true, portalApproval: true, operationObserved: true, executionSlotReleased: true, measurements,
+      ...(operations ? { operations } : {}) };
   } catch (error) {
     if (phase === 'operations' && error instanceof Error && /^reference_operations_[a-z_]+$/.test(error.message)) throw error;
     if (phase === 'code_rule' && error instanceof Error && /^reference_code_rule_[a-z_]+$/.test(error.message)) throw error;

@@ -118,6 +118,7 @@ export async function proveReferenceOperations(input: OperationInputs) {
         "SELECT sequence::text FROM itervane.operations_health_samples WHERE environment_id=$1 AND binding->>'releaseOperationId'=$2 AND signal->>'status'='healthy' ORDER BY sequence DESC LIMIT 1",
         [environmentId, release.operationId],
       )).rows[0]);
+      const recoveryStarted = performance.now();
       await deployment.setOwnedContainerRunning(false, { containerId, configDigest, reference: imageReference });
       const admitted = await untilResult(async () => (await database.pool.query<{
         incident_id: string; task_id: string; run_id: string; sample_sequence: string; attempt: number; reason: string; deployment: string; container: string;
@@ -286,6 +287,7 @@ export async function proveReferenceOperations(input: OperationInputs) {
       return { taskId, runId, incidentId: recovered.id, releaseOperationId: release.operationId, executionId: queued.executionId,
         approvalId: waiting.nativeApprovalId, diagnosisSha256: sha256Schema.parse(diagnosisRecord?.sha256),
         recoverySha256: sha256Schema.parse(row?.proof_sha256), sampleSequence: Number(admitted.sample_sequence), admissions: recovered.diagnoses.length,
+        recoveryDurationMs: Math.round(performance.now() - recoveryStarted), diagnosisUsage: diagnosis.usage,
         healthStatus: proof.observation.runtime.healthStatus, anonymousStatus, portalApproval: true, nativeApproval: true, stoppedBeforeBothApproved: true,
         independentReader: true, incidentRecovered: true, executionSlotReleased: true, httpMcpAgreement: true, model: 'scripted_anthropic_fixture', ...(ruleSnapshotSha256 ? { ruleSnapshotSha256 } : {}) };
     };
