@@ -13,6 +13,8 @@ on:
       - 'packages/portal/src/**'
       - 'packages/portal/test/native/reference-install.ts'
       - 'packages/portal/test/native/reference-release.ts'
+      - 'packages/portal/test/native/reference-operations.ts'
+      - 'packages/portal/test/native/reference-registration.ts'
       - 'packages/control-plane/test/helpers/**'
       - 'packages/control-plane/test/native/**'
       - 'packages/contracts/src/**'
@@ -246,6 +248,17 @@ jobs:
             $d.inspectionGuestId != $d.verificationGuestId and $d.healthStatus == 200 and ($d.anonymousStatus == 401 or $d.anonymousStatus == 403) and
             ([$d.auditSha256, $d.patchSha256, $d.verificationSha256] | all(test("^[a-f0-9]{64}$"))) and
             ($d.manifestDigest | test("^sha256:[a-f0-9]{64}$")) and ($d.runtimeVersion | test("^candidate-[a-f0-9]{16}$"))' \
+            .reports/p0/runner-reference-development.json >/dev/null
+      - name: Require independent health-triggered operations evidence
+        if: matrix.referenceDevelopment == true
+        run: |
+          jq -e '.development as $release | $release.operations as $operations |
+            $operations.releaseOperationId == $release.operationId and $operations.taskId != $release.taskId and
+            $operations.runId != $release.runId and $operations.admissions == 1 and $operations.sampleSequence > 1 and
+            $operations.portalApproval and $operations.nativeApproval and $operations.stoppedBeforeBothApproved and
+            $operations.independentReader and $operations.incidentRecovered and $operations.executionSlotReleased and $operations.httpMcpAgreement and
+            $operations.healthStatus == 200 and ($operations.anonymousStatus == 401 or $operations.anonymousStatus == 403) and
+            ([$operations.diagnosisSha256, $operations.recoverySha256] | all(test("^[a-f0-9]{64}$")))' \
             .reports/p0/runner-reference-development.json >/dev/null
       - name: Require the clean installation and authenticated audit receipt
         if: matrix.scenario == 'protected-release-linked-health' && steps.capability.outputs.available == 'true'

@@ -27,8 +27,12 @@ node --env-file=/run/itervane/release.env --import tsx packages/control-plane/sr
 2. 登录门户核对候选镜像、复验、目标和审批有效期。人工批准后，由发布 Worker 导入 Registry、请求 Komodo、核对运行版本与应用入口。 [发布 Worker 配置表](reviews/p2-e-release-installation.md#安装配置)
 3. 从门户和 MCP `get_release_result` 查询同一操作、更新 ID、镜像摘要和核对时间。检查预期版本的授权健康请求成功、匿名健康请求被拒绝。结果未知时保留当前操作，先核对已经发生的下游动作。 [发布核对](reviews/p2-e-release-installation.md) · [冷备与恢复](control-plane-backup.md)
 
+要在该发布上启用自动诊断，登记 Whiskers 观察目标、重启安装和当前环境的事件监测授权。启动专用诊断、健康及重启 Worker。门户审批人和 Whiskers Operator 分别完成批准，再由门户继续执行并读回复验。 [健康探测与自动诊断登记](control-plane-health.md) · [Whiskers 重启安装](control-plane-restart.md)
+
 ## English
 
 Install the reference control plane and qualified KVM Runner from the same pinned revision. Register the HTTPS repository, application and protected environment through the project API with an authorized operator identity. Prepare a pinned Registry and Komodo deployment on a dedicated internal application network. Use the protected ingress reference and a separate Keycloak health probe identity.
 
 Record the target with the registration command above and pass its environment ID and fingerprint to the dedicated release Worker along with the Runner binding and scoped downstream credentials. Submit a fixed revision with the external MCP write scope. After repair and independent verification, request release for the current task version. Approve the identified candidate in the signed-in portal. Verify the update ID, digest and running version through the portal, external MCP and protected health endpoint.
+
+Enroll the current protected environment for [health monitoring](control-plane-health.md) and [Whiskers restart](control-plane-restart.md). Start the dedicated diagnosis, health and restart Workers. Approve the restart in the portal and in Whiskers, then resume it in the portal and read the verified recovery.
