@@ -212,7 +212,13 @@ if [[ "$scenario" == protected-release* || "$scenario" == reference-development-
 fi
 if [[ "$scenario" == reference-development-* ]]; then
   pnpm --filter @itervane/portal build
-  pnpm --silent probe:reference-install --native-release "$shared/worker.mjs" > "$reports/runner-reference-development.pending"
+  for role in health-worker restart-worker; do
+    pnpm exec esbuild "packages/control-plane/src/entries/$role.ts" --bundle --platform=node --format=esm --target=node24 \
+      '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' \
+      --outfile=".reports/p0/reference-$role.mjs"
+    sudo -n install -m 0444 ".reports/p0/reference-$role.mjs" "$shared/$role.mjs"
+  done
+  pnpm --silent probe:reference-install --native-operations "$shared/worker.mjs" > "$reports/runner-reference-development.pending"
   assert_empty
   jq --arg scenario "$scenario" --arg tree "$(git rev-parse 'HEAD^{tree}')" \
     '. + {scenario: $scenario, sourceTree: $tree, workspaceAndStagingEmpty: true}' \
