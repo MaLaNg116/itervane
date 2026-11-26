@@ -1,10 +1,9 @@
 import { deepStrictEqual, equal, notEqual, ok } from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { parseEnv, promisify } from 'node:util';
+import { promisify } from 'node:util';
 import type { Client } from '@modelcontextprotocol/client';
 import type { Page } from '@playwright/test';
 import {
@@ -22,6 +21,8 @@ import { temporaryRegistry } from '../../../control-plane/test/native/registry-f
 import { startScopedWorker } from '../../../control-plane/test/native/scoped-worker.js';
 import { openNativeReleaseKomodo } from '../../../verification/src/native/komodo-probe.js';
 import { standardNpmReleaseFiles } from '../../../verification/src/native/npm-release-fixture.js';
+import { registerReferenceTarget } from './reference-registration.js';
+import { proveReferenceOperations } from './reference-operations.js';
 
 const execute = promisify(execFile);
 export const referenceReleaseRevision = '37ac62431fd9bf7b2a6c0f4b3f15d5d5f1f030b8';
@@ -39,6 +40,7 @@ export async function proveReferenceDevelopment(options: {
   workerBundle: string;
   runnerEnvironment: string[];
   verificationProfile: StandardVerificationProfile;
+  operations?: { modelUrl: string; configureApi: (settings: Record<string, string>) => Promise<void> };
 }) {
   const { client, page, projectId, repositoryId } = options;
   const shared = dirname(options.workerBundle);
@@ -127,18 +129,11 @@ export async function proveReferenceDevelopment(options: {
       traefik: join(proxyDirectory, 'traefik'), oauth2: join(proxyDirectory, 'oauth2-proxy'),
     });
     const rolloutCheckSha256 = fingerprintRolloutCheck(ingress.check);
-    const mappingFile = join(options.directory, 'reference-release-target.json');
-    await writeFile(mappingFile, JSON.stringify({
+    const mapping = await registerReferenceTarget(options.directory, 'release-target', {
       environmentId: environment.id, ...target.binding, imageRepository: 'testing/standard', registryOrigin: registry.origin,
       verificationProfileSha256: verificationProfileFingerprint(options.verificationProfile),
       rolloutCheckSha256, rolloutCheck: ingress.check, recoveryPlanSha256: sha256('reference protected release recovery plan'),
-    }), { flag: 'wx', mode: 0o600 });
-    const apiEnvironment = parseEnv(await readFile(join(options.directory, 'api.env'), 'utf8'));
-    const registration = await execute(process.execPath, ['--import', 'tsx',
-      'packages/control-plane/src/entries/register-release-target.ts', mappingFile], {
-      timeout: 20_000, env: { PATH: process.env.PATH, LANG: 'C.UTF-8', ...apiEnvironment },
-    });
-    const mapping = JSON.parse(registration.stdout) as { environmentId: string; revision: number; fingerprint: string };
+    }) as { environmentId: string; revision: number; fingerprint: string };
     equal(mapping.environmentId, environment.id);
     equal(mapping.revision, 1);
     const database = resources.database = await openDatabase(options.databaseUrl);
@@ -241,13 +236,22 @@ export async function proveReferenceDevelopment(options: {
     const inspectionGuestId = idSchema.parse(guests?.inspection);
     const verificationGuestId = idSchema.parse(guests?.verification);
     notEqual(inspectionGuestId, verificationGuestId);
+    let operations: Awaited<ReturnType<typeof proveReferenceOperations>> | undefined;
+    if (options.operations) {
+      phase = 'operations';
+      await resources.worker.stop('TERM');
+      operations = await proveReferenceOperations({ origin: options.origin, directory: options.directory, page, client,
+        mcpToken: options.mcpToken, ...options.operations, database, databaseUrl: options.databaseUrl, shared, ca, deployment: target,
+        ingress, mapping, registryOrigin: registry.origin, imageRepository: 'testing/standard', release: proof, image: imported });
+    }
     return { taskId, runId: task.runId, projectId, candidateId: candidate.id, operationId, updateId: proof.update.updateId,
       revision: referenceReleaseRevision, inspectionGuestId, verificationGuestId, auditSha256: audit.sha256,
       patchSha256: repair.result.candidate.patchSha256, verificationSha256: verification.resultSha256,
       manifestDigest: proof.manifestDigest, runtimeVersion: proof.runtime.version, anonymousStatus, healthStatus: proof.runtime.healthStatus,
       controlPlaneIdentity: 'native_keycloak', ingressIdentity: 'native_keycloak', model: 'scripted_anthropic_fixture',
-      mcpApprovalDenied: true, portalApproval: true, operationObserved: true, executionSlotReleased: true };
-  } catch {
+      mcpApprovalDenied: true, portalApproval: true, operationObserved: true, executionSlotReleased: true, ...(operations ? { operations } : {}) };
+  } catch (error) {
+    if (phase === 'operations' && error instanceof Error && /^reference_operations_[a-z_]+$/.test(error.message)) throw error;
     throw new Error('reference_release_' + phase);
   } finally {
     try { await resources.worker?.stop('TERM'); }

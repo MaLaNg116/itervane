@@ -1,7 +1,7 @@
 import { deepStrictEqual, equal, notEqual, ok } from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { readFile, mkdtemp, rm } from 'node:fs/promises';
+import { appendFile, readFile, mkdtemp, rm } from 'node:fs/promises';
 import { createServer as createHttp } from 'node:http';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -24,7 +24,8 @@ const referenceSource = 'https://github.com/MaLaNg116/itervane.git';
 const referenceRevision = '49799e18f4f63cf22767a9cd8054cab979b9b6d2';
 const args = process.argv.slice(2);
 const [mode, workerBundle] = args;
-const releaseMode = mode === '--native-release';
+const operationsMode = mode === '--native-operations';
+const releaseMode = mode === '--native-release' || operationsMode;
 if (args.length && (args.length !== 2 || (!releaseMode && mode !== '--native-runner') || process.platform !== 'linux'
   || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted'
   || !workerBundle || !/^\/var\/lib\/libvirt\/images\/itervane-native\.[a-zA-Z0-9]{8}\/qualified\/worker\.mjs$/.test(workerBundle))) {
@@ -274,9 +275,23 @@ try {
     equal(tools.some(tool => tool.name === 'request_release'), releaseMode);
     if (releaseMode) {
       phase = 'reference_development';
-      ok(releaseWorkerSettings);
+      ok(releaseWorkerSettings && auditProvider);
+      const operations = operationsMode ? { modelUrl: auditProvider.baseURL,
+        async configureApi(settings: Record<string, string>) {
+          await nativeWorker?.stop('TERM');
+          nativeWorker = undefined;
+          await api?.close();
+          await appendFile(join(directory, 'api.env'), Object.entries(settings).map(([key, value]) => `${key}=${value}\n`).join(''));
+          api = serve(directory, 'api');
+          await until(async () => {
+            if (api!.exited) throw new Error('operations_api_start');
+            try { return (await fetch(install.portal + '/health/live', { signal: AbortSignal.timeout(1_000) })).ok; }
+            catch { return false; }
+          });
+        },
+      } : undefined;
       development = await proveReferenceDevelopment({ directory, origin: install.portal, page, client, mcpToken,
-        ...resources, ...releaseWorkerSettings });
+        ...resources, ...releaseWorkerSettings, ...(operations ? { operations } : {}) });
     } else {
       ok(taskId);
       phase = 'mcp_read_task';
@@ -313,7 +328,7 @@ try {
     keycloakError: Boolean(document.getElementById('kc-error-message')), callbackPath: location.pathname === '/auth/callback',
     portalLanguageSelector: Boolean(document.querySelector('select[aria-label="Language"],select[aria-label="显示语言"]')),
   })).catch(() => undefined);
-  const detail = error instanceof Error && /^reference_release_[a-z_]+$/.test(error.message) ? error.message : undefined;
+  const detail = error instanceof Error && /^reference_(?:release|operations)_[a-z_]+$/.test(error.message) ? error.message : undefined;
   console.error(JSON.stringify({ error: 'reference_probe_failed', phase, detail, loginView }));
   process.exitCode = 1;
 } finally {
