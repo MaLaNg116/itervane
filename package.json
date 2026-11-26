@@ -1,6 +1,6 @@
 {
   "name": "itervane",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -33,6 +33,7 @@
     "reference:init": "tsx packages/control-plane/src/entries/reference.ts init",
     "reference:start": "tsx packages/control-plane/src/entries/reference.ts start",
     "reference:runner-profile": "tsx scripts/reference-runner-profile.ts",
+    "release:source": "pnpm --silent -r licenses list --json | tsx scripts/package-source-release.ts",
     "start:worker": "tsx --env-file-if-exists=.env packages/control-plane/src/entries/worker.ts",
     "start:release-worker": "tsx packages/control-plane/src/entries/release-worker.ts",
     "start:restart-worker": "tsx packages/control-plane/src/entries/restart-worker.ts",
