@@ -84,10 +84,16 @@ jobs:
         if: steps.capability.outputs.available == 'true'
         env:
           PROBE_HOST_ENVIRONMENT: ${{ runner.environment }}
+          NATIVE_SCENARIO: ${{ matrix.scenario }}
         run: |
           directory=$(sudo -n mktemp -d /var/lib/libvirt/images/itervane-native.XXXXXXXX)
+          sudo -n chown root:root "$directory"
           sudo -n chmod 0711 "$directory"
-          bash fixtures/runner/prepare-native-session.sh "$directory"
+          if [[ "$NATIVE_SCENARIO" == protected-release-linked-health ]]; then
+            bash fixtures/runner/prepare-native-session.sh "$directory" reference-install
+          else
+            bash fixtures/runner/prepare-native-session.sh "$directory"
+          fi
           printf 'directory=%s\n' "$directory" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         if: steps.capability.outputs.available == 'true'

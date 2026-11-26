@@ -44,18 +44,22 @@ sudo -n install -m 0444 .reports/p0/qualified-client.mjs "$shared/client.mjs"
 
 reference_session=
 if [[ "$scenario" == protected-release-linked-health ]]; then
-  sudo -n systemctl stop itervane-probe-libvirtd.service
   reference_session=itervane-reference-libvirt.service
   unit=itervane-reference-runner.service
   sock=/run/itervane-reference-runner/inspection.sock
 fi
 
 stop_session() {
-  sudo -n systemctl stop "$unit"
-  if [[ -n "$reference_session" ]]; then sudo -n systemctl stop "$reference_session"; fi
-  if [[ "$1" -ne 0 ]]; then
+  local status=$1 cleanup=0
+  if [[ "$status" -ne 0 ]]; then
     sudo -n journalctl --unit "$unit" --grep '^itervane-domain-result ' --lines 20 --output cat --no-pager >&2 || true
   fi
+  if sudo -n systemctl is-active --quiet "$unit"; then sudo -n systemctl stop "$unit" || cleanup=$?; fi
+  if [[ -n "$reference_session" ]] && sudo -n systemctl is-active --quiet "$reference_session"; then
+    sudo -n systemctl stop "$reference_session" || cleanup=$?
+  fi
+  if [[ "$status" -ne 0 ]]; then exit "$status"; fi
+  exit "$cleanup"
 }
 trap 'stop_session "$?"' EXIT
 if [[ -n "$reference_session" ]]; then
