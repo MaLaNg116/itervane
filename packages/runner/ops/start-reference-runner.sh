@@ -32,9 +32,9 @@ image=$(realpath -e -- "$2")
 digest=$3
 runner=$4
 worker=$5
-shift 5
 [[ "$state" = "$1" && "$state" != / && "$image" = "$2" && -f "$image" ]]
 [[ "$runner" =~ ^[a-z][a-z0-9_-]{0,30}$ && "$worker" =~ ^[a-z][a-z0-9_-]{0,30}$ && "$digest" =~ ^[0-9a-f]{64}$ ]]
+shift 5
 phase=image_ownership
 [[ "$(stat -c '%a %U %G' -- "$image")" = '440 root kvm' ]]
 phase=image_digest
