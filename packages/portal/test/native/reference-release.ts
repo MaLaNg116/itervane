@@ -2,14 +2,17 @@ import { deepStrictEqual, equal, notEqual, ok } from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import type { Client } from '@modelcontextprotocol/client';
 import type { Page } from '@playwright/test';
 import {
   admissionDtoSchema, applicationDtoSchema, environmentDtoSchema, formalAuditDtoSchema, formalReleaseCandidateDtoSchema,
   formalReleaseDecisionResultSchema, formalReleaseResultSchema, formalReleaseViewSchema, formalRepairDtoSchema,
-  formalVerificationResultSchema, idSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sourceInspectionDtoSchema, taskDtoSchema,
+  formalVerificationResultSchema, idSchema, releaseRegistryImageProofSchema, releaseRolloutProofSchema, sourceInspectionDtoSchema,
+  taskDtoSchema, taskEventDtoSchema,
   verificationViewSchema, type CodeRuleValidationProfile, type RecordedVerificationView, type StandardVerificationProfile, type TaskDto,
+  type VerificationView,
 } from '@itervane/contracts';
 import { sha256 } from '@itervane/runner';
 import { openDatabase } from '../../../control-plane/src/persistence/database.js';
@@ -35,16 +38,33 @@ const standardRuntimePort = 38171;
 export type ReferenceToolCall = (name: string, args: Record<string, unknown>) => Promise<unknown>;
 
 export async function waitForReferenceVerification(read: ReferenceToolCall, taskId: string, readyRun: (runId: string) => boolean) {
-  return untilResult(async () => {
-    const current = verificationViewSchema.parse(await read('get_verification', { taskId })).current;
-    const task = taskDtoSchema.parse(await read('get_task', { taskId }));
-    if (current.status === 'recorded' && task.state === 'waiting_input' && readyRun(current.runId)) {
-      equal(current.outcome, 'observed');
-      equal(current.runId, task.runId);
-      return { current, task };
-    }
-    ok(!['needs_human', 'failed', 'cancelled', 'reconciling'].includes(task.state));
-  }, 720_000);
+  let taskState: TaskDto['state'] | undefined;
+  let verificationState: VerificationView['current']['status'] | undefined;
+  try {
+    return await untilResult(async () => {
+      const current = verificationViewSchema.parse(await read('get_verification', { taskId })).current;
+      verificationState = current.status;
+      const task = taskDtoSchema.parse(await read('get_task', { taskId }));
+      taskState = task.state;
+      if (current.status === 'recorded' && task.state === 'waiting_input' && readyRun(current.runId)) {
+        equal(current.outcome, 'observed');
+        equal(current.runId, task.runId);
+        return { current, task };
+      }
+      ok(!['needs_human', 'failed', 'cancelled', 'reconciling'].includes(task.state));
+    }, 720_000);
+  } catch (error) {
+    const payload = await Promise.race([
+      read('get_task_events', { taskId, limit: 4 }).catch(() => undefined),
+      delay(3_000, undefined, { ref: false }),
+    ]);
+    const events = taskEventDtoSchema.array().max(4).safeParse(
+      payload && typeof payload === 'object' && 'items' in payload ? payload.items : null,
+    );
+    console.error(JSON.stringify({ error: 'reference_verification_wait_failed', taskState, verificationState,
+      events: events.data?.map(({ type, state, reason }) => ({ type, state, reason })) }));
+    throw error;
+  }
 }
 
 export async function proveReferenceDevelopment(options: {
