@@ -30,16 +30,17 @@ export function summarizePublishedRuleScan({ sha256: evidenceSha256, document }:
 
 /** Compare the published version and recorded scan to what the two formal read interfaces expose. */
 export async function readNativeRuleReuse(task: TaskDto, rule: PublishedRule, expectedMatches: 0 | 1,
-  { request, mcp, admin }: { request: Request; mcp: Client; admin: Awaited<ReturnType<typeof databaseFixture>>['admin'] }) {
+  { request, mcp, admin, locale = 'zh-CN' }: { request: Request; mcp: Client; admin: Awaited<ReturnType<typeof databaseFixture>>['admin']; locale?: Locale }) {
   const taskId = task.id;
   const base = `/v1/tasks/${taskId}`;
   const readMcp = async (name: string) => (await mcp.callTool({ name, arguments: { taskId } })).structuredContent;
-  const pinned = taskRuleSnapshotViewSchema.parse(await request(`${base}/rule-snapshot`, undefined, false, 'zh-CN'));
+  const pinned = taskRuleSnapshotViewSchema.parse(await request(`${base}/rule-snapshot`, undefined, false, locale));
   deepStrictEqual(taskRuleSnapshotViewSchema.parse(await readMcp('get_task_rule_snapshot')), pinned);
-  const english = taskRuleSnapshotViewSchema.parse(await request(`${base}/rule-snapshot`, undefined, false, 'en'));
-  equal(english.locale, 'en');
-  notEqual(english.message, pinned.message);
-  deepStrictEqual(english.snapshot, pinned.snapshot);
+  const alternateLocale = locale === 'en' ? 'zh-CN' : 'en';
+  const alternate = taskRuleSnapshotViewSchema.parse(await request(`${base}/rule-snapshot`, undefined, false, alternateLocale));
+  equal(alternate.locale, alternateLocale);
+  notEqual(alternate.message, pinned.message);
+  deepStrictEqual(alternate.snapshot, pinned.snapshot);
   ok(pinned.snapshot);
   const { document, sha256: pinnedSha256 } = pinned.snapshot;
   equal(document.projectId, task.projectId);
@@ -79,7 +80,7 @@ export async function readNativeRuleReuse(task: TaskDto, rule: PublishedRule, ex
   deepStrictEqual(scan.findings.map(({ path, ruleKey }) => ({ path, ruleKey })), expectedMatches
     ? [{ path: 'server/readiness.mjs', ruleKey: rule.packageKey }] : []);
 
-  const audit = formalAuditDtoSchema.parse(await request(`${base}/audit`, undefined, false, 'zh-CN'));
+  const audit = formalAuditDtoSchema.parse(await request(`${base}/audit`, undefined, false, locale));
   deepStrictEqual(formalAuditDtoSchema.parse(await readMcp('get_audit')), audit);
   ok(audit.status === 'recorded' && audit.result.status === 'completed' && audit.result.checklist);
   equal(audit.result.inspectionSha256, stored.receipt_sha256);

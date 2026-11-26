@@ -10,8 +10,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { parseEnv, promisify } from 'node:util';
 import { chromium, expect, type Page } from '@playwright/test';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { formalAuditDtoSchema, projectDtoSchema, repositoryDtoSchema, sourceInspectionDtoSchema, standardVerificationProfileSchema,
-  taskDtoSchema, type StandardVerificationProfile } from '@itervane/contracts';
+import { codeRuleValidationProfileSchema, formalAuditDtoSchema, projectDtoSchema, repositoryDtoSchema, sourceInspectionDtoSchema,
+  standardVerificationProfileSchema, taskDtoSchema, type CodeRuleValidationProfile, type StandardVerificationProfile } from '@itervane/contracts';
 import { auditFixtureKey, auditFixtureModel, auditProtocolFixture } from '../../../control-plane/test/native/audit-provider.js';
 import { sourceWorkerEnvironment, startScopedWorker } from '../../../control-plane/test/native/scoped-worker.js';
 import { npmReleaseApproval } from '../../../verification/src/native/npm-release-fixture.js';
@@ -26,7 +26,8 @@ const args = process.argv.slice(2);
 const [mode, workerBundle] = args;
 const runbookMode = mode === '--native-runbook';
 const operationsMode = mode === '--native-operations' || runbookMode;
-const releaseMode = mode === '--native-release' || operationsMode;
+const codeRuleMode = mode === '--native-code-rule';
+const releaseMode = mode === '--native-release' || operationsMode || codeRuleMode;
 if (args.length && (args.length !== 2 || (!releaseMode && mode !== '--native-runner') || process.platform !== 'linux'
   || process.env.PROBE_HOST_ENVIRONMENT !== 'github-hosted'
   || !workerBundle || !/^\/var\/lib\/libvirt\/images\/itervane-native\.[a-zA-Z0-9]{8}\/qualified\/worker\.mjs$/.test(workerBundle))) {
@@ -176,6 +177,7 @@ let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let loginPage: Page | undefined;
 let releaseWorkerSettings: { workerBundle: string; databaseUrl: string; runnerEnvironment: string[];
   verificationProfile: StandardVerificationProfile } | undefined;
+let codeProfile: CodeRuleValidationProfile | undefined;
 const composeEnv = { ...process.env };
 for (const key of ['COMPOSE_PROJECT_NAME', 'ITERVANE_REFERENCE_PG_PORT', 'ITERVANE_REFERENCE_IDP_PORT']) delete composeEnv[key];
 try {
@@ -209,10 +211,13 @@ try {
       const verificationProfile = standardVerificationProfileSchema.parse(JSON.parse(profiles.ITERVANE_VERIFICATION_PROFILE ?? 'null'));
       equal(verificationProfile.runnerImageSha256, image);
       releaseWorkerSettings = { workerBundle, databaseUrl, runnerEnvironment, verificationProfile };
-      releaseSettings = ['ITERVANE_FORMAL_REPAIR=1', `ITERVANE_VERIFICATION_PROFILE=${JSON.stringify(verificationProfile)}`,
-        `ITERVANE_NPM_REPAIR_APPROVALS=${JSON.stringify([npmReleaseApproval])}`];
+      releaseSettings = [`ITERVANE_VERIFICATION_PROFILE=${JSON.stringify(verificationProfile)}`];
+      if (codeRuleMode) {
+        codeProfile = codeRuleValidationProfileSchema.parse(JSON.parse(profiles.ITERVANE_CODE_RULE_VALIDATION_PROFILE ?? 'null'));
+        equal(codeProfile.runnerImageSha256, image);
+      } else releaseSettings.push('ITERVANE_FORMAL_REPAIR=1', `ITERVANE_NPM_REPAIR_APPROVALS=${JSON.stringify([npmReleaseApproval])}`);
     }
-    auditProvider = await auditProtocolFixture({ dependencyRepair: releaseMode });
+    auditProvider = await auditProtocolFixture({ dependencyRepair: releaseMode && !codeRuleMode, linkedHealth: codeRuleMode });
     nativeWorker = await startScopedWorker(workerBundle, [...runnerEnvironment, ...releaseSettings,
       'ITERVANE_WORKER_POLL_MS=100', 'ITERVANE_AUDIT_MODEL_PROVIDER=anthropic',
       `ANTHROPIC_BASE_URL=${auditProvider.baseURL}`, `ANTHROPIC_MODEL=${auditFixtureModel}`],
@@ -277,22 +282,23 @@ try {
     if (releaseMode) {
       phase = 'reference_development';
       ok(releaseWorkerSettings && auditProvider);
-      const operations = operationsMode ? { modelUrl: auditProvider.baseURL, runbook: runbookMode,
-        async configureApi(settings: Record<string, string>) {
-          await nativeWorker?.stop('TERM');
-          nativeWorker = undefined;
-          await api?.close();
-          await appendFile(join(directory, 'api.env'), Object.entries(settings).map(([key, value]) => `${key}=${value}\n`).join(''));
-          api = serve(directory, 'api');
-          await until(async () => {
-            if (api!.exited) throw new Error('operations_api_start');
-            try { return (await fetch(install.portal + '/health/live', { signal: AbortSignal.timeout(1_000) })).ok; }
-            catch { return false; }
-          });
-        },
-      } : undefined;
+      const configureApi = async (settings: Record<string, string>) => {
+        await nativeWorker?.stop('TERM');
+        nativeWorker = undefined;
+        await api?.close();
+        await appendFile(join(directory, 'api.env'), Object.entries(settings).map(([key, value]) => `${key}=${value}\n`).join(''));
+        api = serve(directory, 'api');
+        await until(async () => {
+          if (api!.exited) throw new Error('operations_api_start');
+          try { return (await fetch(install.portal + '/health/live', { signal: AbortSignal.timeout(1_000) })).ok; }
+          catch { return false; }
+        });
+      };
+      const operations = operationsMode ? { modelUrl: auditProvider.baseURL, runbook: runbookMode, configureApi } : undefined;
+      if (codeRuleMode) ok(codeProfile);
+      const healthRule = codeProfile ? { modelUrl: auditProvider.baseURL, codeProfile, configureApi, sourceUrl: referenceSource } : undefined;
       development = await proveReferenceDevelopment({ directory, origin: install.portal, page, client, mcpToken,
-        ...resources, ...releaseWorkerSettings, ...(operations ? { operations } : {}) });
+        ...resources, ...releaseWorkerSettings, ...(operations ? { operations } : {}), ...(healthRule ? { healthRule } : {}) });
     } else {
       ok(taskId);
       phase = 'mcp_read_task';
@@ -329,7 +335,7 @@ try {
     keycloakError: Boolean(document.getElementById('kc-error-message')), callbackPath: location.pathname === '/auth/callback',
     portalLanguageSelector: Boolean(document.querySelector('select[aria-label="Language"],select[aria-label="显示语言"]')),
   })).catch(() => undefined);
-  const detail = error instanceof Error && /^reference_(?:release|operations)_[a-z_]+$/.test(error.message) ? error.message : undefined;
+  const detail = error instanceof Error && /^reference_(?:release|operations|code_rule)_[a-z_]+$/.test(error.message) ? error.message : undefined;
   console.error(JSON.stringify({ error: 'reference_probe_failed', phase, detail, loginView }));
   process.exitCode = 1;
 } finally {
