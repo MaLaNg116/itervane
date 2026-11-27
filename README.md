@@ -1,117 +1,98 @@
-# Itervane
+<h1 align="center">Itervane · 迭航</h1>
 
-An open-source, self-hostable platform for agent-driven application delivery, operations, and governance.
+<p align="center">
+  <strong>Open-source, self-hosted delivery and operations for apps built with AI.</strong><br>
+  Audit and repair a pinned Git revision, verify the result in a disposable VM, and approve the exact image you deploy.
+</p>
 
-Itervane connects three evidence-based loops:
+<p align="center">
+  <a href="https://github.com/MaLaNg116/itervane/releases/tag/v0.1.0"><img alt="Release v0.1.0" src="https://img.shields.io/badge/release-v0.1.0-1f6feb"></a>
+  <a href="https://github.com/MaLaNg116/itervane/actions/workflows/verification.yml?query=branch%3Amain"><img alt="Verification on main" src="https://github.com/MaLaNg116/itervane/actions/workflows/verification.yml/badge.svg?branch=main"></a>
+  <a href="LICENSE"><img alt="Apache-2.0 license" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+</p>
 
-- Delivery: audit, repair, independently verify, freeze a release candidate, obtain human approval, deploy, and verify the running application.
-- Operations: observe, diagnose, propose a bounded action, obtain approval, execute, and verify recovery; code defects enter a linked delivery task.
-- Knowledge: turn cases into rule and runbook candidates, validate positive and negative examples, obtain human review, publish a version, and verify reuse in later tasks.
+<p align="center">
+  <a href="README.zh-CN.md">简体中文</a> ·
+  <a href="#self-host">Self-host</a> ·
+  <a href="#release-evidence">Release evidence</a> ·
+  <a href="#development">Development</a>
+</p>
 
-## Status
+<p align="center">
+  <img src="docs/assets/readme/portal-release-en.png" alt="Release approval dialog with the candidate fingerprint, image digest and rule snapshot digest" width="576"><br>
+  <em>Release approval in the v0.1 portal with synthetic data.</em>
+</p>
 
-The [reference installation](docs/reference-installation.md) starts a fresh loopback control plane with PostgreSQL, Keycloak and the bilingual portal. It also configures an OIDC client for external MCP. See the [source release guide](docs/source-release.md) to verify and build an archive, and the [component notices](docs/release-components.md) for pinned versions and licenses.
+## Workflows
 
-Itervane has a durable task control plane, a bilingual portal, external MCP and a qualified path for fixed-source inspection. [Blueprint v6](docs/blueprint-v6.md) and the [TypeScript + PostgreSQL implementation plan v2](docs/implementation-plan-v2-ts-postgresql.md) describe the three MVP workflows and their acceptance criteria. The [review index](docs/reviews/README.md) tracks the evidence for each batch.
+- **Deliver a verified release.** Start an audit from the portal or an external MCP client. The Agent reviews scanner evidence and prepares a fix, and a separate job verifies the candidate. A maintainer approves the image before Itervane deploys it and checks the running version and protected health endpoint.
+- **Operate a protected app.** Diagnose a health incident from container state, logs, metrics and release history. Approve a scoped restart or a restore to a specific release, then verify recovery. Route code defects to a linked repair task.
+- **Learn from completed work.** Turn verified cases into code rules and Runbooks. Test positive and negative examples, review and publish a version, and use it in later tasks. Import reviewed design Skills as advisory guidance for audits.
 
-The workspace includes Anthropic and OpenAI protocol adapters, a bounded tool-loop probe, real PostgreSQL integration tests, evaluation inputs and a trusted reference application.
+## Self-host
 
-The P1-A API adds verified identity, resource registration and durable tasks. P1-B adds a lease-fenced Worker, PostgreSQL graph interrupts and recovery, a bounded read-only tool gateway, authenticated external MCP task tools, and English and Simplified Chinese messages. Tasks wait for a qualified Runner before source inspection. [P1-B setup](docs/control-plane-p1-b.md) · [Runtime gates](docs/decisions/0001-development-and-runtime-gates.md)
+The reference host is **Ubuntu 24.04 x86-64** with **Node.js 24**, **pnpm 11.9.0** and **Docker Compose**. The first step starts the bilingual portal, PostgreSQL and Keycloak on loopback. [Reference installation and upgrade](docs/reference-installation.md#english)
 
-P1-C adds a minimal English/Simplified Chinese React portal with real OIDC Authorization Code + PKCE login, current project permissions, project/repository registration, task history, and versioned retry/cancellation. It uses the same API, database and Worker as MCP. See [portal setup and session boundaries](docs/control-plane-p1-c.md), the [remaining P1 work and P1-C plan](docs/plans/p1-c-portal-and-login.md), and the [review guide](docs/reviews/p1-c-portal-login.md).
+### Start the control plane
 
-P1-D1 adds immutable source-inspection plans, Git object/manifest verification, redacted scanner adapters, and real Gitleaks/Trivy checks on maintainer-generated fixtures. The portal and MCP read the same preparation record. Submitted repositories are not fetched or scanned while the verified disposable-VM gate is closed. See [P1-D setup](docs/control-plane-p1-d.md) and the [D1/D2/D3 implementation and acceptance plan](docs/plans/p1-d-isolated-source-inspection.md).
+For a fresh installation, download `itervane-0.1.0.tar.gz`, `SHA256SUMS`, `release-manifest.json` and `dependency-licenses.json` into the same directory. Run these commands in a shell on the reference host. [v0.1.0 downloads](https://github.com/MaLaNg116/itervane/releases/tag/v0.1.0)
 
-P1-D2 includes a maintainer-only libvirt probe. A dedicated non-root KVM session verified the offline workload restrictions, fresh guest disks and QEMU process exit. Guest jobs exercised the virtio channel, complete input verification, cancellation and deadlines. See the [isolation evidence and replay guide](docs/reviews/p1-d2-runner-isolation.md).
+```sh
+sha256sum --check SHA256SUMS
+tar -xzf itervane-0.1.0.tar.gz
+cd itervane-0.1.0
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm build:portal
 
-P1-D3-A verified Git acquisition from one registered public HTTPS repository in independent KVM guests. The host relay pinned the origin and commit, then refused a follow-up request after closure. The guest returned a bounded Git object receipt and the probe emitted reports in English and Simplified Chinese. See the [source acquisition evidence and replay guide](docs/reviews/p1-d3-source-acquisition.md).
+reference_dir="$HOME/.local/state/itervane/reference"
+install -d -m 0700 "$(dirname "$reference_dir")"
+pnpm reference:prepare "$reference_dir"
+docker compose --project-directory "$reference_dir" --env-file "$reference_dir/.env" \
+  -f "$reference_dir/compose.yml" up --detach --wait
+pnpm reference:init "$reference_dir"
+```
 
-P1-D3-B verified a read-only snapshot and real offline Gitleaks and Trivy scans of a pinned maintainer fixture commit in disposable KVM guests. The scanner used a separate guest account and sealed inputs. The bilingual reports record snapshot and database fingerprints, scan controls and cleanup. [Offline inspection evidence](docs/reviews/p1-d3-offline-inspection.md)
+From the extracted source directory, start the API and Worker in separate terminals.
 
-P1-D3-C1 verified the local inspection controller with two separate unprivileged host accounts. The client received a source- and task-bound receipt after real offline scans and verified KVM cleanup. The controller denied root, unregistered origins and requests without a lease pulse. In-progress domains were removed when the client stopped authorization or disconnected. [Qualified controller guide](docs/reviews/p1-d3-qualified-controller.md)
+```sh
+pnpm reference:start "$HOME/.local/state/itervane/reference" api
+```
 
-P1-D3-C2 connects the platform Worker to that controller. Each inspection and authorization pulse checks the current PostgreSQL lease and project permissions. The API, MCP and portal share the verified scan summary. The initial scope is a registered public HTTPS origin, a complete SHA-1 Git commit and the pinned offline Gitleaks and Trivy profiles. [Worker inspection guide](docs/reviews/p1-d3-worker-inspection.md)
+```sh
+pnpm reference:start "$HOME/.local/state/itervane/reference" worker
+```
 
-P1-E adds a versioned, read-only bilingual rule/Skill catalogue and bounded text preaudit through the same API, external MCP and portal. Deterministic text checks on synthetic or public snippets and single-file diffs produce persistent, source-free reports with explicit coverage. See [P1-E setup and limits](docs/control-plane-p1-e.md), the [implementation plan](docs/plans/p1-e-rules-and-preaudit.md), and the [review guide](docs/reviews/p1-e-rules-preaudit.md).
+Open the portal URL printed by `reference:init`. Sign in with the initial owner credentials from the private `owner-login.env` file and change the initial password. Register a public HTTPS repository, submit a fixed commit, and read the task in the portal or through the scoped MCP client. [Install walkthrough](docs/reference-installation.md#english)
 
-P2-A adds a bilingual, bounded ReAct harness and a complete audit, template repair, and independent verification loop for trusted fixtures. Formal delivery will use verified Worker evidence and the existing release gates. [P2-A fixture verification](docs/agent-harness-p2-a.md) · [P2-A review guide](docs/reviews/p2-a-agent-harness.md)
+### Enable execution and operations
 
-P2-D1 binds an opt-in audit model to the verified scan evidence from a fixed task run. The Worker saves the evidence-linked audit outcome under its current execution lease. The portal, HTTP API and external MCP share that result under current project permissions. For Worker configuration, coverage and acceptance evidence, see the [formal audit guide](docs/reviews/p2-d1-formal-audit.md).
+Project execution waits for a qualified KVM Runner. Configure a model and the sealed Runner inputs for audit and verification. To enable release and operations, register the Komodo target, protected ingress and Whiskers scope. [Runner setup](docs/reference-runner-installation.md#english) · [Model configuration](docs/release-components.md#模型与规则--models-and-rules) · [Protected releases](docs/reference-release-installation.md#english) · [Restart](docs/control-plane-restart.md) · [Version restore](docs/control-plane-restore.md)
 
-P2-B adds PostgreSQL-backed fixture candidate freezing and bilingual human decision records. Rehearsals cover the exact candidate fingerprint, concurrent decisions, expiration, revocation, and owner reassignment. Fixture confirmations carry no release eligibility. See the [P2-B plan](docs/plans/p2-b-release-candidate.md) and [review guide](docs/reviews/p2-b-release-candidate.md).
+## Runtime model
 
-P2-C exercises atomic fixture confirmation, operation creation, and queue wakeup. Its ledger serializes reservations by environment and reconciles uncertain outcomes with independent fixture evidence for version, health, and protected access. Live release requires the qualified Runner and verified deployment target. See the [P2-C plan](docs/plans/p2-c-release-reconciliation.md) and [review guide](docs/reviews/p2-c-release-reconciliation.md).
+The portal and external MCP share a TypeScript control plane. PostgreSQL holds tasks, approvals, the durable queue and Agent checkpoints. Five bounded ReAct roles cover audit, repair, verification, operations and rule extraction. Internal MCP connects Agents to scoped operational tools. [Blueprint v6](docs/blueprint-v6.md) · [Implementation plan](docs/implementation-plan-v2-ts-postgresql.md)
 
-P1-UX refines that portal with a coherent bilingual workspace design and scoped GSAP feedback for actual state changes, new activity and metadata disclosure. Reduced-motion preferences apply live, with immediate permission/error handling. It adds no domain API, migration or execution capability. See [design and motion setup](docs/portal-design-motion.md), the [plan](docs/plans/p1-ux-portal-design-motion.md), and [third-party UI notices](docs/third-party-ui.md).
+The v0.1 scope is one maintainer, one workspace and one active business workflow. It supports registered public HTTPS Git repositories at a fixed commit and the standard React/Vite + Node.js/Express template, packaged as one image with synthetic or public data. Project workloads run in disposable VMs. Human approvals bind the exact artifact or operation, and an independent check verifies the downstream result. [MVP scope](docs/blueprint-v6.md#17-最小-mvp-的边界)
 
-P0.5-A verifies native Komodo deployment, upgrade and digest-pinned rollback with trusted fixtures on a dedicated hosted runner. The [replay guide](docs/reviews/p0-komodo-native-delivery.md) records the real Komodo updates and runtime image evidence.
+## Release evidence
 
-P0.5-B verifies Whiskers MCP observation, native approval, and a single authorized restart with trusted fixtures. The [review guide](docs/reviews/p0-whiskers-native-approval.md) records caller and target binding, the health check, and the audit observation.
+The published v0.1.0 receipt records three independent delivery runs, three independent operations runs, code rule and Runbook reuse, and 339 passing PostgreSQL 17.12 integration tests. It also records a clean archive reinstall, a database upgrade and a cold restore that includes a verified OCI archive. [Release receipt](https://github.com/MaLaNg116/itervane/releases/download/v0.1.0/release-acceptance.json) · [Acceptance criteria](docs/release-acceptance.md#english)
 
-For P0 setup, observed versions, and outstanding gates, see [P0 verification](docs/p0-verification.md). Managed project execution, release, and Agent operations require runtime qualification.
+Hosted workflows use scripted Anthropic protocol responses against real reference infrastructure. Live model probes cover audit, template repair and operations diagnosis, with human intervention recorded in some multi-step cases. [Release evaluation](docs/release-evaluation.md#english)
+
+## Development
+
+In a checkout, install the locked dependencies and run the fast checks.
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm check
-pnpm test:integration
-pnpm test:portal
-pnpm probe:mcp
-pnpm probe:evaluation
-pnpm probe:agent
-pnpm probe:scanners
 ```
 
-Use Node.js 24 and pnpm 11.9.0. Database tests need Docker with Linux containers, or an explicitly dedicated PostgreSQL 17 test database. Browser tests additionally need the trusted Keycloak image and Chromium (`pnpm --filter @itervane/portal exec playwright install --with-deps chromium` on Linux); Windows uses installed Chrome. Live model and read-only cloud checks are opt-in through an ignored local `.env`. `pnpm verify:p0` reports missing gates as blocked; green unit tests alone cannot pass P0.
+Run `pnpm test:integration` with Docker or a dedicated PostgreSQL 17 test database. Use `pnpm test:portal` for browser coverage with Keycloak and Chromium or Chrome. [Verification workflow](.github/workflows/verification.yml)
 
-The scanner probe needs Git, tar, x64 Windows/Linux and network access to pinned official CLI assets and the official vulnerability database. It accepts no source-path or URL arguments, uses generated inputs only, and does not qualify a production Runner.
-
-## Development baseline
-
-The complete design documents are maintained in Chinese:
-
-- [Baseline index and design consistency](docs/baseline.md): document responsibilities, invariant mapping, approved clarifications, and change records.
-- [Blueprint v6](docs/blueprint-v6.md): product vision, all three loops, five logical agent roles, security boundaries, and MVP scope.
-- [Implementation plan v2: TypeScript + PostgreSQL](docs/implementation-plan-v2-ts-postgresql.md): technology choices, modules, dependencies, database and concurrency design, P0-P5 tasks, and acceptance criteria.
-- [Development plan v1](docs/development-plan-v1.md): actionable P0/P1 tasks, dependencies, and the route to all three MVP loops.
-- [P0 verification](docs/p0-verification.md): reproducible checks, current evidence, candidate dependencies, and blockers.
-- [Delivery and review index](docs/reviews/README.md): per-delivery code walkthroughs, evidence, limitations, and review order.
-- [P1-A control plane](docs/control-plane-p1-a.md): identity, least-privilege database setup, API commands, and verification limits.
-- [P1-B durable runtime and MCP](docs/control-plane-p1-b.md): worker startup, checkpoint publication, cancellation/resume, MCP auth, and localization.
-- [P1-C portal and login](docs/control-plane-p1-c.md): trusted same-origin build, public OIDC client, memory-only tokens, bilingual workflows, and real browser verification.
-- [Approved restart setup](docs/control-plane-restart.md): current installation binding, scoped credentials, operator approvals, and recovery receipts.
-- [Approved version restore setup](docs/control-plane-restore.md): opt-in submission, separate Komodo identities, and verification of the recovered deployment.
-- [P1-D1 source-inspection foundations](docs/control-plane-p1-d.md): immutable preparation, content verification, real trusted scanner checks, and the remaining KVM acceptance gates.
-- [P1-E rules and text preaudit](docs/control-plane-p1-e.md): advisory rules/Skill, finite non-executing text checks, immutable redacted reports, current project authorization, and the P2-A/P4 boundaries.
-- [P2-A Agent harness](docs/agent-harness-p2-a.md) covers fixture runs, bilingual tool decisions, and checkpoint recovery boundaries.
-- [P1-UX portal design and motion](docs/portal-design-motion.md): shared design tokens, bounded GSAP feedback, live reduced-motion support, stable session boundaries, and build notices.
-- [Portal component migration](docs/portal-shadcn.md): shadcn/ui source ownership, bilingual page and form review, and self-hosted upgrade instructions.
-
-Blueprint v6 remains the product and architecture baseline. The implementation plan records the agreed TypeScript stack and execution approach. No implementation phase has been accepted as complete. Commits are separated by requirement for review.
-
-## Agent engineering
-
-A durable governance workflow surrounds bounded autonomous tool-use loops. Five logical roles cover audit, repair, verification, operations, and rule extraction. Context, budgets, stop conditions, evidence, human intervention, and recovery are explicit platform responsibilities.
-
-MCP works in both directions: external coding assistants connect to the platform, and the platform connects to controlled operations tools.
-
-## Architecture direction
-
-- TypeScript and Node.js for the control plane, workers, agent harness, and MCP integrations.
-- React for the portal.
-- PostgreSQL for domain records, pg-boss scheduling, and durable agent checkpoints, with separate schemas and migration ownership.
-- Drizzle and node-postgres for domain data access; LangGraph TS for agent execution foundations.
-- Komodo as the first deployment backend and Whiskers as the first operations MCP integration target.
-- Disposable virtual machines for untrusted code execution, testing, and builds.
-
-The platform owns project authorization, release evidence, approvals, operation records, concurrency coordination, and result reconciliation. Agents cannot approve their own deployments or infrastructure actions.
-
-## Initial MVP
-
-One maintainer, one workspace, and one active business workflow. A registered Git snapshot of a standard React/Vite + Node.js/Express application produces one image using mock or public data. Deployment and impactful operations require human confirmation.
-
-The MVP includes all three loops, both MCP directions, and validated reuse of at least one code rule and one runbook. Production data writes, business database migrations, arbitrary host administration, public SaaS multitenancy, and high availability are outside the first release.
+For a change, start with the project conventions and the relevant stage guide. [Development conventions](AGENTS.md) · [Design baseline](docs/baseline.md) · [Review Guide index](docs/reviews/README.md)
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE). Third-party components, model services, and rule packages retain their own licenses and terms.
-
+Itervane is licensed under Apache-2.0. Third-party components, model services and rule packages carry their own licenses or terms. [LICENSE](LICENSE) · [Component notices](docs/release-components.md)
